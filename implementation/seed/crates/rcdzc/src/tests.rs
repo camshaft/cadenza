@@ -35790,6 +35790,44 @@ mod stage1 {
                 "the lowercase-type-var hint points at the unannotated-generic route: {m}"
             );
         }
+        // NESTED type-var positions get the SAME rich guidance (was the terse "unbound name `b`"): a var
+        // inside `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)`, at every annotation site.
+        for src in [
+            "(module m (def (f (: x (List b))) x) (export f))",
+            "(module m (def (f (: x (Tuple a b))) x) (export f))",
+            "(module m (def (f (: g (-> a b))) g) (export f))",
+            "(module m (def (f (: m (Map k v))) m) (export f))",
+            "(module m (def (main) (: 5 (List b))) (export main))",
+            "(module m (def (main) (let (((: x (List b)) 5)) 0)) (export main))",
+        ] {
+            let m = unbound_hint(src);
+            assert!(
+                m.contains("not a type variable") && m.contains("UNANNOTATED"),
+                "a NESTED lowercase type-var gets the rich hint too: {src} -> {m}"
+            );
+        }
+        // NO false change: an UPPERCASE unknown type nested in a compound stays the plain message (a real
+        // missing type, not a would-be var), and a well-formed nested type is clean.
+        let nested_upper = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x (List Widget))) x) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Widget nested is unbound");
+        assert!(
+            nested_upper.message.contains("unbound name `Widget`")
+                && !nested_upper.message.contains("not a type variable"),
+            "an uppercase nested missing type keeps the plain message: {}",
+            nested_upper.message
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: x (List Int64))) x) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed nested type annotation is clean"
+        );
         // A lowercase name in a VARIANT PAYLOAD is still a genuine type variable — NOT this fault. And an
         // UPPERCASE unbound type name (`Widget`) is a plain missing-type, keeping the bare message (it is
         // not a would-be type variable).

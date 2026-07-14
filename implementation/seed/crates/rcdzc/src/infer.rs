@@ -1075,18 +1075,20 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
     {
-        out.push(
-            Reject::coded(
-                Code::Unbound,
-                format!(
-                    "unbound name `{name}` — a lowercase name in a type position is not a type \
-                     variable here ({lead} names an existing type). Cadenza has no `∀`-binder in an \
-                     annotation; write a GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` \
-                     is already polymorphic in `x` — or annotate a concrete type"
-                ),
-            )
-            .at(ty_expr),
-        );
+        out.push(lowercase_type_var_reject(&name, ty_expr, lead));
+        return;
+    }
+    // A COMPOUND type expression carrying a lowercase type-var in a nested position — `(List b)`,
+    // `(Tuple a b)`, `(-> a b)`, `(Map k v)`, `(Record (x a))`. The bare-name branch above only catches a
+    // top-level `(: x a)`; a nested `b` fell to the generic `collect` below, which reported the terse
+    // "unbound name `b`" WITHOUT the "not a type variable here — leave the parameter unannotated" guidance
+    // an ML/Haskell user needs (they read `(List b)` as `List<some type var b>`). Walk the type expr's
+    // nested positions and emit the SAME rich message for each lowercase-unbound leaf, so a nested type-var
+    // gets fix-parity with the top-level one. If any fired, we are done (the enriched rejects replace what
+    // `collect` would have said); otherwise fall through to the ordinary path.
+    let before_tv = out.len();
+    enrich_nested_lowercase_type_vars(db, ty_expr, lead, out);
+    if out.len() != before_tv {
         return;
     }
     let before = out.len();
@@ -1107,6 +1109,58 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
                 )
                 .at(ty_expr),
             );
+        }
+    }
+}
+
+/// The CDZ0101 reject for a LOWERCASE name used as a would-be type variable in a type-annotation position
+/// — the ML/Haskell reflex (`a` read as `∀a`), which Cadenza has no `∀`-binder to scope. Names the actual
+/// route to the polymorphism the author wanted: leave the parameter UNANNOTATED. Shared by the top-level
+/// bare-name case and the NESTED-position walk (`enrich_nested_lowercase_type_vars`), so `(: x a)` and
+/// `(: x (List b))` read identically. `lead` names the site ("a parameter's annotation", etc.).
+fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
+    Reject::coded(
+        Code::Unbound,
+        format!(
+            "unbound name `{name}` — a lowercase name in a type position is not a type variable here \
+             ({lead} names an existing type). Cadenza has no `∀`-binder in an annotation; write a \
+             GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` is already polymorphic in `x` \
+             — or annotate a concrete type"
+        ),
+    )
+    .at(at)
+}
+
+/// Walk a COMPOUND type-annotation expression's NESTED type positions and emit the rich
+/// [`lowercase_type_var_reject`] for each lowercase name that resolves to nothing — so a type-var nested in
+/// `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)` gets the SAME "not a type variable here" guidance
+/// the top-level `(: x a)` does, instead of the terse "unbound name `b`" the generic `collect` gives. Only
+/// a bare lowercase name resolving to `Poison` is enriched (an uppercase unknown type, or a name that IS a
+/// value, keeps its own fault). Recurses through the tail elements of a `(head …)` form (the type-argument
+/// positions), NOT the head (`List`/`Map`/`->` are the known ctors); a record-bearing type never reaches
+/// here (the caller's record branch returns first), so there are no field LABELS to skip.
+fn enrich_nested_lowercase_type_vars(
+    db: &mut Db,
+    node: StructId,
+    lead: &str,
+    out: &mut Vec<Reject>,
+) {
+    // A bare NAME node is a leaf — enrich it if it is a lowercase would-be type var resolving to nothing,
+    // then stop (a name has no tail to recurse).
+    if let Some(name) = db.ast.as_name(node).map(str::to_string) {
+        if name.starts_with(|c: char| c.is_ascii_lowercase())
+            && matches!(resolved_of(db, node), Resolved::Poison(_))
+        {
+            out.push(lowercase_type_var_reject(&name, node, lead));
+        }
+        return;
+    }
+    // A compound `(head tail…)` — recurse into the TAIL (the type-argument positions); the head names the
+    // constructor, not a type var.
+    if let crate::ast::Struct::List(kids) = db.ast.get(node) {
+        let kids = kids.clone();
+        for &child in kids.iter().skip(1) {
+            enrich_nested_lowercase_type_vars(db, child, lead, out);
         }
     }
 }
