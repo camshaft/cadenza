@@ -355,8 +355,17 @@ pub fn defined_names(buffer: &str, from: &str) -> Result<Vec<String>, JsError> {
 /// Accepts a bare expression (`(dbl 21)`), and tolerates a buffer that is itself a bare expression
 /// rather than defs (nothing to call — the expression stands alone). The buffer may be a `(do …)`
 /// block (the guide editor's wrap), a `(module NAME …)` (a hand-written program), or a bare form.
+/// `exact` selects the CALCULATOR's forced-rational mode: when true, the expression's bare numeric
+/// literals ground to an exact `Rational` (via `assemble_repl_program_exact`'s do-local
+/// `(pragma default-fraction Rational)` module — C6), so `1 / 3` is `1/3` with no `R` suffix. The
+/// general playground REPL passes `false` (ordinary Int64/Float defaults).
 #[wasm_bindgen]
-pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, JsError> {
+pub fn repl_eval(
+    buffer: &str,
+    expr: &str,
+    from: &str,
+    exact: bool,
+) -> Result<CompileResult, JsError> {
     let from = parse_format(from)?;
 
     // A parse failure in either piece → one codeless error diagnostic (uniform with `compile`).
@@ -397,7 +406,11 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
     // Assemble the combined program via the SHARED assembler (`cadenza_syntax::repl`) — the same one the
     // native `cdz calc` REPL uses, so the two surfaces never drift in how the buffer's items are
     // unwrapped and the `(def (cdz-repl-eval) <expr>)` entry synthesized + exported.
-    let arenas = cadenza_syntax::repl::assemble_repl_program(&buf_arenas, &expr_arenas);
+    let arenas = if exact {
+        cadenza_syntax::repl::assemble_repl_program_exact(&buf_arenas, &expr_arenas)
+    } else {
+        cadenza_syntax::repl::assemble_repl_program(&buf_arenas, &expr_arenas)
+    };
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
 
     // Compile the synthesized module (plain Wasm — a REPL call is run, not stepped). Diagnostics from a

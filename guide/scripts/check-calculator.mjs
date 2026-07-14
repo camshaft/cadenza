@@ -81,9 +81,10 @@ function wrapInLetsMl(bindings, expr) {
   return wrapped;
 }
 
-/// Compile + run one expression (ML surface), returning the rendered value or throwing on decline.
+/// Compile + run one ML expression, returning the rendered value or throwing on decline. The plain path
+/// wraps it as `def main() = <expr>`. This checks the ordinary (non-exact) calculator path.
 async function evalMl(expr) {
-  const out = compile(wrapAsEntry(expr), "ml");
+  const out = compile(`def main() = ${expr}\nexport { main }`, "ml");
   if (!out.component) {
     const err = (out.diagnostics || []).find((d) => d.error);
     throw new Error(err ? `${err.code || ""} ${err.message}`.trim() : "declined");
@@ -91,10 +92,20 @@ async function evalMl(expr) {
   return await runComponent(out.component);
 }
 
-/// The calculator uses replEval (buffer + expr); here we emulate its assembled program directly: the
-/// `let`-wrapped expression becomes the sole entry `main`. This mirrors what replEval("", wrapped) does.
-function wrapAsEntry(expr) {
-  return `def main() = ${expr}\nexport { main }`;
+/// Compile + run an EXACT-MODE expression: an S-EXPR program wrapping the (s-expr) expression in the same
+/// do-local `(pragma default-fraction Rational)` module `assemble_repl_program_exact` builds, so bare
+/// literals ground to Rational. Built in s-expr (unambiguous) — this checks that the exact wrapper the
+/// calculator emits actually makes `(/ 1 3)` exact. Mirrors `repl_eval(exact=true)`'s assembly.
+async function evalExactSexpr(sexprExpr) {
+  // The module is do-local INSIDE main's body (a top-level module sibling is not visible to `main`) —
+  // exactly the shape `assemble_repl_program_exact` builds.
+  const prog = `(do (def (main) (do (module Exact (pragma default-fraction Rational) (def (v) ${sexprExpr})) ((. Exact v) unit))) (export main))`;
+  const out = compile(prog, "sexpr");
+  if (!out.component) {
+    const err = (out.diagnostics || []).find((d) => d.error);
+    throw new Error(err ? `${err.code || ""} ${err.message}`.trim() : "declined");
+  }
+  return await runComponent(out.component);
 }
 
 let pass = 0;
@@ -127,6 +138,25 @@ await check("counter n=n+1", "n", [["n", "1"], ["n", "n + 1"]], "2");
 await check("rational var", "r + r + r", [["r", "1R / 3R"]], "1/1");
 // A plain scalar.
 await check("scalar", "2 + 3", [], "5");
+
+// --- EXACT MODE (C6b): a bare literal grounds to Rational, so `1 / 3` is `1/3` with NO `R` suffix ---
+async function checkExact(label, sexprExpr, wantSubstr) {
+  try {
+    const got = await evalExactSexpr(sexprExpr);
+    const ok = got != null && String(got).includes(wantSubstr);
+    console.log(`${ok ? "ok  " : "FAIL"}  exact ${label}: ${sexprExpr}  =>  ${got}`);
+    ok ? pass++ : fail++;
+  } catch (e) {
+    console.log(`FAIL  exact ${label}: ${sexprExpr}  =>  threw ${e.message}`);
+    fail++;
+  }
+}
+// THE MARQUEE: bare `1 / 3` is exact 1/3 (not integer-truncated 0) — forced rationals by default.
+await checkExact("bare 1/3 is exact", "(/ 1 3)", "1/3");
+// Bare thirds sum to exactly 1.
+await checkExact("bare thirds sum to 1", "(+ (+ (/ 1 3) (/ 1 3)) (/ 1 3))", "1/1");
+// A bare decimal grounds to its exact fraction (0.1 + 0.2 = 3/10, not 0.30000…004).
+await checkExact("bare decimal exact", "(+ 0.1 0.2)", "3/10");
 
 console.log(`\ncalculator check: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

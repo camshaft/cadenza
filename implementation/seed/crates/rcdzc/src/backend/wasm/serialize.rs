@@ -1543,15 +1543,16 @@ fn emit_cell_rebuild(
     }
 }
 
-/// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading an optional
-/// fixed-shape tuple-arg REBUILD among the scalar core params. With `tuple_arg = None`, pushes the raw scalar
-/// args `local.get 1..1+arity`. With `Some(rebuild)`, pushes the PREFIX scalars (`1..base_param`), the rebuilt
-/// tuple cell (via [`emit_tuple_rebuild`], stashed in `tuple_local` for the post-dispatch drop), then the
-/// SUFFIX scalars (`base_param+nfields..1+arity`) — the tuple sits in its original argument position. For a
-/// SOLE tuple (base_param=1, nfields=arity) prefix+suffix are empty → byte-identical to a bare rebuild; for
-/// `None` byte-identical to the raw push. Shared by the scalar `call` body + every list-result `call` body.
+/// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading ZERO OR MORE
+/// fixed-shape tuple-arg REBUILDS among the scalar core params. `tuples` are in ascending `base_param` order
+/// (each rebuild carries the core-param index its flattened leaves start at); the flattened core params run
+/// `1..1+arity` (after `self`=0). Walks the core-param range: a param that starts a tuple's leaves emits that
+/// tuple's rebuilt cell (via [`emit_tuple_rebuild`], stashed at `tuple_local + tuple_index` for the
+/// post-dispatch drop) and skips its leaves; any other param is a plain scalar `local.get`. With `tuples`
+/// empty, byte-identical to the raw scalar push; with one tuple, byte-identical to the prior single-tuple
+/// interleave. Shared by the scalar `call` body + every list-result `call` body.
 fn emit_closure_call_args(
-    tuple_arg: Option<&TupleArgRebuild>,
+    tuples: &[TupleArgRebuild],
     tuple_local: u32,
     arity: u32,
     imp: &dyn Fn(&str) -> u64,
@@ -1562,21 +1563,20 @@ fn emit_closure_call_args(
         out.push(op::LOCAL_GET);
         uleb128(l as u64, out);
     };
-    if let Some(rebuild) = tuple_arg {
-        // The tuple consumes `nleaves` flattened core params (recursively — a nested field contributes its
-        // own leaves), so the SUFFIX scalars start at `base + nleaves`.
-        let nleaves: u32 = rebuild.fields.iter().map(FieldRebuild::leaf_count).sum();
-        let base = rebuild.base_param;
-        for a in 1..base {
-            get(a, out); // a prefix scalar arg
-        }
-        emit_tuple_rebuild(rebuild, tuple_local, imp, out); // → the rebuilt tuple handle
-        for a in (base + nleaves)..(1 + arity) {
-            get(a, out); // a suffix scalar arg
-        }
-    } else {
-        for a in 0..arity {
-            get(1 + a, out);
+    // Walk the flattened core params `1..1+arity`; at each tuple's `base_param` emit its rebuild + skip its
+    // leaves, else push the scalar. `tuples` are ascending by `base_param` + non-overlapping.
+    let mut a = 1u32;
+    while a < 1 + arity {
+        if let Some((ti, rebuild)) = tuples.iter().enumerate().find(|(_, t)| t.base_param == a) {
+            emit_tuple_rebuild(rebuild, tuple_local + ti as u32, imp, out);
+            a += rebuild
+                .fields
+                .iter()
+                .map(FieldRebuild::leaf_count)
+                .sum::<u32>();
+        } else {
+            get(a, out);
+            a += 1;
         }
     }
 }
@@ -1590,6 +1590,16 @@ fn emit_tuple_rebuilt_drop(tuple_local: u32, imp: &dyn Fn(&str) -> u64, out: &mu
     uleb128(tuple_local as u64, out);
     out.push(op::CALL);
     uleb128(imp("drop"), out);
+}
+
+/// View a single-tuple `Option<&TupleArgRebuild>` as the 0-or-1-element slice `emit_closure_call_args` (and
+/// the multi-tuple paths) take. `None` → `&[]`, `Some(rb)` → the one-element slice. (Not `Option::as_slice`,
+/// which would yield `&[&TupleArgRebuild]`.)
+fn tuple_arg_slice(tuple_arg: Option<&TupleArgRebuild>) -> &[TupleArgRebuild] {
+    match tuple_arg {
+        Some(rb) => std::slice::from_ref(rb),
+        None => &[],
+    }
 }
 
 /// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
@@ -1910,7 +1920,13 @@ pub fn closure_bytes_resource_core_module_borrow(
         // dispatch: push env(cell) + args (or the REBUILT tuple-arg cell), read the code slot
         // (arr-get(cell,0)→get-int→wrap), call_indirect.
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         ci32(0, &mut inner);
         inner.push(op::CALL);
@@ -2283,7 +2299,13 @@ pub fn closure_value_resource_core_module_borrow(
         // dispatch: push env(cell) + args (or the REBUILT tuple-arg cell), read the code slot, call_indirect →
         // the compound handle.
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -2603,7 +2625,13 @@ pub fn closure_value_encode_resource_core_module_borrow(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         ci32(0, &mut inner);
         inner.push(op::CALL);
@@ -2964,7 +2992,13 @@ pub fn multi_closure_bytes_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         ci32(0, &mut inner);
         inner.push(op::CALL);
@@ -3299,7 +3333,13 @@ pub fn multi_closure_value_encode_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         ci32(0, &mut inner);
         inner.push(op::CALL);
@@ -3671,7 +3711,13 @@ pub fn multi_closure_value_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        emit_closure_call_args(tuple_arg, tuple_local, arity, &imp, &mut inner);
+        emit_closure_call_args(
+            tuple_arg_slice(tuple_arg),
+            tuple_local,
+            arity,
+            &imp,
+            &mut inner,
+        );
         get(cell, &mut inner);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -4063,7 +4109,7 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         {
             let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
             emit_closure_call_args(
-                tuple_arg,
+                tuple_arg_slice(tuple_arg),
                 tuple_local,
                 arg_vts.len() as u32,
                 &imp,
@@ -4483,7 +4529,13 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(gr.tuple_arg.as_ref(), tuple_local, arity, &imp, &mut inner);
+            emit_closure_call_args(
+                tuple_arg_slice(gr.tuple_arg.as_ref()),
+                tuple_local,
+                arity,
+                &imp,
+                &mut inner,
+            );
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4614,7 +4666,13 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(gr.tuple_arg.as_ref(), tuple_local, arity, &imp, &mut inner);
+            emit_closure_call_args(
+                tuple_arg_slice(gr.tuple_arg.as_ref()),
+                tuple_local,
+                arity,
+                &imp,
+                &mut inner,
+            );
             get(cell, &mut inner);
             inner.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -4680,7 +4738,13 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(gr.tuple_arg.as_ref(), tuple_local, arity, &imp, &mut inner);
+            emit_closure_call_args(
+                tuple_arg_slice(gr.tuple_arg.as_ref()),
+                tuple_local,
+                arity,
+                &imp,
+                &mut inner,
+            );
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4775,7 +4839,13 @@ pub fn distinct_sig_resource_core_module(
             // push env (the cell) then the closure's args (prefix scalars, rebuilt tuple, suffix scalars).
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            emit_closure_call_args(gr.tuple_arg.as_ref(), tuple_local, arity, &imp, &mut inner);
+            emit_closure_call_args(
+                tuple_arg_slice(gr.tuple_arg.as_ref()),
+                tuple_local,
+                arity,
+                &imp,
+                &mut inner,
+            );
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::I32_CONST);

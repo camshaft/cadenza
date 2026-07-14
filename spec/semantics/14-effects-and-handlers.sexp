@@ -1121,6 +1121,48 @@
                 ((. List len) xs))) (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive walk threads TWO effects at once — a fresh-index counter and a running total"
+  (doc    "The full compiler-pass shape: ONE recursive walk that reads a fresh index from `Idx` AND folds a
+           running total through `Tot`, under TWO nested handlers, each threading its own state independently.
+           `walk` at each step reads `v = (Idx.next)` (a fresh index) then `(Tot.add v)` (accumulate it), then
+           recurses; at the base it reads back the total `(Tot.total)`. `Idx` seeded 1 threads `s + 1` so the
+           three indices are 1, 2, 3; `Tot` seeded 0 threads `t + d` so the total is `1 + 2 + 3` = 6. Both
+           states are live on the recursion stack simultaneously and thread through DISTINCT slots (the walk
+           specializes once against the merged two-effect context — a single shared slot per effect would
+           clobber on re-entry). Pins that effect-context monomorphization threads more than one effect
+           through one recursive walk — a fresh-name counter AND a diagnostics/total accumulator — the exact
+           combination a self-hosting compiler pass needs.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (effect Tot (op add (-> Int64 Int64)) (op total (-> Unit Int64)))
+            (def (walk (: n Int64))
+              (if (= n 0)
+                  (Tot.total unit)
+                  (let ((v (Idx.next)))
+                    (let ((u (Tot.add v)))
+                      (walk (- n 1))))))
+            (def (main)
+              (handle Tot 0 ((add (d) t (resume t (+ t d))) (total (uu) t (resume t t)))
+                (handle Idx 1 ((next (u) s (resume s (+ s 1))))
+                  (walk 3)))) (export main)))
+  (output (: 6 Int64)))
+
+(case "a handle's TUPLE value pairing a scalar with a built list escapes and is destructured"
+  (doc    "The handle's VALUE is a COMPOUND — a tuple pairing a scalar with an effect-built heap list — and
+           the whole tuple escapes the handle to be destructured outside. `(handle Idx 1 … (tuple 42 (build
+           2)))` evaluates to `(42, [2,1])`; bound to `r` in an enclosing `let`, `(+ (. r 0) ((. List len)
+           (. r 1)))` reads the scalar 42 and the built list's length 2 → 44. Pins that a handle can return a
+           MIXED compound (a scalar beside a heap value) as its result and hand it whole to the enclosing
+           computation — a phase returning both a summary count and its collected list.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64))
+              (if (= n 0) (list) (let ((v (Idx.next))) ((. List push) (build (- n 1)) v))))
+            (def (main)
+              (let ((r (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (tuple 42 (build 2)))))
+                (+ (. r 0) ((. List len) (. r 1))))) (export main)))
+  (output (: 44 Int64)))
+
 ; A RECURSIVE effectful walk whose handler arm resumes WITH THE STATE ITSELF and threads a CHANGED state
 ; `(resume s (+ s 1))` — the exact combination (recursion × a state-threading arm whose resume VALUE is
 ; the state) that leaked a compiler-internal specialization name. The recursive-def specialization

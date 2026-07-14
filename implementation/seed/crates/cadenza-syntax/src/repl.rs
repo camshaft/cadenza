@@ -102,27 +102,79 @@ fn copy_subtree(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
     }
 }
 
+/// The do-local module the EXACT-MODE entry body is wrapped in — its `(pragma default-fraction Rational)`
+/// makes a bare numeric literal in the wrapped expression an exact rational (`numeric-model.md` §A Module
+/// May Declare Its Default Fraction Literal Type). Kebab (a member name, not a boundary name, but kept
+/// kebab for consistency) and `cdz-`-prefixed so it can't collide with a reader's own module.
+const EXACT_MODULE: &str = "cdz-calc-exact";
+const EXACT_INNER: &str = "cdz-calc-value";
+
 /// Assemble the runnable REPL program: the buffer's kept top-level items (defs/types, shell unwrapped
 /// and exports dropped) plus a synthesized nullary entry `(def (cdz-repl-eval) <expr>)`, exported as
-/// the sole entry, all in one fresh arena as a top-level `(do item… entry export)` block. The compiler
-/// accepts a bare `(do …)` (exactly what the guide editor emits), so no `(module …)` wrapping is added.
+/// the sole entry, all in one fresh arena as a top-level `(do item… entry export)` block.
+///
+/// The default (`assemble_repl_program`) leaves the expression's numeric literals with their ordinary
+/// types (integer `/` truncates). [`assemble_repl_program_exact`] instead wraps the expression in a
+/// do-local `(module … (pragma default-fraction Rational) (def (cdz-calc-value) <expr>)) ((. … ) unit)`
+/// so a bare literal grounds to an EXACT rational — the calculator's "exact by default" mode, so `1 / 3`
+/// is `1/3` without the `R` suffix (C6). Everything else is identical.
 ///
 /// `buffer` is the parsed definitions arena; `expr` is the parsed expression arena (its whole root is
 /// the entry body). Both are copied AT THE AST LEVEL into the result — NOT string-spliced — so a string
 /// literal containing parentheses (or any surface quirk) can't corrupt the assembly. The returned arena
 /// is ready to `codec::encode` + hand to the compiler.
 pub fn assemble_repl_program(buffer: &Arenas, expr: &Arenas) -> Arenas {
+    assemble_with(buffer, expr, false)
+}
+
+/// [`assemble_repl_program`] in EXACT mode — the expression's bare numeric literals default to `Rational`
+/// (exact by default), via a do-local `(pragma default-fraction Rational)` module wrapping the entry body.
+pub fn assemble_repl_program_exact(buffer: &Arenas, expr: &Arenas) -> Arenas {
+    assemble_with(buffer, expr, true)
+}
+
+fn assemble_with(buffer: &Arenas, expr: &Arenas, exact: bool) -> Arenas {
     let mut b = Builder::new();
     let do_head = b.name("do");
     let mut do_kids = vec![do_head];
     for it in buffer_items(buffer) {
         do_kids.push(copy_subtree(&mut b, buffer, it));
     }
-    // The synthesized entry: `(def (cdz-repl-eval) <expr>)`.
+    // The synthesized entry: `(def (cdz-repl-eval) <body>)`, where <body> is either the expression
+    // directly, or — in exact mode — the expression wrapped so its literals default to Rational.
     let entry_def_head = b.name("def");
     let entry_name = b.name(REPL_ENTRY);
     let entry_sig = b.list(vec![entry_name]); // `(cdz-repl-eval)` — a nullary signature
-    let entry_body = copy_subtree(&mut b, expr, expr.root);
+    let expr_core = copy_subtree(&mut b, expr, expr.root);
+    let entry_body = if exact {
+        // `(do (module cdz-calc-exact (pragma default-fraction Rational) (def (cdz-calc-value) <expr>))
+        //      ((. cdz-calc-exact cdz-calc-value) unit))` — a do-local module whose pragma grounds <expr>'s
+        // bare literals to exact rationals, then called. (A do-local module IS visible to a later form in
+        // the same do; a top-level module sibling is not — so the pragma module lives inside the entry.)
+        let module_head = b.name("module");
+        let module_name = b.name(EXACT_MODULE);
+        let pragma_head = b.name("pragma");
+        let pragma_key = b.name("default-fraction");
+        let pragma_ty = b.name("Rational");
+        let pragma = b.list(vec![pragma_head, pragma_key, pragma_ty]);
+        let inner_def_head = b.name("def");
+        let inner_name = b.name(EXACT_INNER);
+        let inner_sig = b.list(vec![inner_name]); // `(cdz-calc-value)` — nullary
+        let inner_def = b.list(vec![inner_def_head, inner_sig, expr_core]);
+        let module = b.list(vec![module_head, module_name, pragma, inner_def]);
+        // `((. cdz-calc-exact cdz-calc-value) unit)` — member-access the inner value + apply to `unit`.
+        let dot = b.name(".");
+        let acc_mod = b.name(EXACT_MODULE);
+        let acc_val = b.name(EXACT_INNER);
+        let member = b.list(vec![dot, acc_mod, acc_val]);
+        let unit = b.name("unit");
+        let call = b.list(vec![member, unit]);
+        // The body is a do declaring the module then calling it.
+        let body_do = b.name("do");
+        b.list(vec![body_do, module, call])
+    } else {
+        expr_core
+    };
     let entry_def = b.list(vec![entry_def_head, entry_sig, entry_body]);
     do_kids.push(entry_def);
     // `(export cdz-repl-eval)`.
@@ -208,6 +260,33 @@ mod tests {
         assert!(
             !rendered.contains("(export dbl)"),
             "the buffer's own export is dropped: {rendered}"
+        );
+    }
+
+    #[test]
+    fn assemble_exact_wraps_the_expr_in_a_default_fraction_module() {
+        let buf = parse("0"); // no items (a bare expression buffer)
+        let expr = parse("(/ 1 3)");
+        let program = assemble_repl_program_exact(&buf, &expr);
+        let rendered = crate::query::Tree::of(&program).to_sexpr();
+        // The entry body wraps the expr in a do-local `(module … (pragma default-fraction Rational) …)`.
+        assert!(
+            rendered.contains("(pragma default-fraction Rational)"),
+            "exact mode declares the default-fraction pragma: {rendered}"
+        );
+        assert!(
+            rendered.contains("(/ 1 3)"),
+            "the expression is inside the module's inner def: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("(def ({REPL_ENTRY})")),
+            "still exported as the sole entry: {rendered}"
+        );
+        // The NON-exact assembler does NOT wrap — the expr is the bare entry body.
+        let plain = crate::query::Tree::of(&assemble_repl_program(&buf, &expr)).to_sexpr();
+        assert!(
+            !plain.contains("default-fraction"),
+            "non-exact mode adds no pragma: {plain}"
         );
     }
 

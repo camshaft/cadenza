@@ -58,6 +58,13 @@ pub struct CompileArgs {
     /// `name=` of an explicit `kind:name=path` spec.
     #[arg(long, value_name = "NAME")]
     entry: Option<String>,
+
+    /// The INTERFACE this component publishes its exports under, when compiled as a cross-component
+    /// PROVIDER (`DESIGN-cross-component-interop-rcdzc.md` X4b) — e.g. `--component-name cadenza:math/api`.
+    /// A peer consumer's `(extern "cadenza:math/api" …)` binds to it. Injected as a `KIND_COMPONENT_NAME`
+    /// artifact. Absent (the common case) → the component exports its boundary funcs at top level.
+    #[arg(long, value_name = "INTERFACE")]
+    component_name: Option<String>,
 }
 
 /// A backend target, as a clap-parsed value (its own enum so clap validates the spelling and `--help`
@@ -119,6 +126,12 @@ impl CompileArgs {
     /// component boundary. A wrapping driver turns this into a `KIND_ENTRY` input artifact.
     pub fn entry(&self) -> Option<&str> {
         self.entry.as_deref()
+    }
+
+    /// The `--component-name <INTERFACE>`, if given — the interface a cross-component PROVIDER publishes
+    /// its exports under. A wrapping driver turns this into a `KIND_COMPONENT_NAME` input artifact.
+    pub fn component_name(&self) -> Option<&str> {
+        self.component_name.as_deref()
     }
 }
 
@@ -191,6 +204,11 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
     if let Some(entry) = cli.entry() {
         inputs.push(entry_artifact(entry));
     }
+    // A `--component-name <INTERFACE>` names the interface a PROVIDER publishes its exports under — inject
+    // it as a `KIND_COMPONENT_NAME` artifact (X4b).
+    if let Some(iface) = cli.component_name() {
+        inputs.push(component_name_artifact(iface));
+    }
 
     run_prepared(inputs, &cli.targets(), cli.out, prog)
 }
@@ -200,6 +218,16 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
 /// way.
 pub fn entry_artifact(name: &str) -> Artifact {
     Artifact::new(crate::link::KIND_ENTRY, "entry", name.as_bytes().to_vec())
+}
+
+/// Build the `KIND_COMPONENT_NAME` input artifact naming a provider's published interface (X4b) — its
+/// bytes are the interface name. Shared by `run` and the `cdz` driver.
+pub fn component_name_artifact(iface: &str) -> Artifact {
+    Artifact::new(
+        crate::link::KIND_COMPONENT_NAME,
+        "component-name",
+        iface.as_bytes().to_vec(),
+    )
 }
 
 /// Compile a set of ALREADY-BUILT input artifacts to the requested targets and write the outputs — the

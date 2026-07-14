@@ -659,6 +659,17 @@ pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be appl
 /// leaves them untouched.
 pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 
+/// The coded CDZ0201 a MALFORMED `(extern …)` gets — its first element (the peer interface) is missing or
+/// not a string literal, so `scan_extern_decl` drops it and the ops it would bind go unbound. Shared as a
+/// const so `dedup_faults` recognizes it (`starts_with`) and drops the CONSEQUENT "unbound name" fault for
+/// each op name the dropped extern was meant to bind — one primary "no" naming the real defect.
+pub const MALFORMED_EXTERN_MESSAGE: &str = "an `(extern …)` names a peer INTERFACE as a string — write `(extern \
+     \"cadenza:pkg/iface\" (<op> (-> …))…)` (the interface identifier is a string literal, not a bare name)";
+
+/// The stable PREFIX of [`MALFORMED_EXTERN_MESSAGE`] — `dedup_faults` matches this to detect a
+/// malformed-extern reject without pinning the whole message.
+pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)` names a peer INTERFACE";
+
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

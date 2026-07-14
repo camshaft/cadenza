@@ -1,7 +1,12 @@
 # Design — cross-component Cadenza interop via shared-runtime value handles (rcdzc)
 
 **Author:** design pass (compiler). **Audience:** the implementer picking this up, + future me.
-**Status:** proposal / handoff — **nothing landed.** Written 2026-07-14 against `spec` @`51407497`.
+**Status:** ✅ **REALIZED end-to-end (2026-07-14).** X0–X5d + X4b-4 all landed on `spec`. Two separately-
+compiled Cadenza source components link and run across a live boundary; a runtime value (scalar OR
+compound: List/String/Record/tuple/…) crosses between them as an opaque shared-runtime handle with NO
+serialization; driveable from the CLI (`cdz compile --component-name` + `cdz-run --peer`). Remaining =
+optional widenings (own/borrow reclamation across the boundary, N-component graphs, a multi-component
+corpus shape, the outermost non-Cadenza marshaling edge). Written 2026-07-14 against `spec` @`51407497`.
 **Operator ask (verbatim intent):** "a way to easily interop with Cadenza functions across
 components — export a function with a specific signature, and another Cadenza component binds to it via
 our import mechanisms; extend the component ABI to be a Cadenza API where any runtime value can cross
@@ -285,11 +290,19 @@ composition; no wasmparser in the compile path, no external interface artifact n
   `export_instance_item`'s trailing `0x00`), not bare strings. Byte-neutral (only a `component-name`
   request takes the provider path — gate 1926 pass / 0 fail / 0 regressions). SCOPE: scalar/unit exports
   (a compound interface member is a later increment); bare (no runtime) provider.
-- **X4b-4 — runner/CLI delivery + e2e.** The library path (`run_with_peers`) is proven; what remains is
-  the CLI/tooling surface so the operator drives it without a Rust test: `cdz` delivers the peer set + the
-  `component-name`/`extern` artifacts. Multi-component gate/corpus shape (corpus is single-`(input)` —
-  `DESIGN-package-linking.md §8.1` names the same gap). The RESOLVER + EMIT + RUNNER are all done (the
-  two-source e2e passes as a Rust integration test); X4b-4 is the CLI ergonomics layer over them.
+- **X4b-4 — runner/CLI delivery. ✅ DONE (`spec`) — DRIVEABLE FROM THE COMMAND LINE.** Two CLI surfaces:
+  (1) `cdz compile <prov> --component-name cadenza:pkg/iface` (a `--component-name` flag on
+  `rcdzc::cli::CompileArgs` + the `cdz` driver → a `KIND_COMPONENT_NAME` artifact via
+  `component_name_artifact`, the `--entry` pattern) publishes a provider's interface; (2) `cdz-run <cons>
+  --peer cadenza:pkg/iface=<prov.wasm>` (a repeatable `--peer interface=path`) composes the consumer with
+  its peers via `run_with_peers` — resolving the shared runtime if the consumer OR any peer needs it.
+  **Proven through the real BINARIES: `cdz compile prov.sexp --component-name cadenza:math/api` + `cdz
+  compile cons.sexp` + `cdz-run cons.wasm --call main --arg 5 --peer cadenza:math/api=prov.wasm` → -5; the
+  compound case (a tuple crossing, runtime auto-resolved from the store) → 9.** The whole vertical is now
+  operator-driveable end-to-end, no Rust harness. (A multi-component CORPUS/gate shape — corpus is
+  single-`(input)`, `DESIGN-package-linking.md §8.1` names the same gap — remains a separate tooling task;
+  the behavior is proven by the CLI + the Rust integration tests.) ⚠ `.cdz`/`.ml` parse as ML; use `.sexp`
+  for the s-expr surface at the CLI.
 
 **X5 — COMPOUND values cross as shared `value` handles (the payoff). IN SUB-BRICKS.**
 - **X5a — share ONE runtime instance across consumer + peers. ✅ DONE (`spec`).** `run_with_peers` (X4a)

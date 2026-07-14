@@ -70,8 +70,15 @@ export function coreModule(text: string, from: Surface): Promise<Uint8Array | nu
 
 /// Evaluate a REPL expression against a buffer's definitions (the playground's mini-REPL). Returns a
 /// compile outcome; the caller runs the component through the run client just like a normal example.
-export function replEval(buffer: string, expr: string, from: Surface): Promise<CompileOutcome> {
-  return client().replEval(buffer, expr, from);
+/// `exact` selects the calculator's forced-rational mode (a bare numeric literal grounds to Rational, so
+/// `1 / 3` is `1/3`); the playground passes false (ordinary defaults). Defaults false.
+export function replEval(
+  buffer: string,
+  expr: string,
+  from: Surface,
+  exact = false,
+): Promise<CompileOutcome> {
+  return client().replEval(buffer, expr, from, exact);
 }
 
 /// The names of every top-level definition the buffer declares — for the REPL's autocomplete.

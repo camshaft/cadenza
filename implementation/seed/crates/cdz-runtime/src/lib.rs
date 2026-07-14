@@ -17226,6 +17226,23 @@ mod tests {
                 }
                 BytesOp::Compact => {
                     v = op_bytes_compact(v); // content unchanged; storage becomes independent
+                    // CANONICITY: compact must yield a leaf `champ_eq` + `champ_hash`-IDENTICAL to a FRESH
+                    // flat leaf of the same content — the property the compiler's rope-key/value-eq
+                    // canonicalization relies on (physical-byte `champ_eq` is correct only if compact makes
+                    // a rope byte-identical to a flat key/operand). The content check below covers bytes;
+                    // this pins the CANONICAL byte FORM (incl. the inline/heap `Raw` boundary) over the
+                    // arbitrary fuzzed rope shape `v` currently holds — not just the one hand-built shape.
+                    let twin = bytes_leaf(&reference);
+                    assert!(
+                        champ_eq(v, twin),
+                        "compacted rope is champ_eq to a fresh flat leaf of the same content (canonical form)"
+                    );
+                    assert_eq!(
+                        champ_hash(v),
+                        champ_hash(twin),
+                        "compacted rope hashes identically to its flat twin (equal keys must hash equal)"
+                    );
+                    op_drop(twin);
                 }
                 BytesOp::ReadOne => {
                     if !reference.is_empty() {
