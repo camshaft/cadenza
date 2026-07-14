@@ -3595,6 +3595,19 @@ fn selfcall_precedes_perform_in_operands(
             }
         }
     }
+    // A `match` evaluates its SCRUTINEE first, then the selected ARM BODY — a strict spine (scrutinee before
+    // body). If the SCRUTINEE contains a self-call, any arm BODY that reaches a perform reads the recursion's
+    // OUT-state (`(match (walk …) (_ (E.op)))` threads the arm body against the post-scrutinee `cur`, which
+    // the recursive-call arm returns UNCHANGED as the incoming state). Same out-state gap as operands / `let`
+    // / `do`; without this the scrutinee-self-call shape leaks the internal `f#ctx$s0` name in a CDZ0101.
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node)
+        && contains_self_call(db, scrutinee, callee_def)
+        && arms
+            .iter()
+            .any(|&(_, body)| contains_any_perform(db, body, ctx))
+    {
+        return true;
+    }
     // Recurse structurally — the shape can be nested inside a branch/let/operand.
     match db.ast.get(node).clone() {
         Struct::List(children) => children

@@ -3636,6 +3636,28 @@ fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
     );
 }
 
+/// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
+/// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
+/// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of
+/// `selfcall_precedes_perform_in_operands`, this leaked the internal `walk#eff2$s0` name in a confusing
+/// CDZ0101. It must decline CLEANLY. A PERFORMING scrutinee with no self-call (the corpus case) and a
+/// match-bound-payload-into-a-perform (also corpus) both still FOLD — the guard fires only when the
+/// SCRUTINEE contains a self-call.
+#[test]
+fn a_match_scrutinee_selfcall_then_arm_perform_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (match (walk (- n 1)) (_ (Ctr.tick))))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing match-scrutinee post-order shape must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
