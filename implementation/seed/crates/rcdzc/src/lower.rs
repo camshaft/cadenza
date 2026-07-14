@@ -4057,12 +4057,13 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
 /// Accept a map-pattern VALUE sub-pattern `v` iff it is IRREFUTABLE — a bare binder / `_`, or an
 /// irrefutable nested pattern (a `(tuple …)` of irrefutable elements, a single-variant `(Mk n)`), composed
 /// to any depth. Its binders read via `MapField` `value_steps` (resolve descends them). A REFUTABLE value
-/// sub-pattern DECLINES: a LITERAL is lifted by `desugar_map_value_subpatterns` (runs first, so a bare
-/// literal never reaches here — but a literal nested in a tuple would); a MULTI-VARIANT ctor `(Some n)`
-/// needs value-DISCRIMINANT dispatch (a later increment). Reuses `check_binding_pattern` (a binding
-/// position IS "must be irrefutable") against `Any` — refutability is a property of the pattern SHAPE, not
-/// the value type — mapping its CDZ0210 (refutable) to a codeless DECLINE, exactly as
-/// `list_element_irrefutable_or_decline` does for a list element.
+/// (a literal, or a multi-variant ctor `(Some n)`) does NOT reach this guard: `map_value_liftable` lifts it
+/// FIRST into a dispatching `(match __mv (<value> body) (_ <catch-all>))` (`5bc7215e` literals, `d4a471d3`
+/// multi-variant ctors), so by here every value is bare or irrefutable. This residual guard reuses
+/// `check_binding_pattern` (a binding position IS "must be irrefutable") against `Any` — refutability is a
+/// property of the pattern SHAPE, not the value type — mapping a stray CDZ0210 (a refutable value the lift
+/// somehow missed) to a codeless DECLINE, exactly as `list_element_irrefutable_or_decline` does for a list
+/// element.
 fn map_value_irrefutable_or_decline(db: &mut Db, v: StructId) -> Result<(), Reject> {
     match check_binding_pattern(db, v, &crate::ty::Ty::Any) {
         Ok(()) => Ok(()),
@@ -4364,10 +4365,12 @@ fn desugar_runtime_map_match(
             "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
         )));
     };
-    // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern whose value
-    // sub-patterns are IRREFUTABLE (a bare binder, or a tuple / single-variant ctor — checked just below);
-    // a refutable value sub-pattern declines. (Over a RUNTIME map a nested value binder's READ isn't wired
-    // yet, so it accepts the shape here and declines at `lower_map_field` — honest, no miscompile.)
+    // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern. By the time
+    // this runs, `desugar_map_value_subpatterns` has already LIFTED every non-bare value (a REFUTABLE
+    // literal/multi-variant ctor into a dispatching `(match __mv …)`, an IRREFUTABLE compound bound by
+    // Inc-17's `value_steps`), so the values reaching here are bare binders or irrefutable compounds. Over
+    // a RUNTIME map the nested-binder READ is wired (`f3f8f94e`): `lower_map_field_runtime` walks
+    // `value_steps` after the `Map.lookup` via `synth_value_path_read`.
     for &(pat, _) in &arms[..catch_all_ix] {
         let inner = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => g[0],
@@ -4378,10 +4381,8 @@ fn desugar_runtime_map_match(
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             )));
         };
-        // A value sub-pattern must be a bare binder or an IRREFUTABLE nested pattern (its binders read via
-        // `MapField` `value_steps`). Over a RUNTIME map the nested-binder READ is wired (`f3f8f94e`):
-        // `lower_map_field_runtime` walks `value_steps` after the `Map.lookup` via `synth_value_path_read`.
-        // A refutable value sub-pattern declines.
+        // The irrefutability guard now sees only bare binders + irrefutable compounds (refutable values
+        // were lifted out above); their binders read via `MapField` `value_steps`.
         for &(_, v) in &entries {
             if let Err(r) = map_value_irrefutable_or_decline(db, v) {
                 return Some(Core::Poison(r));
@@ -4487,14 +4488,14 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
 // A value binder position is itself a binder position (Patterns Compose): a value MAY be a wildcard, a
-// name (bare binder), a tuple pattern, or a (single-variant) constructor pattern, matched recursively to
-// any depth against the value at the key — resolve descends the sub-pattern giving `MapField.value_steps`
-// (`880c95b6`; `5bc7215e` first did binder-free literals), and the whole-arm CDZ0102 linearity walk spans
-// the value binders. It reads over a CONSTANT map (fold down `value_steps`) AND a RUNTIME map
-// (`f3f8f94e`: `lower_map_field_runtime` walks `value_steps` after the `Map.lookup`). (SCOPE, honest: only
-// a REFUTABLE value declines — a bare literal is lifted; a MULTI-variant ctor `(Some n)` needs value-
-// discriminant dispatch, a later increment. The sentence's ENUMERATED kinds — wildcard/name/tuple/
-// constructor — all bind, over both const and runtime maps.)
+// name, a tuple pattern, or a constructor pattern (single- OR multi-variant), matched recursively to any
+// depth against the value at the key — the map value-compose axis is now COMPLETE. An IRREFUTABLE value
+// (bare binder / tuple / single-variant ctor) binds via Inc-17's `MapField.value_steps` (resolve descends
+// the sub-path; `880c95b6` const, `f3f8f94e` runtime); a REFUTABLE value (a literal, `5bc7215e`; or a
+// multi-variant ctor `(Some n)`, `d4a471d3`) is LIFTED into a dispatching `(match __mv (<value> body) (_
+// <catch-all>))` by `desugar_map_value_subpatterns` (via `map_value_liftable`), so a non-matching value
+// falls through to the next arm — over both constant and runtime maps. The whole-arm CDZ0102 linearity
+// walk spans the value binders. All of §4's enumerated kinds bind, refutable or not.
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`).
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
@@ -4551,9 +4552,9 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         };
         // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
         // single-variant `(Mk n)`) whose binders read via `MapField` `value_steps` (resolve descends them).
-        // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor) needs value-DISPATCH: a literal is
-        // lifted by `desugar_map_value_subpatterns` (runs before this) so it never reaches here; a
-        // multi-variant ctor declines (value-discriminant dispatch is a later increment).
+        // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor `(Some n)`) is DISPATCHED: it is
+        // lifted by `desugar_map_value_subpatterns` (runs before this) into a `(match __mv …)`, so only bare
+        // binders + irrefutable compounds reach this irrefutability guard.
         for &(_, v) in &pat_entries {
             if let Err(r) = map_value_irrefutable_or_decline(db, v) {
                 return Core::Poison(r);
