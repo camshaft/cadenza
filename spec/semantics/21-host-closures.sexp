@@ -2601,6 +2601,20 @@
   (call   mk (: 10 Int64) (: (tuple 3 4) (Tuple Int64 Int64)))
   (output (: 17 Int64)))
 
+(case "MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`"
+  (doc    "The direct-call fixed-shape compound-arg path extends to the MULTI-EXPORT shape: N same-signature
+           closures (`mk-sum`, `mk-diff`, both `(-> (Tuple Int64 Int64) Int64)`) cross as N `make-<name>`s
+           sharing ONE `call` whose single argument is a native component `tuple<s64,s64>` — the shared `call`
+           rebuilds the tuple cell from the flattened fields (the same `TupleArgRebuild` the single-export
+           path uses), dispatched through the guest's funcref table by the handle's resource rep. The host
+           `make-diff()` → a handle, `call(handle, (10, 3))` → `(. p 0) - (. p 1)` = 7. The envelope mints
+           the `tuple<…>` defined type in the SHARED `call` functype (outer lift + nested re-export).")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (mk-diff) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
+              (export mk-sum) (export mk-diff)))
+  (call   mk-diff (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
