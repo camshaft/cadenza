@@ -66,6 +66,16 @@ thread_local! {
     /// by inference's own cost) — see the `runtime_record_field_projection_indexes_in_bounded_time` test.
     pub(crate) static RECORD_FIELD_INDEX_KEYS_SCANNED: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total compound-payload elements walked by `infer::ty_has_free_var` since the last reset —
+    /// the fields of a `Ty::Record`/elements of a `Ty::Tuple` it actually enumerates (a cache MISS walks
+    /// them; a HIT is O(1)). The `type_of` memoization guard (`!has_free_var`) ran the full O(N) walk of a
+    /// wide record type once PER node referencing it → O(N²); the `Db::ty_has_free_var` per-`Rc` cache makes
+    /// the total elements walked O(N) regardless of reference count. The noise-free regression signal (a
+    /// wall-clock ratio is diluted by inference's own cost) — see
+    /// `ty_has_free_var_walks_a_shared_record_type_once`.
+    pub(crate) static TY_HAS_FREE_VAR_ELEMS_WALKED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -991,6 +1001,15 @@ pub struct Db {
     /// verdict O(1) after first computation. `None` until computed.
     pub(crate) reaches_host_call: crate::fxhash::FxHashMap<StructId, bool>,
 
+    /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
+    /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
+    /// A wide `Ty::Record`/`Ty::Tuple` (an N-field record) referenced from N nodes had the guard walk its
+    /// whole O(N) payload once per node → O(N²). The payload is IMMUTABLE and its `Rc` is SHARED across all
+    /// those nodes (a memoized `typeval_of` / a solved param type hands back the same `Rc`), so the verdict
+    /// caches by the `Rc`'s `as_ptr` address (the fix-50 key). Only `true`/ground `false` verdicts are
+    /// definite facts of the fixed payload, so caching is sound; the map lives on the per-compile `Db`.
+    pub(crate) ty_has_free_var: crate::fxhash::FxHashMap<usize, bool>,
+
     /// Memo of one function body's DIRECT callee edges (`eval::collect_callees`): for a body/callee
     /// occurrence, the list of callee bodies its code calls (excluding nested `fn` boundaries). A pure
     /// function of the fixed resolved structure — the same node's edges never change — so it caches by
@@ -1768,6 +1787,7 @@ impl Db {
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
+            ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
             record_field_index: crate::fxhash::FxHashMap::default(),

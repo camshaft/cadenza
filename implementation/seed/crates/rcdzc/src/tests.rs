@@ -38050,6 +38050,69 @@ mod stage1 {
     }
 
     #[test]
+    fn ty_has_free_var_walks_a_shared_record_type_once() {
+        // REGRESSION (perf): `infer::type_of`'s memoization guard runs `!t.has_free_var()` on EVERY node's
+        // solved type. For a parameter annotated with an N-field record, referenced from N sites, each
+        // reference's `type_of` walked the whole O(N) record type → O(N²) (the `pp` shape: N=6400 grew
+        // ~3×/dbl, `has_free_var` ~41% self). The record type's field `BTreeMap` is an IMMUTABLE `Rc` shared
+        // across all those references. FIX: `infer::ty_has_free_var` caches the verdict per payload `Rc`
+        // address (`Db::ty_has_free_var`), so the O(N) walk happens ONCE per record type, not once per
+        // reference. Total fields walked is then O(N), not O(N²).
+        //
+        // The shape: `use` takes a P-field record parameter and projects every field once — each `(. r fi)`
+        // demands `type_of(r)` = the record type, whose guard would re-walk all P fields absent the cache.
+        // Deterministic counter (a pure function of the program), so no min-of-runs.
+        fn proj_param_src(p: usize) -> String {
+            let fields_ty: String = (0..p)
+                .map(|i| format!("(f{i} Int64)"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            fn tree(items: &[String]) -> String {
+                if items.len() == 1 {
+                    return items[0].clone();
+                }
+                let m = items.len() / 2;
+                format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+            }
+            let projs: Vec<String> = (0..p).map(|i| format!("(. r f{i})")).collect();
+            format!(
+                "(module m (def (use (: r (Record {fields_ty}))) {}) \
+                   (def (main) 0) (export main))",
+                tree(&projs)
+            )
+        }
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&proj_param_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide record-param projection compiles with no error diagnostics: {diags:?}"
+        );
+        fn elems_walked(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.get())
+            })
+        }
+        // The `has_free_var` walk over the P-field record type must total O(P) elements, not O(P²). The
+        // record type may be walked from a couple of distinct `Rc`s (the param annotation may be reduced
+        // more than once before the type_of memo settles), so allow a small constant multiple of P; that is
+        // still far below the O(P²) a per-reference re-walk would produce. `> 0` proves the cached path ran
+        // (a revert to a bare `t.has_free_var()` in the guard leaves this counter at 0 → the test fails).
+        let p = 400usize;
+        let walked = elems_walked(&proj_param_src(p));
+        assert!(
+            walked > 0 && walked <= (p as u64) * 8,
+            "the `type_of` guard's free-var check on a P-field record referenced P times must walk O(P) \
+             fields via the per-`Rc` cache, not O(P²) (was a full re-walk per reference): P={p} walked \
+             {walked} fields (expected 0 < n ≤ {}); the O(P²) re-walk was ~{}",
+            (p as u64) * 8,
+            (p as u64) * (p as u64)
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

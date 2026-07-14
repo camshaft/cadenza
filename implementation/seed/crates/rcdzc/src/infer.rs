@@ -71,10 +71,74 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     // recompute, so leave it unmemoized and let the solved type win. Every FULLY-GROUND type is memoized as
     // before (the solve-once discipline holds for real types; `has_free_var` treats a deferred int
     // width/sign as ground — those default, they are not undetermined).
-    if !matches!(t, Ty::Any) && !t.has_free_var() {
+    if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) {
         db.types.fill(id, t.clone());
     }
     t
+}
+
+/// `Ty::has_free_var`, but MEMOIZED per shared compound `Rc` — for the `type_of` memoization guard above,
+/// which runs on EVERY node's solved type. A wide `Ty::Record`/`Ty::Tuple` (an N-field record annotation)
+/// is referenced from N nodes, each of which had the guard walk the whole O(N) payload → O(N²). The payload
+/// is immutable and its `Rc` is SHARED across those nodes (a memoized `typeval_of` / a solved param type
+/// hands back the same `Rc`), so the verdict caches by the `Rc`'s address (`Db::ty_has_free_var`, the
+/// fix-50 key). Scalars and thin wrappers recurse directly (already O(1)); only the wide `Rc`-backed
+/// payloads — `Record`/`Tuple`/`Sum`/`Nominal` — are cached, since those are the ones that make the walk
+/// superlinear. Identical result to `Ty::has_free_var`, just without the repeated deep walk.
+pub(crate) fn ty_has_free_var(db: &mut Db, t: &Ty) -> bool {
+    match t {
+        // The `Rc`-backed compounds: cache the whole-payload verdict by the `Rc`'s address so N references
+        // to the same shared type pay ONE walk, not N.
+        Ty::Record(fields) => {
+            let ptr = std::rc::Rc::as_ptr(fields) as *const () as usize;
+            if let Some(&v) = db.ty_has_free_var.get(&ptr) {
+                return v;
+            }
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            #[cfg(test)]
+            crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(c.get() + tys.len() as u64));
+            let v = tys.iter().any(|f| ty_has_free_var(db, f));
+            db.ty_has_free_var.insert(ptr, v);
+            v
+        }
+        Ty::Tuple(elems) => {
+            let ptr = std::rc::Rc::as_ptr(elems) as *const () as usize;
+            if let Some(&v) = db.ty_has_free_var.get(&ptr) {
+                return v;
+            }
+            let tys: Vec<Ty> = elems.to_vec();
+            #[cfg(test)]
+            crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(c.get() + tys.len() as u64));
+            let v = tys.iter().any(|e| ty_has_free_var(db, e));
+            db.ty_has_free_var.insert(ptr, v);
+            v
+        }
+        // Thin wrappers / leaves — already O(1) or O(depth-of-thin-nesting); recurse directly (no shared
+        // `Rc` to key on, and no wide fan-out to amortize). `Sum`/`Nominal` `args` is a `Vec` (no shared
+        // pointer identity) and holds only type ARGUMENTS (small — an instantiation's type params, not an
+        // N-wide payload), so a direct walk is fine — the wide case is the `Record`/`Tuple` above.
+        Ty::Var(_) => true,
+        Ty::Fn(p, r) => ty_has_free_var(db, p) || ty_has_free_var(db, r),
+        Ty::List(elem) | Ty::Set(elem) => ty_has_free_var(db, elem),
+        Ty::Map(k, v) => ty_has_free_var(db, k) || ty_has_free_var(db, v),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+            let tys: Vec<Ty> = args.clone();
+            tys.iter().any(|a| ty_has_free_var(db, a))
+        }
+        Ty::Qty { inner, .. } => ty_has_free_var(db, inner),
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::Type
+        | Ty::Any
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational
+        | Ty::Float(_) => false,
+    }
 }
 
 /// Whether the solved type of `id` is a `Ty::Nominal` — a cheap KIND check that does NOT clone the type.
