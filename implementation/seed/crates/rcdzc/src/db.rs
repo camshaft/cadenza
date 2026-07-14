@@ -2210,6 +2210,23 @@ impl Db {
         self.effect_decl_index.get(name).copied()
     }
 
+    /// A CROSS-COMPONENT extern operation bound by name (X4b) — `(interface, op-name, declared-type-occ)`
+    /// for the first `(extern "iface" (name (-> …)) …)` clause binding `name`, or `None`. An op with no
+    /// declared type (a malformed clause) is skipped (it binds nothing resolvable). Linear over
+    /// `extern_decls` (a program binds few peer interfaces); first-wins on a duplicate name.
+    pub fn extern_op_by_name(&self, name: &str) -> Option<(String, String, StructId)> {
+        for d in &self.extern_decls {
+            for o in &d.ops {
+                if o.name == name
+                    && let Some(ty) = o.ty
+                {
+                    return Some((d.interface.clone(), o.name.clone(), ty));
+                }
+            }
+        }
+        None
+    }
+
     /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
     /// operation's `(meta effect-op)` channel carries, so a later pass recovers an effect's operation set
     /// from a projected op value. `None` if `occ` names no effect declaration.

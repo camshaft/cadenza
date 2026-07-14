@@ -245,9 +245,18 @@ composition; no wasmparser in the compile path, no external interface artifact n
   TYPE)`, no `op` keyword); `Db::extern_decls` populated at load; `extern` registered in
   `TOP_LEVEL_FORMS`/`TOP_LEVEL_KEYWORDS`. Byte-neutral (table populated, nothing consumes it — gate 1894
   pass / 0 fail / 0 regressions; tests `x4b1_*`).
-- **X4b-2 — resolve → `Core::ExternCall`.** An extern op resolves to a `Resolved::Extern { interface, op,
-  ty }` (a new `Resolved` variant), typed from the declared sig; an applied extern lowers to
-  `Core::ExternCall` (X2's IR node). Not inlined (no sibling `Def`).
+- **X4b-2 — resolve → `Core::ExternCall`. ✅ DONE (`spec`).** New `Resolved::Extern { interface: String,
+  op: String, ty: StructId }` variant; `resolve_name` step 3d resolves an extern op name to it via a new
+  `db.extern_op_by_name` query (after sum/effect/variant decls, before prelude); `infer::compute` types it
+  as its declared sig (`typeval_of(ty)`); `lower`'s `Apply` arm produces `Core::ExternCall` (result = the
+  sig's result after N args, via `fn_result_after`); a BARE (unapplied) extern declines (a first-class
+  extern-op value is later). Every exhaustive `Resolved` match got an arm (7 forced: eval collect_callees,
+  infer compute + type_errors, lower compute + ref_escapes_whole + uses_in, compile walk_for_dead_traps —
+  all leaf/no-op except compute). Byte-neutral: a program with `(extern …)` type-checks + lowers to
+  `Core::ExternCall`, which the backend DECLINES cleanly pending X4b-3 (never a type reject). Tests
+  `x4b2_*` (resolves to `Resolved::Extern`, lowers to `Core::ExternCall` w/ interface+op+result; a
+  well-typed application declines-at-emit not type-rejects). Gate 1911 pass / 0 fail / 0 regressions;
+  suite 1366; clippy clean.
 - **X4b-3 — backend emit.** `emit` collects the extern-import set from `Core::ExternCall`s, records
   `layout.extern_order` (the `host_order` analogue), `select` emits each as `call <extern-index>` (a new
   `Lir` or reuse `CallHostImport`-style), the core imports the peer ops from `"peer"`, route the whole to

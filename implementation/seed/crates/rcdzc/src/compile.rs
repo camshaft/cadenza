@@ -3017,6 +3017,7 @@ fn walk_for_dead_traps(
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
+        | Resolved::Extern { .. }
         | Resolved::Poison(_) => {}
     }
 }

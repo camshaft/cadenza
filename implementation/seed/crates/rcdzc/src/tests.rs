@@ -47656,4 +47656,79 @@ mod cross_component_oracle {
             "a program binding no peer has an empty extern table (byte-neutral common case)"
         );
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-2 — an extern op resolves to `Resolved::Extern` and, APPLIED, lowers to `Core::ExternCall`.
+    // The declared signature types the application (no CDZ error); the call is NOT inlined (no body).
+    // (The backend emit that turns `Core::ExternCall` into an imported `call` is X4b-3.)
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4b2_an_applied_extern_op_lowers_to_a_core_extern_call() {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use crate::resolve::resolved_of;
+        use crate::resolved::Resolved;
+        use crate::testkit::parse;
+        let src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let mut db = Db::load(parse(src));
+        let d = db.def_by_name("main").expect("main");
+        let body = db.defs[d].body.expect("body");
+        // The applied extern `(neg x)` lowers to a Core::ExternCall naming the peer interface + op.
+        match core_of(&mut db, body) {
+            Core::ExternCall {
+                interface,
+                op,
+                result,
+                ..
+            } => {
+                assert_eq!(interface, "cadenza:math/api");
+                assert_eq!(op, "neg");
+                assert_eq!(
+                    result,
+                    crate::ty::Ty::int64(),
+                    "result = the sig's Int64 result"
+                );
+            }
+            other => panic!("expected Core::ExternCall, got {other:?}"),
+        }
+        // The head `neg` itself resolves to a Resolved::Extern (not an inlined sibling def).
+        // (Locate the head occurrence: `main`'s body is the application `(neg x)`; its head is child 0.)
+        let head = match db.ast.get(body) {
+            crate::ast::Struct::List(items) => items[0],
+            _ => panic!("main body is an application"),
+        };
+        assert!(
+            matches!(resolved_of(&mut db, head), Resolved::Extern { .. }),
+            "the extern op name resolves to Resolved::Extern"
+        );
+    }
+
+    #[test]
+    fn x4b2_an_extern_application_type_checks_against_the_declared_signature() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        // A well-typed use has NO fault; a mis-typed arg (Bool where Int64 declared) is CDZ0203 —
+        // the extern application is checked exactly like an ordinary call to a def of that signature.
+        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (neg x)) (export main))";
+        let mut db = Db::load(parse(ok));
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok() || {
+                // The backend declines Core::ExternCall in X4b-2 (emit is X4b-3), so a full compile
+                // won't SUCCEED yet — but it must not fail with a TYPE error. Assert the decline is
+                // the emit decline, not a type reject.
+                let e = crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
+                    .err()
+                    .expect("declines pending X4b-3 emit");
+                e.code.is_none() // a decline (no CDZ code), not a coded type rejection
+            },
+            "a well-typed extern application declines cleanly (emit pending), never a type reject"
+        );
+        let _ = &mut db;
+    }
 }

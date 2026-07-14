@@ -122,6 +122,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A CROSS-COMPONENT extern op (X4b): its type is its DECLARED monomorphic signature (the `(-> …)`
+        // contract), evaluated as a type. An application of it type-checks against this exactly like a
+        // call to a def of the same signature (cross-component-interop.md §The Exchanged Signature Is
+        // Monomorphic). `typeval_of` yields the `Ty::Fn`; an unresolvable declaration types `Any` (a
+        // malformed extern sig declines downstream, never a spurious mismatch here).
+        Resolved::Extern { ty, .. } => crate::eval::typeval_of(db, ty).unwrap_or(Ty::Any),
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
         // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
@@ -8154,6 +8160,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)
+        // A cross-component extern reference carries no fault of its own — its declared signature is the
+        // contract (well-formed by construction) and a mismatched APPLICATION is caught by the ordinary
+        // apply check, exactly like a call to a def.
+        | Resolved::Extern { .. }
         | Resolved::Lambda { .. } => {}
     }
 }
