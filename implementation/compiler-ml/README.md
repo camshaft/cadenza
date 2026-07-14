@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 230 tests total across 25 modules):
+top. Current `src/` modules (each with same-file `@test`s — 241 tests total across 26 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -163,6 +163,16 @@ top. Current `src/` modules (each with same-file `@test`s — 230 tests total ac
   compiler runs over a register file / constant pool / positional args. 12 `@test`s. Confirmed WORKING.
   (⚠ minor prelude gap noted: `List` has no `slice` — only `at`/`len`/`push`/`concat`/`update` — so
   `reverse` is index-driven; less impactful than the Map/Set enumeration gap.)
+- `src/lex.cdz` — a LEXER: a flat list of ASCII char-codes (`List Int64`) → a `List Token` (multi-digit
+  integers, `+ - * /` operators, parens; whitespace skipped, anything else a `Token.Bad`). The first
+  front-end stage, and a deliberate stress of two codegen regions: `scan-number` threads a `(value,
+  next-index)` TUPLE through self-recursion (the slot-alias family, fixed iter 14 — re-exercised at
+  scale) and `lex-from` builds the result by pushing a compound `Token` sum into a single-use tail-loop
+  accumulator (the consuming-op region — a single-use accumulator does NOT trip the still-live-binding
+  bug). 11 `@test`s. Confirmed WORKING (the tuple-through-recursion + accumulator paths both correct); a
+  reversal LOGIC bug I first wrote was caught by the multi-token order tests, which is the framework
+  doing its job. Lexes over char-codes not a `String` to sidestep the open runtime-`String.at` equality
+  bug (a real text lexer would hit it — which is the point of that finding).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -246,16 +256,33 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returns **4**, not 3 —
   the `List.push` consumes/mutates `xs` in place, so the later `List.len xs` reads `[7,9]`. ORDER-
   SENSITIVE (the tell): borrowing BEFORE the consume (`(len xs) + (len (push xs 9))`) returns 3
-  (correct). ROOT: the Perceus last-use analysis — a binding consumed by an op but READ AGAIN LATER must
-  be `dup`'d before the consume. Reproduces for `Map.insert`/`Set.insert`. ⚠ CORRECTION: my iters 27–29
-  wrongly said "let-bound collections compute correctly / only self-call fails" — those "working" cases
-  were CONSTANT-FOLDED (small literals); a genuinely runtime shared binding fails regardless of
-  recursion. The self-call
-  (`repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`) and interpreter
-  (`repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`) repros are INSTANCES of this root.
-  Fix locus: the dup-before-consume in `backend/wasm/select.rs` (a binding live after a consuming op
-  needs a `dup`). Blocks ANY pass building a modified collection while still needing the original (a diff,
-  a "with one more binding", a before/after) — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
+  (correct). 🔬 WAT-CONFIRMED (iter 34): the body does `call build; local.tee 1; …; vec-push; vec-len;
+  local.get 1; vec-len` — the tee'd stack copy shares the cell with slot 1, `vec-push` consumes it at
+  rc==1 (mutating the trie IN PLACE), and NO `dup` precedes the consume, so the later `local.get 1`
+  observes the mutation. ⚠⚠ SCOPE (iter 34, corrects iters 27–29 — which were BACKWARDS): this is
+  EXCLUSIVELY a **`let`-binding-in-body** defect. A plain PARAMETER used identically computes CORRECTLY
+  (a param is borrowed-from-caller; the call boundary keeps it live), and passing a let-binding ACROSS a
+  call is also correct (the arg is protected — the callee often inlines and re-evaluates it into a fresh
+  list). Only a consuming op applied to a let-binding DIRECTLY in the let body, with a later read of the
+  same binding, miscompiles. So "only a self-recursive shared param fails / let-bound is fine" was
+  exactly reversed. The self-call (`repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`) and
+  interpreter (`repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`) repros are INSTANCES:
+  their consuming op + surviving read both land in a let/arm BODY over one slot — not a recursion or
+  parameter-sharing effect. Reproduces for `Map.insert`/`Set.insert`. Fix locus: the consuming-op emit
+  (`Core::ListPush`/`MapInsert`/`SetInsert` in `backend/wasm/select.rs`) must `dup` its heap operand when
+  the operand is a `LocalRef`/`Param` still READ AGAIN in the enclosing body (a delicate refcount change —
+  over-dup leaks — so a seed-agent job; the repro carries the exact missing dup). Blocks ANY pass building
+  a modified collection while still needing the original (a diff, "with one more binding", a before/after)
+  — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
+
+- **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
+  `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =
+  p.0` → CDZ0203 "a parameter's annotation requires a type, but found a non-type": the ML reader lowers a
+  paren-comma form in TYPE position to the VALUE constructor head `("tuple" A B)` (the same node a tuple
+  LITERAL builds), not the tuple TYPE `(Tuple A B)`. So tuple VALUES/PATTERNS use `(a, b)` but a tuple
+  TYPE must use `Tuple(A, B)` — an inconsistency, and the error points at what looks like a type. Ideal:
+  accept `(A, B)` in type position (the RHS of a `:` is unambiguously a type annotation) as `Tuple(A,
+  B)`. Low-severity (a clean workaround exists); the confusing diagnostic is the real cost.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

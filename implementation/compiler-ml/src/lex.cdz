@@ -1,0 +1,169 @@
+/// lex.cdz — a LEXER: a flat list of ASCII char-codes (`List Int64`) → a list of `Token`s. The first
+/// front-end stage of a real compiler, and a deliberate stress of two codegen regions the log flagged:
+///   (1) `scan-number` returns a `(value, next-index)` TUPLE threaded through self-recursion — the
+///       slot-alias/tuple-through-loop family (reported FIXED iter 14; this re-exercises it at scale);
+///   (2) `lex-from` builds the result `List Token` by pushing a COMPOUND sum (`Token.Num(n)`) into a
+///       single-use accumulator threaded through a self-tail loop — the consuming-op region (the
+///       accumulator is single-use per step, so it must NOT trip the still-live-binding mutation bug).
+/// It lexes over char-CODES (`List Int64`), not a `String`, to sidestep the open runtime-`String.at`
+/// content-equality bug (iter 12) — a lexer over real text would hit it, which is itself the point of
+/// that finding. Recognizes: multi-digit non-negative integers, `+ - * /` operators, `( )` parens;
+/// anything else is `Token.Bad(code)`. Whitespace (code 32) is skipped.
+
+type Token =
+  | Num(Int64)
+  | Op(Int64)
+  | LParen
+  | RParen
+  | Bad(Int64)
+
+/// The code at `i`, or -1 past the end (a total indexed read; -1 is not a valid ASCII code we scan).
+def code-at(src: List(Int64), i: Int64) = match List.at(src, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => 0 - 1
+
+def is-digit(c: Int64) = c >= 48 and c <= 57
+def is-space(c: Int64) = c == 32
+def is-op(c: Int64) = c == 43 or c == 45 or c == 42 or c == 47
+
+/// Scan a run of digits starting at `i`, accumulating the decimal value into `acc`. Returns the
+/// `(value, index-after-the-number)` tuple — the shape threaded back through the caller's recursion.
+def scan-number(src: List(Int64), i: Int64, acc: Int64) =
+  let c = code-at(src, i) in
+  if is-digit(c) then
+    scan-number(src, i + 1, acc * 10 + (c - 48))
+  else
+    (acc, i)
+
+/// The core loop: from index `i`, append each lexed token onto `acc` (`List.push` appends to the end, so
+/// `acc` grows in SOURCE ORDER — no final reversal needed). A tail-recursive self-call threading both `i`
+/// and the growing `acc`.
+def lex-from(src: List(Int64), i: Int64, acc: List(Token)) =
+  let c = code-at(src, i) in
+  if c < 0 then
+    acc
+  else
+    (if is-space(c) then
+      lex-from(src, i + 1, acc)
+    else
+      (if is-digit(c) then
+        let scanned = scan-number(src, i, 0) in
+        lex-from(src, scanned.1, List.push(acc, Token.Num(scanned.0)))
+      else
+        (if is-op(c) then
+          lex-from(src, i + 1, List.push(acc, Token.Op(c)))
+        else
+          (if c == 40 then
+            lex-from(src, i + 1, List.push(acc, Token.LParen))
+          else
+            (if c == 41 then
+              lex-from(src, i + 1, List.push(acc, Token.RParen))
+            else
+              lex-from(src, i + 1, List.push(acc, Token.Bad(c))))))))
+
+/// Lex a whole source (list of char-codes) into a `List Token` in source order.
+def lex(src: List(Int64)) = lex-from(src, 0, [])
+
+/// How many tokens `src` lexes to.
+def token-count(src: List(Int64)) = List.len(lex(src))
+
+/// The numeric value of the token at position `i`, or -1 if it is not a `Num`.
+def num-at(src: List(Int64), i: Int64) = match List.at(lex(src), i) with
+  | Option.Some(t) => (match t with
+    | Token.Num(n) => n
+    | _ => 0 - 1)
+  | Option.None(_) => 0 - 1
+
+/// Is the token at `i` an operator with code `code`?
+def op-at-is(src: List(Int64), i: Int64, code: Int64) = match List.at(lex(src), i) with
+  | Option.Some(t) => (match t with
+    | Token.Op(c) => c == code
+    | _ => false)
+  | Option.None(_) => false
+
+@test
+def lex-empty() = if token-count([]) == 0 then unit else trap("empty source, no tokens")
+
+@test
+def lex-single-digit() =
+  // "7" → [Num 7]
+  if token-count([55]) == 1 then (if num-at([55], 0) == 7 then unit else trap("7")) else trap("one token")
+
+@test
+def lex-multi-digit() =
+  // "123" → [Num 123]  (the scan-number tuple-through-recursion path)
+  if token-count([49, 50, 51]) == 1 then
+    (if num-at([49, 50, 51], 0) == 123 then unit else trap("123"))
+  else
+    trap("multi-digit is ONE token")
+
+@test
+def lex-two-numbers() =
+  // "12 34" → [Num 12, Num 34]  (space-separated, two scan-number runs)
+  let src = [49, 50, 32, 51, 52] in
+  if token-count(src) == 2 then
+    (if num-at(src, 0) == 12 then (if num-at(src, 1) == 34 then unit else trap("34")) else trap("12"))
+  else
+    trap("two numbers")
+
+@test
+def lex-simple-expr() =
+  // "1+2" → [Num 1, Op +, Num 2]  (43 = '+')
+  let src = [49, 43, 50] in
+  if token-count(src) == 3 then
+    (if num-at(src, 0) == 1 then
+      (if op-at-is(src, 1, 43) then (if num-at(src, 2) == 2 then unit else trap("2")) else trap("+"))
+    else
+      trap("1"))
+  else
+    trap("three tokens")
+
+@test
+def lex-parens() =
+  // "(9)" → [LParen, Num 9, RParen]  (40='(', 41=')')
+  let src = [40, 57, 41] in
+  if token-count(src) == 3 then (if num-at(src, 1) == 9 then unit else trap("9 inside")) else trap("( 9 )")
+
+@test
+def lex-full-expr() =
+  // "(12+345)*6" → LParen Num12 Op+ Num345 RParen Op* Num6 = 7 tokens
+  let src = [40, 49, 50, 43, 51, 52, 53, 41, 42, 54] in
+  if token-count(src) == 7 then
+    (if num-at(src, 1) == 12 then
+      (if num-at(src, 3) == 345 then (if num-at(src, 6) == 6 then unit else trap("6")) else trap("345"))
+    else
+      trap("12"))
+  else
+    trap("seven tokens")
+
+@test
+def lex-skips-spaces() =
+  // "  5  " → [Num 5]  (leading + trailing spaces skipped)
+  if token-count([32, 32, 53, 32, 32]) == 1 then
+    (if num-at([32, 32, 53, 32, 32], 0) == 5 then unit else trap("5"))
+  else
+    trap("spaces skipped")
+
+@test
+def lex-bad-char() =
+  // "@" (64) → [Bad 64]  — one unrecognized token
+  if token-count([64]) == 1 then
+    (if num-at([64], 0) == 0 - 1 then unit else trap("bad char is not a Num"))
+  else
+    trap("one bad token")
+
+@test
+def lex-order-preserved() =
+  // "9-1" → Num9 Op- Num1 ; check the reversal restored source order (45 = '-')
+  let src = [57, 45, 49] in
+  if num-at(src, 0) == 9 then
+    (if op-at-is(src, 1, 45) then (if num-at(src, 2) == 1 then unit else trap("1 last")) else trap("- middle"))
+  else
+    trap("9 first")
+
+@test
+def lex-large-number() =
+  // a big multi-digit run: "1000000" → Num 1000000 (scan-number accumulation depth)
+  if num-at([49, 48, 48, 48, 48, 48, 48], 0) == 1000000 then unit else trap("1000000")
+
+export { lex, token-count, num-at, op-at-is }
