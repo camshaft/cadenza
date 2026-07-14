@@ -5406,10 +5406,6 @@ fn emit(
             out.push(Lir::CallHostImport(index));
             Ok(())
         }
-        // A CROSS-COMPONENT call — X2 lands the IR foundation only; the peer-interface import envelope
-        // (X3) and the front-end binding that CONSTRUCTS an ExternCall (X4) arrive in later increments,
-        // so nothing produces one on the normal path yet and the emit DECLINES cleanly
-        // (decline-don't-miscompile; component-abi.md §Cross-Component Value Exchange).
         // A CROSS-COMPONENT call (X4b) — push each scalar argument, then `call` the peer op by its
         // position in the program's extern-import set (`layout.extern_order`). Structurally the host-call
         // emit, but resolves against the extern set (bound under module `"peer"`). X4b-3 scope: scalar
