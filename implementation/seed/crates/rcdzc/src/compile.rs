@@ -1109,6 +1109,13 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401. This is the
     // no-ambient-authority floor: a program that reaches a host operation it never declared is REJECTED
     // here rather than compiled to a component carrying that undeclared (latent) import.
+    //
+    // Delegation is an ENTRYPOINT's prerogative: this check (and the `host` delegation it honors) is
+    // scoped to each EXPORT's body — a library def that performs an effect is fine, its home being its
+    // callers' context — so authority enters a program only from the top and no interior function routes
+    // an effect to the boundary, keeping "no ambient authority" transitive.
+    //= spec/capabilities/capabilities-and-effects.md#host-delegation-is-an-entrypoint-s-prerogative
+    //# Only an entrypoint MUST be able to delegate an effect to the host, so that authority enters a program from the top and no interior function can route an effect to the boundary, keeping "no ambient authority" transitive: a library performs and handles effects but never grants host access.
     //= constitution.md#iv-no-ambient-authority
     //# A program that reaches a host operation it does not declare MUST be rejected at compile time rather than compiled to a component carrying a latent import.
     let export_bodies: Vec<StructId> = db
