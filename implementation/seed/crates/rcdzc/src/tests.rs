@@ -12941,6 +12941,56 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unreferenced_or_recursive_callees_wrong_argument_names_the_function_and_parameter() {
+        // A wrong-typed argument whose parameter the body does NOT reference (`(h true)` where `h`
+        // ignores `a`), or whose callee is RECURSIVE (its reduction declines), is reported by the
+        // CALL-SITE unify (step 1), not the synthesized-annotation path (step 2, which is silent for
+        // these). Step 1 used to emit the raw "type mismatch: Int64 and Bool must be the same type here"
+        // — the same defect a referenced-param arg reads as "this argument is a Bool…" (M106). Now step 1
+        // gives the SAME argument phrasing AND, having the call head + parameter in hand (step 2 does
+        // not), names them: "the argument for `h`'s parameter `a` is a Bool, but a value of type Int64 is
+        // expected here".
+        // UNREFERENCED parameter — the body `0` never uses `a`.
+        let unref = reject_full("(module m (def (h (: a Int64)) 0) (def (g) (h true)) (export g))")
+            .expect("a wrong argument to an unreferenced parameter rejects");
+        assert!(
+            unref
+                .message
+                .contains("the argument for `h`'s parameter `a` is a Bool, but a value of type Int64 is expected here"),
+            "names the function + parameter, argument phrasing: {}",
+            unref.message
+        );
+        assert!(
+            !unref.message.contains("must be the same type here"),
+            "no raw unify wording: {}",
+            unref.message
+        );
+        // RECURSIVE callee — the reduction declines, so step 2 never runs; step 1 is the sole reporter.
+        let rec = reject_full(
+            "(module m (def (h (: a Int64)) (if (< a 0) 0 (h (- a 1)))) (def (g) (h true)) (export g))",
+        )
+        .expect("a wrong argument to a recursive callee rejects");
+        assert!(
+            rec.message
+                .contains("the argument for `h`'s parameter `a` is a Bool"),
+            "a recursive callee's wrong argument is named too: {}",
+            rec.message
+        );
+        // The sum-wrap fix still rides along at the call site (an unreferenced Option parameter).
+        let wrap =
+            reject_full("(module m (def (h (: o (Option Int64))) 0) (def (g) (h 5)) (export g))")
+                .expect("a bare payload to an unreferenced Option parameter rejects");
+        assert!(
+            wrap.message
+                .contains("the argument for `h`'s parameter `o`")
+                && wrap.fix.as_ref().map(|f| f.kind) == Some(crate::abi::FixKind::Wrap),
+            "the sum-wrap fix rides along the named call-site message: {} / {:?}",
+            wrap.message,
+            wrap.fix
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
