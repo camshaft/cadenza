@@ -374,10 +374,21 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
 pub(super) fn sum_derives_eq(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
     let mut visited = std::collections::HashSet::new();
     visited.insert(decl.occ);
-    decl.variants.iter().all(|v| {
-        v.payloads.clone().iter().all(|&pty| {
-            crate::eval::typeval_of(db, pty).is_some_and(|ty| ty_derives_eq(db, &ty, &mut visited))
-        })
+    // Evaluate each payload at the SENTINEL instantiation, so a type PARAMETER (bare or nested) appears as
+    // a sentinel var. A generic enum's `#[derive(PartialEq, Eq)]` adds a `T{k}: Eq` bound automatically, so
+    // a param payload IS Eq-derivable — `ty_derives_eq` treats a sentinel var as Eq. (For a monomorphic sum
+    // the sentinel instantiation is empty and `typeval_of` would do; using the sentinel path uniformly is
+    // simplest.) A payload whose ctor/scheme is unavailable falls back to `typeval_of` (the raw payload).
+    let occs: Vec<(crate::ast::StructId, crate::ast::StructId)> = decl
+        .variants
+        .iter()
+        .filter_map(|v| v.ctor.map(|c| (c, v.payloads.clone())))
+        .flat_map(|(c, ps)| ps.into_iter().map(move |p| (c, p)))
+        .collect();
+    occs.iter().all(|&(_ctor, pty)| {
+        let ty = sentinel_payload_ty(db, decl, pty)
+            .or_else(|| crate::eval::typeval_of(db, pty));
+        ty.is_some_and(|ty| ty_derives_eq(db, &ty, &mut visited))
     })
 }
 
@@ -403,6 +414,12 @@ fn ty_derives_eq(
     use crate::ty::Ty;
     match ty {
         Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // A SENTINEL var is the sum's OWN type PARAMETER (`T{k}`). A generic enum's `#[derive(PartialEq,
+        // Eq)]` adds a `T{k}: PartialEq + Eq` bound automatically, so a param payload IS Eq-derivable — the
+        // derive compiles, and a runtime `=` at a concrete instantiation (`Box Int64`) type-checks because
+        // `i64: Eq`. Treat it as Eq. (A NON-sentinel free `Ty::Var` is a genuinely-unknown type → the
+        // catch-all below rejects it.)
+        Ty::Var(n) if *n >= PARAM_SENTINEL_BASE => true,
         // A float is `PartialEq` but NOT `Eq` — exclude it (a sum carrying a float can't `#[derive(Eq)]`).
         Ty::Float(_) => false,
         Ty::Tuple(elems) => elems.iter().all(|e| ty_derives_eq(db, e, visited)),
@@ -423,18 +440,24 @@ fn ty_derives_eq(
             {
                 return true;
             }
-            // A USER sum is Eq iff its own variants' payloads are — recurse into its declaration (once,
-            // visited-guarded); a back-edge to an in-progress decl is assumed Eq (confirmed at top level).
+            // A USER sum is Eq iff its declaration's own payloads are (at the sentinel instantiation, so a
+            // type PARAMETER payload counts as Eq — the generic enum's derive bounds it `T: Eq`, and the
+            // args checked above are the concrete instantiation). Recurse once (visited-guarded); a
+            // back-edge to an in-progress decl is assumed Eq (confirmed at top level). Delegate to
+            // `sum_derives_eq`, which walks the decl's payloads at the sentinel instantiation.
             if !visited.insert(*decl) {
                 return true;
             }
-            match db.type_decl_by_occ(*decl) {
+            match db.type_decl_by_occ(*decl).cloned() {
                 Some(d) => {
-                    let payloads: Vec<crate::ast::StructId> =
+                    // Inline `sum_derives_eq`'s payload walk sharing THIS `visited` set (so the cycle guard
+                    // spans the whole recursion), evaluating each payload at the sentinel instantiation.
+                    let occs: Vec<crate::ast::StructId> =
                         d.variants.iter().flat_map(|v| v.payloads.clone()).collect();
-                    payloads.iter().all(|&pty| {
-                        crate::eval::typeval_of(db, pty)
-                            .is_some_and(|pt| ty_derives_eq(db, &pt, visited))
+                    occs.iter().all(|&pty| {
+                        let pt = sentinel_payload_ty(db, &d, pty)
+                            .or_else(|| crate::eval::typeval_of(db, pty));
+                        pt.is_some_and(|pt| ty_derives_eq(db, &pt, visited))
                     })
                 }
                 None => false,
