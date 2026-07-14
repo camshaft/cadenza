@@ -17331,6 +17331,53 @@ mod match_engine {
     }
 
     #[test]
+    fn quasiquote_selectively_evaluates_at_unquote_holes() {
+        // 12-metaprogramming §Quasiquote Constructs AST With Selective Evaluation: `(quasiquote T)`
+        // reifies like quote, EXCEPT an active `(unquote e)` hole EVALUATES `e` and inserts its value.
+        // `crate::quote::reify_active` rewrites the quasiquote, keeping an active unquote's operand LIVE
+        // (wrapped `(Ast.Int e)`) so `e` resolves/types as ordinary code. Each below compiles clean; the
+        // gate checks the built ASTs' values/equalities.
+        // An active unquote embedding a runtime (let-bound) value builds the same node a const fold does,
+        // so `` `(f ,x) `` (x=1) equals `(quote (f 1))`.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((x 1)) (= (quasiquote (f (unquote x))) (quote (f 1))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an unquoted runtime value builds the same AST as quote"
+        );
+        // An unquote MUST evaluate its operand — an UNBOUND name in it is the ordinary CDZ0101, NOT
+        // swallowed into inert quoted AST (metaprogramming.md: selective EVALUATION, not a second quote).
+        assert_eq!(
+            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
+                .as_deref(),
+            Some("CDZ0101"),
+            "an active unquote of an unbound name is rejected, not quoted"
+        );
+        // Quasiquote NESTS: ``(+ ,,x) evaluates only the INNER unquote (depth reaches 1 there); the outer
+        // `quasiquote`/`unquote` reify as inert structure. Compiles clean (builds the nested AST value).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((x 2)) (quasiquote (quasiquote (+ (unquote (unquote x))))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a nested quasiquote evaluates only the inner unquote"
+        );
+        // An ACTIVE splice (`,@`) is DEFERRED this increment — the quasiquote bails un-reified, so the
+        // existing splice-non-list check still fires: splicing a non-list (Int64 `5`) is CDZ0201.
+        assert_eq!(
+            reject_code("(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))")
+                .as_deref(),
+            Some("CDZ0201"),
+            "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_linked_list_folds_at_runtime() {
         // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
         // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
