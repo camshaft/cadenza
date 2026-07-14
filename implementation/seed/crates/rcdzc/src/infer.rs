@@ -5949,10 +5949,24 @@ fn check_application(
         // the compound analogue of the text-vs-scalar message. Only a DEFINITE compound (not an unsolved
         // var/`Any`) against a definite scalar/text — a compound-vs-compound mismatch (two different record
         // shapes) keeps the generic path (its own structural-delta hints, M91/M92, fire there).
+        // A USER SUM / NOMINAL is "compound-like" for this cross-kind check: `(+ Color 1)` / `(= Color "x")`
+        // holds a tagged heap value (or an erased newtype) against an unboxed scalar or text — no shared
+        // arithmetic/order/equality across that boundary, the same clash as a record-vs-int. Included here
+        // so a sum/nominal-vs-atom pair reports the clear "different types … kind boundary" (CDZ0201)
+        // instead of the generic scheme-unify's phantom "type mismatch: Int64 and Color". (A NEWTYPE vs its
+        // OWN INNER — `(= UserId Int64)` — never reaches here: the comparison-only `nominal_inner_vs` block
+        // above catches it first with the unwrap fix; and arithmetic on two SAME sums/nominals is caught by
+        // the text/compound arithmetic guard below. This adds the remaining sum/nominal-vs-ATOM case.)
         let is_compound = |t: &Ty| {
             matches!(
                 t,
-                Ty::Record(_) | Ty::Tuple(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_)
+                Ty::Record(_)
+                    | Ty::Tuple(_)
+                    | Ty::List(_)
+                    | Ty::Map(..)
+                    | Ty::Set(_)
+                    | Ty::Sum { .. }
+                    | Ty::Nominal { .. }
             )
         };
         let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
@@ -5968,6 +5982,11 @@ fn check_application(
             Ty::List(_) => Some(2),
             Ty::Map(..) => Some(3),
             Ty::Set(_) => Some(4),
+            // A user sum/nominal shares ONE tag: two DISTINCT sums (`Color` vs `Shape`) or a sum vs a
+            // nominal are the SAME "kind" here, so `different_compound_kinds` does NOT fire for them — they
+            // stay on the generic path ("type mismatch: Color and Shape"), a genuine same-kind mismatch. A
+            // sum vs a RECORD/LIST/etc. differs in tag → the kind-boundary message, correct.
+            Ty::Sum { .. } | Ty::Nominal { .. } => Some(5),
             _ => None,
         };
         let different_compound_kinds = match (compound_kind(&a), compound_kind(&b)) {
@@ -6079,11 +6098,19 @@ fn check_application(
             }
             return;
         }
-        let cross_kind = (is_text(&a) && is_scalar(&b))
-            || (is_scalar(&a) && is_text(&b))
-            || (is_compound(&a) && is_atom(&b))
-            || (is_atom(&a) && is_compound(&b))
-            || different_compound_kinds;
+        // An `(Option T)` held against its OWN payload `T` — `(+ (List.at xs 0) 1)`, a fallible read used
+        // directly — is NOT a kind-boundary clash to relabel: it has a specific, more actionable route
+        // (match the Option to handle `None`), attached by the generic-path `option_payload_mismatch_hint`
+        // below. Exclude it from the cross-kind sum-vs-atom branch (which the `Ty::Sum` addition to
+        // `is_compound` would otherwise capture first), so the "the value is optional; match it" hint wins.
+        let is_option_payload_pair = option_payload_mismatch_hint(&a, &b).is_some()
+            || option_payload_mismatch_hint(&b, &a).is_some();
+        let cross_kind = !is_option_payload_pair
+            && ((is_text(&a) && is_scalar(&b))
+                || (is_scalar(&a) && is_text(&b))
+                || (is_compound(&a) && is_atom(&b))
+                || (is_atom(&a) && is_compound(&b))
+                || different_compound_kinds);
         if cross_kind {
             trace!(target: "rcdzc::infer", head = head.0, "fault: operands of distinct kinds — not comparable/operable across the boundary (CDZ0201)");
             out.push(Reject::coded(
