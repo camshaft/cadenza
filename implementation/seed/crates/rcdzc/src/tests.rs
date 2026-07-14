@@ -24289,6 +24289,27 @@ mod match_engine {
     }
 
     #[test]
+    fn a_plural_family_unit_spelling_names_the_same_unit_as_its_singular() {
+        // The ML quantity-literal surface reads for natural language (`4.0 feet`, `1.0 meters`), so a
+        // common English PLURAL spelling resolves to the SAME family unit as its canonical singular:
+        // `feet` = `foot`, `meters` = `meter`. `1.0 meters + 4.0 feet` converts feet to the meter
+        // reference (foot = 381/1250 m) and adds: 1 + 4 * 0.3048 = 2.2192 m. The plural resolves and
+        // converts exactly as the singular would — before the plural aliases it failed as an unknown
+        // unit. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"meters\")) \
+                      ((. Qty of) 4.0 ((. Unit of) #\"feet\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a meters+feet plural family-unit sum compiles and runs"),
+                "main"
+            ),
+            2.2192
+        );
+    }
+
+    #[test]
     fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
         // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
         // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-
