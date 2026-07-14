@@ -3111,6 +3111,45 @@
   (call   mk (: 1 Int64) (: 2 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 116 Int64)))
 
+; The flatten/rebuild machinery is FIELD-TYPE agnostic: a tuple's fields may be FLOATS, mixed WIDTHS, or a
+; Bool interleaved with ints — each field crosses as its own aliased-width component scalar. A single-variant
+; NOMINAL over a tuple erases to the tuple (per §156), so a nominal-tuple arg crosses as the bare tuple.
+
+(case "a Tuple ARG of FLOAT fields crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Float64 Float64) Float64)` — a tuple of two f64 fields (each crosses as an f64
+           core param). `call(handle, (1.5, 2.5))` → `p.0 +. p.1` = 4.0. The field type need not be an integer.")
+  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+. (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: (tuple 1.5 2.5) (Tuple Float64 Float64)))
+  (output (: 4.0 Float64)))
+
+(case "a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 Bool Int64) Int64)` — a Bool field interleaved among ints (the rebuild boxes
+           it via `box-bool`). `call(handle, (10, true, 100))` → `if p.1 then p.0 + p.2 else p.2` = 110.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Bool Int64))) (if (. p 1) (+ (. p 0) (. p 2)) (. p 2))))
+              (export mk)))
+  (call   mk (: (tuple 10 true 100) (Tuple Int64 Bool Int64)))
+  (output (: 110 Int64)))
+
+(case "a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int32 Int64) Int32)` — the fields have DIFFERENT machine widths; each still crosses
+           as its own aliased-width core param (Int32 → i32, Int64 → i64). `call(handle, (42, 100))` → `p.0` = 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Int64))) (. p 0)))
+              (export mk)))
+  (call   mk (: (tuple 42 100) (Tuple Int32 Int64)))
+  (output (: 42 Int32)))
+
+(case "a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)"
+  (doc    "`(type Pair (Mk (Tuple Int64 Int64)))` + `mk : (-> Pair Int64)` — a single-variant nominal over a
+           tuple erases to the tuple (§156), so `Pair` crosses as `tuple<s64,s64>` (NO wrapper resource). The
+           host supplies the bare underlying tuple. `call(handle, (10, 3))` → `(match p ((Mk t) (+ t.0 t.1)))`
+           = 13. The peel is kind-agnostic — it applies to a nominal over a compound just as over a scalar.")
+  (input  (do (type Pair (Mk (Tuple Int64 Int64)))
+              (def (mk) (fn ((: p Pair)) (match p ((Mk t) (+ (. t 0) (. t 1))))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) Pair))
+  (output (: 13 Int64)))
+
 ; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
 ; closures share one `call` that interleaves the prefix scalar with the rebuilt tuple, then produces a scalar,
 ; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (The among-scalars tuple
