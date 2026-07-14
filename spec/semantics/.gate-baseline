@@ -1245,6 +1245,7 @@ pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a short-circuit connective threads a branch perform to the continuation
+pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
@@ -2097,6 +2098,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the built-in Ast is transformed as an ordinary value
@@ -2167,6 +2169,10 @@ pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the three-way comparison is deconstructed by an exhaustive match
+pass	the three-way comparison orders Bool with false below true
+pass	the three-way comparison orders Float64 by numeric value — Equal
+pass	the three-way comparison orders Float64 by numeric value — Greater
+pass	the three-way comparison orders Float64 by numeric value — Less
 pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit

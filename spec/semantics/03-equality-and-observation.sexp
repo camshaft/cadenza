@@ -684,6 +684,56 @@
   (input  (compare "a" "b"))
   (output (: (Less unit) Ordering)))
 
+(case "the three-way comparison orders Float64 by numeric value — Less"
+  (doc    "`(compare 1.5 2.5)` is `(Ordering.Less unit)`: Float64 offers the same total order the numeric
+           model defines for it, and `compare` reports it as the Less variant exactly as over Int64
+           (core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison). Pins that the
+           three-way comparison spans the OTHER realized numeric type, not just Int64 — the Float64
+           companion of `(compare 1 2)`. (A NaN operand is not ordered and declines here — the finite
+           float order is what is pinned.)")
+  (input  (compare 1.5 2.5))
+  (output (: (Less unit) Ordering)))
+
+(case "the three-way comparison orders Float64 by numeric value — Equal"
+  (doc    "`(compare 2.5 2.5)` is `(Ordering.Equal unit)` — two equal finite Float64 values report the
+           middle variant, the Float64 companion of `(compare 2 2)`. Pins that Float64 equality-under-order
+           agrees with the value relation (distinct from both strict arms).")
+  (input  (compare 2.5 2.5))
+  (output (: (Equal unit) Ordering)))
+
+(case "the three-way comparison orders Float64 by numeric value — Greater"
+  (doc    "`(compare 2.5 1.5)` is `(Ordering.Greater unit)` — with the Less and Equal Float64 cases this
+           pins all three Ordering variants are reachable over Float64 and correctly discriminated by the
+           numeric relation, exactly as the Int64 triple does.")
+  (input  (compare 2.5 1.5))
+  (output (: (Greater unit) Ordering)))
+
+(case "a shorter string that is a prefix of a longer one compares Less"
+  (doc    "`(compare \"ab\" \"abc\")` is `(Ordering.Less unit)`: with equal leading scalars, the shorter
+           string orders before the longer (collections-and-text.md #String Comparison Is Defined On
+           Scalar Values — lexicographic order treats end-of-string as least). Pins the length-tiebreak
+           edge of the lexicographic order that `(compare \"a\" \"b\")` (a first-scalar difference) does
+           not exercise.")
+  (input  (compare "ab" "abc"))
+  (output (: (Less unit) Ordering)))
+
+(case "the three-way comparison orders Bool with false below true"
+  (doc    "`(compare false true)` is `(Ordering.Less unit)` — Bool carries the total order false < true
+           (the order the boolean-ordering cases above test through `<`/`>`), and `compare` reports it as
+           the Less variant. Pins that the three-way comparison is offered over Bool (a finite non-numeric
+           type), the compare-primitive companion of the `(< false true)` operator cases.")
+  (input  (compare false true))
+  (output (: (Less unit) Ordering)))
+
+(case "the boolean less-than operator agrees with compare over Bool"
+  (doc    "core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (the operators MUST
+           agree with the three-way comparison): `(< false true)` is true exactly when
+           `(compare false true)` is `(Ordering.Less unit)`. This pins that agreement for Bool — the same
+           one-order-surfaced-two-ways law the Int64 case pins, over the boolean order — so `<` on Bool and
+           `compare` on Bool cannot diverge.")
+  (input  (< false true))
+  (output (: true Bool)))
+
 (case "a program that makes a host call has that call in its observable behavior"
   (doc    "Witnesses core-semantics.md #Host Calls Are Ordered And Part Of Observable Behavior.
            The module declares a unit-returning effect `log` and the entrypoint delegates it to the host,
