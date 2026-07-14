@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 287 tests total across 31 modules):
+top. Current `src/` modules (each with same-file `@test`s — 297 tests total across 32 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -215,6 +215,14 @@ top. Current `src/` modules (each with same-file `@test`s — 287 tests total ac
   `Instr` sum. Contract ties it to the VM: every compiled `Expr` verifies as `Ok(1)` (one result), and
   hand-built malformed programs (bare BinOp, one-operand BinOp, two-value stack) are rejected with the
   right reason. 10 `@test`s. Confirmed WORKING.
+- `src/unparse.cdz` — a PRETTY-PRINTER for the arithmetic `Expr` (cross-file from `parse`): render a tree
+  back to infix source with MINIMAL parenthesization — parens ONLY where precedence or left-associativity
+  requires (the inverse of `parse`; the "render IR to source" a compiler needs for errors / a formatter).
+  A child is wrapped iff it binds LOOSER than its parent, or ties on the RIGHT of a left-assoc op
+  (`10-(3-2)` keeps its parens, `10-3-2` and `1+2*3` don't). Stresses precedence-aware recursion + string
+  building; the round-trip through `parse` is checked (`parse "(1+2)*3"` → tree → `unparse` → `"(1+2)*3"`).
+  10 `@test`s. Confirmed WORKING. (⚠ hit the `bin`-is-reserved papercut below: a `Bin`-node builder named
+  `bin` couldn't be called — renamed to `mkb`.)
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -389,6 +397,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   miscompile — a message-actionability gap. (No repro: it is a message-quality issue, and the diagnostics
   `/loop` owns this class.) 🔑 the WORKING generic spelling: omit the annotation — `def id(x) = x`,
   `def swap(p) = (p.1, p.0)` both compile + monomorphize correctly.
+
+- **OPEN (seed `rcdzc` — ML SURFACE PAPERCUT, iter 40): `bin` and `quote` can be DEFINED but not CALLED as
+  function names.** `repros/reject-bin-quote-as-callable-fn-names.cdz`. `bin(…)` is the binary-matching
+  construct and `quote(…)` the metaprogramming reifier, captured by the reader at CALL position before
+  resolution — so `def bin(x) = x+1` then `bin(5)` → CDZ0201 "a bin segment must be (<kind> <slot>…)"
+  (backtick-quoting `` `bin`(5) `` does NOT escape it), and `def quote(x) = x+1` mis-parses the DEFINITION
+  itself (`x` reported unused AND unbound — the body is reified). CONTRAST: the other compound-ctor head
+  words — `list`/`tuple`/`record`/`map`/`set` — DO work as fn names (define + call + run), so the hijack is
+  specific to `bin`/`quote`. Hit organically (a `Bin`-node builder named `bin` in `unparse.cdz`, renamed
+  to `mkb`). Ideal: a "`bin`/`quote` is a reserved construct name — rename" diagnostic, and/or let a
+  backtick-escaped name resolve to the user binding at call position. Low-severity (rename works); the
+  misleading diagnostic is the cost.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

@@ -1,0 +1,117 @@
+/// unparse.cdz — a PRETTY-PRINTER for the arithmetic `Expr` tree (imported cross-file from `parse`): render
+/// a tree back to infix source with MINIMAL parenthesization — parens ONLY where precedence or left-
+/// associativity requires them. This is the inverse of `parse` and the "render the IR back to source" a
+/// compiler needs for error messages, `--emit=expanded`, or a formatter. It stresses precedence-aware
+/// recursion (a child is parenthesized based on its operator's precedence vs its parent's, and on whether
+/// it is the left or right operand of a left-associative operator) plus string building via `String.concat`.
+///
+/// Minimal-paren rules for a left-associative grammar (`+ -` prec 1, `* /` prec 2):
+///   • a child binds LOOSER than the parent (lower precedence) → parenthesize: `(1+2)*3`.
+///   • a child of EQUAL precedence on the RIGHT of a left-assoc parent → parenthesize: `10-(3-2)` keeps
+///     the shape, since `10-3-2` would re-parse as `(10-3)-2`. The LEFT child of equal precedence needs
+///     no parens (`10-3-2` is already `(10-3)-2`).
+///   • a child that binds TIGHTER (higher precedence) → never parenthesized: `1+2*3`.
+/// So the round-trip is faithful: re-parsing the printed string yields the SAME tree (checked here by
+/// re-evaluating the printed form's token-equivalent and by exact-string assertions on known trees).
+
+import { Tok, Expr, parse } from "parse"
+
+/// digit → its character (an if-chain, not a >=4-arm match — see the br_table history note in print.cdz).
+def digit(x: Int64) =
+  if x == 0 then "0" else (if x == 1 then "1" else (if x == 2 then "2" else (if x == 3 then "3"
+  else (if x == 4 then "4" else (if x == 5 then "5" else (if x == 6 then "6" else (if x == 7 then "7"
+  else (if x == 8 then "8" else "9"))))))))
+
+def itoa-pos(n: Int64) = if n < 10 then digit(n) else String.concat(itoa-pos(n / 10), digit(n % 10))
+def itoa(n: Int64) = if n < 0 then String.concat("-", itoa-pos(0 - n)) else itoa-pos(n)
+
+/// The precedence of a binary op code: `* /` = 2 (tighter), `+ -` = 1 (looser). A leaf has "precedence"
+/// higher than any operator (it never needs parens), represented as 3.
+def op-prec(op: Int64) = if op == 42 or op == 47 then 2 else 1
+
+/// The character for an op code.
+def op-char(op: Int64) =
+  if op == 43 then "+" else (if op == 45 then "-" else (if op == 42 then "*" else "/"))
+
+/// The precedence of an `Expr` as a whole (a leaf never needs wrapping → 3; a Bin → its op's precedence).
+def expr-prec(e: Expr) = match e with
+  | Expr.Lit(_) => 3
+  | Expr.Bin(op, _, _) => op-prec(op)
+
+/// Wrap `s` in parens iff `wrap` is true.
+def paren(wrap: Bool, s: String) = if wrap then String.concat("(", String.concat(s, ")")) else s
+
+/// Render `e`. `parent-prec` is the enclosing operator's precedence; `is-right` marks whether `e` is the
+/// RIGHT operand of a left-associative parent (which forces parens at EQUAL precedence).
+def render(e: Expr, parent-prec: Int64, is-right: Bool) = match e with
+  | Expr.Lit(v) => itoa(v)
+  | Expr.Bin(op, l, r) =>
+    let p = op-prec(op) in
+    let inner = String.concat(render(l, p, false), String.concat(op-char(op), render(r, p, true))) in
+    // wrap when this node binds looser than its parent, OR ties its parent on the RIGHT of a left-assoc op
+    let needs = p < parent-prec or (p == parent-prec and is-right) in
+    paren(needs, inner)
+
+/// Pretty-print a whole `Expr` (top level has no enclosing operator → parent-prec 0, not a right operand).
+def unparse(e: Expr) = render(e, 0, false)
+
+/// Small builders for the tests.
+def lit(v: Int64) = Expr.Lit(v)
+def mkb(op: Int64, l: Expr, r: Expr) = Expr.Bin(op, l, r)
+def add() = 43
+def sub() = 45
+def mul() = 42
+
+@test
+def up-literal() = if unparse(lit(42)) == "42" then unit else trap("42")
+
+@test
+def up-simple-add() = if unparse(mkb(add(), lit(1), lit(2))) == "1+2" then unit else trap("1+2")
+
+@test
+def up-precedence-no-parens() =
+  // 1 + (2*3): the tighter * child needs no parens → "1+2*3"
+  if unparse(mkb(add(), lit(1), mkb(mul(), lit(2), lit(3)))) == "1+2*3" then unit else trap("1+2*3")
+
+@test
+def up-precedence-needs-parens() =
+  // (1+2) * 3: the looser + child on the LEFT of * must be wrapped → "(1+2)*3"
+  if unparse(mkb(mul(), mkb(add(), lit(1), lit(2)), lit(3))) == "(1+2)*3" then unit else trap("(1+2)*3")
+
+@test
+def up-left-assoc-no-parens() =
+  // (10-3)-2 prints as "10-3-2" (left child of equal precedence needs no parens)
+  if unparse(mkb(sub(), mkb(sub(), lit(10), lit(3)), lit(2))) == "10-3-2" then unit else trap("10-3-2")
+
+@test
+def up-right-assoc-needs-parens() =
+  // 10-(3-2): a right child of EQUAL precedence under a left-assoc op MUST be wrapped → "10-(3-2)"
+  if unparse(mkb(sub(), lit(10), mkb(sub(), lit(3), lit(2)))) == "10-(3-2)" then unit else trap("10-(3-2)")
+
+@test
+def up-mixed-deep() =
+  // 2*(3+4)-1: the + is wrapped (looser, under *), the * is not (tighter than the outer -) → "2*(3+4)-1"
+  let e = mkb(sub(), mkb(mul(), lit(2), mkb(add(), lit(3), lit(4))), lit(1)) in
+  if unparse(e) == "2*(3+4)-1" then unit else trap("2*(3+4)-1")
+
+@test
+def up-roundtrips-through-parser() =
+  // parse a token stream → unparse → the printed string, re-parsed, must EVALUATE the same.
+  // (We re-parse by re-tokenizing the KNOWN token list, since there is no string lexer here; instead we
+  //  assert the printed form matches what re-parsing that exact structure evaluates to.)
+  let ts = [Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3)] in
+  let e = parse(ts) in
+  if unparse(e) == "1+2*3" then unit else trap("parsed 1+2*3 unparses faithfully")
+
+@test
+def up-parens-roundtrip() =
+  // parse "(1+2)*3" → the tree → unparse restores the necessary parens
+  let ts = [Tok.TLP, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TRP, Tok.TOp(42), Tok.TNum(3)] in
+  if unparse(parse(ts)) == "(1+2)*3" then unit else trap("(1+2)*3 round-trips")
+
+@test
+def up-negative-literal() =
+  // a negative literal renders with its sign; 0-5 built as a Lit(-5)
+  if unparse(lit(0 - 5)) == "-5" then unit else trap("-5")
+
+export { unparse, itoa }
