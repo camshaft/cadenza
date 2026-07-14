@@ -3280,6 +3280,40 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+(case "a variant-payload binder shadow is scoped to its arm, not the whole def"
+  (doc    "The shadow's SCOPE BOUNDARY: `(def (f (: n Int64)) (+ (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0))
+           n))` — the arm binder `n` shadows the param `n` INSIDE the match arm, but the `+ n` OUTSIDE the
+           match (still in `f`'s body) reads the PARAM again. `f(5)`: the match yields the payload 6 (the
+           shadow), and the trailing `+ n` adds the param 5 → 11. Pins that a variant-payload binder shadow
+           is scoped to its arm ONLY (core-semantics.md §Bindings Introduced By A Pattern Are Scoped To Its
+           Branch), so a reference to the same name outside the match resolves to the enclosing param, not
+           the arm binder — the exact scope boundary the shadow-in-a-called-def fix must preserve.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Int64) (Z))
+            (def (f (: n Int64)) (+ (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)) n))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "a match on the result of a match threads sum values through nested control flow"
+  (doc    "A match whose SCRUTINEE is itself a match returning a sum: the inner match flips `(W.A n)` →
+           `(W.B n)` and `(W.B n)` → `(W.A n)`, and the outer match deconstructs the flipped result. `f(5)`
+           builds `(W.A 5)` (k > 0), the inner flips it to `(W.B 5)`, and the outer `(W.B n)` arm yields
+           `n * 2` = 10. Pins that a sum value produced by one match flows as the scrutinee of another — a
+           match is an ordinary sum-valued expression, composable as a scrutinee, with the binders of each
+           match scoped to its own arms.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (A Int64) (B Int64))
+            (def (f (: k Int64))
+              (match (match (if (> k 0) (W.A k) (W.B k)) ((W.A n) (W.B n)) ((W.B n) (W.A n)))
+                ((W.A n) n) ((W.B n) (* n 2))))
+            (export f)))
+  (call   f (: 5 Int64))
+  (output (: 10 Int64)))
+
 (case "a RUNTIME guarded sum-match arm dispatches through its guard"
   (doc    "A guarded arm over a RUNTIME sum scrutinee (chosen by `if`, so the match cannot fold): `((guard
            (V.A n) (> n 5)) 1)` fires only when the `A` payload exceeds 5, else FALLS THROUGH to the
