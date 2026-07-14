@@ -666,9 +666,12 @@ pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 pub const MALFORMED_EXTERN_MESSAGE: &str = "an `(extern …)` names a peer INTERFACE as a string — write `(extern \
      \"cadenza:pkg/iface\" (<op> (-> …))…)` (the interface identifier is a string literal, not a bare name)";
 
-/// The stable PREFIX of [`MALFORMED_EXTERN_MESSAGE`] — `dedup_faults` matches this to detect a
-/// malformed-extern reject without pinning the whole message.
-pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)` names a peer INTERFACE";
+/// The stable PREFIX shared by EVERY malformed-`(extern …)` reject — the interface one
+/// ([`MALFORMED_EXTERN_MESSAGE`]) AND the op-clause ones (a bare-name/non-name op head, a missing/
+/// non-arrow op type). `dedup_faults` matches this to detect that SOME extern is malformed (so its
+/// unbound op names should be collected + their consequent "unbound name" faults dropped) without pinning
+/// which defect. Every such message begins ``an `(extern …)` ``.
+pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)`";
 
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the

@@ -49582,6 +49582,65 @@ mod cross_component_oracle {
         );
     }
 
+    /// A well-formed-INTERFACE extern with a MALFORMED OP CLAUSE — a bare-name op (`neg` instead of
+    /// `(neg (-> …))`), a non-name op head (`(5 (-> …))`), or a missing/non-arrow op type (`(neg)` /
+    /// `(neg Int64)`) — is CDZ0201 at the declaration, not silently dropped. `scan_extern_decl` drops such
+    /// a clause (or records `ty: None`), so the op it would bind goes unbound (the misleading "unbound name
+    /// `neg`"). The op-clause companion of the interface check; the unbound-name consequent for the
+    /// dropped op is deduped (for the shapes that leave it genuinely unbound — a bare name / no type).
+    #[test]
+    fn a_malformed_extern_op_clause_is_cdz0201() {
+        use crate::testkit::parse;
+        // A bare-name op clause + a non-name op head → the "operation is `(<name> (-> …))`" reject, and the
+        // op (when it has a name) is NOT reported unbound.
+        for (src, unbound) in [
+            (
+                "(do (extern \"cadenza:math/api\" neg) (def (main) (neg 5)) (export main))",
+                Some("neg"),
+            ),
+            (
+                "(do (extern \"cadenza:math/api\" (5 (-> Int64 Int64))) (def (main) 1) (export main))",
+                None,
+            ),
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message
+                        .contains("operation is `(<name> (-> Arg… Result))`")),
+                "a malformed extern op clause is CDZ0201: {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            if let Some(name) = unbound {
+                assert!(
+                    !diags
+                        .iter()
+                        .any(|d| d.message.contains(&format!("unbound name `{name}`"))),
+                    "the dropped op `{name}` is not reported unbound: {:?}",
+                    diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+                );
+            }
+        }
+        // A missing/no-type op clause `(neg)` → the "operation's type must be an arrow" reject, and `neg`
+        // is not reported unbound.
+        let no_ty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(do (extern \"cadenza:math/api\" (neg)) (def (main) (neg 5)) (export main))",
+        )));
+        assert!(
+            no_ty.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("operation's type must be an arrow")),
+            "a no-type extern op clause names the arrow requirement: {:?}",
+            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !no_ty
+                .iter()
+                .any(|d| d.message.contains("unbound name `neg`")),
+            "the no-type op `neg` is not reported unbound: {:?}",
+            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
     // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via

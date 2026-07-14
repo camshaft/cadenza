@@ -1776,6 +1776,61 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             faults.push(
                 Reject::coded(Code::Malformed, crate::diag::MALFORMED_EXTERN_MESSAGE).at(anchor),
             );
+            // A malformed-interface extern registers no ops at all — the interface reject is the primary,
+            // and each op it would bind is unbound-deduped below. So do NOT also validate its op clauses
+            // (they never registered); only a WELL-FORMED-interface extern's op clauses are checked.
+            continue;
+        }
+        // Each OP CLAUSE of a well-formed extern must be `(<name> (-> Arg… Result))`. `scan_extern_decl`
+        // SILENTLY DROPS a clause that is not a list, or whose head is not a name (a `(NAME TYPE)` shape),
+        // and records `ty: None` for one with no type — so a `(neg)` / a bare `neg` / a `(5 …)` clause
+        // leaves `neg` unbound (the misleading "unbound name `neg` → did you mean `Neg`?"), and a non-arrow
+        // type (`(neg Int64)`) makes the bound op a non-function that only faults at the call site ("cannot
+        // apply a value of type Int64"). Reject each malformed clause at the declaration — the op-clause
+        // companion of the interface check + the effect-op `(op NAME (-> …))` shape checks. Skip the
+        // interface (element 0); validate each clause after it.
+        for &clause in etail.iter().skip(1) {
+            // The clause must be a `(name type…)` LIST with a NAME head. A bare atom / a non-name head is
+            // malformed — it binds no op.
+            let name_head = match db.ast.get(clause) {
+                crate::ast::Struct::List(parts) => {
+                    parts.first().and_then(|&h| db.ast.as_name(h)).is_some()
+                }
+                crate::ast::Struct::Atom(_) => false,
+            };
+            if !name_head {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an `(extern …)` operation is `(<name> (-> Arg… Result))` — a bare name or a \
+                         non-name head binds no operation",
+                    )
+                    .at(clause),
+                );
+                continue;
+            }
+            // A well-shaped `(name …)` clause whose TYPE (element 1) is missing or not an arrow `(-> …)`.
+            // The type is what the extern application checks against; a missing/non-arrow one binds an op
+            // with no callable signature. Reuse the effect-op wording ("performed like a function; a
+            // nullary operation is `(-> Result)`") so the two operation-type checks read alike.
+            let crate::ast::Struct::List(parts) = db.ast.get(clause) else {
+                continue; // unreachable (name_head implied a list), but keep the borrow total
+            };
+            let parts = parts.clone();
+            let ty_is_arrow = parts
+                .get(1)
+                .is_some_and(|&t| db.ast.as_form(t, "->").is_some());
+            if !ty_is_arrow {
+                let anchor = parts.first().copied().unwrap_or(clause);
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an `(extern …)` operation's type must be an arrow `(-> Arg… Result)` — it is \
+                         called like a function; a nullary operation is `(-> Result)`",
+                    )
+                    .at(anchor),
+                );
+            }
         }
     }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
@@ -2121,11 +2176,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_malformed_host_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
     });
-    // A MALFORMED `(extern …)` (non-string interface) does not register, so each op it would bind goes
-    // unbound — a misleading consequent "unbound name `neg`" the malformed-extern reject already explains.
-    // When such a reject is present, collect the op NAMES from every malformed extern in the arena so the
-    // consequent unbound-name faults for exactly those names are dropped (one primary "no"). Re-derived
-    // here (not threaded from `collect_faults`) because `dedup_faults` re-computes its flags from `faults`.
+    // A MALFORMED `(extern …)` — a non-string INTERFACE (no ops register) OR a malformed OP CLAUSE (a
+    // bare-name/non-name head, a missing/non-arrow type — that op does not register) — leaves the op(s) it
+    // would bind UNBOUND, a misleading consequent "unbound name `neg`" the malformed-extern reject already
+    // explains. When any such reject is present, collect the affected op NAMES from every extern in the
+    // arena so the consequent unbound-name faults for exactly those names are dropped (one primary "no").
+    // Re-derived here (not threaded from `collect_faults`) because `dedup_faults` re-computes its flags
+    // from `faults`+`db`.
     let malformed_extern_op_names: std::collections::HashSet<String> = if faults
         .iter()
         .any(|r| r.message.starts_with(crate::diag::MALFORMED_EXTERN_PREFIX))
@@ -2137,14 +2194,23 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             };
             let etail = etail.to_vec();
             let interface_ok = etail.first().is_some_and(|&i| db.ast.as_str(i).is_some());
-            if !interface_ok {
-                for &clause in etail.iter().skip(1) {
-                    if let crate::ast::Struct::List(parts) = db.ast.get(clause)
-                        && let Some(&name_occ) = parts.first()
-                        && let Some(name) = db.ast.as_name(name_occ)
-                    {
-                        names.insert(name.to_string());
-                    }
+            for &clause in etail.iter().skip(1) {
+                // A clause's op name (if it has one) — the name the author expected bound. When the
+                // INTERFACE is bad, NONE registered (collect every clause's name); when the interface is
+                // OK, only a MALFORMED clause (non-arrow / no type) failed to register — collect just those.
+                let (name, ty_is_arrow) = match db.ast.get(clause) {
+                    crate::ast::Struct::List(parts) => (
+                        parts.first().and_then(|&h| db.ast.as_name(h)),
+                        parts
+                            .get(1)
+                            .is_some_and(|&t| db.ast.as_form(t, "->").is_some()),
+                    ),
+                    crate::ast::Struct::Atom(_) => (db.ast.as_name(clause), false),
+                };
+                if let Some(name) = name
+                    && (!interface_ok || !ty_is_arrow)
+                {
+                    names.insert(name.to_string());
                 }
             }
         }
