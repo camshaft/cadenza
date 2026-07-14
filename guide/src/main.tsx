@@ -9,6 +9,8 @@ import "./index.css";
 
 // The playground is a heavy, full-screen route — lazy-load it so the guide's first paint stays light.
 const PlaygroundPage = lazy(() => import("./playground/PlaygroundPage.tsx"));
+// The calculator is a full-screen route too (pulls in the compile + run workers) — also lazy.
+const CalculatorPage = lazy(() => import("./calculator/CalculatorPage.tsx"));
 
 // Root layout: `ScrollRestoration` scrolls a new navigation to the top and RESTORES the previous
 // scroll position on back/forward (a per-history-entry memory). The playground manages its own
@@ -16,11 +18,7 @@ const PlaygroundPage = lazy(() => import("./playground/PlaygroundPage.tsx"));
 function RootLayout() {
   return (
     <>
-      <ScrollRestoration
-        getKey={(location) =>
-          location.pathname === "/playground" ? "playground" : location.pathname
-        }
-      />
+      <ScrollRestoration getKey={(location) => location.pathname} />
       <Outlet />
     </>
   );
@@ -41,6 +39,14 @@ const router = createBrowserRouter(
           element: (
             <Suspense fallback={<div className="p-6 text-slate-500">Loading playground…</div>}>
               <PlaygroundPage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "/calculator",
+          element: (
+            <Suspense fallback={<div className="p-6 text-slate-500">Loading calculator…</div>}>
+              <CalculatorPage />
             </Suspense>
           ),
         },
