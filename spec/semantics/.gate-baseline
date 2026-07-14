@@ -481,6 +481,8 @@ pass	a handle whose head names a value rather than an effect is rejected
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
+pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
