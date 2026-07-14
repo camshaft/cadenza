@@ -1346,6 +1346,7 @@ pass	an if-wrapped self-application is rejected in bounded time, not an inferenc
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
+pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
