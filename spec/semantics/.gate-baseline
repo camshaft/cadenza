@@ -6,6 +6,8 @@ pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
+pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
@@ -986,6 +988,7 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
+pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a utf8 bin segment binds a decoded string when the bytes are well-formed
