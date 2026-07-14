@@ -43618,7 +43618,8 @@ mod closure_host_resource {
         use crate::backend::wasm::runtime_abi::OPS;
         use crate::backend::wasm::select::SelectedFunc;
         use crate::backend::wasm::serialize::{
-            ClosureMake, TupleArgRebuild, multi_closure_resource_core_module_with_host_borrow,
+            ClosureMake, FieldRebuild, TupleArgRebuild,
+            multi_closure_resource_core_module_with_host_borrow,
         };
         use crate::layout::{ExportPlan, Layout};
         use crate::lower::LiftedLambda;
@@ -43705,12 +43706,20 @@ mod closure_host_resource {
 
         // The tuple `(Tuple Int64 Int64)` crosses FLATTENED as two s64 core params; each field boxes with
         // `box-int` (which takes an i64). A 64-bit field's core param is ALREADY i64, so NO i32→i64 extend
-        // (`field_extend_signed = None`); the extend is only for a NARROW int field (an i32-width core param).
+        // (`extend = None`); the extend is only for a NARROW int field (an i32-width core param).
         // The `call`'s boundary/core arg list is thus `[I64, I64]` (the flattened fields), NOT one i32 handle.
         let rebuild = TupleArgRebuild {
-            field_box_ops: vec![Some("box-int"), Some("box-int")],
-            field_extend_signed: vec![None, None],
-            base_param: 1, // the tuple is the sole closure arg → fields at core params 1..1+N
+            fields: vec![
+                FieldRebuild::Scalar {
+                    box_op: "box-int",
+                    extend: None,
+                },
+                FieldRebuild::Scalar {
+                    box_op: "box-int",
+                    extend: None,
+                },
+            ],
+            base_param: 1, // the tuple is the sole closure arg → leaves at core params 1..1+N
         };
         let core = multi_closure_resource_core_module_with_host_borrow(
             &funcs,

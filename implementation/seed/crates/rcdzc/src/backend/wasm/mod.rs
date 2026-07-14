@@ -1445,59 +1445,62 @@ fn fixed_shape_scalar_tuple_arg(
     }
     let mut comp_bytes = Vec::new();
     let mut core_vts = Vec::new();
-    let mut field_box_ops = Vec::new();
-    let mut field_extend_signed = Vec::new();
+    let mut rebuild_fields = Vec::new();
     for f in &fields {
         // Each field must be a genuine aliased-width scalar (Int/Bool/Float) — the only shapes the canonical
         // ABI flattens AND the cell rebuild boxes with a single op. A nested compound / collection → None.
         let cb = closure_boundary_byte(f)?;
         let vt = crate::backend::wasm::lir::valtype_of(f)?;
-        // The cell's box op + whether an integer field needs an i32→i64 extend before `box-int` (a NARROW
-        // int is an i32 core param → extend to the i64 `box-int` takes; a 64-bit int is already i64 → no
-        // extend). A bool/float boxes at its native width, no extend. Mirrors `select::box_op_ty` +
-        // `emit_box_i32_to_i64_extend`.
-        let (box_op, extend) = match f.strip_nominal() {
-            Ty::Int(it) => {
-                let signed = it.ground_signed();
-                let extend = if it.ground_width() < 64 {
-                    Some(signed)
-                } else {
-                    None
-                };
-                (Some("box-int"), extend)
-            }
-            Ty::Bool => (Some("box-bool"), None),
-            Ty::Float(ft) if ft.ground_width() == 64 => (Some("box-float"), None),
-            Ty::Float(ft) if ft.ground_width() == 32 => (Some("box-float32"), None),
-            _ => return None,
-        };
+        rebuild_fields.push(scalar_field_rebuild(f)?);
         comp_bytes.push(cb);
         core_vts.push(vt);
-        field_box_ops.push(box_op);
-        field_extend_signed.push(extend);
     }
     Some((
         comp_bytes,
         core_vts,
         crate::backend::wasm::serialize::TupleArgRebuild {
-            field_box_ops,
-            field_extend_signed,
-            base_param: 1, // the tuple is the SOLE closure arg → its fields start at core param 1 (after self)
+            fields: rebuild_fields,
+            base_param: 1, // the tuple is the SOLE closure arg → its leaves start at core param 1 (after self)
         },
     ))
 }
 
-/// The FIELD box-op + extend descriptor for ONE fixed-shape scalar tuple/record type (the per-field data
+/// The [`serialize::FieldRebuild::Scalar`] for one aliased-width scalar field (Int/Bool/Float, peeling a
+/// nominal): the box op + whether a NARROW int needs an i32→i64 extend before `box-int`. `None` if `f` is not
+/// an aliased-width scalar. Mirrors `select::box_op_ty` + `emit_box_i32_to_i64_extend`.
+fn scalar_field_rebuild(
+    f: &crate::ty::Ty,
+) -> Option<crate::backend::wasm::serialize::FieldRebuild> {
+    use crate::backend::wasm::serialize::FieldRebuild;
+    use crate::ty::Ty;
+    let (box_op, extend) = match f.strip_nominal() {
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            let extend = if it.ground_width() < 64 {
+                Some(signed)
+            } else {
+                None
+            };
+            ("box-int", extend)
+        }
+        Ty::Bool => ("box-bool", None),
+        Ty::Float(ft) if ft.ground_width() == 64 => ("box-float", None),
+        Ty::Float(ft) if ft.ground_width() == 32 => ("box-float32", None),
+        _ => return None,
+    };
+    Some(FieldRebuild::Scalar { box_op, extend })
+}
+
+/// The per-FIELD ABI for ONE fixed-shape scalar tuple/record type (the data
 /// [`fixed_shape_scalar_tuple_arg`] builds, minus the `base_param`). Returns `(comp_bytes, core_vts,
-/// field_box_ops, field_extend_signed)` or `None` if `ty` is not a tuple/record of aliased-width scalars.
+/// rebuild_fields)` or `None` if `ty` is not a tuple/record of aliased-width scalars.
 #[allow(clippy::type_complexity)]
 fn tuple_field_abi(
     ty: &crate::ty::Ty,
 ) -> Option<(
     Vec<u8>,
     Vec<crate::backend::wasm::lir::ValType>,
-    Vec<Option<&'static str>>,
-    Vec<Option<bool>>,
+    Vec<crate::backend::wasm::serialize::FieldRebuild>,
 )> {
     use crate::ty::Ty;
     let fields: Vec<Ty> = match ty.strip_nominal() {
@@ -1510,32 +1513,15 @@ fn tuple_field_abi(
     }
     let mut comp_bytes = Vec::new();
     let mut core_vts = Vec::new();
-    let mut field_box_ops = Vec::new();
-    let mut field_extend_signed = Vec::new();
+    let mut rebuild_fields = Vec::new();
     for f in &fields {
         let cb = closure_boundary_byte(f)?;
         let vt = crate::backend::wasm::lir::valtype_of(f)?;
-        let (box_op, extend) = match f.strip_nominal() {
-            Ty::Int(it) => {
-                let signed = it.ground_signed();
-                let extend = if it.ground_width() < 64 {
-                    Some(signed)
-                } else {
-                    None
-                };
-                (Some("box-int"), extend)
-            }
-            Ty::Bool => (Some("box-bool"), None),
-            Ty::Float(ft) if ft.ground_width() == 64 => (Some("box-float"), None),
-            Ty::Float(ft) if ft.ground_width() == 32 => (Some("box-float32"), None),
-            _ => return None,
-        };
+        rebuild_fields.push(scalar_field_rebuild(f)?);
         comp_bytes.push(cb);
         core_vts.push(vt);
-        field_box_ops.push(box_op);
-        field_extend_signed.push(extend);
     }
-    Some((comp_bytes, core_vts, field_box_ops, field_extend_signed))
+    Some((comp_bytes, core_vts, rebuild_fields))
 }
 
 /// The flattened `call`-boundary description for a compound closure argument on the direct-call path:
@@ -1578,8 +1564,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         return None; // zero or >1 tuple, or the sole-tuple case (handled by `fixed_shape_scalar_tuple_arg`)
     }
     let tpos = tuple_positions[0];
-    let (field_bytes, field_vts, field_box_ops, field_extend_signed) =
-        tuple_field_abi(&arg_tys[tpos])?;
+    let (field_bytes, field_vts, rebuild_fields) = tuple_field_abi(&arg_tys[tpos])?;
     let mut prefix_bytes = Vec::new();
     let mut suffix_bytes = Vec::new();
     let mut all_vts = Vec::new(); // flattened core call params: prefix scalars, then tuple fields, then suffix
@@ -1598,7 +1583,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         }
         all_vts.push(vt);
     }
-    // The tuple's fields start at core param `1 + prefix.len()` (after `self`=0 + the prefix scalars).
+    // The tuple's leaves start at core param `1 + prefix.len()` (after `self`=0 + the prefix scalars).
     let base_param = 1 + prefix_bytes.len() as u32;
     Some((
         field_bytes, // the tuple's OWN field bytes → the `tuple<…>` defined type
@@ -1606,8 +1591,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         prefix_bytes,
         suffix_bytes,
         crate::backend::wasm::serialize::TupleArgRebuild {
-            field_box_ops,
-            field_extend_signed,
+            fields: rebuild_fields,
             base_param,
         },
     ))
@@ -1888,8 +1872,10 @@ fn emit_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -2485,8 +2471,10 @@ fn emit_multi_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -2975,8 +2963,10 @@ fn emit_mixed_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -3493,11 +3483,19 @@ fn emit_distinct_sig_resource(
     let any_collection = ginfos.iter().any(|gi| gi.ret_descriptor.is_some());
     // A tuple-arg group's `call-<g>` rebuilds the flattened tuple cell (`arr-alloc` + per field box + `arr-set`
     // + `drop`). Collect the box ops the rebuilds actually reference (per field type) so they are imported.
-    let tuple_box_ops: std::collections::BTreeSet<&'static str> = ginfos
-        .iter()
-        .filter_map(|gi| gi.tuple_arg.as_ref())
-        .flat_map(|(_, _, _, rb)| rb.field_box_ops.iter().filter_map(|o| *o))
-        .collect();
+    let tuple_box_ops: std::collections::BTreeSet<&'static str> = {
+        let mut ops = std::collections::BTreeSet::new();
+        for gi in &ginfos {
+            if let Some((_, _, _, rb)) = gi.tuple_arg.as_ref() {
+                for f in &rb.fields {
+                    f.collect_box_ops(&mut |bop| {
+                        ops.insert(bop);
+                    });
+                }
+            }
+        }
+        ops
+    };
     let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
