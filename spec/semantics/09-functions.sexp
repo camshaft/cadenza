@@ -1677,6 +1677,17 @@
             (def (main) (fib 10)) (export main)))
   (output (: 55 Int64)))
 
+(case "recursive fibonacci over a RUNTIME argument computes the predecessors correctly"
+  (doc    "`(def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))` called with a RUNTIME
+           argument x = 10 (not a constant, so the recursion runs at run time, not folded). Each recursive
+           call passes a computed argument `(- n 1)` / `(- n 2)`; under the `n >= 2` branch refinement the
+           subtraction cannot underflow, so its overflow guard is elided and the argument value flows
+           straight into the call (no dead spill slot). fib(10) = 55. Pins that a guard-elided computed
+           call argument is passed correctly.")
+  (input  (do (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (def (main (: x Int64)) (fib x)) (export main)))
+  (call   main (: 10 Int64))
+  (output (: 55 Int64)))
+
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
 ; default. The `(+ Int64.max 1)` and `(* Int64.max 2)` cases (06-numeric-model) pin this for a top-level

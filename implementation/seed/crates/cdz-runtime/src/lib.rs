@@ -9358,6 +9358,106 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// `value-encode` of a `Shape::List` over a LARGE, MULTI-LEVEL RRB vec — the shape the compiler-in-
+    /// Cadenza port produces for any list literal / `List.map` result with >32 elements (a list literal
+    /// lowers to `vec-of-arr`, and `String.concat`/fold builds grow real `vec`s). Every OTHER `Shape::List`
+    /// encode test builds a ≤3-element vec — a SINGLE RRB leaf (`shift=0`), so `op_vec_get`'s multi-level
+    /// TRIE DESCENT (interior nodes at index ≥32) was never exercised on the escape path, exactly the arm
+    /// whose doc-comment records the past "arr-len/arr-get read the root arity → rendered only the first
+    /// element" bug. Sizes 31/32/33/64/100 straddle the `VEC_BITS=5` (branch 32) level boundary (31 = full
+    /// single leaf, 32 = still one leaf, 33 = first 2-level, 64/100 = deeper 2-level).
+    ///
+    /// TWO independent checks so a bug can't hide: (1) DIFFERENTIAL — the iterative production walk must
+    /// byte-match the recursive oracle (catches a walk-order/index bug in one walker); (2) CONTENT — decode
+    /// the document's KIND_INT leaves and assert they equal the pushed sequence `1..=n` IN ORDER (catches a
+    /// SHARED `op_vec_get` trie-descent bug that would fool the differential — both walkers call `vec-get`,
+    /// so a wrong element at a trie boundary would make them AGREE on the wrong answer).
+    #[test]
+    fn value_encode_large_multilevel_vec_list_matches_and_has_correct_elements() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: table [Int(0), List(→0)], root=1 — a bare `(List Int)`.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, mut v: u64| loop {
+            let mut b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        };
+        leb(&mut d, 2); // table_len
+        d.push(0); // [0] Int
+        d.push(7); // [1] List
+        leb(&mut d, 0); // elem → 0
+        leb(&mut d, 1); // root = 1
+        let descriptor = decode_descriptor(&d).expect("descriptor decodes");
+
+        for n in [31i64, 32, 33, 64, 100] {
+            // Build a REAL RRB vec of `1..=n` (values chosen so each KIND_INT magnitude is a single byte
+            // == the value, for a clean content check; all < 128 so one big-endian byte).
+            let mut v = op_vec_empty();
+            for i in 1..=n {
+                v = op_vec_push(v, op_box_int(i));
+            }
+            assert_eq!(op_vec_len(v) as i64, n, "built a real vec of {n} elements");
+
+            let doc = op_value_encode_form(v, &d).expect("encode the large list");
+
+            // (1) DIFFERENTIAL: the recursive oracle must produce byte-identical output.
+            let mut b = DocBuilder::default();
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+                .expect("recursive oracle encodes");
+            assert_eq!(
+                doc,
+                b.finish(root),
+                "n={n}: iterative and recursive Shape::List encode must agree over a multi-level vec"
+            );
+
+            // (2) CONTENT: the KIND_INT leaves, in emission order, must be exactly [1,2,…,n] (single-byte
+            // magnitudes). This is INDEPENDENT of `vec-get` (it reads the serialized bytes), so a shared
+            // trie-descent bug that fooled the differential is caught here.
+            let mut ints: Vec<u8> = Vec::new();
+            let leaf_count = doc[8] as usize;
+            let mut i = 9;
+            for _ in 0..leaf_count {
+                let kind = doc[i];
+                i += 1;
+                match kind {
+                    0 => {
+                        // KIND_INT_POS_DEC: LEB len + big-endian magnitude (single byte for 1..=100).
+                        let len = doc[i] as usize;
+                        i += 1;
+                        assert_eq!(
+                            len, 1,
+                            "n={n}: each element 1..=100 is a single magnitude byte"
+                        );
+                        ints.push(doc[i]);
+                        i += len;
+                    }
+                    10 => {
+                        // KIND_NAME (the `list` head): LEB len + bytes.
+                        let len = doc[i] as usize;
+                        i += 1 + len;
+                    }
+                    k => panic!("n={n}: unexpected leaf kind {k} in a (List Int) document"),
+                }
+            }
+            let want: Vec<u8> = (1..=n as u8).collect();
+            assert_eq!(
+                ints, want,
+                "n={n}: the encoded ints are exactly 1..={n} IN ORDER — op_vec_get descends the multi-level \
+                 trie correctly at every index (a boundary-crossing descent bug would reorder/drop elements)"
+            );
+
+            op_drop(v);
+        }
+        assert_eq!(live_nodes(), before, "no leak across the large-vec encodes");
+    }
+
     fn alloc_calls() -> u64 {
         ALLOC_CALLS.load(std::sync::atomic::Ordering::Relaxed)
     }

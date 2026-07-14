@@ -9341,7 +9341,7 @@ fn emit_checked_arith_to(
             db, rhs, ot, sb_slot, slots, b_base, high, scratch_ty, layout, out,
         )?;
     }
-    // push$a push$b <machine-op> local.set $r
+    // push$a push$b <machine-op> — the result is left on the operand stack.
     sa.push(out);
     sb.push(out);
     out.push(match op {
@@ -9350,7 +9350,6 @@ fn emit_checked_arith_to(
         Prim::Mul => m.mul(),
         _ => return Err(Reject::decline("not a checked arithmetic op")),
     });
-    out.push(Lir::LocalSet(sr));
     // GUARD ELISION: when interval arithmetic over the operands' known ranges proves the result CANNOT
     // leave the type (`(+ (& x 15) (& y 15))` sums two `[0,15]` values → `[0,30]`, fits Int64), BOTH the
     // machine overflow guard AND the narrow range-check are dead — the machine op already computed the
@@ -9360,11 +9359,19 @@ fn emit_checked_arith_to(
     // operand node's possibly-deferred type — so the fit-check bounds the result at the RIGHT width.
     let result_ty = IntTy::fixed(m.signed, m.width);
     if crate::lower::arith_provably_in_range(db, op, lhs, rhs, result_ty) {
-        if matches!(dest, ResultDest::Stack) {
-            out.push(Lir::LocalGet(sr));
+        // NO guard reads `$r`, so the `local.set $r` (needed only to let the guards re-read the result)
+        // is pure waste. For `Stack` the machine op's result is ALREADY on the stack — leave it, emitting
+        // NOTHING (before, `set $r ; get $r` round-tripped through a dead slot: an inlined-call argument
+        // `(- n 1)` under a proving refinement teed into a slot never read). For `Slot(d)` store once into
+        // the caller's destination.
+        match dest {
+            ResultDest::Stack => {}
+            ResultDest::Slot(d) => out.push(Lir::LocalSet(d)),
         }
         return Ok(());
     }
+    // A guard follows and reads `$r` — store the machine result there first.
+    out.push(Lir::LocalSet(sr));
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
     // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
     // an undefined value; the guard is emitted (or provably elided) at EVERY reachable overflow, so no
@@ -11969,6 +11976,40 @@ mod tests {
                 .count()
                 >= 2,
             "an unbounded operand in the chain keeps the guards; got {chained_open:?}"
+        );
+    }
+
+    #[test]
+    fn a_guard_elided_arith_operand_leaves_its_result_on_the_stack_no_dead_store() {
+        // When a checked arith's overflow guard is PROVABLY elided (result in range) AND the op is used as
+        // an operand/argument (dest = Stack), the machine op's result is already on the stack — it must be
+        // left there, NOT round-tripped through `local.set $r ; local.get $r` (which the peephole then
+        // fuses to a `local.tee $r` INTO A SLOT NEVER READ — a dead store). `(g (- n 1))` under `n >= 2`
+        // (from the branch refinement) elides the `(- n 1)` underflow guard, so the arg should be
+        // `... i64.sub ; call` with no `local.tee`/`local.set` of a dead slot between the sub and the call.
+        let ast = crate::testkit::parse(
+            "(module m \
+               (def (g (: n Int64)) (if (< n 2) n (+ (g (- n 1)) 1))) \
+               (def (f (: x Int64)) (g x)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("g").expect("g");
+        let (params, body) = function_of(&mut db, "g");
+        let code = select_function_of(&mut db, body, &params, &layout, Some(d))
+            .expect("select")
+            .code;
+        // The `(- n 1)` argument: an `I64Sub` immediately followed by the `Call` (or a `return_call`), with
+        // NO `LocalTee`/`LocalSet` in between (the guard-elided result flows straight into the call).
+        let sub_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::I64Sub))
+            .expect("the (- n 1) argument subtracts");
+        let next = &code[sub_ix + 1];
+        assert!(
+            matches!(next, Lir::Call(_) | Lir::ReturnCall(_)),
+            "a guard-elided (- n 1) argument flows straight into the call — no dead store between \
+             the sub and the call; got next = {next:?} in {code:?}"
         );
     }
 

@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 189 tests total across 21 modules):
+top. Current `src/` modules (each with same-file `@test`s — 199 tests total across 22 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -144,6 +144,11 @@ top. Current `src/` modules (each with same-file `@test`s — 189 tests total ac
   `Ok(max-depth)` if the `Ast` stays within a limit, `Err` the moment a node exceeds it. Stresses a
   `Result` THREADED through recursion with EARLY-RETURN on `Err` (a deep child short-circuits the sibling
   walk). 9 `@test`s incl. widest-branch-decides + short-circuit-on-deep-first-child. Confirmed WORKING.
+- `src/interp.cdz` — a tree-walking INTERPRETER for an expression language with LET BINDINGS, evaluated
+  under a `Map String Int64` environment (`Let` extends via `Map.insert`, `Var` reads via `Map.lookup`,
+  threaded through recursion). The eval half of a REPL/compiler. 10 `@test`s (arith, nested let, correct
+  lexical shadowing, rhs-sees-outer-scope, unbound). The `interp-shadow-restores` case is WITHHELD — it
+  exposed the `Map.insert`-mutates-shared-recursive-param miscompile above.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -220,6 +225,20 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): a consuming persistent-collection op MUTATES a
+  shared recursive-param collection (Map/List/Set).**
+  `repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`. A persistent `Map.insert`/
+  `List.push`/`Set.insert` on a collection PARAMETER shared across the SIBLING recursive calls of a
+  self-recursive function mutates its operand — violating `collections-and-text.md` §"… leaves its
+  operand … unchanged". A tree-walking interpreter's `(Add (Bind Var) Var)` under `{x:1}` returns 4 (2+2)
+  not 3 (2+1): the left operand's `Map.insert(env, x, 2)` corrupts the shared `env`. SHARP: `let`-bound
+  collections, non-recursive helpers, and a single non-recursive fn all compute correctly — only a
+  SELF-RECURSIVE fn (consume in one recursive sub-call, sibling read of the same param in another)
+  miscompiles; and it reproduces IDENTICALLY for `List.push` and `Set.insert` (each returns 4), so it is
+  a GENERAL persistent-collection operand-consumption bug, not Map-specific. Borrow/Perceus family — the
+  cross-call ownership seam: a borrowed collection param passed to a consuming call needs a `dup`. Blocks
+  a scope-threading interpreter/type-checker; `src/interp.cdz`'s `interp-shadow-restores` is withheld.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
