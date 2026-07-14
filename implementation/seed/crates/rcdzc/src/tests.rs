@@ -37285,6 +37285,19 @@ mod stage1 {
             "a mutual group with the perform in a different branch from the mutual call must specialize, \
              not leak an internal ev#eff…$s0 name"
         );
+        // The MATCH-dispatch analogue: the cycle dispatches on a `match` (perform in one arm, mutual call in
+        // another) rather than an `if`. The `match` thread arm had the SAME shared-state-ref bug as the `if`
+        // arm (each arm threaded under one shared `cur`); copying the state-refs per arm fixes it. Same
+        // recursion `ev 2 -> od 1 -> ev 0` fires `Fresh.next`, seed 42, resumes 43.
+        let sep_match = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1))))) \
+                   (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1))))) \
+                   (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(sep_match))).is_ok(),
+            "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
+             must specialize, not leak an internal ev#eff…$s0 name"
+        );
     }
 
     #[test]

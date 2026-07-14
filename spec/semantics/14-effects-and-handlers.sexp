@@ -1967,6 +1967,24 @@
               (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
   (output (: 43 Int64)))
 
+(case "a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds"
+  (doc    "The `match` companion of the separate-branch mutual case above — the cycle dispatches on a
+           `match` rather than an `if`, with the perform in one arm and the mutual call in another. `(def (ev
+           n) (match n (0 (Fresh.next)) (_ (od (- n 1)))))`, `(def (od n) (match n (0 0) (_ (ev (- n 1)))))`.
+           Same recursion `ev 2 -> od 1 -> ev 0`, the `0` arm fires `Fresh.next`: seeded 42, the arm resumes
+           `s + 1` = 43. Pins that each MATCH ARM (like each `if` branch) gets its own copy of the threaded
+           state reference — the performing arm substitutes it into the resume value while the mutual-call arm
+           appends it as a trailing state argument, and a single-parent arena would otherwise orphan a shared
+           state-ref node, leaking the internal `ev#eff…$s0` name. Was the match-dispatch analogue of the
+           if-branch leak; now folds to 43.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1)))))
+            (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1)))))
+            (def (main)
+              (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
+  (output (: 43 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads
