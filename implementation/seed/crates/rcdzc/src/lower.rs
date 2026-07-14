@@ -1214,6 +1214,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Rational arithmetic");
                     lower_rational_arith(db, prim, args[0], args[1])
                 }
+                // A `+`/`-`/`*`/`/` over FLOAT operands — floating-point arithmetic written with the ONE
+                // arithmetic operator (there is no distinct `+.`). Remap the integer prim to its float
+                // counterpart and route to `lower_float_arith` (fold two constant floats at the solved
+                // width, else emit the machine `f64.add`…), exactly as the Qty-inner-float arm does.
+                // Checked before the generic int-arith path (which would range-check against a fixed
+                // width — wrong for a float). Dispatch on the OPERAND type being `Ty::Float`, like the
+                // BigInt/Rational arms; a float/int mix never reaches here (rejected CDZ0301 in
+                // `check_application`). `%`/bit-ops/shift are integer-only and fall through to `is_arith`.
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if args.len() == 2 && float_operand(db, &args) =>
+                {
+                    let fprim = match prim {
+                        Prim::Add => Prim::FAdd,
+                        Prim::Sub => Prim::FSub,
+                        Prim::Mul => Prim::FMul,
+                        _ => Prim::FDiv,
+                    };
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Float arithmetic (operand is Float)");
+                    lower_float_arith(db, id, fprim, &args)
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, id, prim, &args)
@@ -2505,7 +2525,7 @@ pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 }
 
 /// The OPERATOR-SPECIFIC wrong-arity fault of an application whose head is a fixed-arity binary operator
-/// applied to a number of operands other than 2 — an OVER-application (`(+ 1 2 3)`, `(< n 1 2)`, `(+. x 1.0
+/// applied to a number of operands other than 2 — an OVER-application (`(+ 1 2 3)`, `(< n 1 2)`, `(+ x 1.0
 /// 2.0)`) or an UNDER-application (`(+ n)`, `(-)`) — the CDZ0201 "+ takes exactly 2 operands"
 /// (`binop_arity_reject`), carrying a delete-surplus fix on the over-application. Surfaced for
 /// `type_errors` so `cdz check` reports the CLEAR operator message in EVERY body, not only the
@@ -9012,9 +9032,10 @@ fn lower_runtime_combine(
             ));
         }
     };
-    // Build `(op-name lconv rconv)` with the ORDINARY numeric operator (float ops for a float inner) so
-    // it lowers through the ordinary arith/comparison path — the converted operands are bare numerics.
-    let op_name = combine_op_name(op, is_float);
+    // Build `(op-name lconv rconv)` with the ONE arithmetic/comparison operator (a float inner routes it
+    // to float arithmetic by operand type) so it lowers through the ordinary arith/comparison path — the
+    // converted operands are bare numerics.
+    let op_name = combine_op_name(op);
     let head = db.push_name(op_name);
     let app = db.push_list(vec![head, lconv, rconv]);
     core_of(db, app)
@@ -9037,18 +9058,19 @@ fn convert_operand_ast(
     if num == 1 && den == 1 {
         return Some(value);
     }
-    let (mul, div) = if is_float { ("*.", "/.") } else { ("*", "/") };
+    // The ONE arithmetic operator `*`/`/` — a float `num.0` operand routes it to float arithmetic by the
+    // operand type (there is no distinct `*.`/`/.`); `is_float` only picks the literal spelling.
     // `(* value num)` — multiply by the scale numerator (a `num.0` float literal for a float inner).
     let mut node = value;
     if num != 1 {
         let n_lit = num_literal(db, num, is_float);
-        let mul_head = db.push_name(mul);
+        let mul_head = db.push_name("*");
         node = db.push_list(vec![mul_head, node, n_lit]);
     }
     // `(/ … den)` — divide by the denominator.
     if den != 1 {
         let d_lit = num_literal(db, den, is_float);
-        let div_head = db.push_name(div);
+        let div_head = db.push_name("/");
         node = db.push_list(vec![div_head, node, d_lit]);
     }
     Some(node)
@@ -9075,14 +9097,13 @@ fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
     }
 }
 
-/// The ordinary numeric operator NAME for a mixed-unit combine `op` at the inner type — the float
-/// operators (`+.`/`-.`/`<`/…) for a float inner, the integer ones otherwise. Comparisons share one
-/// spelling across inners (they are polymorphic over the operand type).
-fn combine_op_name(op: Prim, is_float: bool) -> &'static str {
+/// The ordinary arithmetic/comparison operator NAME for a mixed-unit combine `op` — the ONE operator
+/// spelling per prim (`+`/`-`/`<`/…). A float inner routes `+`/`-` to float arithmetic by the operand
+/// type at lowering (no distinct `+.`), so the spelling is inner-type-independent, exactly as the
+/// comparisons already were.
+fn combine_op_name(op: Prim) -> &'static str {
     match op {
-        Prim::Add if is_float => "+.",
         Prim::Add => "+",
-        Prim::Sub if is_float => "-.",
         Prim::Sub => "-",
         Prim::Lt => "<",
         Prim::Gt => ">",
@@ -9243,23 +9264,20 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
             ));
         }
     };
-    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the inner
-    // type's multiply (`*.` float / `*` int).
-    let mul = if inner_is_float { "*." } else { "*" };
+    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the ONE
+    // multiply operator `*`; a float `value` routes it to float arithmetic by the operand type at
+    // lowering (no distinct `*.`), so the spelling is inner-type-independent.
     let mut node = value;
     for _ in 1..n.unsigned_abs() {
-        let mul_head = db.push_name(mul);
+        let mul_head = db.push_name("*");
         node = db.push_list(vec![mul_head, node, value]);
     }
-    // A negative exponent is the reciprocal `1 / value^|n|`, dividing in the inner type (`/.` float / `/`
-    // int); a positive one is the power itself. Lower the synthesized node through the ordinary arith
-    // path (so the constant case folds and a runtime magnitude emits the multiplies/division).
+    // A negative exponent is the reciprocal `1 / value^|n|` (the ONE `/` operator, float-dispatched by
+    // its operand type); a positive one is the power itself. Lower the synthesized node through the
+    // ordinary arith path (so the constant case folds and a runtime magnitude emits the multiplies/div).
     if n < 0 {
-        let (one, div) = (
-            num_literal(db, 1, inner_is_float),
-            if inner_is_float { "/." } else { "/" },
-        );
-        let div_head = db.push_name(div);
+        let one = num_literal(db, 1, inner_is_float);
+        let div_head = db.push_name("/");
         node = db.push_list(vec![div_head, one, node]);
     }
     core_of(db, node)
@@ -9315,7 +9333,7 @@ fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
 
 /// The wrong-arity CDZ0201 reject shared by the fixed-arity BINARY operators — integer arithmetic
 /// (`lower_arith`), FLOAT arithmetic (`lower_float_arith`), and COMPARISON (`lower_comparison`). All three
-/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+. 1.0 2.0 3.0)`) has a
+/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+ 1.0 2.0 3.0)`) has a
 /// mechanical repair: DELETE the first surplus operand (`args[2]`) — the fixpoint removes each extra until
 /// exactly 2 remain. A TOO-FEW application (`(+ 1)`) has nothing to delete → no fix. Carrying the delete
 /// fix on THIS authoritative CDZ0201 is what lets `dedup_faults` drop the sibling CDZ0203 over-application
@@ -9538,6 +9556,16 @@ fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
 fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
     args.iter()
         .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+}
+
+/// True iff either operand of a binary op has solved type `Ty::Float` — the signal to remap `+`/`-`/`*`/
+/// `/` to the float prim (`FAdd`…) and route to `lower_float_arith` instead of the integer fold. There is
+/// no distinct `+.`; floating-point arithmetic is dispatched here on the operand type, like the BigInt/
+/// Rational operands. (A `Float`/int mix never reaches lowering — `check_application` rejected it CDZ0301
+/// — so if ONE operand is a Float the other is too.)
+fn float_operand(db: &mut Db, args: &[StructId]) -> bool {
+    args.iter()
+        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Float(_)))
 }
 
 /// Lower a BigInt `+`/`-`/`*`/`/` to a runtime `Core::BigIntBinOp` (the runtime `bigint-*` op). Unlike
@@ -15675,10 +15703,12 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
         Prim::WrappingMul => "wrapping-mul",
-        Prim::FAdd => "+.",
-        Prim::FSub => "-.",
-        Prim::FMul => "*.",
-        Prim::FDiv => "/.",
+        // The F* prims are the float MODE of the ONE arithmetic operator — a float `+`, not a distinct
+        // `+.` — so a user-facing message (arity fault) names the undotted operator the author wrote.
+        Prim::FAdd => "+",
+        Prim::FSub => "-",
+        Prim::FMul => "*",
+        Prim::FDiv => "/",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",

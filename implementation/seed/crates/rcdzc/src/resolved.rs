@@ -96,14 +96,17 @@ pub enum Prim {
     /// matching `Ordering` variant (a `Core::SumNew` at the Ordering discs, like `List.at` builds Option);
     /// a compound or runtime operand declines (as the comparison prims do).
     Compare,
-    /// The FLOATING-POINT arithmetic operators `+.` `-.` `*.` `/.` — each `∀a. (Float a) → (Float a) →
-    /// (Float a)`, the width-generic float analogue of the integer `Add`/`Sub`/`Mul`/`Div`. Spelled
-    /// distinctly from the integer operators (OCaml-style dot suffix) so no operator silently mixes an
-    /// integer and a float operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point
-    /// Operator): an integer operand to `+.` fails to unify with `Float` → CDZ0301. UNLIKE the integer
-    /// arithmetic these NEVER trap on overflow — an IEEE result that leaves the finite range is an
-    /// infinity, division by zero is ±inf/NaN. A constant pair FOLDS (round-to-nearest-even at the width);
-    /// a runtime operand emits the machine `f64.add`/… (F4).
+    /// The FLOATING-POINT arithmetic prims — each `∀a. (Float a) → (Float a) → (Float a)`, the
+    /// width-generic float analogue of the integer `Add`/`Sub`/`Mul`/`Div`. These are INTERNAL — NOT a
+    /// distinct surface operator. The author writes the ONE arithmetic operator `+`/`-`/`*`/`/`; when its
+    /// operands solve to `Float`, `infer::apply_type` types the application `Float` and `lower` remaps the
+    /// integer prim to the matching `F*` here (routing to `lower_float_arith`) — the same solved-type
+    /// dispatch a `BigInt`/`Rational`/`Qty` operand rides (numeric-model.md §An Arithmetic Operator
+    /// Requires Both Operands To Be One Numeric Type). A mixed integer/float application is CDZ0301 from
+    /// that dispatch (the operands disagree), not a coercion. UNLIKE the integer arithmetic these NEVER
+    /// trap on overflow — an IEEE result that leaves the finite range is an infinity, division by zero is
+    /// ±inf/NaN. A constant pair FOLDS (round-to-nearest-even at the width); a runtime operand emits the
+    /// machine `f64.add`/… (F4).
     FAdd,
     FSub,
     FMul,
@@ -727,10 +730,6 @@ impl Prim {
             ">=" => Some(Prim::Ge),
             "=" => Some(Prim::Eq),
             "compare" => Some(Prim::Compare),
-            "+." => Some(Prim::FAdd),
-            "-." => Some(Prim::FSub),
-            "*." => Some(Prim::FMul),
-            "/." => Some(Prim::FDiv),
             "wrap" => Some(Prim::Wrap),
             "checked-of" => Some(Prim::CheckedOf),
             "Int" => Some(Prim::IntCtor),

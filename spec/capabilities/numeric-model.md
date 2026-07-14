@@ -147,9 +147,11 @@ A floating-point bit width that is outside the set the numeric model admits MUST
 
 A conversion between a floating-point type and any other numeric type, or between two floating-point types of different width, MUST be written explicitly rather than performed as an implicit promotion or narrowing.
 
-### A Floating-Point Operation Uses A Floating-Point Operator
+### An Arithmetic Operator Requires Both Operands To Be One Numeric Type
 
-An arithmetic operation on floating-point values MUST be written with a floating-point operator distinct from the integer arithmetic operator, so that no operator silently accepts one integer and one floating-point operand and no integer operator coerces a floating-point operand.
+An arithmetic operator MUST be a single symbol whose result type and operation are resolved from its operand types, rather than a set of type-specific symbols the author selects by hand — the same operator writes integer, arbitrary-precision, exact-rational, and floating-point arithmetic, dispatched on what its operands are.
+
+An arithmetic operator MUST require both of its operands to be the same numeric type, so that an application mixing a floating-point operand with an integer operand is rejected at compile time rather than silently accepting one integer and one floating-point operand or coercing a floating-point operand to an integer. This is the no-silent-promotion rule applied to the operator: the rejection follows from the operands disagreeing, not from the operator naming a type.
 
 ### A Floating-Point Literal That Denotes No Representable Value Is Malformed
 

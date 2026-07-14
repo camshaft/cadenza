@@ -8165,7 +8165,7 @@ fn reject_oversize_branch_constant(db: &mut Db, id: StructId, it: IntTy) -> Resu
 
 /// Emit a FLOAT operation's OPERAND at the operation's width `w` (32 or 64). The float analogue of
 /// [`emit_operand`]: a bare float LITERAL is width-polymorphic (it defaults to Float64 = an f64 slot
-/// when typed on its own), so `(+. x 1.0)` over a `Float32` `x` would otherwise push the literal as an
+/// when typed on its own), so `(+ x 1.0)` over a `Float32` `x` would otherwise push the literal as an
 /// f64 beside `x`'s f32 and produce invalid wasm (`expected f32, found f64`). Materialize a bare-literal
 /// operand (or the canonical NaN) DIRECTLY at the op width `w` — the width unification the per-node
 /// `type_of` does not thread back to the operand. Any other operand emits normally, then a slot

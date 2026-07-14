@@ -203,6 +203,13 @@ impl FloatTy {
             Width::Deferred | Width::Var(_) => DEFAULT_FLOAT_WIDTH,
         }
     }
+
+    /// Whether this float's width is CONCRETELY fixed (a `Float32`/`Float64`), not a deferred literal or
+    /// an unresolved variable — the float twin of [`IntTy::width_is_fixed`]. Used to prefer a
+    /// concrete-width operand over a deferred literal when typing `+`/`-`/`*`/`/` over floats.
+    pub fn width_is_fixed(self) -> bool {
+        matches!(self.width, Width::Fixed(_))
+    }
 }
 
 /// A UNIT — an element of the free abelian group over named base dimensions (`units-of-measure.md` §A

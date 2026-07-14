@@ -267,11 +267,11 @@
   (output (: 16 Int64)))
 
 (case "a closure capturing values of DIFFERENT types (Float64 + Int64)"
-  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+. x base)))` — the cell captures a Float64 AND an
+  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+ x base)))` — the cell captures a Float64 AND an
            Int64 (the latter unused in the body, but still stored), and the closure returns a Float64.
-           `make(1.5, 7)` then `call(2.5)` = 2.5 +. 1.5 = 4.0. Pins a MIXED-type capture environment (a float
+           `make(1.5, 7)` then `call(2.5)` = 2.5 + 1.5 = 4.0. Pins a MIXED-type capture environment (a float
            and an int share one cell) with a float `call` result.")
-  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+. x base)))
+  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+ x base)))
               (export mk)))
   (call   mk (: 1.5 Float64) (: 7 Int64) (: 2.5 Float64))
   (output (: 4.0 Float64)))
@@ -372,7 +372,7 @@
             (def (main)
               (host (ask)
                 (let ((v (ask.ask)))
-                  (fn ((: x Float64)) (+. x v))))) (export main)))
+                  (fn ((: x Float64)) (+ x v))))) (export main)))
   (call   main (: 1.5 Float64))
   (host-responses (respond ask.ask (: 2.5 Float64)))
   (host-calls (call ask.ask))
@@ -521,9 +521,9 @@
   (output (: 9 Int8)))
 
 (case "a 32-bit-float closure crosses the host boundary"
-  (doc    "`(fn (x) (+. x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
+  (doc    "`(fn (x) (+ x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
            than the f64 the runtime ops use. `call(2.5)` = 4.0. Pins the 32-bit float width.")
-  (input  (do (def (main) (fn ((: x Float32)) (+. x 1.5))) (export main)))
+  (input  (do (def (main) (fn ((: x Float32)) (+ x 1.5))) (export main)))
   (call   main (: 2.5 Float32))
   (output (: 4.0 Float32)))
 
@@ -3561,8 +3561,8 @@
 
 (case "a Tuple ARG of FLOAT fields crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Float64 Float64) Float64)` — a tuple of two f64 fields (each crosses as an f64
-           core param). `call(handle, (1.5, 2.5))` → `p.0 +. p.1` = 4.0. The field type need not be an integer.")
-  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+. (. p 0) (. p 1))))
+           core param). `call(handle, (1.5, 2.5))` → `p.0 + p.1` = 4.0. The field type need not be an integer.")
+  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+ (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: (tuple 1.5 2.5) (Tuple Float64 Float64)))
   (output (: 4.0 Float64)))

@@ -1695,8 +1695,8 @@ pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
-pass	float multiplication uses the float operator
-pass	float subtraction uses the float operator
+pass	float multiplication uses the arithmetic operator
+pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
 pass	function arguments are evaluated left to right
@@ -1987,6 +1987,7 @@ pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the LEB128 byte composition runs on a runtime operand
+pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the built-in Ast is transformed as an ordinary value
@@ -2010,7 +2011,6 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
-pass	the float operator rejects an integer operand and does not promote it
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean

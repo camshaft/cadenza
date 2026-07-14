@@ -2978,20 +2978,21 @@ fn an_exported_addition_runs_over_runtime_args() {
     assert_eq!(got2, 99);
 }
 
-/// The float dual: an exported `(+. a b)` over two runtime Float64 params emits `local.get 0;
-/// local.get 1; f64.add` (no fold — the params are unknown, no overflow guard — floats never trap) and
-/// the boundary carries the params as component `f64`. Run under wasmtime it computes the IEEE sum.
-/// Exercised with a NON-exact pair (0.1, 0.2 → 0.30000000000000004) so a wrong op or a fold-to-0.3
-/// would be caught, plus `*.`/`/.` to pin each machine op. Compared BY BITS.
+/// The float dual: an exported `(+ a b)` over two runtime Float64 params — the ONE arithmetic operator
+/// dispatched to float by the operand type — emits `local.get 0; local.get 1; f64.add` (no fold — the
+/// params are unknown, no overflow guard — floats never trap) and the boundary carries the params as
+/// component `f64`. Run under wasmtime it computes the IEEE sum. Exercised with a NON-exact pair (0.1,
+/// 0.2 → 0.30000000000000004) so a wrong op or a fold-to-0.3 would be caught, plus `*`/`/` to pin each
+/// machine op. Compared BY BITS.
 #[test]
 fn an_exported_float_op_runs_over_runtime_args() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
     for (op, a, b, want) in [
-        ("+.", 0.1f64, 0.2f64, 0.1f64 + 0.2f64),
-        ("*.", 6.0, 7.0, 42.0f64),
-        ("-.", 5.5, 2.0, 3.5f64),
-        ("/.", 1.0, 3.0, 1.0f64 / 3.0f64),
+        ("+", 0.1f64, 0.2f64, 0.1f64 + 0.2f64),
+        ("*", 6.0, 7.0, 42.0f64),
+        ("-", 5.5, 2.0, 3.5f64),
+        ("/", 1.0, 3.0, 1.0f64 / 3.0f64),
     ] {
         let src = format!("(module m (def (f (: a Float64) (: b Float64)) ({op} a b)) (export f))");
         let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
@@ -3006,21 +3007,22 @@ fn an_exported_float_op_runs_over_runtime_args() {
 
 /// ⚠ INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
 /// the literal at its Float64 default (an `f64.const` beside an `f32.add`) — `wasm-tools` rejected the
-/// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+. x 1.0)` over a Float32
-/// `x`), the float analogue of the narrow-int operand miscompile. Fixed by grounding each float-arith
-/// operand to the OP width at the consuming site (`emit_float_operand`): a bare literal materializes at
-/// f32 directly, a control-flow operand whose slot disagrees demotes/promotes. Sound because a genuine
-/// Float32-vs-Float64 disagreement faults (CDZ0301) before emit. Values verified by IEEE bits at f32.
+/// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+ x 1.0)` over a Float32
+/// `x` — the ONE arithmetic operator dispatched to float by operand type), the float analogue of the
+/// narrow-int operand miscompile. Fixed by grounding each float-arith operand to the OP width at the
+/// consuming site (`emit_float_operand`): a bare literal materializes at f32 directly, a control-flow
+/// operand whose slot disagrees demotes/promotes. Sound because a genuine Float32-vs-Float64
+/// disagreement faults (CDZ0301) before emit. Values verified by IEEE bits at f32.
 #[test]
 fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
     // Each op with a bare literal on the RIGHT (`x <op> C`) over a Float32 param — was invalid wasm.
     for (op, x, c, want) in [
-        ("+.", 2.5f32, 1.0f32, 3.5f32),
-        ("-.", 5.5f32, 2.0f32, 3.5f32),
-        ("*.", 3.5f32, 2.0f32, 7.0f32),
-        ("/.", 7.0f32, 2.0f32, 3.5f32),
+        ("+", 2.5f32, 1.0f32, 3.5f32),
+        ("-", 5.5f32, 2.0f32, 3.5f32),
+        ("*", 3.5f32, 2.0f32, 7.0f32),
+        ("/", 7.0f32, 2.0f32, 3.5f32),
     ] {
         let src = format!(
             "(module m (def (f (: x Float32)) ({op} x {c:?})) (export f))",
@@ -3035,7 +3037,7 @@ fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
         );
     }
     // Literal on the LEFT (`C <op> x`) — position-independent.
-    let left = "(module m (def (f (: x Float32)) (+. 1.0 x)) (export f))";
+    let left = "(module m (def (f (: x Float32)) (+ 1.0 x)) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(left))).expect("compile");
     let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(2.5f32)]);
     assert_eq!(
@@ -3044,12 +3046,12 @@ fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
         "left literal grounds to f32"
     );
     // A CONTROL-FLOW operand (an `if` of two bare literals) also grounds to the op width.
-    let cf = "(module m (def (f (: c Bool) (: x Float32)) (+. x (if c 1.0 2.0))) (export f))";
+    let cf = "(module m (def (f (: c Bool) (: x Float32)) (+ x (if c 1.0 2.0))) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(cf))).expect("compile");
     let got: f32 = run_returns_with(&bytes, "f", &[Val::Bool(true), Val::Float32(1.0f32)]);
     assert_eq!(got.to_bits(), 2.0f32.to_bits(), "if-operand grounds to f32");
     // The Float64 path is UNCHANGED (the literal was always f64 there).
-    let f64src = "(module m (def (f (: x Float64)) (+. x 1.0)) (export f))";
+    let f64src = "(module m (def (f (: x Float64)) (+ x 1.0)) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
     let got: f64 = run_returns_with(&bytes, "f", &[Val::Float64(2.5)]);
     assert_eq!(got.to_bits(), 3.5f64.to_bits(), "Float64 unchanged");
@@ -16917,80 +16919,81 @@ mod match_engine {
     }
 
     #[test]
-    fn an_integer_operator_on_two_floats_offers_the_float_sibling_operator_swap() {
-        // `(+ 1.0 2.0)` — an INTEGER arithmetic operator applied to two FLOAT operands. The whole-
-        // operation repair is to SWAP the operator to its float sibling (`+.`), NOT to retype an operand
-        // (retyping one leaves the other float, so `fix --all` could never converge, and two float
-        // literals mean float math). The fix rewrites the OPERATOR NAME node. Each of `+`/`-`/`*`/`/`
-        // maps to `+.`/`-.`/`*.`/`/.` (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
-        // To A Fix; `numeric-model.md` §Numeric Types Do Not Silently Promote).
-        for (op, sibling) in [("+", "+."), ("-", "-."), ("*", "*."), ("/", "/.")] {
+    fn one_arithmetic_operator_over_two_floats_is_well_typed() {
+        // `(+ 1.0 2.0)` — the ONE arithmetic operator `+`/`-`/`*`/`/` applied to two FLOAT operands is
+        // WELL-TYPED float arithmetic: there is no distinct `+.`, so a `Float` operand routes to the float
+        // op by type (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric
+        // Type). Each folds to a Float64 value, not a rejection.
+        for (op, want) in [("+", 3.0f64), ("-", -1.0f64), ("*", 2.0f64), ("/", 0.5f64)] {
             let src = format!("(module m (def (main) ({op} 1.0 2.0)) (export main))");
-            let d = reject_full(&src).unwrap_or_else(|| panic!("`{op}` on two floats must reject"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
             assert!(
-                d.message.contains("integer arithmetic") && d.message.contains(sibling),
-                "names the float sibling `{sibling}`: {}",
-                d.message
+                reject_full(&src).is_none(),
+                "`{op}` on two floats must be well-typed, got: {:?}",
+                reject_full(&src).map(|d| d.message)
             );
             assert_eq!(
-                d.fix.as_ref().map(|f| f.replacement.as_str()),
-                Some(sibling),
-                "swaps the operator to `{sibling}`: {}",
-                d.message
+                run_returns::<f64>(&component(&src), "main").to_bits(),
+                want.to_bits(),
+                "`{op}` on two floats folds to {want} (by IEEE bits)"
             );
         }
-        // A genuine int/float MIX (`(+ 1 2.0)`) is NOT the both-float case — it keeps the per-operand
-        // coercion fix (one operand is already an integer), NOT the operator swap.
-        let mix = reject_full("(module m (def (main) (+ 1 2.0)) (export main))").expect("reject");
-        assert!(
-            !mix.message.contains("integer arithmetic"),
-            "an int/float mix keeps per-operand coercion, not the operator swap: {}",
-            mix.message
-        );
-        // `%` has no float sibling → no operator-swap fix (it falls through to the generic path).
-        let rem = reject_full("(module m (def (main) (% 5.0 2.0)) (export main))").expect("reject");
-        assert!(
-            !rem.message
-                .contains("integer arithmetic, but both operands"),
-            "`%` has no float sibling to swap to: {}",
-            rem.message
-        );
     }
 
     #[test]
-    fn a_float_operator_on_two_ints_offers_the_integer_sibling_operator_swap() {
-        // The MIRROR of the two-floats case: `(+. n m)` — a FLOAT arithmetic operator applied to two
-        // INTEGER operands. The whole-operation repair is to SWAP the operator to its INTEGER sibling
-        // (`+`), NOT to wrap an operand: wrapping one in `Float64.of-int` leaves the OTHER an int (so the
-        // fix never converges), and two integer operands mean integer math. The fix rewrites the OPERATOR
-        // NAME node. Each of `+.`/`-.`/`*.`/`/.` maps to `+`/`-`/`*`/`/`.
-        for (op, sibling) in [("+.", "+"), ("-.", "-"), ("*.", "*"), ("/.", "/")] {
-            let src = format!("(module m (def (g (: n Int64) (: m Int64)) ({op} n m)) (export g))");
-            let d = reject_full(&src).unwrap_or_else(|| panic!("`{op}` on two ints must reject"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
-            assert!(
-                d.message.contains("floating-point arithmetic") && d.message.contains(sibling),
-                "names the integer sibling `{sibling}`: {}",
-                d.message
-            );
-            assert_eq!(
-                d.fix.as_ref().map(|f| f.replacement.as_str()),
-                Some(sibling),
-                "swaps the operator to `{sibling}`: {}",
-                d.message
-            );
-        }
-        // A genuine int/float MIX (`(+. n 1.0)`) is NOT the both-int case — it keeps the per-operand
-        // `of-int` coercion fix (one operand is already a float), NOT the operator swap.
-        let mix =
-            reject_full("(module m (def (g (: n Int64)) (+. n 1.0)) (export g))").expect("reject");
-        assert!(
-            !mix.message
-                .contains("floating-point arithmetic, but both operands"),
-            "an int/float mix keeps per-operand coercion, not the operator swap: {}",
-            mix.message
+    fn a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix() {
+        // A genuine int/float MIX is rejected CDZ0301 — the same operator accepts only one numeric type
+        // (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric Type). The
+        // one-shot repair conforms the SECOND operand to the FIRST operand's type (the first establishes
+        // the intended type), deterministic and order-consistent. This replaces the old operator-swap
+        // repair — there is no `+.` to swap to.
+        //
+        // FLOAT-first (`(+ 2.0 1)`): the second operand `1` is retyped UP to a float literal `1.0`.
+        let ffirst =
+            reject_full("(module m (def (main) (+ 2.0 1)) (export main))").expect("reject");
+        assert_eq!(
+            ffirst.code.as_deref(),
+            Some("CDZ0301"),
+            "got: {}",
+            ffirst.message
         );
+        assert_eq!(
+            ffirst.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "float-first: retypes the trailing integer literal to a float: {}",
+            ffirst.message
+        );
+        // INT-first (`(+ 2 1.0)`): the second operand `1.0` is retyped DOWN to the integer `1` (drop `.0`).
+        let ifirst =
+            reject_full("(module m (def (main) (+ 2 1.0)) (export main))").expect("reject");
+        assert_eq!(
+            ifirst.code.as_deref(),
+            Some("CDZ0301"),
+            "got: {}",
+            ifirst.message
+        );
+        assert_eq!(
+            ifirst.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1"),
+            "int-first: drops the fractional form of the trailing float literal: {}",
+            ifirst.message
+        );
+        // A COMPUTED integer SECOND operand (a param, not a literal) wraps in `Float64.of-int` when the
+        // first operand is a float.
+        let computed =
+            reject_full("(module m (def (g (: n Int64)) (+ 1.0 n)) (export g))").expect("reject");
+        assert_eq!(computed.code.as_deref(), Some("CDZ0301"));
+        assert!(
+            computed
+                .fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Float64.of-int")),
+            "a computed int second operand wraps in Float64.of-int: {:?}",
+            computed.fix
+        );
+        // `%` is integer-only (no float form) — a `(% 5.0 2.0)` falls through to the scheme, which rejects
+        // a float operand; still CDZ0301, but no float-arithmetic fold.
+        let rem = reject_full("(module m (def (main) (% 5.0 2.0)) (export main))").expect("reject");
+        assert_eq!(rem.code.as_deref(), Some("CDZ0301"), "got: {}", rem.message);
     }
 
     #[test]
@@ -21829,17 +21832,18 @@ mod match_engine {
 
     #[test]
     fn constant_float_arithmetic_folds_at_round_to_nearest_even() {
-        // The float operators `+.`/`-.`/`*.`/`/.` fold two constant Float64 operands at round-to-nearest-
-        // even (the fixed deterministic mode), the result crossing as its canonical f64 (numeric-model.md
-        // §A Floating-Point Operation Uses A Floating-Point Operator; determinism contract). Read BY BITS
-        // so the exact IEEE value is pinned — `0.1 +. 0.2` is the famous NON-exact 0.30000000000000004,
-        // not 0.3, which a wrong (exact-decimal or f32) fold would miss.
+        // The ONE arithmetic operator `+`/`-`/`*`/`/` over two constant Float64 operands folds float
+        // arithmetic at round-to-nearest-even (the fixed deterministic mode), the result crossing as its
+        // canonical f64 (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric
+        // Type; determinism contract). There is no distinct `+.` — a `Float` operand routes to the float
+        // op by type. Read BY BITS so the exact IEEE value is pinned — `(+ 0.1 0.2)` is the famous
+        // NON-exact 0.30000000000000004, not 0.3, which a wrong (exact-decimal or f32) fold would miss.
         for (prog, want) in [
-            ("(+. 0.1 0.2)", 0.1f64 + 0.2f64),
-            ("(*. 6.0 7.0)", 42.0f64),
-            ("(-. 5.5 2.0)", 3.5f64),
-            ("(/. 1.0 4.0)", 0.25f64),
-            ("(/. 1.0 3.0)", 1.0f64 / 3.0f64),
+            ("(+ 0.1 0.2)", 0.1f64 + 0.2f64),
+            ("(* 6.0 7.0)", 42.0f64),
+            ("(- 5.5 2.0)", 3.5f64),
+            ("(/ 1.0 4.0)", 0.25f64),
+            ("(/ 1.0 3.0)", 1.0f64 / 3.0f64),
         ] {
             let src = format!("(module m (def (main) {prog}) (export main))");
             let got = run_returns::<f64>(&component(&src), "main");
@@ -27021,10 +27025,11 @@ mod diagnostics {
     #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
-        // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
-        // corpus-blessed `(Float64.of-int x)` — a WRAP fix converting the integer operand. Applying it
-        // makes the program type-check.
-        let d = first_error("(module m (def (f (: x Int64)) (+. x 2.0)) (export f))");
+        // A Fix): `(+ 2.0 x)` mixes a float with an integer `x : Int64` under the ONE arithmetic operator
+        // — CDZ0301 (no silent promotion) — and the repair conforms the SECOND operand to the FIRST (the
+        // leading float), so it is the corpus-blessed `(Float64.of-int x)` WRAP converting the integer.
+        // Applying it makes the program type-check.
+        let d = first_error("(module m (def (f (: x Int64)) (+ 2.0 x)) (export f))");
         assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
         // The message names the no-silent-promotion RULE and the two types, not a bare unifier dump.
         assert!(
@@ -27117,11 +27122,12 @@ mod diagnostics {
 
     #[test]
     fn a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening() {
-        // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER operand (`x : Int32`) a bare
-        // `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first widen:
-        // `(Float64.of-int (Int64.of x))`. This is the correctness fix for the D7 gap — a suggested fix
-        // must resolve the fault in ONE shot, not cascade to the next mismatch.
-        let d = first_error("(module m (def (f (: x Int32)) (+. x 2.0)) (export f))");
+        // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER second operand (`x : Int32`)
+        // mixed with a leading float under the ONE arithmetic operator (`(+ 2.0 x)`, conform-second-to-
+        // first), a bare `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first
+        // widen: `(Float64.of-int (Int64.of x))`. This is the correctness fix for the D7 gap — a suggested
+        // fix must resolve the fault in ONE shot, not cascade to the next mismatch.
+        let d = first_error("(module m (def (f (: x Int32)) (+ 2.0 x)) (export f))");
         assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
         assert_eq!(
             d.fix.as_ref().map(|f| f.replacement.as_str()),
@@ -27137,9 +27143,10 @@ mod diagnostics {
 
     #[test]
     fn a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix() {
-        // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand to `+.` is a plain
-        // CDZ0203/CDZ0301 with no `of-int` repair (converting a Bool to a float is not the fix).
-        let d = first_error("(module m (def (f (: x Bool)) (+. x 2.0)) (export f))");
+        // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand mixed with a float under
+        // the ONE arithmetic operator (`(+ x 2.0)`, `x : Bool`) is a plain CDZ0203/CDZ0301 with no
+        // `of-int` repair (converting a Bool to a float is not the fix).
+        let d = first_error("(module m (def (f (: x Bool)) (+ x 2.0)) (export f))");
         assert!(
             d.fix.is_none(),
             "no coercion fix for a non-integer operand: {:?}",
@@ -27169,9 +27176,11 @@ mod diagnostics {
     fn a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix() {
         // A `Float32`/`Float64` mismatch is CDZ0301 like the integer-width case — but its message must name
         // the FLOAT domain: "floating-point precisions differ … never silently widens or narrows a FLOAT",
-        // NOT the "integer widths differ … an integer" the shared width-unify used to (mis)report. And it
-        // carries the same `(<Type>.of …)` coercion fix (the float `.of` is total, not "checked").
-        let d = first_error("(module m (def (f (: a Float32) (: b Float64)) (+. a b)) (export f))");
+        // NOT the "integer widths differ … an integer" a shared width-unify might (mis)report. The two
+        // floats are combined with the ONE arithmetic operator (`(+ a b)`); the Float skip arm produces
+        // the float-domain message. It carries the same `(<Type>.of …)` coercion fix (float `.of` is
+        // total, not "checked").
+        let d = first_error("(module m (def (f (: a Float32) (: b Float64)) (+ a b)) (export f))");
         assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
         assert!(
             d.message.contains("floating-point precisions differ")
@@ -27254,13 +27263,14 @@ mod diagnostics {
             "nothing to delete for too-few: {:?}",
             few.fix
         );
-        // The COMPARISON `(< 1 2 3)` and FLOAT `(+. 1.0 2.0 3.0)` operators share the exact shape — they
-        // route through `lower_comparison`/`lower_float_arith`, which previously lacked the delete fix (so
-        // they DOUBLE-reported: CDZ0201 + an un-deduped CDZ0203). Via the shared `binop_arity_reject` they
-        // now report ONCE with the fix, exactly like `+`.
+        // The COMPARISON `(< 1 2 3)` and float arithmetic `(+ 1.0 2.0 3.0)` (the ONE `+` over float
+        // operands) share the exact shape — they route through `lower_comparison`/`lower_float_arith`,
+        // which previously lacked the delete fix (so they DOUBLE-reported: CDZ0201 + an un-deduped
+        // CDZ0203). Via the shared `binop_arity_reject` they now report ONCE with the fix, exactly like
+        // integer `+`.
         for src in [
             "(module m (def (f) (< 1 2 3)) (export f))",
-            "(module m (def (f) (+. 1.0 2.0 3.0)) (export f))",
+            "(module m (def (f) (+ 1.0 2.0 3.0)) (export f))",
         ] {
             let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
@@ -28277,12 +28287,14 @@ mod diagnostics {
             du[0].message
         );
 
-        // A comparison and a float operator take the same path (the message names the operator).
+        // A comparison and the arithmetic operator over FLOAT operands take the same path (the message
+        // names the operator). Float arithmetic reuses the ONE `+` — over-applying it (`(+ x 1.0 2.0)`,
+        // `x : Float64`) is the same arity fault, named `+`, not a distinct `+.`.
         for (src, op) in [
             ("(module m (def (g (: n Int64)) (< n 1 2)) (export g))", "<"),
             (
-                "(module m (def (g (: x Float64)) (+. x 1.0 2.0)) (export g))",
-                "+.",
+                "(module m (def (g (: x Float64)) (+ x 1.0 2.0)) (export g))",
+                "+",
             ),
         ] {
             let dc: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
@@ -30135,7 +30147,7 @@ mod stage1 {
             "CDZ0201",
         );
         find(
-            "(module m (def (g (: n Int64)) (+. 1.0e400 2.0)) (export g))",
+            "(module m (def (g (: n Int64)) (+ 1.0e400 2.0)) (export g))",
             "CDZ0201",
         );
         find(
@@ -31933,17 +31945,20 @@ mod stage1 {
     }
 
     #[test]
-    fn a_float_operator_rejects_an_integer_operand_no_silent_promotion() {
-        // 06-numeric-model: the FLOAT operators `+.`/`-.`/`*.`/`/.` are float-only — an integer operand
-        // fails to unify with `(Float a)` → CDZ0301, the dual of an int operator rejecting a float
-        // (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Neither operator
-        // coerces: `(+. 2 2.0)` is as rejected as `(+ 2 2.0)`.
-        for op in ["+.", "-.", "*.", "/."] {
-            let msg = expect_decline(&format!("({op} 2 2.0)"));
-            assert!(
-                msg.contains("Float") || msg.contains("Int") || msg.contains("unify"),
-                "an integer operand to `{op}` should cite the numeric mismatch; got: {msg}"
-            );
+    fn an_arithmetic_operator_rejects_a_mixed_int_float_pair_no_silent_promotion() {
+        // 06-numeric-model: the ONE arithmetic operator `+`/`-`/`*`/`/` requires both operands to be one
+        // numeric type — a mixed integer/float pair is rejected CDZ0301 rather than coercing either way
+        // (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric Type). The
+        // rejection holds in BOTH operand orders (`(+ 2 2.0)` and `(+ 2.0 2)`) — neither the leading nor
+        // the trailing operand's type wins.
+        for op in ["+", "-", "*", "/"] {
+            for prog in [format!("({op} 2 2.0)"), format!("({op} 2.0 2)")] {
+                let msg = expect_decline(&prog);
+                assert!(
+                    msg.contains("Float") || msg.contains("Int") || msg.contains("conversion"),
+                    "the int/float mix `{prog}` should cite the numeric mismatch; got: {msg}"
+                );
+            }
         }
     }
 
@@ -45245,7 +45260,7 @@ mod debug_info {
         use std::io::Write;
         use std::process::Command;
         let src = "(module m \
-                     (def (scale (: x Float64) (: k Float32)) (*. x (Float64.of-int 1))) \
+                     (def (scale (: x Float64) (: k Float32)) (* x (Float64.of-int 1))) \
                      (export scale))";
         let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
         assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);

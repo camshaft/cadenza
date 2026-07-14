@@ -3027,6 +3027,34 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             {
                 return Ty::Rational;
             }
+            // A `+`/`-`/`*`/`/` over FLOAT operands is that float type — the SAME arithmetic operator as
+            // the integer case, dispatched here on a `Ty::Float` operand (there is no distinct `+.`). Its
+            // `∀a. (Int a) → …` scheme does NOT accept a `Float`, so the generic scheme-unify would reject
+            // it; type it directly instead, and `lower` remaps to `Prim::FAdd`… + `lower_float_arith`. A
+            // `Float`/integer mix is rejected in `check_application` (CDZ0301), so if one operand is
+            // `Float` the well-typed case has both — return the float type (the concrete-width operand, so
+            // a `Float32` op stays `Float32`; a deferred literal grounds to `Float64`). Comparison over
+            // floats is `Bool` via the generic path; `%`/bitwise/shift have no float form and fall through
+            // to the scheme (which rejects a float operand — those stay integer-only).
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
+            {
+                // Prefer whichever operand fixed the width (a concrete `Float32`/`Float64` over a deferred
+                // literal), mirroring the `join` width preference — so `(+ x 1.0)` with `x : Float32`
+                // stays `Float32` rather than the literal's deferred width.
+                return match (&a, &b) {
+                    (Ty::Float(fa), _) if fa.width_is_fixed() => a.clone(),
+                    (_, Ty::Float(fb)) if fb.width_is_fixed() => b.clone(),
+                    (Ty::Float(_), _) => a.clone(),
+                    (_, Ty::Float(_)) => b.clone(),
+                    _ => Ty::float(),
+                };
+            }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
             if a_qty || b_qty {
@@ -4722,41 +4750,6 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
     }
 }
 
-/// The INTEGER-arithmetic operator spelling and its FLOAT-arithmetic sibling spelling `(int, float)`,
-/// or `None` for a prim with no float sibling. The four arithmetic operators `+`/`-`/`*`/`/` each have a
-/// width-generic float twin `+.`/`-.`/`*.`/`/.` (`prelude.rs`); the comparisons `<`/`=`/… are ALREADY
-/// polymorphic over floats (no separate spelling), and `%`/bit-ops have no float form. Used to repair
-/// `(+ 1.0 2.0)` — an integer operator applied to two FLOAT operands — by swapping the operator name,
-/// the whole-operation fix (rewriting one operand to an int leaves the other float; the author clearly
-/// wants float math). Returns both spellings so the message names the written operator and the fix names
-/// the sibling.
-fn float_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
-    use crate::resolved::Prim;
-    match prim {
-        Prim::Add => Some(("+", "+.")),
-        Prim::Sub => Some(("-", "-.")),
-        Prim::Mul => Some(("*", "*.")),
-        Prim::Div => Some(("/", "/.")),
-        _ => None,
-    }
-}
-
-/// The MIRROR of [`float_sibling_operator`]: a FLOAT-arithmetic operator's spelling and its INTEGER
-/// sibling `(float, int)`, or `None` for a non-float-arith prim. Used to repair `(+. n m)` — a FLOAT
-/// operator applied to two INTEGER operands — by swapping the operator name to `+`, the whole-operation
-/// fix (wrapping one operand in `Float64.of-int` leaves the OTHER an int, so it does not clear the fault;
-/// two integer operands mean integer math). The exact inverse of the two-floats→`+.` swap.
-fn int_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
-    use crate::resolved::Prim;
-    match prim {
-        Prim::FAdd => Some(("+.", "+")),
-        Prim::FSub => Some(("-.", "-")),
-        Prim::FMul => Some(("*.", "*")),
-        Prim::FDiv => Some(("/.", "/")),
-        _ => None,
-    }
-}
-
 /// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
 /// different conversions (`units-of-measure.md` §A Named Unit's Conversion Is Unique) — and push CDZ0502
 /// for each. A name conflicts when its reduced unit (`base` scaled by `num/den`) differs from the
@@ -4990,91 +4983,10 @@ fn check_application(
         collect(db, args[1], out);
         return;
     }
-    // An INTEGER arithmetic operator (`+`/`-`/`*`/`/`) applied to two FLOAT operands — `(+ 1.0 2.0)`.
-    // The whole-operation repair is to SWAP the operator to its float sibling (`+.`), NOT to rewrite an
-    // operand: `+`'s scheme is `(Int a)`, so the generic unify below would fault the FIRST operand and
-    // offer to drop its `.0` — a fix that leaves the SECOND operand float (so `fix --all` rightly refuses
-    // it) and misreads the intent (two float literals mean float math). Detect it here and emit ONE clean
-    // CDZ0301 whose fix rewrites the OPERATOR NAME node (the app's first child) to the float sibling, then
-    // return so the generic path does not also add the misleading per-operand fix. Gated on BOTH operands
-    // being `Ty::Float` (a genuine int/float MIX — `(+ 1 2.0)` — keeps the per-operand coercion, which is
-    // the right call there: one operand is already an integer). `numeric-model.md` §Numeric Types Do Not
-    // Silently Promote (the explicit-conversion discipline) + `diagnostics.md` §A Diagnostic Carries A
-    // Route To A Fix.
-    if args.len() == 2
-        && let Some(prim) = crate::eval::meta_apply_of(db, head)
-        && let Some((int_op, sibling)) = float_sibling_operator(prim)
-        && let a0 = type_of(db, args[0])
-        && let b0 = type_of(db, args[1])
-        && matches!(a0, Ty::Float(_))
-        && matches!(b0, Ty::Float(_))
-    {
-        // The operator NAME occurrence is the application's first child (`(+ …)` → the `+` atom). Fall
-        // back to an unfixed reject if the shape is unexpected (never mis-target a fix).
-        let op_name_node = match db.ast.get(app) {
-            crate::ast::Struct::List(items) => items.first().copied(),
-            _ => None,
-        };
-        trace!(target: "rcdzc::infer", head = head.0, int_op, sibling, "fault: integer arithmetic operator on two floats — swap to the float sibling (CDZ0301)");
-        let mut reject = Reject::coded(
-            Code::NumericMismatch,
-            format!(
-                "`{int_op}` is integer arithmetic, but both operands are {} — use the floating-point \
-                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
-                a0.render_name(),
-            ),
-        )
-        .at(app);
-        if let Some(node) = op_name_node {
-            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
-        }
-        out.push(reject);
-        for &arg in args {
-            collect(db, arg, out);
-        }
-        return;
-    }
-    // The MIRROR: a FLOAT arithmetic operator (`+.`/`-.`/`*.`/`/.`) applied to two INTEGER operands —
-    // `(+. n m)` for `n`,`m` : `Int64`. The whole-operation repair is to SWAP the operator to its INTEGER
-    // sibling (`+`), NOT to wrap an operand: `+.`'s scheme wants `Float`, so the generic unify below faults
-    // an operand and offers `(Float64.of-int …)` on JUST that one — leaving the OTHER operand an int, so
-    // the fix does not clear the fault (`fix --all` rightly refuses it) and misreads intent (two integer
-    // operands mean integer math). Emit ONE clean CDZ0301 whose fix rewrites the OPERATOR NAME node to the
-    // int sibling, then return so the generic path does not also add the misleading per-operand wrap.
-    // Gated on BOTH operands being `Ty::Int` (a genuine int/float MIX — `(+. n 1.0)` — keeps the
-    // per-operand `of-int` coercion, right there since one operand is already a float). The exact inverse
-    // of the two-floats→`+.` swap above.
-    if args.len() == 2
-        && let Some(prim) = crate::eval::meta_apply_of(db, head)
-        && let Some((float_op, sibling)) = int_sibling_operator(prim)
-        && let a0 = type_of(db, args[0])
-        && let b0 = type_of(db, args[1])
-        && matches!(a0, Ty::Int(_))
-        && matches!(b0, Ty::Int(_))
-    {
-        let op_name_node = match db.ast.get(app) {
-            crate::ast::Struct::List(items) => items.first().copied(),
-            _ => None,
-        };
-        trace!(target: "rcdzc::infer", head = head.0, float_op, sibling, "fault: float arithmetic operator on two ints — swap to the int sibling (CDZ0301)");
-        let mut reject = Reject::coded(
-            Code::NumericMismatch,
-            format!(
-                "`{float_op}` is floating-point arithmetic, but both operands are {} — use the integer \
-                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
-                a0.render_name(),
-            ),
-        )
-        .at(app);
-        if let Some(node) = op_name_node {
-            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
-        }
-        out.push(reject);
-        for &arg in args {
-            collect(db, arg, out);
-        }
-        return;
-    }
+    // (A `+`/`-`/`*`/`/` over FLOAT operands — including the int/float MIX `(+ 2 2.0)` — is handled by the
+    // Float skip+mix arm further below, alongside the BigInt/Rational skips: floating-point arithmetic
+    // reuses the ONE arithmetic operator, so there is no operator-swap repair — the fix is the one-shot
+    // int→float coercion on the integer operand, the same repair wherever an int/float mismatch surfaces.)
     // The RECORD + TUPLE ROW OPERATIONS have NO HM scheme (a label-list / literal-position operand is not
     // a typed value; a result shape is row-/arity-polymorphic), so SKIP the generic scheme-unify (it would
     // fault the operand). The per-op faults (CDZ0212 absent / CDZ0211 shared / CDZ0201 split-out-of-arity)
@@ -5466,6 +5378,83 @@ fn check_application(
                     (args[0], &a0)
                 };
                 if let Some(fix) = numeric_text_coercion_fix(db, &Ty::Rational, other, fix_arg) {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
+            }
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+        // A `+`/`-`/`*`/`/` over FLOAT operands is float arithmetic — the SAME operator as the integer
+        // case, dispatched on a `Ty::Float` operand (there is no distinct `+.`). The operator's `∀a. (Int
+        // a) → …` scheme does NOT accept a `Float`, so the generic scheme-unify below would spuriously
+        // reject two well-typed floats. Skip it (both operands are Float in the well-typed case; `lower`
+        // remaps to `Prim::FAdd`… + folds/emits the machine op), descend for operand faults, and return.
+        // A genuine FLOAT/other MIX (`(+ 2 2.0)`, `(+ x 1.0)` for an integer `x`) still faults CDZ0301 —
+        // reported here, since if it fell through, the scheme-unify would fault only the second operand
+        // (its first `(Int a)` param having unified with the leading float's… no — a float never unifies
+        // with `(Int a)`, so BOTH would fault, a double-report). This is the numeric-model §An Arithmetic
+        // Operator Requires Both Operands To Be One Numeric Type rejection: the mix is caught by the
+        // operand disagreement, offering the one-shot int→float coercion on the integer operand (the
+        // `(: 3 Float64)` retype for a literal, `(Float64.of-int …)` for a computed int) — the SAME repair
+        // wherever an int/float mismatch surfaces. Widths must also agree: a `Float32`/`Float64` mix is a
+        // no-silent-promotion CDZ0301 with the `(<Float>.of …)` width wrap (via `numeric_text_coercion_fix`).
+        // Comparisons ride the generic `∀a. a→a→Bool` scheme (which accepts two floats) — a float/other
+        // comparison mix is faulted below/there — so only the ARITHMETIC forms need this skip; `is_additive`
+        // covers comparisons too, so guard the skip to a well-typed both-float pair and let a mix report.
+        if (is_multiplicative
+            || matches!(
+                prim,
+                Some(crate::resolved::Prim::Add | crate::resolved::Prim::Sub)
+            ))
+            && (matches!(a0, Ty::Float(_)) || matches!(b0, Ty::Float(_)))
+        {
+            // A mix — one operand a float, the other neither a matching-width float nor `Any` — is the
+            // no-promotion error CDZ0301. `agrees_with` handles the width check: two `Ty::Float`s agree
+            // iff their widths agree (a deferred/var width is compatible), and a float never agrees with a
+            // non-float. So the well-typed case is exactly "both floats AND they agree"; anything else is
+            // the mix.
+            let both_float = matches!(a0, Ty::Float(_)) && matches!(b0, Ty::Float(_));
+            let a_ok = matches!(a0, Ty::Float(_)) || matches!(a0, Ty::Any);
+            let b_ok = matches!(b0, Ty::Float(_)) || matches!(b0, Ty::Any);
+            let widths_ok = !both_float || a0.agrees_with(&b0);
+            if !(a_ok && b_ok && widths_ok) {
+                // Offer a one-shot coercion that conforms the SECOND operand to the FIRST operand's type —
+                // the first operand establishes the intended numeric type, the second is retyped to match.
+                // So `(+ 2 2.0)` (Int64, Float64) drops the `.0` (`2.0` → `2`, an int context); `(+ 2.0 2)`
+                // (Float64, Int64) retypes the int up (`2` → `2.0`); a `Float32`/`Float64` mix wraps the
+                // second in the first's `.of`. `numeric_text_coercion_fix` picks the right repair from the
+                // (expected = first's type, actual = second's type) pair — and returns `None` when there is
+                // no clean one-shot (a non-integer float `2.5` into an int context), leaving the bare
+                // CDZ0301. Deterministic and order-consistent (always the second operand), never guessing.
+                let (expected, fix_arg, actual) = (a0.clone(), args[1], &b0);
+                // A both-float WIDTH mismatch (`Float32`/`Float64`) names the FLOAT domain ("precisions
+                // differ … never silently widens or narrows a float") — the message the `Ty::Float`
+                // scheme-unify used to give before floating-point arithmetic moved onto the shared `(Int
+                // a)`-schemed operator. A float-vs-non-float mix ("no implicit conversion between numeric
+                // types") is the ordinary no-promotion wording. Both are CDZ0301 + the same coercion fix.
+                let msg = if both_float {
+                    let (Ty::Float(fa), Ty::Float(fb)) = (&a0, &b0) else {
+                        unreachable!("both_float guarantees two Ty::Float")
+                    };
+                    format!(
+                        "floating-point precisions differ: {}-bit vs {}-bit — convert explicitly \
+                         (Cadenza never silently widens or narrows a float)",
+                        fa.ground_width(),
+                        fb.ground_width(),
+                    )
+                } else {
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    )
+                };
+                let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
+                if let Some(fix) = numeric_text_coercion_fix(db, &expected, actual, fix_arg) {
                     reject = reject.with_fix(fix);
                 }
                 out.push(reject);
@@ -6114,6 +6103,28 @@ fn check_application(
             if !covered {
                 out.push(reject);
             }
+        }
+        return;
+    }
+    // An ARITHMETIC operator applied at an arity OTHER than 2, over a NON-integer numeric operand
+    // (`(+ 1.0 2.0 3.0)`, `(+ x 1.0 2.0)` for a Float `x`) — the well-typed arity-2 case took the
+    // Float/BigInt/Rational skip arm above (guarded on `args.len() == 2`), but an over/under-application
+    // falls through here to the generic `∀a. (Int a) → …` scheme-unify, which faults each Float/BigInt/
+    // Rational arg CDZ0301 (they never unify with `(Int a)`). That is a SPURIOUS type-mismatch masking
+    // the real ARITY error — the emit-path lowering reports the clean CDZ0201 "+ takes exactly 2
+    // operands" (with the delete/complete fix). So skip the generic unify for this shape, descend for the
+    // operands' own faults, and return; the arity CDZ0201 is the sole report. (An arity-2 integer/mixed
+    // application is unaffected — it is handled above or wants the generic unify's numeric report.)
+    if args.len() != 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+        && prim.is_arith()
+        && args
+            .iter()
+            .any(|&a| matches!(type_of(db, a), Ty::Float(_) | Ty::BigInt | Ty::Rational))
+    {
+        trace!(target: "rcdzc::infer", head = head.0, "fault: skip generic unify for a non-arity-2 arithmetic op over a non-int numeric (the arity CDZ0201 is the real fault)");
+        for &arg in args {
+            collect(db, arg, out);
         }
         return;
     }
@@ -7649,7 +7660,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Apply { head, args } => {
             check_application(db, id, head, &args, out);
             // OPERATOR-ARITY WELL-FORMEDNESS: a fixed-arity binary operator applied to a count other than 2
-            // (an over-application `(+ n 1 2)`/`(< n 1 2)`/`(+. x 1.0 2.0)`, or an under-application `(+ n)`)
+            // (an over-application `(+ n 1 2)`/`(< n 1 2)`/`(+ x 1.0 2.0)`, or an under-application `(+ n)`)
             // has a clear operator-specific CDZ0201 "+ takes exactly 2 operands" — but it is produced ONLY
             // by the emit-path lowering walk (`collect_reached_poisons`, nullary-exported bodies), so `check`
             // on a PARAMETERIZED body saw only `check_application`'s GENERIC CDZ0203 ("applied N arguments to
