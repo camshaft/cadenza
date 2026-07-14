@@ -417,10 +417,14 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    if !host_imports.is_empty() && !imports.is_empty() {
+    // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
+    // (`envelope::assemble_host_runtime`, wired in the host block below). One remaining combination still
+    // declines: a host op with a STRING parameter (needs the shared-memory shape) composed with the runtime
+    // — the memory + two-interface fusion is a further increment. A scalar/unit host op + runtime is emitted.
+    if !host_imports.is_empty() && !imports.is_empty() && host::set_needs_memory(&host_imports) {
         return Err(Reject::decline(
-            "a program that both delegates a host effect AND uses the value-heap runtime is not yet \
-             emitted (the host + runtime import index spaces compose in a later increment)",
+            "a host op with a string parameter composed with the value-heap runtime is not yet emitted \
+             (the shared-memory host shape and the runtime import compose in a later increment)",
         ));
     }
 
@@ -663,6 +667,23 @@ pub fn emit(
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
+        // A program that ALSO uses the value-heap runtime (a host op result fed into a runtime collection
+        // op — `imports` non-empty) composes BOTH imported interfaces: `assemble_host_runtime` imports the
+        // effect (as `"host"`) AND the runtime (as its versioned name, `"heap"`), aliases + lowers both op
+        // sets, and instantiates the program with both bound. (A string-param host op + runtime declined
+        // above; here the host set is scalar/unit, so no shared memory.) The core module already composed
+        // both import spaces (`core_module_with_host` above).
+        if !imports.is_empty() {
+            let import_name = runtime_import_name();
+            return Ok(envelope::assemble_host_runtime(
+                &core,
+                &boundary,
+                &iface,
+                &host_fns,
+                &imports,
+                &import_name,
+            ));
+        }
         // A host op with a STRING parameter needs the shared-memory shape (the `(ptr,len)` a `string`
         // lowers to is read from a memory both the program and the op's canon-lower bind); a scalar-only
         // host set takes the memoryless shape (byte-identical to E2h-2).
@@ -2380,6 +2401,7 @@ fn emit_distinct_sig_resource(
         result_byte: u8,
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
+        ret_descriptor: Option<Vec<u8>>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -2407,7 +2429,20 @@ fn emit_distinct_sig_resource(
         } else {
             crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
         };
-        let result_byte = if ret_is_bytes || ret_template.is_some() {
+        // A VARIABLE-LENGTH collection (List/Map/Set) result crosses `call-<g>` as `list<u8>` too, rendered
+        // via `value-encode(rep, desc)` against this group's own shape descriptor.
+        let ret_descriptor =
+            if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&ret_ty).is_some() {
+                None
+            } else if matches!(
+                ret_ty.strip_nominal(),
+                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+            ) {
+                crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
+            } else {
+                None
+            };
+        let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
             0
         } else {
             closure_boundary_byte(&ret_ty)
@@ -2428,6 +2463,7 @@ fn emit_distinct_sig_resource(
             result_byte,
             ret_is_bytes,
             ret_template,
+            ret_descriptor,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -2540,6 +2576,7 @@ fn emit_distinct_sig_resource(
     let intrinsics = (2 * sigs.len()) as u32;
     let any_bytes = ginfos.iter().any(|gi| gi.ret_is_bytes);
     let any_compound = ginfos.iter().any(|gi| gi.ret_template.is_some());
+    let any_collection = ginfos.iter().any(|gi| gi.ret_descriptor.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -2554,6 +2591,19 @@ fn emit_distinct_sig_resource(
             // A compound group's `call-<g>` walks the returned handle to fill the value form — a Bool leaf
             // reads `get-bool` (int + nested `arr-get` already covered).
             used.insert("get-bool");
+        }
+        if any_collection {
+            // A collection group's `call-<g>` renders via `value-encode(rep, desc)` (build the descriptor
+            // Bytes + copy the doc out).
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -2613,13 +2663,17 @@ fn emit_distinct_sig_resource(
             lifted_slot: slot,
             ret_is_bytes: ginfos[gi].ret_is_bytes,
             ret_template: ginfos[gi].ret_template.clone(),
+            ret_descriptor: ginfos[gi].ret_descriptor.clone(),
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
             arg_bytes: ginfos[gi].arg_bytes.clone(),
             result_byte: ginfos[gi].result_byte,
-            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — true for a byte-rope OR a compound.
-            ret_is_bytes: ginfos[gi].ret_is_bytes || ginfos[gi].ret_template.is_some(),
+            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — a byte-rope, a fixed-shape compound,
+            // OR a variable-length collection.
+            ret_is_bytes: ginfos[gi].ret_is_bytes
+                || ginfos[gi].ret_template.is_some()
+                || ginfos[gi].ret_descriptor.is_some(),
         });
     }
 
@@ -2837,6 +2891,7 @@ fn emit_roundtrip_resource(
         result_byte: u8,
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
+        ret_descriptor: Option<Vec<u8>>,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
     for p in &producers {
@@ -2909,16 +2964,31 @@ fn emit_roundtrip_resource(
         } else {
             crate::lower::runtime_value_form_template(c.result.strip_nominal())
         };
-        let consumer_result_byte = if ret_is_bytes || ret_template.is_some() {
-            0 // unused by the list-returning paths; the consumer returns list<u8>
-        } else {
-            closure_boundary_byte(&c.result).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a consumer result of type {} has no scalar host-boundary representation",
-                    c.result.render_name()
-                ))
-            })?
-        };
+        // A VARIABLE-LENGTH collection consumer result crosses as `list<u8>` too, rendered via
+        // `value-encode(rep, desc)` against its own shape descriptor. `None` for byte-rope/scalar/template.
+        let ret_descriptor =
+            if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&c.result).is_some()
+            {
+                None
+            } else if matches!(
+                c.result.strip_nominal(),
+                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+            ) {
+                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
+            } else {
+                None
+            };
+        let consumer_result_byte =
+            if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
+                0 // unused by the list-returning paths; the consumer returns list<u8>
+            } else {
+                closure_boundary_byte(&c.result).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a consumer result of type {} has no scalar host-boundary representation",
+                        c.result.render_name()
+                    ))
+                })?
+            };
         consume_specs.push(ConsumeSpec {
             def: c.def,
             name: c.name.clone(),
@@ -2928,6 +2998,7 @@ fn emit_roundtrip_resource(
             result_byte: consumer_result_byte,
             ret_is_bytes,
             ret_template,
+            ret_descriptor,
         });
     }
     // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
@@ -2977,6 +3048,7 @@ fn emit_roundtrip_resource(
     }
     let any_bytes = consume_specs.iter().any(|c| c.ret_is_bytes);
     let any_compound = consume_specs.iter().any(|c| c.ret_template.is_some());
+    let any_collection = consume_specs.iter().any(|c| c.ret_descriptor.is_some());
     let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -2990,6 +3062,19 @@ fn emit_roundtrip_resource(
             // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
             // `get-bool` (int + nested `arr-get` already covered).
             used.insert("get-bool");
+        }
+        if any_collection {
+            // A collection consumer renders via `value-encode(rep, desc)` (build the descriptor Bytes + copy
+            // the doc out).
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -3035,6 +3120,7 @@ fn emit_roundtrip_resource(
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
                 ret_template: c.ret_template.clone(),
+                ret_descriptor: c.ret_descriptor.clone(),
             })
         })
         .collect::<Result<_, Reject>>()?;
@@ -3075,8 +3161,8 @@ fn emit_roundtrip_resource(
             name: c.name.clone(),
             params: c.abi_params.clone(),
             result_byte: c.result_byte,
-            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
-            ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
+            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound OR collection.
+            ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some() || c.ret_descriptor.is_some(),
         })
         .collect();
     let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
@@ -3404,6 +3490,9 @@ fn emit_distinct_sig_roundtrip_resource(
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
                 ret_template: c.ret_template.clone(),
+                // A COLLECTION result on the DISTINCT-SIG round-trip is a later widening; that path's
+                // consumer classification never builds a descriptor.
+                ret_descriptor: None,
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),

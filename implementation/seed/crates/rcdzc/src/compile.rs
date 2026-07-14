@@ -514,6 +514,12 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // still DECLINES downstream rather than being mistaken for compiled. Every `(pragma …)` in the arena
     // is checked (a top-level one or a module member alike); the fault anchors at the pragma form, which
     // sorts before a later reference, so it is the reported error.
+    //
+    // A `(pragma …)` is resolved entirely at compile time — it is validated here and never lowered to a
+    // `Core` node, so it introduces NO runtime representation of its own into the emitted component (it
+    // affects how the module is compiled without adding runtime cost or crossing the boundary).
+    //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-compile-time-only
+    //# A module directive MUST be resolved at compile time and MUST NOT introduce any runtime representation of its own into the emitted component, so that a directive affects how the module is compiled without adding runtime cost or crossing the boundary.
     for form in (0..db.ast.structure.len() as u32).map(StructId) {
         // OWN the tail + key before matching: the domain check below reduces the type argument via
         // `eval::typeval_of` (which needs `&mut Db`), and a borrowed `key: &str` / `ptail: &[StructId]`
@@ -1284,6 +1290,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
+            // The BUILT-IN-OPERATION wrong-arity decline (`<op> is applied at the wrong arity …`, from
+            // `lower`) fires on both an under- and an OVER-application. On an over-application `infer`'s
+            // coded CDZ0203 is the primary "no" (carrying the delete-surplus fix), so drop this weaker
+            // decline — one primary error for `(Map.size m x)`, not a coded reject shadowed by a decline.
+            // On an UNDER-application there is no such coded reject, so `has_over_application_reject` is
+            // false and the decline is KEPT (it is the only report of the missing argument).
+            if has_over_application_reject
+                && r.is_decline()
+                && r.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)
+            {
+                return false;
+            }
             if (has_malformed_handler_reject || has_resume_result_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
@@ -1389,7 +1407,34 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
 /// Collect poisons reached UNCONDITIONALLY from `id`. Descends the core form into positions a value is
 /// unconditionally used (an `if` CONDITION), but NOT into a conditional's branches — a poison shielded
 /// by an untaken branch is not a build failure. Reads the core column on demand.
+///
+/// This is the RECURSIVE-DESCENT DEPTH GUARD in front of the walk: β-reduction can leave a MEMOIZED core
+/// chain thousands of nodes deep (a non-normalizing self-application bottoms out in a `RecursionBound`
+/// poison only after the reduction budget clips it — e.g. `((fn v (tuple (v v) 1)) (fn v (tuple (v v) 1)))`
+/// leaves a `Tuple[Tuple[…poison…, 1], 1]` chain ~`REDUCE_NODE_BUDGET`-deep). That chain is built bottom-up
+/// at shallow demand depths, so `core_of`'s own descent guard never fires on it — but the poison walk then
+/// descends the whole pre-built chain in one native recursion and OVERFLOWS THE STACK (a process abort) on
+/// a small valid-to-parse program. Past [`DESCENT_DEPTH_LIMIT`] surface the reduction-bound poison (CDZ0999,
+/// the same code the chain's innermost node carries) instead of recursing — a compiler must never crash on
+/// well-formed input, only decline or complete. The guard sits at the ONE recursive entry and the walk
+/// dispatches structurally, so it covers the whole compound-construction class (tuple/record/list/sum/map/
+/// set/…) at once, not one syntactic wrapper.
 fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        let mut r = Reject::coded(
+            Code::RecursionBound,
+            "an expression does not reduce to a value within the compiler's reduction limits (a call chain nested too deeply, or a non-terminating / explosively-growing reduction)",
+        );
+        r.set_origin_if_absent(id);
+        out.push(r);
+        return;
+    }
+    db.descent_depth += 1;
+    collect_reached_poisons_at(db, id, out);
+    db.descent_depth -= 1;
+}
+
+fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
     // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in
     // one is a build failure — descend into every form here (the raw AST head, since the core collapsed
@@ -1542,6 +1587,10 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         Core::BytesAt { bytes, index, .. } => {
             collect_reached_poisons(db, bytes, out);
+            collect_reached_poisons(db, index, out);
+        }
+        Core::StrAt { string, index, .. } => {
+            collect_reached_poisons(db, string, out);
             collect_reached_poisons(db, index, out);
         }
         Core::BytesConcat { lhs, rhs } => {

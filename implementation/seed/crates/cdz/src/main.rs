@@ -1486,6 +1486,12 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let text = String::from_utf8_lossy(bytes);
+    // ONE line-start index over the source, so each token's line:col is a binary search, not a from-start
+    // newline scan — `highlight` emits a token for EVERY node (a whole-file classify), and the per-token
+    // from-start `line_col` made it O(tokens × source_len) = O(N²) (a 6400-def file = 5.1s, 99.7% in
+    // `line_col`). With the index it is linear. (The fixes-8-11 pattern — the same swap `uses`/`scope`
+    // already carry.)
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node.
     for line in text.lines() {
         let mut cols = line.splitn(2, '\t');
@@ -1498,7 +1504,7 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
             .ok()
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
         {
-            let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+            let (l, c) = index.line_col(&source, span.start);
             println!("{}:{l}:{c}: {kind}", args.file);
         }
     }

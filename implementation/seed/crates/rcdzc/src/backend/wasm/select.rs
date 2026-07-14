@@ -314,6 +314,12 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesAt { bytes, index, .. } => {
             binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
+        // `String.at` CONSUMES its string — the `Some` branch `bytes-slice`s a scalar span OUT of it (the
+        // returned String retains part of the source), and the `None` branch drops it. So a binding used
+        // as the string operand ESCAPES into the result (like `Bytes.slice`), unlike `Bytes.at`'s borrow.
+        Core::StrAt { string, index, .. } => {
+            binding_escapes(db, string, binder, false) || binding_escapes(db, index, binder, false)
+        }
         // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
         // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
         // Consume`). A binding used as an operand escapes into the result. `slice`'s start/len are scalars.
@@ -1038,6 +1044,21 @@ pub fn collect_used_ops(
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, bytes, out);
+            collect_used_ops(db, index, out);
+        }
+        // `String.at` on a runtime string walks the UTF-8 buffer (`bytes-len`/`bytes-get`), slices the
+        // scalar span (`bytes-slice`, which CONSUMES the string handle → the borrowed scan `dup`s first,
+        // and the None branch `drop`s the un-consumed handle), and builds `Some`/`None` (`sum-new`,
+        // `arr-alloc` for the unit payload).
+        Core::StrAt { string, index, .. } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+            out.insert(OP_BYTES_SLICE);
+            out.insert(OP_DROP);
+            out.insert(OP_DUP);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            collect_used_ops(db, string, out);
             collect_used_ops(db, index, out);
         }
         // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
@@ -3431,6 +3452,155 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // `String.at(str, index)` on a RUNTIME string — read the i-th UNICODE SCALAR as a one-scalar
+        // String, fallibly. A String is a flat UTF-8 byte leaf, so WALK the byte buffer: a byte is a
+        // scalar START iff `(byte & 0xC0) != 0x80` (not a `10xxxxxx` continuation byte). Phase 1 skips
+        // `index` scalar starts, leaving `pos` at the target scalar's first byte; phase 2 measures that
+        // scalar's byte span (lead byte + its continuation bytes) and `bytes-slice`s it into `Some`. A
+        // negative index or one at/beyond the scalar count → `None`. The string handle is BORROWED for the
+        // scan (`bytes-len`/`bytes-get`) and CONSUMED by the final `bytes-slice`; the None branch drops it.
+        Core::StrAt {
+            string,
+            index,
+            disc_some,
+            disc_none,
+        } => {
+            let str_slot = base;
+            let index_slot = base + 1;
+            let pos_slot = base + 2;
+            let scalar_slot = base + 3;
+            let bytelen_slot = base + 4;
+            let spanstart_slot = base + 5;
+            if spanstart_slot + 1 > *high {
+                *high = spanstart_slot + 1;
+            }
+            scratch_ty.insert(str_slot, ValType::I32);
+            for s in [
+                index_slot,
+                pos_slot,
+                scalar_slot,
+                bytelen_slot,
+                spanstart_slot,
+            ] {
+                scratch_ty.insert(s, ValType::I64);
+            }
+            emit(db, string, slots, base + 6, high, scratch_ty, layout, out)?; // [str]
+            out.push(Lir::LocalSet(str_slot));
+            emit(db, index, slots, base + 6, high, scratch_ty, layout, out)?; // [index:i64]
+            out.push(Lir::LocalSet(index_slot));
+            // byte-count (i64), read repeatedly below.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN));
+            out.push(Lir::I64ExtendI32U);
+            out.push(Lir::LocalSet(bytelen_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(pos_slot)); // pos = 0
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(scalar_slot)); // scalar = 0
+            // A byte at `pos` (already known `pos < bytelen`) begins a NEW scalar iff it is NOT a `10xxxxxx`
+            // continuation byte: `(bytes-get(str, pos) & 0xC0) != 0x80`. Helper closure emitting that test
+            // as an i32 bool onto the stack (borrows `str`).
+            let push_is_lead = |out: &mut Emit| {
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::I32WrapI64);
+                out.push(Lir::CallImport(OP_BYTES_GET)); // [byte:i32]
+                out.push(Lir::ConstI32(0xC0));
+                out.push(Lir::I32And);
+                out.push(Lir::ConstI32(0x80));
+                out.push(Lir::I32Ne); // [(byte & 0xC0) != 0x80]
+            };
+            // "Advance `pos` past ONE whole scalar": `pos++`, then while `pos < bytelen` and the byte at
+            // `pos` is a CONTINUATION byte, `pos++`. Emitted as `block { pos++; loop { br_out if pos>=len;
+            // br_out if is_lead(pos); pos++; br loop } }`. Precondition: `pos < bytelen` (a scalar starts
+            // here). Used in both phases.
+            let emit_skip_one_scalar = |out: &mut Emit, push_is_lead: &dyn Fn(&mut Emit)| {
+                // pos++ past the lead byte.
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI64(1));
+                out.push(Lir::I64Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Block(BlockType::Empty)); // $cont_done
+                out.push(Lir::Loop(BlockType::Empty)); // $cont
+                // pos >= bytelen → done.
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(bytelen_slot));
+                out.push(Lir::I64GeS);
+                out.push(Lir::BrIf(1)); // → $cont_done
+                // byte at pos is a LEAD byte (new scalar) → done.
+                push_is_lead(out);
+                out.push(Lir::BrIf(1)); // → $cont_done
+                // else a continuation byte: pos++, loop.
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI64(1));
+                out.push(Lir::I64Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Br(0)); // → $cont
+                out.push(Lir::End); // end $cont
+                out.push(Lir::End); // end $cont_done
+            };
+            // PHASE 1 — skip `index` scalar starts (only if index >= 0; a negative index leaves scalar=0 <
+            // index false, so found is computed false below). `block { loop { br_out if scalar>=index;
+            // br_out if pos>=bytelen; skip_one_scalar; scalar++; br loop } }`.
+            out.push(Lir::Block(BlockType::Empty)); // $skip_done
+            out.push(Lir::Loop(BlockType::Empty)); // $skip
+            out.push(Lir::LocalGet(scalar_slot));
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::I64GeS);
+            out.push(Lir::BrIf(1)); // scalar >= index → $skip_done
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::I64GeS);
+            out.push(Lir::BrIf(1)); // pos >= bytelen → $skip_done (index out of range)
+            emit_skip_one_scalar(out, &push_is_lead);
+            out.push(Lir::LocalGet(scalar_slot));
+            out.push(Lir::ConstI64(1));
+            out.push(Lir::I64Add);
+            out.push(Lir::LocalSet(scalar_slot));
+            out.push(Lir::Br(0)); // → $skip
+            out.push(Lir::End); // end $skip
+            out.push(Lir::End); // end $skip_done
+            // found = (index >= 0) & (scalar == index) & (pos < bytelen). scalar only reaches `index` if it
+            // did not hit end first, so `scalar == index && pos < bytelen` is the in-range condition; the
+            // explicit `index >= 0` guards a negative index (where scalar=0 stayed below index).
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [index >= 0]
+            out.push(Lir::LocalGet(scalar_slot));
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::I64Eq); // [.., scalar == index]
+            out.push(Lir::I32And);
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::I64LtS); // [.., pos < bytelen]
+            out.push(Lir::I32And); // [found]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — measure the scalar's byte span and slice it. spanstart = pos; advance pos past this
+            // scalar; span_len = pos - spanstart. `bytes-slice(str, spanstart, span_len)` CONSUMES str.
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalSet(spanstart_slot));
+            emit_skip_one_scalar(out, &push_is_lead);
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(str_slot)); // [disc_some, str]
+            out.push(Lir::LocalGet(spanstart_slot));
+            out.push(Lir::I32WrapI64); // [.., spanstart:i32]
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(spanstart_slot));
+            out.push(Lir::I64Sub);
+            out.push(Lir::I32WrapI64); // [.., span_len:i32]
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes str)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None. The str handle was BORROWED (never consumed), so drop it, then build None.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            out.push(Lir::ConstI32(disc_none as i32));
             out.push(Lir::ConstI32(0));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]

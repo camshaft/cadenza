@@ -208,6 +208,30 @@ impl Builder {
         self.structure.len()
     }
 
+    /// The structure entry at `id` — read-only access to an already-pushed occurrence, so a caller can
+    /// inspect a node it just built (e.g. the parser flattening a top-level `(do …)`). Mirrors
+    /// [`Arenas::get`]; the builder is append-only, so any `id` from a prior push stays valid.
+    pub fn get(&self, id: StructId) -> &Struct {
+        &self.structure[id.0 as usize]
+    }
+
+    /// If `id` is a `List` whose head is the NAME `head`, its tail (the children after the head) —
+    /// mirrors [`Arenas::as_form`], for inspecting a just-built node during parse.
+    pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
+        match self.get(id) {
+            Struct::List(items) => match items.first() {
+                Some(&h) if self.head_leaf_is(h, head) => Some(&items[1..]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// True if `id` is an `Atom` of the NAME leaf `name`.
+    fn head_leaf_is(&self, id: StructId, name: &str) -> bool {
+        matches!(self.get(id), Struct::Atom(l) if matches!(&self.leaves[l.0 as usize], Leaf::Name(n) if n == name))
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,

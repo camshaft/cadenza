@@ -163,6 +163,8 @@ pub enum Prim {
     //# Every floating-point not-a-number value MUST serialize to one canonical byte form, consistent with structural equality treating all not-a-number values as equal.
     //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
     //# A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
+    //= spec/capabilities/numeric-model.md#floating-point-follows-the-determinism-contract
+    //# A floating-point value MUST serialize under the canonical form fixed by the deterministic-value-form contract.
     FloatNan,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,

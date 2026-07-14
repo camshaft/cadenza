@@ -428,21 +428,18 @@ impl<'a> Parser<'a> {
             self.error("empty program");
             return self.error_node(span);
         }
-        // A program is a `;`-separated SEQUENCE of top-level forms. One form stays bare; two or more
-        // wrap into a `(do …)` sequencing form — the root counterpart of a nested `;` sequence, so a
-        // corpus file authors its several top-level forms at the root (no wrapper keyword). The `;`
-        // between forms is consumed here (a trailing/absent `;` is tolerated for robustness).
+        // A program is a JUXTAPOSED run of top-level forms — whitespace-separated, NO `;` between them,
+        // exactly like the members of a `module { … }` block. One form stays bare; two or more wrap into
+        // a `(do …)` form, the root's declaration+result list (no wrapper keyword in the surface). `;` is
+        // NOT a top-level separator: it is the sequencing operator WITHIN a body (see `finish_sequence`),
+        // so a `def`/expression body greedily collects its own `;`-run and stops at the next juxtaposed
+        // form. A stray `;` between top-level forms is thus surplus, skipped by the progress guard below.
         let start = self.cur_span();
-        let mut forms = vec![self.stmt()];
+        let mut forms = Vec::new();
+        self.push_root_form(&mut forms, self.pos);
         while !self.at_end() {
-            if self.at(Kind::Semi) {
-                self.bump(); // separator between top-level forms
-                if self.at_end() {
-                    break; // trailing `;`
-                }
-            }
             let before = self.pos;
-            forms.push(self.stmt());
+            self.push_root_form(&mut forms, before);
             // Forward-progress guard: a stray token that begins no expression (e.g. a lone `)` at the
             // top level) is left un-consumed by `prefix` so a parent can resync — but here there is no
             // parent, so skip it ourselves. `prefix` already recorded the error; just advance so the
@@ -468,6 +465,33 @@ impl<'a> Parser<'a> {
         let trailing = std::mem::take(&mut self.trailing);
         root = self.wrap_comments(trailing, root);
         root
+    }
+
+    /// Parse one top-level form and append it to `forms`, FLATTENING a `(do …)` result into its
+    /// elements. `stmt` parses at `expr(0)`, so a `;`-run between top-level forms (`a; b`) folds into a
+    /// single `(do a b)` — but the root is itself a flat declaration+result sequence, so those elements
+    /// are the root's own forms, not a nested block. Splicing them here makes a `;`-separated top-level
+    /// run and a whitespace-JUXTAPOSED one converge on the SAME flat root `(do …)`: the surface may write
+    /// either (or mix them — a `;` only where an adjacency would otherwise re-lex, e.g. `def x = 5; x + 1`)
+    /// and the tree is identical. A `(comment …)`-wrapped stmt is appended whole (its inner form may be a
+    /// `do`, but the comment wrapper must stay attached). `start` is the stmt's first token position, used
+    /// only to detect that `stmt` made no progress (handled by the caller's guard).
+    fn push_root_form(&mut self, forms: &mut Vec<StructId>, start_pos: usize) {
+        let node = self.stmt();
+        if self.pos == start_pos {
+            return; // no progress — the caller's guard will advance past the stray token
+        }
+        // Splice a bare `(do e1 e2 …)` (head is the NAME `do`, NOT a comment-wrapped node) into flat
+        // root forms; anything else is one form. `as_form` matches only a NAME-`do` head with ≥1 child.
+        let do_elems = self
+            .builder
+            .as_form(node, "do")
+            .filter(|elems| !elems.is_empty())
+            .map(|elems| elems.to_vec());
+        match do_elems {
+            Some(elems) => forms.extend(elems),
+            None => forms.push(node),
+        }
     }
 
     // ---- expression grammar (Pratt) ----
@@ -511,8 +535,72 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
         }
+        // Sequencing `;` is the LOOSEST operator (looser than every infix op above), so it is folded
+        // here AFTER the Pratt loop rather than through it: a `;`-run collapses to a single flat
+        // `(do a b c)` (not the nested `(; a (; b c))` a generic right-assoc fold would give), with the
+        // last element the sequence's value — modelling `a; b` as `let _ = a in b`. It is collected only
+        // when the CALLER permits sequencing (`min_prec == PREC_SEQ`, i.e. a body/statement position);
+        // a sub-expression parsed at any tighter level leaves the `;` for its enclosing sequence, so a
+        // `;` inside a call arg / list / tuple element does not escape into the element.
+        if min_prec == crate::token::PREC_SEQ && self.at(Kind::Semi) {
+            left = self.finish_sequence(left, start);
+        }
         self.depth -= 1;
         left
+    }
+
+    /// Fold a `;`-separated run starting after `first` into a flat `(do first e2 e3 …)`. Each following
+    /// element is parsed at `PREC_SEQ + 1`, so it stops at the next `;` (the elements stay flat siblings
+    /// rather than nesting), modelling `a; b` as `let _ = a in b`.
+    ///
+    /// A `;` ENDS the sequence — consumed as a surplus/trailing separator, no further element taken —
+    /// when the token after it is:
+    ///   - a closer / block keyword / end of input (a genuine trailing `;`), or
+    ///   - a DECLARATION KEYWORD (`def`/`type`/`effect`/`module`/`import`/`export`). A declaration is a
+    ///     top-level / module-member form, not an expression-statement, so a `;` before it cannot be
+    ///     sequencing — it is the separator a body was terminated with. This lets a function body
+    ///     greedily collect its statement run (`deposit(20); deposit(5); balance()`) while a trailing
+    ///     `;` before the next `def` cleanly ends the body instead of swallowing that `def`.
+    ///
+    /// When only `first` was collected (every `;` ended the sequence), it is returned BARE — a lone
+    /// `first;` is just `first`, not a one-element `(do first)`.
+    fn finish_sequence(&mut self, first: StructId, start: Span) -> StructId {
+        let mut elems = vec![first];
+        while self.at(Kind::Semi) {
+            self.bump(); // `;`
+            if self.at_expr_stop() || self.at_declaration_keyword() {
+                break; // trailing `;`, or the next juxtaposed declaration form begins
+            }
+            elems.push(self.expr(crate::token::PREC_SEQ + 1));
+        }
+        if elems.len() == 1 {
+            return elems.pop().expect("one element");
+        }
+        let do_head = self.name("do", start);
+        let mut items = Vec::with_capacity(elems.len() + 1);
+        items.push(do_head);
+        items.extend(elems);
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// True at a declaration keyword (`def`/`type`/`effect`/`module`/`import`/`export`) — a top-level or
+    /// module-member form that introduces a binding/declaration, never an expression-statement. A `;`
+    /// sequence stops before one (see [`Self::finish_sequence`]); the declaration is left to be parsed
+    /// as the next juxtaposed form by `program`/`module_expr`.
+    fn at_declaration_keyword(&self) -> bool {
+        self.at(Kind::Ident)
+            && matches!(
+                keyword(self.cur_text()),
+                Some(
+                    Keyword::Def
+                        | Keyword::Type
+                        | Keyword::Effect
+                        | Keyword::Module
+                        | Keyword::Import
+                        | Keyword::Export
+                )
+            )
     }
 
     /// Run a bracketed sub-expression parser with the match-arm `|`-terminates flag CLEARED, restoring
@@ -739,7 +827,10 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
-                args.push(self.expr(0));
+                // An argument is a single expression, not a sequence (`PREC_SEQ + 1`): a `;` here belongs
+                // to an enclosing block, so a sequence passed as an argument must parenthesize —
+                // `f((a; b))` — matching the "parens only for a genuine ambiguity" surface rule.
+                args.push(self.expr(crate::token::PREC_SEQ + 1));
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }
@@ -752,7 +843,9 @@ impl<'a> Parser<'a> {
     /// `()` the unit form, `( expr )` grouping, `( e, e, … )` a tuple literal `(tuple e …)`, or
     /// `( e; e; … )` a parenthesized SEQUENCE `(do e …)` — the way a sequence is used as a VALUE (a
     /// let-binding value, a call argument): `def x = (setup(); compute())`, like OCaml's
-    /// `let x = (f (); 42)`. A single `(e)` is transparent grouping (NOT a 1-tuple).
+    /// `let x = (f (); 42)`. A single `(e)` is transparent grouping (NOT a 1-tuple). The inner `expr(0)`
+    /// is a full sequence position, so a `;`-run inside the parens folds to `(do …)` via the Pratt
+    /// loop's sequencing rule — the parens are the delimiter that lets a sequence sit in a value slot.
     fn paren(&mut self) -> StructId {
         let start = self.cur_span();
         self.expect(Kind::LParen, "`(`");
@@ -765,34 +858,20 @@ impl<'a> Parser<'a> {
         if self.at(Kind::Comma) {
             // a tuple: gather the rest, recovering from a missing `,` between elements. The head is the
             // STRING primitive `"tuple"` (not the name), so the literal builds the unshadowable tuple
-            // constructor even where the name `tuple` is rebound.
+            // constructor even where the name `tuple` is rebound. A tuple element is a single expression
+            // at `PREC_SEQ + 1` (not a sequence): a `;` inside would belong to an enclosing block, not
+            // the element, and `,` separates elements — so `(a; b, c)` is not a legal tuple element here.
             let head = self.ctor_head("tuple", start);
             let mut items = vec![head, first];
             while self.sep_continue(Kind::RParen) {
-                items.push(self.expr(0));
-            }
-            self.expect(Kind::RParen, "`)`");
-            let span = start.merge(self.prev_span());
-            return self.list(items, span);
-        }
-        if self.at(Kind::Semi) {
-            // a parenthesized sequence -> (do first …). `let`-in-sequence scoping works here too: a
-            // `let` element greedily takes the rest via `seq`/`let_expr`, so it lands last.
-            let head = self.name("do", start);
-            let mut items = vec![head, first];
-            while self.at(Kind::Semi) {
-                self.bump(); // `;`
-                if self.at(Kind::RParen) {
-                    break; // trailing `;`
-                }
-                items.push(self.expr(0));
+                items.push(self.expr(crate::token::PREC_SEQ + 1));
             }
             self.expect(Kind::RParen, "`)`");
             let span = start.merge(self.prev_span());
             return self.list(items, span);
         }
         self.expect(Kind::RParen, "`)`");
-        first // grouping is transparent in the arena
+        first // grouping (or the folded `(do …)` sequence) is transparent in the arena
     }
 
     // ---- keyword forms ----
@@ -810,7 +889,10 @@ impl<'a> Parser<'a> {
             let b_start = self.cur_span();
             let n = self.binder();
             self.expect(Kind::Eq, "`=`");
-            let e = self.expr(0);
+            // The bound value is a single expression (`PREC_SEQ + 1`), delimited by `in` (or the next
+            // `,` binding). A `;` after it belongs to the enclosing sequence — `let x = a in b; c` is
+            // `(do (let x=a in b) c)` — so a sequence VALUE parenthesizes: `let x = (a; b) in …`.
+            let e = self.expr(crate::token::PREC_SEQ + 1);
             let b_span = b_start.merge(self.prev_span());
             bindings.push(self.list(vec![n, e], b_span));
             if self.at(Kind::Comma) {
@@ -827,16 +909,19 @@ impl<'a> Parser<'a> {
         self.list(vec![let_head, binds, body], span)
     }
 
-    /// `if c then t else e`  ->  `(if c t e)`
+    /// `if c then t else e`  ->  `(if c t e)`. The condition and both branches are single expressions
+    /// (`PREC_SEQ + 1`), NOT sequences: a `;` after the `if` belongs to the ENCLOSING sequence, so
+    /// `if c then a else b; more` is `(do (if c a b) more)` — `more` runs after the `if` regardless of
+    /// the branch taken — not `(if c a (do b more))`. A sequence inside a branch is written `(a; b)`.
     fn if_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("if", start);
         self.bump(); // `if`
-        let c = self.expr(0);
+        let c = self.expr(crate::token::PREC_SEQ + 1);
         self.expect_keyword(Keyword::Then, "`then`");
-        let t = self.expr(0);
+        let t = self.expr(crate::token::PREC_SEQ + 1);
         self.expect_keyword(Keyword::Else, "`else`");
-        let e = self.expr(0);
+        let e = self.expr(crate::token::PREC_SEQ + 1);
         let span = start.merge(self.prev_span());
         self.list(vec![head, c, t, e], span)
     }
@@ -903,7 +988,14 @@ impl<'a> Parser<'a> {
         // ---- value definition: `def name = value` -> (def name value) ----
         if self.at(Kind::Eq) {
             self.bump(); // `=`
-            let value = self.expr(0);
+            // A value def binds a single expression (`PREC_SEQ + 1`), like a `let` binding — NOT a
+            // sequence. A `;` after it belongs to the enclosing sequence, so `def x = 5; rest` is
+            // `(do (def x 5) rest)`: the def hoists `x` into scope for `rest` (the corpus's
+            // `(do (def x 5) (+ x 1))` reading), rather than making `5; rest` the value. A value that
+            // is itself a sequence parenthesizes: `def x = (a; b)`. (A FUNCTION body, by contrast, IS a
+            // sequence position — it collects its `;`-run — since its body is delimited by the next
+            // top-level form, with no trailing "rest" to escape into.)
+            let value = self.expr(crate::token::PREC_SEQ + 1);
             let span = start.merge(self.prev_span());
             // (def name doc… value) — docs precede the value, mirroring the function form.
             let mut items = vec![def_head, name];
@@ -1304,7 +1396,9 @@ impl<'a> Parser<'a> {
         let start = self.cur_span();
         let head = self.keyword_head("match", start);
         self.bump(); // `match`
-        let scrut = self.expr(0);
+        // The scrutinee is a single expression (`PREC_SEQ + 1`), delimited by `with`; a sequence
+        // scrutinee parenthesizes. (Each arm body, below, IS a sequence position — bounded by `|`.)
+        let scrut = self.expr(crate::token::PREC_SEQ + 1);
         let mut items = vec![head, scrut];
         self.expect_keyword(Keyword::With, "`with`");
         if self.at(Kind::Pipe) {
@@ -1331,7 +1425,8 @@ impl<'a> Parser<'a> {
             let g_start = self.cur_span();
             let guard_head = self.keyword_head("guard", g_start);
             self.bump(); // `if`
-            let g = self.expr(0);
+            // A guard is a single boolean expression (`PREC_SEQ + 1`), delimited by `=>`.
+            let g = self.expr(crate::token::PREC_SEQ + 1);
             let g_span = g_start.merge(self.prev_span());
             // (guard <pat> <expr>) — keeps the arm head a single pattern occurrence.
             pat = self.list(vec![guard_head, pat, g], g_span);
@@ -1589,8 +1684,10 @@ impl<'a> Parser<'a> {
                 let before = self.pos;
                 // `.. rest` spreads a tail list into the literal (`[1, 2, .. rest]`); an ordinary
                 // element otherwise. The marker is flat (`… ".." rest`), shared with the pattern form.
-                if !self.rest_marker(&mut items, |p| p.expr(0)) {
-                    items.push(self.expr(0));
+                // Elements are single expressions (`PREC_SEQ + 1`) — a `;` is not a list separator, so a
+                // sequence element parenthesizes (`[(a; b), c]`), matching call-argument position.
+                if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
+                    items.push(self.expr(crate::token::PREC_SEQ + 1));
                 }
                 if !self.sep_continue(Kind::RBracket) {
                     break;
@@ -1624,15 +1721,17 @@ impl<'a> Parser<'a> {
                 // Field SHORTHAND: `{ x }` puns to `{ x = x }` — a field with no `= value` binds the
                 // field to a same-named value in scope. The value is a SECOND `x` occurrence (so it
                 // resolves as an ordinary name reference), spanning the same name text.
+                // A field value is a single expression (`PREC_SEQ + 1`), delimited by `,`/`}`; a
+                // sequence value parenthesizes.
                 let value = if self.at(Kind::Eq) {
                     self.bump(); // `=`
-                    self.expr(0)
+                    self.expr(crate::token::PREC_SEQ + 1)
                 } else if let Some(n) = pun {
                     self.name(n, f_start)
                 } else {
                     // a non-name field with no `=` — record the missing `=` as before.
                     self.expect(Kind::Eq, "`=`");
-                    self.expr(0)
+                    self.expr(crate::token::PREC_SEQ + 1)
                 };
                 let f_span = f_start.merge(self.prev_span());
                 items.push(self.list(vec![name, value], f_span));
@@ -1675,11 +1774,12 @@ impl<'a> Parser<'a> {
                 let before = self.pos;
                 // `.. rest` spreads a tail map into the literal (`#{ 1 = v, .. rest }`); a `key = value`
                 // entry otherwise. The marker is flat (`… ".." rest`), the list analogue's twin.
-                if !self.rest_marker(&mut items, |p| p.expr(0)) {
+                // Key and value are single expressions (`PREC_SEQ + 1`); a sequence parenthesizes.
+                if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
                     let e_start = self.cur_span();
-                    let key = self.expr(0);
+                    let key = self.expr(crate::token::PREC_SEQ + 1);
                     self.expect(Kind::Eq, "`=`");
-                    let value = self.expr(0);
+                    let value = self.expr(crate::token::PREC_SEQ + 1);
                     let e_span = e_start.merge(self.prev_span());
                     items.push(self.list(vec![key, value], e_span));
                 }
@@ -1705,7 +1805,8 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBracket) {
             loop {
                 let before = self.pos;
-                items.push(self.expr(0));
+                // Raw-list elements are single expressions (`PREC_SEQ + 1`); a sequence parenthesizes.
+                items.push(self.expr(crate::token::PREC_SEQ + 1));
                 if !self.sep_continue(Kind::RBracket) {
                     break;
                 }
@@ -2048,6 +2149,73 @@ mod tests {
         assert_eq!(effects.len(), 2);
         assert_eq!(a.as_name(effects[0]), Some("ask"));
         assert_eq!(a.as_name(effects[1]), Some("log"));
+    }
+
+    #[test]
+    fn semicolon_sequences_a_function_body() {
+        // A `;`-separated body folds into a flat `(do …)`, the last element the value — modelling
+        // `a; b` as `let _ = a in b`. The body greedily collects its run and stops at the next
+        // top-level `def` (a declaration keyword ends the sequence, so `g`'s def is NOT swallowed).
+        let a = parse_ok("def f() = a; b; c\ndef g() = 2");
+        let top = a.as_form(a.root, "do").unwrap();
+        assert_eq!(top.len(), 2, "two top-level defs: {top:?}");
+        let f = a.as_form(top[0], "def").unwrap();
+        let body = a.as_form(f[1], "do").unwrap();
+        assert_eq!(
+            body.len(),
+            3,
+            "f's body is the 3-element sequence (do a b c)"
+        );
+        assert_eq!(a.as_name(body[0]), Some("a"));
+        assert_eq!(a.as_name(body[2]), Some("c"));
+    }
+
+    #[test]
+    fn top_level_forms_juxtapose_without_semicolons() {
+        // Top-level forms are whitespace-separated — no `;` needed. `def a = 1 def b = 2` is two
+        // distinct root forms, not a body that swallowed the second.
+        let a = parse_ok("def a = 1 def b = 2");
+        let top = a.as_form(a.root, "do").unwrap();
+        assert_eq!(top.len(), 2);
+        assert!(a.as_form(top[0], "def").is_some());
+        assert!(a.as_form(top[1], "def").is_some());
+    }
+
+    #[test]
+    fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
+        // A `;` between top-level forms is optional: it folds a stmt-level `(do …)` that the root
+        // then splices flat, so `a; b` and `a  b` at the root yield the IDENTICAL tree.
+        let with = parse_ok("f(); g()");
+        let without = parse_ok("f() g()");
+        let wt = with.as_form(with.root, "do").unwrap();
+        let wo = without.as_form(without.root, "do").unwrap();
+        assert_eq!(wt.len(), 2);
+        assert_eq!(wo.len(), 2);
+        assert_eq!(with.head_name(wt[0]), Some("f"));
+        assert_eq!(with.head_name(wt[1]), Some("g"));
+    }
+
+    #[test]
+    fn semicolon_in_argument_position_needs_parens() {
+        // A call argument is a single expression: a `;` inside must parenthesize, so `f((a; b))` is a
+        // one-argument call whose argument is the sequence `(do a b)`.
+        let a = parse_ok("f((a; b))");
+        let call = a.as_form(a.root, "f").unwrap();
+        assert_eq!(call.len(), 1, "one argument");
+        let seq = a.as_form(call[0], "do").unwrap();
+        assert_eq!(seq.len(), 2, "the argument is the sequence (do a b)");
+    }
+
+    #[test]
+    fn if_branch_does_not_swallow_the_trailing_sequence() {
+        // `if`'s branches parse at `PREC_SEQ + 1`, so a `;` after the `if` belongs to the enclosing
+        // sequence: `if c then a else b; more` is `(do (if c a b) more)`, not `(if c a (do b more))`.
+        let a = parse_ok("def f() = if c then a else b; more");
+        let f = a.as_form(a.root, "def").unwrap();
+        let body = a.as_form(f[1], "do").unwrap();
+        assert_eq!(body.len(), 2, "body is (do (if …) more)");
+        assert!(a.as_form(body[0], "if").is_some(), "first stmt is the if");
+        assert_eq!(a.as_name(body[1]), Some("more"));
     }
 
     #[test]

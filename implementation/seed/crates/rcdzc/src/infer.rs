@@ -663,7 +663,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     }
     let ty_expr = tail[1];
     // A RUNTIME WIDTH `(: n (UInt m))` with a runtime `m` is its own CDZ0302 (surfaced where the
-    // annotation is used in the body); do not also fault it here as "not a type".
+    // annotation is used in the body); do not also fault it here as "not a type". An integer type's
+    // width must be a COMPILE-TIME value: a width read from runtime data is rejected, never accepted.
+    //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
+    //# The bit width of an integer type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that an integer's width is fixed before the program runs rather than dependent on a value computed at runtime.
     if crate::eval::is_runtime_width_type(db, ty_expr) {
         return;
     }
@@ -673,7 +676,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // exported. `reduce_ctor` clamps the width to the sentinel 0, so `typeval_of` succeeds with `Int0` and
     // the "not a type" check below never fires; catch it HERE by reading the ORIGINAL width off the
     // annotation, and name that width (not the misleading clamped `UInt0`). CDZ0302, the same code the
-    // literal-fit path gives — consistent with the totality the unbound-name rule already has.
+    // literal-fit path gives — consistent with the totality the unbound-name rule already has. A width
+    // outside the admitted range (1..=64) is rejected at compile time, never accepted or trapped at run.
+    //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
+    //# A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
     if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, signed, width = w, "fault: over-ceiling integer width in a parameter annotation (CDZ0302)");
         out.push(
@@ -2744,20 +2750,31 @@ fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, Stri
 }
 
 /// The coercion [`Fix`] that repairs a NUMERIC/TEXT mismatch between an `expected` type and the value
-/// `arg` (of type `actual`), or `None` when no total one-shot conversion applies. Consolidates the four
-/// coercions the argument-unify chain offers — int→float (`of-int`, width-aware), int-width (`.of`),
-/// int-valued-float-literal drop (`3.0`→`3`), and String→Bytes (`to-bytes`) — so EVERY site the same
-/// mismatch surfaces (an operator/ctor argument AND a VARIANT-CONSTRUCTOR PAYLOAD) offers the identical
-/// repair. Does NOT include the sum-wrap ("wrap in `Some`", `wrap_variant_for`) — that is a distinct
-/// structural repair a caller adds separately. Every fix is heuristic (`.of` is checked, drop-`.0` and
-/// to-bytes are intent guesses); the wrap text is a resolver-generic member-access spelling, not a
-/// hard-coded name.
+/// `arg` (of type `actual`), or `None` when no total one-shot conversion applies. Consolidates the
+/// coercions the argument-unify chain offers — int-LITERAL→float retype (`3`→`3.0`, preferred over the
+/// wrap), int→float (`of-int`, width-aware), int-width (`.of`), int-valued-float-literal drop
+/// (`3.0`→`3`), and String→Bytes (`to-bytes`) — so EVERY site the same mismatch surfaces (an operator/ctor
+/// argument, a VARIANT-CONSTRUCTOR PAYLOAD, an annotated LET-BINDER) offers the identical repair. Does NOT
+/// include the sum-wrap ("wrap in `Some`", `wrap_variant_for`) — that is a distinct structural repair a
+/// caller adds separately. Every fix is heuristic (`.of` is checked, retype/drop-`.0`/to-bytes are intent
+/// guesses); the wrap text is a resolver-generic member-access spelling, not a hard-coded name.
 fn numeric_text_coercion_fix(
     db: &mut Db,
     expected: &Ty,
     actual: &Ty,
     arg: StructId,
 ) -> Option<Fix> {
+    // integer LITERAL where a float is expected → RETYPE it to a float literal (`3` → `3.0`), the same
+    // one-shot repair the value-annotation site gives `(: 3 Float64)`. Preferred over the `of-int` WRAP
+    // below: a literal has no reason to round-trip through a runtime conversion — just write it as a float.
+    // (A non-literal int expression has no float spelling, so it falls through to the `of-int` wrap.)
+    if let Ty::Float(_) = expected
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
+        && let crate::ast::Leaf::Int { value, .. } = db.ast.leaf(*lid).clone()
+        && let Some(n) = value.to_i128()
+    {
+        return Some(Fix::replace_heuristic(arg, format!("{n}.0")));
+    }
     // int → float: `(<Float>.of-int …)`, widening a narrower int to Int64 first (`of-int : Int64 → Float`).
     if let (Ty::Float(_), Ty::Int(actual_int)) = (expected, actual) {
         let float_name = expected.render_name();
@@ -4990,23 +5007,36 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // well-formed so an ill-formed one faults instead of silently miscompiling.)
                 let value_ty = type_of(db, value);
                 if let Err(mut r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
-                    // An ANNOTATED let-binder whose annotation mismatches the init value — `(let (((: x
-                    // T) v)) …)` — is the let-binding analogue of the value/param annotation mismatch
-                    // (D33) and the argument mismatch: it has the SAME one-shot repair whenever a total
-                    // conversion bridges the gap. Use the SHARED `numeric_text_coercion_fix` (not just
-                    // `int_coercion_wrap`) so ALL its cases fire here as at the other 5 sites: int-width
-                    // `(<T>.of …)`, int→float `(<Float>.of-int …)`, int-valued-float-literal drop / int-
-                    // literal→float retype, and String→Bytes `(String.to-bytes …)`. Attached HERE, where
-                    // the init `value` node is in hand (`check_binding_pattern` recurses over patterns
-                    // without it), keyed on the binder's annotation type.
+                    // An ANNOTATED let-binder whose annotation disagrees with the init value's type —
+                    // `(let (((: x Float64) 3)) …)`, `(let (((: x Int64) n)) …)` with `n : Int8`,
+                    // `(let (((: x Bytes) s)) …)` with `s : String`, `(let (((: x (Option Int64)) 5)) …)` —
+                    // is the let-binding analogue of the value/param annotation mismatch (D33) and the
+                    // argument mismatch: it has the SAME one-shot repair the direct annotation `(: value T)`
+                    // offers. Attach it HERE (where the init `value` node is in hand —
+                    // `check_binding_pattern` recurses over patterns without it), keyed on the binder's
+                    // annotation type. `numeric_text_coercion_fix` bundles the numeric/text coercions
+                    // (int-literal→float retype `3`→`3.0`, int→float `of-int`, int-width `.of`, int-valued-
+                    // float literal drop `3.0`→`3`, String→Bytes `to-bytes`); the sum-wrap (`5` where an
+                    // `(Option Int64)` is annotated → `(Some 5)`) is the separate structural repair. Before
+                    // this the let-binder offered ONLY the int-width `.of` case — so `(: x Float64) 3` and
+                    // the rest declined a fix the annotation site already gave.
                     if r.code == Some(Code::TypeMismatch)
                         && let Some(ann) = db.ast.as_form(lhs, ":")
                         && ann.len() == 2
                         && let Some(annot_ty) = crate::eval::typeval_of(db, ann[1])
-                        && let Some(fix) =
-                            numeric_text_coercion_fix(db, &annot_ty, &value_ty, value)
                     {
-                        r = r.with_fix(fix);
+                        if let Some(fix) =
+                            numeric_text_coercion_fix(db, &annot_ty, &value_ty, value)
+                        {
+                            r = r.with_fix(fix);
+                        } else if let Some(variant) = wrap_variant_for(db, &annot_ty, &value_ty) {
+                            r = r.with_fix(Fix::wrap_heuristic(
+                                value,
+                                format!("({variant} "),
+                                ")",
+                                format!("wrap the value in `{variant}`"),
+                            ));
+                        }
                     }
                     out.push(r);
                 }
@@ -5642,38 +5672,65 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             );
                         } else {
                             // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
-                            let wrap: Option<(String, String, String, String)> =
-                                if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
+                            let wrap: Option<(String, String, String, String)> = if let Some(ctor) =
+                                wrap_variant_for(db, &annot_ty, &expr_ty)
+                            {
+                                Some((
+                                    format!("({ctor} "),
+                                    ")".to_string(),
+                                    format!("wrap in `({ctor} …)`"),
+                                    format!(" — wrap the value in `{ctor}`"),
+                                ))
+                            } else if let (Ty::Float(_), Ty::Int(actual_int)) =
+                                (&annot_ty, &expr_ty)
+                            {
+                                // A NON-literal integer expression annotated a float — `(: n Float64)`
+                                // with `n : Int64` — cannot become a float LITERAL (handled above for a
+                                // literal), so convert it with `(<Float>.of-int …)`, widening a narrower
+                                // int to Int64 first (`of-int : Int64 → Float`). Mirrors
+                                // `numeric_text_coercion_fix`'s int→float branch, which the ARGUMENT site
+                                // already offered — the annotation site had NO int→float wrap for a
+                                // non-literal, so `(: n Float64)` declined a fix the arg site gave.
+                                let f = annot_ty.render_name();
+                                if actual_int.ground_width() == 64 && actual_int.ground_signed() {
                                     Some((
-                                        format!("({ctor} "),
+                                        format!("({f}.of-int "),
                                         ")".to_string(),
-                                        format!("wrap in `({ctor} …)`"),
-                                        format!(" — wrap the value in `{ctor}`"),
+                                        format!("convert the integer to {f} with `{f}.of-int`"),
+                                        format!(" — convert with `({f}.of-int …)`"),
                                     ))
-                                } else if let Some((prefix, suffix, verb)) =
-                                    int_coercion_wrap(&annot_ty, &expr_ty)
-                                {
-                                    let n = annot_ty.render_name();
-                                    Some((
-                                        prefix,
-                                        suffix,
-                                        verb,
-                                        format!(" — convert with `({n}.of …)`"),
-                                    ))
-                                } else if let Some((prefix, suffix, verb)) =
-                                    total_conversion_wrap(&annot_ty, &expr_ty)
-                                {
-                                    // A total prelude conversion bridges the mismatch — `String` where
-                                    // `Bytes` is annotated → `(String.to-bytes …)`. The heuristic wrap fix
-                                    // applies it; the message tail names the verb inline. (This is the
-                                    // annotation-context twin of the CALL-SITE arg check's total-conversion
-                                    // wrap — a `(g s)` to a `Bytes` param now reports the SAME CDZ0203 with
-                                    // this fix, since the arg check defers a REFERENCED param to this arm.)
-                                    let tail = format!(" — {verb}");
-                                    Some((prefix, suffix, verb, tail))
                                 } else {
-                                    None
-                                };
+                                    Some((
+                                        format!("({f}.of-int (Int64.of "),
+                                        "))".to_string(),
+                                        format!("convert to {f} with `{f}.of-int (Int64.of …)`"),
+                                        format!(" — convert with `({f}.of-int (Int64.of …))`"),
+                                    ))
+                                }
+                            } else if let Some((prefix, suffix, verb)) =
+                                int_coercion_wrap(&annot_ty, &expr_ty)
+                            {
+                                let n = annot_ty.render_name();
+                                Some((
+                                    prefix,
+                                    suffix,
+                                    verb,
+                                    format!(" — convert with `({n}.of …)`"),
+                                ))
+                            } else if let Some((prefix, suffix, verb)) =
+                                total_conversion_wrap(&annot_ty, &expr_ty)
+                            {
+                                // A total prelude conversion bridges the mismatch — `String` where
+                                // `Bytes` is annotated → `(String.to-bytes …)`. The heuristic wrap fix
+                                // applies it; the message tail names the verb inline. (This is the
+                                // annotation-context twin of the CALL-SITE arg check's total-conversion
+                                // wrap — a `(g s)` to a `Bytes` param now reports the SAME CDZ0203 with
+                                // this fix, since the arg check defers a REFERENCED param to this arm.)
+                                let tail = format!(" — {verb}");
+                                Some((prefix, suffix, verb, tail))
+                            } else {
+                                None
+                            };
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
                                 format!(

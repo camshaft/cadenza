@@ -54,6 +54,32 @@ pub struct LiftedLambda {
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
+/// If any of `elems` lowers to a REDUCTION-BOUND poison (`Code::RecursionBound`), return that poison so a
+/// compound construction (tuple / list / record value) built around it COLLAPSES to the poison rather than
+/// surviving as a giant `Core::Tuple`/`ListNew`/`Record`. A non-normalizing self-application in a compound
+/// slot — `((fn v (tuple (v v) 1)) (fn v (tuple (v v) 1)))` — β-reduces (bounded by `REDUCE_NODE_BUDGET`)
+/// into a memoized core chain thousands of `Core::Tuple` levels deep, bottoming out in that poison; without
+/// this collapse, every downstream structural walk over the core tree (`layout::collect_call_callees`,
+/// `compile::collect_reached_poisons`, emit/serialize) would descend the whole chain in native recursion
+/// and OVERFLOW THE COMPILER'S STACK on a small valid-to-parse program. Collapsing at the source — the ONE
+/// place the compound is built — stops that at every consumer at once, not walk-by-walk.
+///
+/// Only `RecursionBound` (a resource-limit poison — the reduction could not finish) collapses; a `ConstTrap`
+/// element does NOT, preserving dead-code elimination (`(. (tuple 42 (/ 100 0)) 0)` projects away its
+/// trapping element and warns CDZ0305, never rejecting). A `RecursionBound` element is not DCE-eligible: the
+/// compiler did not PROVE the computation traps, it ran out of budget, so the enclosing compound genuinely
+/// cannot be built and the poison must propagate.
+fn reduction_bound_element(db: &mut Db, elems: &[StructId]) -> Option<Reject> {
+    for &e in elems {
+        if let Core::Poison(r) = core_of(db, e)
+            && r.code == Some(Code::RecursionBound)
+        {
+            return Some(r);
+        }
+    }
+    None
+}
+
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
@@ -302,7 +328,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Arc<BTreeMap<…>>`, so SHARE the
         // map by an Arc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
         // per-read clone is likewise O(1).
-        Resolved::Record { fields } => Core::Record { fields },
+        Resolved::Record { fields } => {
+            let vals: Vec<StructId> = fields.values().copied().collect();
+            if let Some(r) = reduction_bound_element(db, &vals) {
+                return Core::Poison(r);
+            }
+            Core::Record { fields }
+        }
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
         // application) and lower the field's value directly, so `(. (record (x 1)) x)` and `(. (Int
         // 64) max)` both fold to the field's value with no record built. The one projection, via the
@@ -371,14 +403,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A tuple literal — kept as a compound. Like a record, it folds away only when a projection
         // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
         // constant tuple that escapes) is a `Core::Tuple` the backend builds on the heap.
-        Resolved::Tuple { elems } => Core::Tuple {
-            elems: elems.to_vec(),
-        },
+        Resolved::Tuple { elems } => {
+            if let Some(r) = reduction_bound_element(db, &elems) {
+                return Core::Poison(r);
+            }
+            Core::Tuple {
+                elems: elems.to_vec(),
+            }
+        }
         // A list literal — a `Core::ListNew` the backend builds on the persistent `vec-*` heap. (Unlike a
         // tuple, a list has no projection-fold: `List.len`/`List.at` are operations, not a static index.)
-        Resolved::List { elems } => Core::ListNew {
-            elems: elems.to_vec(),
-        },
+        Resolved::List { elems } => {
+            if let Some(r) = reduction_bound_element(db, &elems) {
+                return Core::Poison(r);
+            }
+            Core::ListNew {
+                elems: elems.to_vec(),
+            }
+        }
         // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
         // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
         // from the node's own solved `Ty::Map` (fully determined by unification — key/value homogeneity is
@@ -565,153 +607,40 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "if c false true folds to the negation !c");
                     Core::Not { operand: cond }
                 }
+                // IF-ENCODED CONNECTIVE: `(if c a false)` IS `(and c a)` and `(if c true b)` IS `(or c b)` —
+                // an `if` with ONE boolean-constant branch is exactly a short-circuit connective (same
+                // evaluation order, same trap behavior: `c` always runs, the other branch runs only on the
+                // deciding polarity). Rerouting through `fold_short_circuit` unlocks the WHOLE boolean-algebra
+                // fold family (subsumption/absorption/complement/comparison-pair) for if-encoded booleans —
+                // e.g. `(if (> x 5) (> x 3) false)` collapses to `(> x 5)` — and is a strict emit improvement
+                // (branchless `i32.and`/`i32.or` vs a `select`/`if` block). The kept condition `c` preserves
+                // any trap (it is the always-evaluated `lhs`). Only fires for a RUNTIME `c` (a constant `c`
+                // folded in the `ConstBool` arm above) with the OTHER branch a runtime bool (a both-constant
+                // `if` was caught by the coercion/negation/identical-branch arms above). `then_`/`else_` are
+                // the post-swap occurrences, reused directly (no synthesis). VETOED when the branch that
+                // would become the connective's guarded `rhs` holds a TAIL CALL (`tail_positions_have_call`):
+                // the loop transform only threads tail calls through `if`/`let`/`match`, not `and`/`or`, so
+                // burying a tail-recursive call in a connective would defeat tail-loop conversion (a bigger
+                // win than a branchless boolean) — e.g. `(if (= n 0) true (odd (- n 1)))` MUST stay an `if`.
+                _ if matches!(core_of(db, else_), Core::ConstBool(false))
+                    && !tail_positions_have_call(db, then_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c a false) → (and c a)");
+                    fold_short_circuit(db, cond, then_, true)
+                }
+                _ if matches!(core_of(db, then_), Core::ConstBool(true))
+                    && !tail_positions_have_call(db, else_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c true b) → (or c b)");
+                    fold_short_circuit(db, cond, else_, false)
+                }
                 _ => Core::If { cond, then_, else_ },
             }
         }
-        // A SHORT-CIRCUITING connective. Fold on a constant LEFT operand — the short-circuit rule decides
-        // the result WITHOUT evaluating `rhs` (so a trapping/ill-formed `rhs` is shielded, exactly as an
-        // `if`'s unselected branch): `(and false _)`→false, `(and true rhs)`→rhs; `(or true _)`→true,
-        // `(or false rhs)`→rhs. A non-constant `lhs` (or a poison `lhs`, which propagates) emits a
-        // `Core::And` the backend lowers to `if lhs then/else <rhs|const>`.
-        Resolved::And { lhs, rhs, is_and } => match core_of(db, lhs) {
-            Core::ConstBool(b) => {
-                // `and`: left decides when false (short-circuit to false), else the result is rhs.
-                // `or`:  left decides when true  (short-circuit to true),  else the result is rhs.
-                if b == is_and {
-                    core_of(db, rhs) // and-true → rhs ; or-false → rhs
-                } else {
-                    Core::ConstBool(!is_and) // and-false → false ; or-true → true
-                }
-            }
-            Core::Poison(r) => Core::Poison(r),
-            // A constant RIGHT operand (the left is a non-constant runtime bool, ALWAYS evaluated — it is
-            // the short-circuit condition). `(and p true)` / `(or p false)` → `p` (the neutral element,
-            // keeps `p` so its effects/traps stay). `(and p false)` → `false` / `(or p true)` → `true`
-            // (the ABSORBING element) — this DISCARDS `p`, so it is applied only when `p` is trap-free
-            // (else `p`'s trap must still fire, so keep the `Core::And`). Mirrors the constant-left fold
-            // above; completes the boolean-identity set. (Both-constant folded via the left arm already.)
-            lc => match core_of(db, rhs) {
-                Core::ConstBool(rb) if rb == is_and => lc, // and-true / or-false → p (neutral, keeps p)
-                Core::ConstBool(_) if is_trap_free(db, lhs) => Core::ConstBool(!is_and), // absorbing
-                // IDEMPOTENCE: `(and a a)` → `a` and `(or a a)` → `a` — a boolean combined with itself is
-                // itself. The two operands are the SAME value (`core_equiv`), so the result is `a`. `lhs` is
-                // the short-circuit condition, ALWAYS evaluated (and evaluated ONCE by returning its core),
-                // so `a`'s own effects/traps are preserved regardless of the fold — no `is_trap_free` guard
-                // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
-                // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
-                _ if core_equiv(db, lhs, rhs) => lc,
-                // NESTED IDEMPOTENCE / ABSORPTION: `(and (and a b) a)` → `(and a b)` and `(or (or a b) a)` →
-                // `(or a b)` — one operand is a nested SAME-connective `(and/or p q)` that already CONTAINS
-                // the other operand (`p` or `q` is `core_equiv` to it), so re-conjoining/disjoining it is
-                // redundant. Returns the nested node (all operands stay evaluated → trap-safe, like the
-                // bitwise idempotent collapse c117). Only the SAME connective (`is_and` matches). Both outer
-                // orders are tried by `bool_nested_idempotent`.
-                _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => {
-                    core_of(db, keep)
-                }
-                // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined
-                // with the DUAL connective of itself-with-anything absorbs to itself (the short-circuit
-                // analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`→x fold, c118). One operand is an inner
-                // `and`/`or` of the DUAL connective CONTAINING `x`; the other is `x`. Result is `x`. DISCARDS
-                // the inner op's OTHER operand `y`, so gated on `is_trap_free(y)` — `y` is only conditionally
-                // evaluated in the short-circuit original, so trap-freedom suffices to drop it. `x` is pure
-                // (`core_equiv`) so returning it evaluates once with no trap. Both orders via
-                // `bool_absorption_operand`.
-                _ if let Some((x, y)) = bool_absorption_operand(db, lhs, rhs, is_and)
-                    && is_trap_free(db, y) =>
-                {
-                    core_of(db, x)
-                }
-                // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
-                // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
-                // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
-                // result is a constant), so gated on `is_trap_free(lhs)` — a trapping `a` must still trap
-                // (`core_equiv` matches only pure cores, so `a` is pure anyway, but keep the guard explicit).
-                // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
-                _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
-                    Core::ConstBool(!is_and) // and → false ; or → true
-                }
-                // COMPLEMENTARY-COMPARISON LAW: `(or (< a b) (>= a b))` → true, `(and (< a b) (>= a b))` →
-                // false — two comparisons on the SAME operand PAIR whose operators are exact COMPLEMENTS
-                // (`< `↔`>=`, `<=`↔`>`) partition the total order, so their `or` is exhaustive (always true)
-                // and their `and` is exclusive (always false). A redundant range guard (`(or (< x c) (>= x
-                // c))`). DISCARDS both operands, so gated on `is_trap_free` for each (a comparison is
-                // trap-free iff its operands are; a `(< (/ a b) 5)` with a trapping `/` keeps the runtime
-                // form). `complementary_comparisons` checks same-pair + complement-op.
-                _ if complementary_comparisons(db, lhs, rhs)
-                    && is_trap_free(db, lhs)
-                    && is_trap_free(db, rhs) =>
-                {
-                    Core::ConstBool(!is_and) // or → true ; and → false
-                }
-                // SUBSUMPTION: two comparisons on the SAME runtime operand `v` against constants with the
-                // SAME operator (both `<`, both `<=`, both `>`, or both `>=`) — one implies the other, so
-                // the redundant one drops. `and` keeps the STRONGER (tighter bound), `or` the WEAKER
-                // (looser): `(and (< v 5) (< v 10))` → `(< v 5)`, `(or (< v 5) (< v 10))` → `(< v 10)`. The
-                // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
-                // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
-                // keep (`lhs` or `rhs`).
-                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
-                    core_of(db, keep)
-                }
-                // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` → `(= v c)` — two INCLUSIVE
-                // opposite bounds pinning `v` to a single point ARE equality (`v>=c && v<=c ⟺ v==c`), so
-                // three ops (`ge`+`le`+`and`) become one `eq`. Only under `and`; reuses the existing (proven
-                // in-type) constant node, so no synthesis / no range guard. DISCARDS the second comparison,
-                // so gated on `is_trap_free` for both (like the sibling disjoint/covering fold); the kept
-                // `(= v c)` still evaluates `v`. Distinct from disjoint/covering (which folds `L>U` empty /
-                // `L<=U+1` covering — the coincident `L==U` point is exactly what THIS fold handles).
-                _ if is_and
-                    && let Some((v, c)) = coincident_point_eq(db, lhs, rhs)
-                    && is_trap_free(db, lhs)
-                    && is_trap_free(db, rhs) =>
-                {
-                    Core::Compare {
-                        op: Prim::Eq,
-                        lhs: v,
-                        rhs: c,
-                    }
-                }
-                // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
-                // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
-                // L`). `and` (intersection `L ≤ v ≤ U`) is EMPTY iff `L > U` → `false`; `or` (union) COVERS
-                // everything iff the half-lines touch/overlap (`L ≤ U+1`) → `true`. `(and (< x 5) (> x 10))`
-                // → false, `(or (< x 5) (> x 3))` → true. Only the constant verdicts (a non-empty `and` /
-                // gapped `or` is not a constant — kept). DISCARDS both operands, so gated on `is_trap_free`.
-                _ if let Some(v) = disjoint_or_covering(db, lhs, rhs, is_and)
-                    && is_trap_free(db, lhs)
-                    && is_trap_free(db, rhs) =>
-                {
-                    Core::ConstBool(v)
-                }
-                // EQUALITY-VS-RANGE: one operand is `(= x c)`, the other an ordering comparison `(cmp x k)`
-                // on the SAME `x`. Whether `c` satisfies `(cmp c k)` (a compile-time test) decides:
-                //   `and`: `sat` → `(= x c)` (the range is redundant given equality); `!sat` → `false`
-                //          (equality contradicts the range). `(and (= x 5) (> x 0))` → `(= x 5)`,
-                //          `(and (= x 5) (> x 100))` → false.
-                //   `or`:  `sat` → `(cmp x k)` (equality is subsumed by the range it satisfies); `!sat` →
-                //          keep both (not a constant — `x==c` adds one point outside the range).
-                // Each DISCARDS one operand — gated on that operand's `is_trap_free`. `eq_vs_range` returns
-                // `(eq_node, range_node, sat)`.
-                _ if let Some((eq_node, range_node, sat)) = eq_vs_range(db, lhs, rhs) => {
-                    if is_and {
-                        if sat && is_trap_free(db, range_node) {
-                            core_of(db, eq_node) // range redundant → keep the equality
-                        } else if !sat && is_trap_free(db, eq_node) && is_trap_free(db, range_node)
-                        {
-                            Core::ConstBool(false) // contradiction
-                        } else {
-                            Core::And { lhs, rhs, is_and }
-                        }
-                    } else if sat && is_trap_free(db, eq_node) {
-                        core_of(db, range_node) // `or`: equality subsumed → keep the range
-                    } else {
-                        Core::And { lhs, rhs, is_and }
-                    }
-                }
-                _ => Core::And { lhs, rhs, is_and },
-            },
-        },
+        // A SHORT-CIRCUITING connective. Delegated to `fold_short_circuit`, which also serves the
+        // `(if c a false)`→`(and c a)` / `(if c true b)`→`(or c b)` rewrites above (an if-encoded
+        // connective routes through the SAME boolean-algebra fold family).
+        Resolved::And { lhs, rhs, is_and } => fold_short_circuit(db, lhs, rhs, is_and),
         // Negation: fold a constant, `(not (not x))` → x (double negation), else `Core::Not` (i32.eqz).
         Resolved::Not { operand } => match core_of(db, operand) {
             Core::ConstBool(b) => Core::ConstBool(!b),
@@ -4911,12 +4840,22 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
-        // A boxed sum: build its shape, then wrap in `Named(<type name>, …)` — the `(: <value> <Type>)`
-        // value-form frame.
-        crate::ty::Ty::Sum { name, .. } => {
+        // A boxed sum. A MONOMORPHIC sum (`args: []`) wraps in `Named(<type name>, …)` — the bare-name
+        // `(: <value> <Type>)` frame (`(: (Neg unit) Sign)`). A GENERIC sum (`args` non-empty) must render
+        // its type ARGUMENTS too (`(: (Some "é") (Option String))`, NOT the bare `(: … Option)`), so it
+        // wraps in a PARAMETRIC `Framed(<type-node>, …)` frame built from the full type (`type_node_of`
+        // renders `(Option String)`), exactly as a `List`/`Map`/`Set` does. Without this a generic sum
+        // result dropped its type args at the boundary.
+        crate::ty::Ty::Sum { name, args, .. } => {
             let inner = builder.shape_of(db, ty)?;
-            let named = builder.push(ShapeNode::Named(name.clone(), inner));
-            Some(builder.encode(named))
+            if args.is_empty() {
+                let named = builder.push(ShapeNode::Named(name.clone(), inner));
+                Some(builder.encode(named))
+            } else {
+                let type_node = type_node_of(ty)?;
+                let framed = builder.push(ShapeNode::Framed(type_node, inner));
+                Some(builder.encode(framed))
+            }
         }
         // A NOMINAL newtype (a recursive one that escapes): its `shape_of` ALREADY produces a
         // `Named(<type name>, …)` root (the erased-tag frame), so encode it directly — wrapping again
@@ -7207,6 +7146,153 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
     is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
 }
 
+/// Fold a SHORT-CIRCUIT CONNECTIVE `(and/or lhs rhs)` (the `is_and` flag selects) into its simplest core.
+/// Shared by the `Resolved::And` arm AND the `(if c a false)`→`(and c a)` / `(if c true b)`→`(or c b)`
+/// if-encoded-connective rewrites — an if-shaped connective routes through the SAME boolean-algebra fold
+/// family (constant short-circuit, idempotence, absorption, complement, and the comparison-pair folds).
+///
+/// A constant LEFT operand short-circuits WITHOUT evaluating `rhs` (a trapping/ill-formed `rhs` is
+/// shielded, exactly as an `if`'s unselected branch): `(and false _)`→false, `(and true rhs)`→rhs;
+/// `(or true _)`→true, `(or false rhs)`→rhs. Otherwise `lhs` is the always-evaluated short-circuit
+/// condition; the arms below simplify against a constant/structural `rhs`, and the fallthrough emits a
+/// `Core::And` the backend lowers to `if lhs then/else <rhs|const>`.
+fn fold_short_circuit(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Core {
+    match core_of(db, lhs) {
+        Core::ConstBool(b) => {
+            // `and`: left decides when false (short-circuit to false), else the result is rhs.
+            // `or`:  left decides when true  (short-circuit to true),  else the result is rhs.
+            if b == is_and {
+                core_of(db, rhs) // and-true → rhs ; or-false → rhs
+            } else {
+                Core::ConstBool(!is_and) // and-false → false ; or-true → true
+            }
+        }
+        Core::Poison(r) => Core::Poison(r),
+        // A constant RIGHT operand (the left is a non-constant runtime bool, ALWAYS evaluated — it is
+        // the short-circuit condition). `(and p true)` / `(or p false)` → `p` (the neutral element,
+        // keeps `p` so its effects/traps stay). `(and p false)` → `false` / `(or p true)` → `true`
+        // (the ABSORBING element) — this DISCARDS `p`, so it is applied only when `p` is trap-free
+        // (else `p`'s trap must still fire, so keep the `Core::And`). Mirrors the constant-left fold
+        // above; completes the boolean-identity set. (Both-constant folded via the left arm already.)
+        lc => match core_of(db, rhs) {
+            Core::ConstBool(rb) if rb == is_and => lc, // and-true / or-false → p (neutral, keeps p)
+            Core::ConstBool(_) if is_trap_free(db, lhs) => Core::ConstBool(!is_and), // absorbing
+            // IDEMPOTENCE: `(and a a)` → `a` and `(or a a)` → `a` — a boolean combined with itself is
+            // itself. The two operands are the SAME value (`core_equiv`), so the result is `a`. `lhs` is
+            // the short-circuit condition, ALWAYS evaluated (and evaluated ONCE by returning its core),
+            // so `a`'s own effects/traps are preserved regardless of the fold — no `is_trap_free` guard
+            // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
+            // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
+            _ if core_equiv(db, lhs, rhs) => lc,
+            // NESTED IDEMPOTENCE / ABSORPTION: `(and (and a b) a)` → `(and a b)` and `(or (or a b) a)` →
+            // `(or a b)` — one operand is a nested SAME-connective `(and/or p q)` that already CONTAINS
+            // the other operand (`p` or `q` is `core_equiv` to it), so re-conjoining/disjoining it is
+            // redundant. Returns the nested node (all operands stay evaluated → trap-safe, like the
+            // bitwise idempotent collapse c117). Only the SAME connective (`is_and` matches). Both outer
+            // orders are tried by `bool_nested_idempotent`.
+            _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => core_of(db, keep),
+            // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined
+            // with the DUAL connective of itself-with-anything absorbs to itself (the short-circuit
+            // analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`→x fold, c118). One operand is an inner
+            // `and`/`or` of the DUAL connective CONTAINING `x`; the other is `x`. Result is `x`. DISCARDS
+            // the inner op's OTHER operand `y`, so gated on `is_trap_free(y)` — `y` is only conditionally
+            // evaluated in the short-circuit original, so trap-freedom suffices to drop it. `x` is pure
+            // (`core_equiv`) so returning it evaluates once with no trap. Both orders via
+            // `bool_absorption_operand`.
+            _ if let Some((x, y)) = bool_absorption_operand(db, lhs, rhs, is_and)
+                && is_trap_free(db, y) =>
+            {
+                core_of(db, x)
+            }
+            // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
+            // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
+            // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
+            // result is a constant), so gated on `is_trap_free(lhs)` — a trapping `a` must still trap
+            // (`core_equiv` matches only pure cores, so `a` is pure anyway, but keep the guard explicit).
+            // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
+            _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
+                Core::ConstBool(!is_and) // and → false ; or → true
+            }
+            // COMPLEMENTARY-COMPARISON LAW: `(or (< a b) (>= a b))` → true, `(and (< a b) (>= a b))` →
+            // false — two comparisons on the SAME operand PAIR whose operators are exact COMPLEMENTS
+            // (`< `↔`>=`, `<=`↔`>`) partition the total order, so their `or` is exhaustive (always true)
+            // and their `and` is exclusive (always false). A redundant range guard (`(or (< x c) (>= x
+            // c))`). DISCARDS both operands, so gated on `is_trap_free` for each (a comparison is
+            // trap-free iff its operands are; a `(< (/ a b) 5)` with a trapping `/` keeps the runtime
+            // form). `complementary_comparisons` checks same-pair + complement-op.
+            _ if complementary_comparisons(db, lhs, rhs)
+                && is_trap_free(db, lhs)
+                && is_trap_free(db, rhs) =>
+            {
+                Core::ConstBool(!is_and) // or → true ; and → false
+            }
+            // SUBSUMPTION: two comparisons on the SAME runtime operand `v` against constants with the
+            // SAME operator (both `<`, both `<=`, both `>`, or both `>=`) — one implies the other, so
+            // the redundant one drops. `and` keeps the STRONGER (tighter bound), `or` the WEAKER
+            // (looser): `(and (< v 5) (< v 10))` → `(< v 5)`, `(or (< v 5) (< v 10))` → `(< v 10)`. The
+            // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
+            // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
+            // keep (`lhs` or `rhs`).
+            _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => core_of(db, keep),
+            // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` → `(= v c)` — two INCLUSIVE
+            // opposite bounds pinning `v` to a single point ARE equality (`v>=c && v<=c ⟺ v==c`), so
+            // three ops (`ge`+`le`+`and`) become one `eq`. Only under `and`; reuses the existing (proven
+            // in-type) constant node, so no synthesis / no range guard. DISCARDS the second comparison,
+            // so gated on `is_trap_free` for both (like the sibling disjoint/covering fold); the kept
+            // `(= v c)` still evaluates `v`. Distinct from disjoint/covering (which folds `L>U` empty /
+            // `L<=U+1` covering — the coincident `L==U` point is exactly what THIS fold handles).
+            _ if is_and
+                && let Some((v, c)) = coincident_point_eq(db, lhs, rhs)
+                && is_trap_free(db, lhs)
+                && is_trap_free(db, rhs) =>
+            {
+                Core::Compare {
+                    op: Prim::Eq,
+                    lhs: v,
+                    rhs: c,
+                }
+            }
+            // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
+            // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
+            // L`). `and` (intersection `L ≤ v ≤ U`) is EMPTY iff `L > U` → `false`; `or` (union) COVERS
+            // everything iff the half-lines touch/overlap (`L ≤ U+1`) → `true`. `(and (< x 5) (> x 10))`
+            // → false, `(or (< x 5) (> x 3))` → true. Only the constant verdicts (a non-empty `and` /
+            // gapped `or` is not a constant — kept). DISCARDS both operands, so gated on `is_trap_free`.
+            _ if let Some(v) = disjoint_or_covering(db, lhs, rhs, is_and)
+                && is_trap_free(db, lhs)
+                && is_trap_free(db, rhs) =>
+            {
+                Core::ConstBool(v)
+            }
+            // EQUALITY-VS-RANGE: one operand is `(= x c)`, the other an ordering comparison `(cmp x k)`
+            // on the SAME `x`. Whether `c` satisfies `(cmp c k)` (a compile-time test) decides:
+            //   `and`: `sat` → `(= x c)` (the range is redundant given equality); `!sat` → `false`
+            //          (equality contradicts the range). `(and (= x 5) (> x 0))` → `(= x 5)`,
+            //          `(and (= x 5) (> x 100))` → false.
+            //   `or`:  `sat` → `(cmp x k)` (equality is subsumed by the range it satisfies); `!sat` →
+            //          keep both (not a constant — `x==c` adds one point outside the range).
+            // Each DISCARDS one operand — gated on that operand's `is_trap_free`. `eq_vs_range` returns
+            // `(eq_node, range_node, sat)`.
+            _ if let Some((eq_node, range_node, sat)) = eq_vs_range(db, lhs, rhs) => {
+                if is_and {
+                    if sat && is_trap_free(db, range_node) {
+                        core_of(db, eq_node) // range redundant → keep the equality
+                    } else if !sat && is_trap_free(db, eq_node) && is_trap_free(db, range_node) {
+                        Core::ConstBool(false) // contradiction
+                    } else {
+                        Core::And { lhs, rhs, is_and }
+                    }
+                } else if sat && is_trap_free(db, eq_node) {
+                    core_of(db, range_node) // `or`: equality subsumed → keep the range
+                } else {
+                    Core::And { lhs, rhs, is_and }
+                }
+            }
+            _ => Core::And { lhs, rhs, is_and },
+        },
+    }
+}
+
 /// NESTED IDEMPOTENCE for a short-circuit `and`/`or`: when one outer operand is a nested `Core::And` of the
 /// SAME connective (`is_and`) that already CONTAINS the other outer operand (one of its sides is
 /// `core_equiv` to it), the outer re-application is redundant — `(and (and a b) a)` == `(and a b)`. Returns
@@ -8020,6 +8106,29 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         // Everything else — checked arithmetic (+/-/*), a LEFT shift, a runtime-count/-divisor shift or
         // div/rem, calls, control flow, heap constructs, poison — is conservatively treated as possibly-
         // trapping.
+        _ => false,
+    }
+}
+
+/// Whether the core at `id` CONTAINS a runtime call (`Core::Call`, `CallClosure`, or `HostCall`) anywhere
+/// in the positions the mutual-/self-recursion loop transform threads a TAIL call through — the node
+/// itself, an `if`'s branches, a `let`'s body, a `match`'s arms. Used to VETO the `(if c a false)`→`(and c
+/// a)` rewrite when the branch that would become the connective's guarded `rhs` holds a tail call: the loop
+/// transform (`body_has_member_tail_call`) only follows `if`/`let`/`match` tail positions, NOT `and`/`or`,
+/// so burying a tail-recursive call inside a connective would defeat tail-loop conversion (a far bigger win
+/// than a branchless boolean). Conservative — descends only tail positions, matching the transform's reach;
+/// a call in a non-tail operand is not a tail edge and would not be lost, but treating the whole branch as
+/// call-bearing here is safe (it only forgoes the rewrite). NOT the same as `!is_trap_free`: a checked-arith
+/// boolean branch (`(> (+ x 1) 5)`) is call-free, so the rewrite still fires and stays sound (its trap is
+/// shielded in the connective's guarded rhs exactly as in the `if`'s branch).
+fn tail_positions_have_call(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Call { .. } | Core::CallClosure { .. } | Core::HostCall { .. } => true,
+        Core::If { then_, else_, .. } => {
+            tail_positions_have_call(db, then_) || tail_positions_have_call(db, else_)
+        }
+        Core::Let { body, .. } => tail_positions_have_call(db, body),
+        Core::Match { arms, .. } => arms.iter().any(|a| tail_positions_have_call(db, a.body)),
         _ => false,
     }
 }
@@ -10414,9 +10523,19 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
                 }
             }
         }
-        // A runtime string or runtime index — the byte-rope indexed read is a later increment.
+        // A RUNTIME string (or runtime index) — walk the UTF-8 byte buffer to the i-th scalar's byte span
+        // and slice it (`Core::StrAt`). A String is a flat UTF-8 byte leaf, so the backend scans scalar
+        // starts (a byte is a scalar START iff `(b & 0xC0) != 0x80`), skips `index` scalars, and slices the
+        // scalar's byte span into the `Some` payload — matching the const `chars().nth`. Guarded on the
+        // string operand being a definite `Ty::String` (the index is any integer).
+        _ if matches!(crate::infer::type_of(db, string), crate::ty::Ty::String) => Core::StrAt {
+            string,
+            index,
+            disc_some,
+            disc_none,
+        },
         _ => Core::Poison(Reject::decline(
-            "String.at on a runtime string is not yet computed (constant strings only)",
+            "String.at needs a String operand (its runtime read walks the UTF-8 buffer)",
         )),
     }
 }

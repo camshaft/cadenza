@@ -145,3 +145,31 @@ fn ml_parse_errors_report_correct_incrementing_line_positions() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn highlight_reports_correct_multi_line_token_positions() {
+    // `cdz highlight` emits `file:line:col: kind` for EVERY token. It maps each token's byte offset to a
+    // line:col via ONE shared `LineIndex` (binary search) rather than a per-token from-start newline scan
+    // — the O(tokens × source_len) = O(N²) that made highlighting a wide file quadratic (a 6400-def file
+    // was 5.1s, 99.7% in `line_col`). This locks in that the index gives the SAME positions: tokens on
+    // later lines report their real line (not all collapsed to line 1), and each is classified.
+    let dir = temp_dir("hl");
+    let src = dir.join("prog.sexp");
+    // A small multi-line program — the export on line 4 must be highlighted at line 4, not line 1.
+    let text = "(do\n  (def (f x)\n    (+ x 1))\n  (export f))\n";
+    std::fs::write(&src, text).unwrap();
+    let (ok, out, err) = run(&["highlight", src.to_str().unwrap()]);
+    assert!(ok, "highlight failed: {err}");
+    // The `def` keyword is on line 2, the `+` call on line 3, the `export` on line 4 — each token's line
+    // must match its source line (a from-start scan and the LineIndex agree; a broken index collapses them).
+    for line in 1..=4 {
+        assert!(
+            out.contains(&format!("prog.sexp:{line}:")),
+            "expected a highlighted token on line {line}; got:\n{out}"
+        );
+    }
+    // And the classifications are present (the render is not just positions).
+    assert!(out.contains(": keyword"), "a keyword token: {out}");
+    assert!(out.contains(": number"), "the `1` literal: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

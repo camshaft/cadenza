@@ -115,27 +115,21 @@ export default function Ordering() {
         id="ordering:1"
         prompt={
           <>
-            Finish the <C>Greater</C> arm so <C>order-sign</C> returns <C>1</C> when <C>a</C> is the
-            larger. With <C>(order-sign 9 3)</C> the answer is <C>1</C>.
+            Finish <C>outside</C> so it returns <C>1</C> when <C>x</C> is <em>below 0 or above 10</em>,
+            and <C>0</C> in between. With <C>(outside 15)</C> the answer is <C>1</C>.
           </>
         }
-        starter={`(def (order-sign a b)
-  (match (compare a b)
-    ((Less _)    (- 0 1))
-    ((Equal _)   0)
-    ((Greater _) ?)))
-(def (main) (order-sign 9 3))`}
-        solution={`(def (order-sign a b)
-  (match (compare a b)
-    ((Less _)    (- 0 1))
-    ((Equal _)   0)
-    ((Greater _) 1)))
-(def (main) (order-sign 9 3))`}
+        starter={`(def (outside x)
+  (if (or (< x 0) ?) 1 0))
+(def (main) (outside 15))`}
+        solution={`(def (outside x)
+  (if (or (< x 0) (> x 10)) 1 0))
+(def (main) (outside 15))`}
         expected="1"
         hint={
           <>
-            The convention here is <C>-1</C> for less and <C>0</C> for equal, so "greater" is the last of
-            the three: <C>1</C>.
+            The two ways to be outside are joined with <C>or</C>; the second is "above 10" —{" "}
+            <C>(&gt; x 10)</C>. <C>15</C> is above 10, so the result is <C>1</C>.
           </>
         }
       />

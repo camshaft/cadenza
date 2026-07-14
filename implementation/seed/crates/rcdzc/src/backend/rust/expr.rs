@@ -784,6 +784,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
         | Core::BytesAt { .. }
+        | Core::StrAt { .. }
         | Core::BytesConcat { .. }
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
@@ -1361,9 +1362,17 @@ fn emit_sum_switch(
     Ok(out)
 }
 
-/// Emit an arm's CONTINUATION: a `Leaf` is the arm body (an ordinary expression); a nested `Switch`
-/// recurses through [`emit_sum_switch`] (a nested constructor pattern). Guarded / literal-payload
-/// continuations are declined (a later slice) — the same shapes the root rejects.
+/// Emit an arm's CONTINUATION as a Rust EXPRESSION:
+///  - `Leaf` → the arm body;
+///  - nested `Switch` → an inner `match` ([`emit_sum_switch`], a nested constructor pattern);
+///  - `Guarded { cond, body, els }` → `if <cond> { <body> } else { <els-cont> }` — the variant already
+///    matched (the enclosing switch bound its payload into `ctx`), so `cond`/`body` see the payload binder;
+///    a false guard FALLS THROUGH to the `els` continuation (the rest of the sub-matrix), mirroring the
+///    wasm backend's guarded `if`;
+///  - `LitTest { path, probe, then_, els }` → `if (<sub-value at path> == <literal>) { <then-cont> } else
+///    { <els-cont> }` — a payload-literal refinement (`(Some 0)`); the sub-value is read via
+///    `emit_sum_payload` (folds a constant / reads the bound name), compared to the literal, and a mismatch
+///    falls through to `els` (the binding arm). Both mirror the wasm `emit_sum_cont`'s desugar to an `if`.
 fn emit_sum_cont(
     db: &mut Db,
     scrutinee: StructId,
@@ -1376,12 +1385,51 @@ fn emit_sum_cont(
         crate::core::SumCont::Switch { path, arms } => {
             emit_sum_switch(db, scrutinee, path, arms, env, ctx)
         }
-        crate::core::SumCont::Guarded { .. } => Err(Reject::decline(
-            "a guarded sum-match arm is not yet rendered by the Rust backend",
-        )),
-        crate::core::SumCont::LitTest { .. } => Err(Reject::decline(
-            "a literal-payload sum pattern is not yet rendered by the Rust backend",
-        )),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            let c = emit(db, *cond, env, ctx)?;
+            let then_ = emit(db, *body, env, ctx)?;
+            let els = emit_sum_cont(db, scrutinee, els, env, ctx)?;
+            Ok(format!("if {c} {{ {then_} }} else {{ {els} }}"))
+        }
+        crate::core::SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            let subject = emit_sum_payload(db, scrutinee, scrutinee, path, env, ctx)?;
+            // The literal to compare against, in the sub-value's own type (`5i64`, `true`) so the Rust
+            // comparison types. A string probe never reaches a RUNTIME test (it declines at `is_scalar`
+            // before a decision tree is built), matching the scalar-match path.
+            let lit = match probe {
+                crate::core::Probe::Int(v) => {
+                    // The sub-value's integer type gives the literal's suffix; a `Payload`/`Elem` path ends
+                    // at an Int leaf, so `ty_at_sum_path` yields its width.
+                    let it = match ty_at_sum_path(db, scrutinee, path) {
+                        Ty::Int(it) => it,
+                        _ => IntTy {
+                            sign: Sign::Fixed(true),
+                            width: Width::Fixed(crate::ty::DEFAULT_INT_WIDTH),
+                        },
+                    };
+                    let target = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
+                        Reject::decline("a literal-payload width has no native Rust representation")
+                    })?;
+                    format!("{}{target}", int_value_signed_decimal(v))
+                }
+                crate::core::Probe::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+                crate::core::Probe::Str(_) | crate::core::Probe::Wild => {
+                    return Err(Reject::decline(
+                        "a non-scalar literal-payload probe is not rendered by the Rust backend",
+                    ));
+                }
+            };
+            let then_ = emit_sum_cont(db, scrutinee, then_, env, ctx)?;
+            let els = emit_sum_cont(db, scrutinee, els, env, ctx)?;
+            Ok(format!(
+                "if ({subject}) == {lit} {{ {then_} }} else {{ {els} }}"
+            ))
+        }
     }
 }
 

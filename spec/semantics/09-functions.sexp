@@ -1334,6 +1334,24 @@
   (input  (do (def (main) ((fn (v0) (if (v0 v0) 1 (v0 v0))) (fn (v2) (if (v2 v2) 1 (v2 v2))))) (export main)))
   (error  CDZ0203))
 
+(case "a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow"
+  (doc    "`(fn v (tuple (v v) 1))` applied to a copy of itself has no normal form: the self-app `(v v)` in
+           a tuple slot grows the term exponentially. Here the reduction BUDGET already terminates inference
+           (β-reduction gives up past the work budget) — but that leaves a MEMOIZED core chain thousands of
+           nodes deep, `Tuple[Tuple[…poison…, 1], 1]`, bottoming out in the reduction-bound poison. That
+           chain is built bottom-up at shallow demand depths, so lowering's own descent guard never fires on
+           it; the REACHED-POISON walk (`collect_reached_poisons`, which reports a provable trap that a
+           program unconditionally reaches) then descended the whole pre-built chain in ONE native recursion
+           and OVERFLOWED THE COMPILER'S STACK — a process abort on a small valid-to-parse program. Giving
+           that walk the same recursive-descent depth guard lowering has makes it surface the reduction-bound
+           poison (CDZ0999) past the limit instead of crashing. The guard sits at the walk's single recursive
+           entry and the walk dispatches structurally, so the whole compound-construction class (a self-app
+           in a tuple / record / list / sum / map / set slot) is covered by ONE guard — not one syntactic
+           wrapper at a time. The point is 'never crash' — a compiler completes or declines on any input,
+           regardless of the syntactic form the divergence hides in.")
+  (input  (do (def (main) ((fn (v0) (tuple (v0 v0) 1)) (fn (v2) (tuple (v2 v2) 1)))) (export main)))
+  (error  CDZ0999))
+
 (case "a deeply nested constant expression compiles or declines without crashing"
   (doc    "A 64-deep nest of `(+ 1 …)` folds to 65 — well within any reasonable bound. The point is the
            companion the gate cannot record: the SAME shape thousands deep must DECLINE (a

@@ -24,6 +24,33 @@
 //! So `(quote `(+ ,x))` and `(quote `(+ ,y))` denote DIFFERENT trees (they mention `x` vs `y`), and a
 //! plain quote never evaluates anything in its body.
 //!
+//! ## Quasiquote — selective evaluation
+//!
+//! `(quasiquote TEMPLATE)` reifies like `quote`, EXCEPT at an ACTIVE `(unquote e)` hole, where `e` is
+//! EVALUATED and its value INSERTED into the built AST (`metaprogramming.md` §Quasiquote Constructs AST
+//! With Selective Evaluation). Quasiquote NESTS, so the "active" positions are tracked by a DEPTH counter
+//! (the classic Bawden algorithm): the quasiquote body starts at depth 1, each nested `quasiquote` bumps
+//! it, each `unquote` drops it; an `unquote` reached at depth 1 is active (evaluate), any deeper one is
+//! inert structure.
+//!
+//! ```text
+//! (unquote e)          depth 1  ->  (Ast.Int e)   -- ACTIVE: e stays LIVE, evaluated + lifted
+//! (unquote e)          depth>1  ->  (Ast.List (list (Ast.Name "unquote")  <reify e @ depth-1>))
+//! (quasiquote t)       any      ->  (Ast.List (list (Ast.Name "quasiquote") <reify t @ depth+1>))
+//! ```
+//!
+//! An ACTIVE unquote keeps its operand `e` LIVE (reused, not reified) and wraps it `(Ast.Int e)`, so `e`
+//! resolves/types/lowers as ordinary code: an unbound name in it is the ordinary CDZ0101 (NOT swallowed
+//! into inert AST), and its Int64 value lifts to an `(Ast.Int …)` node structurally identical to a const
+//! fold's — so `` `(f ,x) `` (x=1) equals `(quote (f 1))`. ⚠ THE LIFT IS Int-ONLY this increment: the
+//! active operand is wrapped `(Ast.Int e)` unconditionally (every corpus active-unquote is Int-valued),
+//! so a non-Int active unquote gets `Ast.Int`'s payload type-error (a decline-equivalent, never a
+//! miscompile); a type-directed lift (Ast-identity, other payload types) is a later increment.
+//!
+//! An ACTIVE `(unquote-splicing e)` (splice list elements into the parent) BAILS (`None`) — the whole
+//! quasiquote is left for `resolve` (so the splice-non-list CDZ0201 check + the decline still fire); a
+//! real list-flattening splice is a later increment.
+//!
 //! ## Scope of this increment
 //!
 //! The built-in `Ast` sum currently has three variants — `Int`/`Name`/`List` — so only a form built
@@ -31,18 +58,23 @@
 //! float, bool, char, symbol, bytes literal — no `Ast` variant carries it yet) is LEFT UNTOUCHED here:
 //! it flows to `resolve::resolve_quote`, which DECLINES (a Todo, never a miscompile). Likewise an
 //! arity-≠1 `(quote …)` is left for `resolve_quote` to reject CDZ0201. This pass only ever rewrites a
-//! quote it can reify COMPLETELY — partial reification is never emitted.
+//! quote/quasiquote it can reify COMPLETELY — partial reification is never emitted.
 //!
 //! ## Ordering / in-place rewrite
 //!
 //! Modelled on [`crate::effects::desugar_handles`]: a scan collects the rewrites, then they are applied.
-//! The reader builds children BEFORE parents, so a nested (inner) quote always has a SMALLER `StructId`
-//! than the quote enclosing it. Processing quotes in DESCENDING id order therefore reifies an OUTER
+//! The reader builds children BEFORE parents, so a nested (inner) quote/quasiquote always has a SMALLER
+//! `StructId` than the one enclosing it. Processing in DESCENDING id order therefore reifies an OUTER
 //! quote — reading its body's still-ORIGINAL structure (its descendants have smaller ids, not yet
-//! rewritten) — before the pass reaches the inner quote's id. By then the inner quote node is ORPHANED
-//! (the outer's reified tree is all fresh nodes that only READ the inner's leaf values, never reference
-//! its ids), so rewriting it is harmless. Reification only ever READS existing nodes and APPENDS fresh
-//! ones, so no live node is ever mutated out from under a pending rewrite.
+//! rewritten) — before the pass reaches an inner quote's id. By then the inner node is ORPHANED (the
+//! outer's reified tree is all fresh nodes), so rewriting it is harmless dead work. The scan handles a
+//! TOP-LEVEL `quasiquote` too; an INNER `quasiquote` the enclosing reification already consumed
+//! structurally is orphaned, so re-planning it (at a fresh depth) is likewise harmless — its rewrite
+//! lands on a node nothing reachable references. Reification READS existing nodes + APPENDS fresh ones;
+//! the ONE exception is an ACTIVE unquote, which REUSES its operand node live (never rewritten — it is
+//! the evaluated code, kept reachable so it resolves against the quasiquote's enclosing scope). A live
+//! quote/quasiquote INSIDE an active unquote operand is real code and is correctly planned by the scan
+//! (it is reachable, not orphaned). So no live node is ever mutated out from under a pending rewrite.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -66,19 +98,34 @@ pub fn reify_quotes(ast: &mut Arenas) {
     let mut plans: Vec<QuotePlan> = Vec::new();
     for i in (0..original_len).rev() {
         let id = StructId(i);
-        // A well-formed one-operand `(quote FORM)`. Any other arity is left for `resolve_quote` to
-        // reject CDZ0201; a non-quote node is skipped.
-        let tail = ast.as_form(id, "quote").map(<[StructId]>::to_vec);
-        let Some([form]) = tail.as_deref() else {
+        // A well-formed one-operand `(quote FORM)` reifies INERTLY (everything structural — a quote body
+        // never evaluates); a `(quasiquote TEMPLATE)` reifies ACTIVELY (depth 1 — an `,e` at depth 1
+        // evaluates). Any other arity is left for `resolve_quote`/`resolve_quasiquote` to reject CDZ0201;
+        // a non-quote node is skipped. An INNER quote/quasiquote the enclosing reification already
+        // consumed structurally is orphaned by the time the descending scan reaches it, so re-planning it
+        // is harmless dead work (module docs §Ordering).
+        let reified = if let Some([form]) = ast
+            .as_form(id, "quote")
+            .map(<[StructId]>::to_vec)
+            .as_deref()
+        {
+            // Reify INERTLY. `None` = a leaf with no `Ast` variant yet, OR a STRAY unquote (`,x`/`,@x` not
+            // under a quasiquote — a syntax error). Leave the quote for resolve: a missing-variant body
+            // DECLINES (Todo), a stray unquote gets CDZ0003 (`resolve::resolve_unquote`). Never partial.
+            reify(ast, *form, false)
+        } else if let Some([tmpl]) = ast
+            .as_form(id, "quasiquote")
+            .map(<[StructId]>::to_vec)
+            .as_deref()
+        {
+            // Reify ACTIVELY at depth 1. `None` = an un-reifiable leaf, an ACTIVE splice (`,@` — deferred),
+            // or an arity fault — leave the quasiquote for `resolve_quasiquote` (a decline / the CDZ0201
+            // splice-non-list check). Never partial.
+            reify_active(ast, *tmpl, 1)
+        } else {
             continue;
         };
-        let form = *form;
-        // Reify the body. `None` = either it mentions a leaf with no `Ast` variant yet, OR it contains a
-        // STRAY unquote (a `,x`/`,@x` not under a quasiquote — a syntax error, `metaprogramming.md`
-        // §Quasiquote Constructs AST With Selective Evaluation). In both cases leave the quote for
-        // resolve: a missing-variant body DECLINES (a Todo), a stray unquote gets CDZ0003 (via
-        // `resolve::resolve_unquote`). Never emit a partial reification.
-        if let Some(reified) = reify(ast, form, false) {
+        if let Some(reified) = reified {
             plans.push(QuotePlan { quote: id, reified });
         }
     }
@@ -87,6 +134,17 @@ pub fn reify_quotes(ast: &mut Arenas) {
         // `StructId` (and its span) is preserved as the result value's node.
         let root = ast.get(plan.reified).clone();
         ast.structure[plan.quote.0 as usize] = root;
+        // BLANK the now-duplicate original root (`plan.reified` is a higher-id APPENDED node that lists
+        // the SAME children as the copy just written into `plan.quote`). `parent_index` records the
+        // LAST (highest-id) parent per child, so leaving `plan.reified` intact would make the shared
+        // children's parent the ORPHAN root (its own parent is `None`) — a scope-walk dead end. Harmless
+        // for a plain quote (all-fresh children, never walked up from), but an ACTIVE unquote REUSES its
+        // live operand: that operand must resolve through `plan.quote`'s ancestors (the enclosing
+        // `let`/`def`), so its parent must be the copy, not the orphan. Emptying the orphan (it is
+        // unreachable — nothing references `plan.reified`) drops its claim, leaving `plan.quote` the sole
+        // parent of the shared subtree. (`plan.reified` >= original_len and `plan.quote` < original_len,
+        // so this never clobbers another plan's quote node.)
+        ast.structure[plan.reified.0 as usize] = Struct::List(Vec::new());
     }
 }
 
@@ -140,14 +198,93 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
             for child in items {
                 reified_children.push(reify(ast, child, child_under_qq)?);
             }
-            let list_head = push_atom(ast, Leaf::Name("list".to_string()));
-            let mut list_form = Vec::with_capacity(reified_children.len() + 1);
-            list_form.push(list_head);
-            list_form.extend(reified_children);
-            let list_val = push_list(ast, list_form);
-            Some(ast_ctor(ast, "List", list_val))
+            Some(wrap_ast_list(ast, reified_children))
         }
     }
+}
+
+/// Reify a QUASIQUOTE template at nesting `depth` (the quasiquote body is depth 1; a nested `quasiquote`
+/// bumps it, an `unquote`/`unquote-splicing` head drops it — the Bawden depth algorithm). Returns the
+/// root of the fresh `Ast` construction tree, or `None` (bail — leave for resolve) on an un-reifiable
+/// leaf, an ACTIVE splice, or an arity fault. Selective evaluation happens at an ACTIVE unquote (see the
+/// module docs §Quasiquote):
+///  - `(unquote e)` at depth 1 → ACTIVE: reuse `e` LIVE, wrap `(Ast.Int e)` — `e` is evaluated as
+///    ordinary code (unbound name → CDZ0101; its Int64 value lifts to an `Ast.Int` node). Int-only lift
+///    this increment (a non-Int active unquote gets `Ast.Int`'s payload type-error).
+///  - `(unquote-splicing e)` at depth 1 → ACTIVE splice: BAIL (deferred — leave for resolve).
+///  - `(unquote e)` at depth>1 → inert `(Ast.List (list (Ast.Name "unquote") <reify e @ depth-1>))`.
+///  - `(quasiquote t)` at any depth → inert `(Ast.List (list (Ast.Name "quasiquote") <reify t @ depth+1>))`.
+///  - any other node → same STRUCTURAL reification as a plain quote, recursing at the SAME depth.
+fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId> {
+    let Struct::List(items) = ast.get(node) else {
+        // A leaf (int/name/…) is depth-independent structure — reify it exactly as a plain quote does.
+        // `under_qq=true` so a bare stray unquote can't arise (a leaf is never an escape head anyway).
+        return reify(ast, node, true);
+    };
+    let items = items.clone();
+    let head = items
+        .first()
+        .and_then(|&h| ast.as_name(h))
+        .map(str::to_string);
+    match head.as_deref() {
+        // An unquote at depth 1 is ACTIVE. `unquote` evaluates + embeds; `unquote-splicing` splices a
+        // list's elements (deferred → bail). Arity ≠ 1 → bail for `resolve_unquote`'s CDZ0201.
+        Some("unquote") if depth == 1 => {
+            if items.len() != 2 {
+                return None;
+            }
+            // Reuse the operand node LIVE (it is evaluated code, not reified) and wrap it `(Ast.Int e)`:
+            // the Int64 value lifts to an `Ast.Int` node identical to a const fold's.
+            Some(ast_ctor(ast, "Int", items[1]))
+        }
+        Some("unquote-splicing") if depth == 1 => None,
+        // A nested unquote (depth>1) is INERT structure at depth-1; its head + operand reify structurally.
+        Some(h @ ("unquote" | "unquote-splicing")) => {
+            if items.len() != 2 {
+                return None;
+            }
+            let inner = reify_active(ast, items[1], depth - 1)?;
+            Some(reify_escape_list(ast, h, inner))
+        }
+        // A nested quasiquote is INERT structure at depth+1.
+        Some("quasiquote") => {
+            if items.len() != 2 {
+                return None;
+            }
+            let inner = reify_active(ast, items[1], depth + 1)?;
+            Some(reify_escape_list(ast, "quasiquote", inner))
+        }
+        // Any other compound: structural `(Ast.List (list <child…>))`, recursing at the SAME depth so an
+        // active unquote nested anywhere inside still fires.
+        _ => {
+            let mut reified_children = Vec::with_capacity(items.len());
+            for child in items {
+                reified_children.push(reify_active(ast, child, depth)?);
+            }
+            Some(wrap_ast_list(ast, reified_children))
+        }
+    }
+}
+
+/// The inert reification of an escape/nesting head node `(HEAD inner)` → `(Ast.List (list (Ast.Name
+/// "HEAD") <inner>))` where `<inner>` is the ALREADY-reified operand. So a quoted-but-not-active
+/// `,`/`,@`/`` ` `` renders as the two-element list the reader produced (head name + operand), matching
+/// the corpus nested-quasiquote value form.
+fn reify_escape_list(ast: &mut Arenas, head: &str, inner: StructId) -> StructId {
+    let head_payload = push_atom(ast, Leaf::Str(head.to_string()));
+    let head_name = ast_ctor(ast, "Name", head_payload);
+    wrap_ast_list(ast, vec![head_name, inner])
+}
+
+/// Wrap already-reified child `Ast` nodes in `(Ast.List (list <child…>))` — the shared tail of every
+/// compound reification (plain-quote list, active-quasiquote list, escape-head list).
+fn wrap_ast_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
+    let list_head = push_atom(ast, Leaf::Name("list".to_string()));
+    let mut list_form = Vec::with_capacity(children.len() + 1);
+    list_form.push(list_head);
+    list_form.extend(children);
+    let list_val = push_list(ast, list_form);
+    ast_ctor(ast, "List", list_val)
 }
 
 /// Build the constructor application `(Ast.<variant> payload)` — i.e. the list `[(. Ast <variant>),
