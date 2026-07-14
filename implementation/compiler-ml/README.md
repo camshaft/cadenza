@@ -239,6 +239,13 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   a GENERAL persistent-collection operand-consumption bug, not Map-specific. Borrow/Perceus family — the
   cross-call ownership seam: a borrowed collection param passed to a consuming call needs a `dup`. Blocks
   a scope-threading interpreter/type-checker; `src/interp.cdz`'s `interp-shadow-restores` is withheld.
+  🔬 SHARPENED (iter 29) to a 6-line non-interpreter repro
+  `repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`: the trigger is a param used by a
+  consuming op in one operand AND passed to a SELF-CALL of the same fn in a sibling operand — the WAT
+  shows the guest emits `local.get 1 … vec-push … local.get 1 (self-call)` with NO `dup` before the
+  consuming `vec-push`, so the self-call reads the mutated handle. An ordinary call to a SEPARATE fn dups
+  correctly; only the self-call arg path omits the dup. Fix locus: the self-call arg emit in
+  `backend/wasm/select.rs`.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
