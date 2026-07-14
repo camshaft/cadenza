@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 139 tests total across 16 modules):
+top. Current `src/` modules (each with same-file `@test`s — 149 tests total across 17 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -118,6 +118,12 @@ top. Current `src/` modules (each with same-file `@test`s — 139 tests total ac
   the record-of-results shape a real analysis returns. Confirmed WORKING (no new bug): record values +
   the heap-list field survive the recursion exactly (a `count == vals-length` invariant test). 9
   `@test`s.
+- `src/scope-fv.cdz` — the BINDING-AWARE free-variable analysis of the untyped lambda calculus (the
+  scope-respecting complement to `free-vars.cdz`'s flat collector): a `Var` is a singleton `Set`, an
+  `App` UNIONS, and a `Lam x` REMOVES its bound var. Stresses `Set String` union + remove threaded
+  through recursion. 10 `@test`s incl. shadowing (`λx.λx.x` closed) and a name free-and-bound at once
+  (`(x (λx.x))` — outer x free). Confirmed WORKING (no new bug). ⚠ minor API inconsistency: a `Set`'s
+  count is `Set.len` but a `Map`'s is `Map.size` (same "count" concept, two names).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
