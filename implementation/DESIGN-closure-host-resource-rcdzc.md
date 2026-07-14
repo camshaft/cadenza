@@ -1060,13 +1060,19 @@ the component type. The new work:
   (value-encode walker, → `(Some 5)`) — the matrix now covers scalar / byte-rope (Bytes+String) / fixed-
   compound / collection (List+Map) / sum. (A Char tuple field declines project-wide: `valtype_of(Ty::Char)=None`
   — no runtime Char slot yet, cross-cutting, not closure-specific.)
+- **🏗️ NESTED fixed-shape compound ARG — vertical STARTED (2/3 bricks):** brick 1 (`274398d9`, oracle) proves
+  `tuple<s64, tuple<s64,s64>>` flattens RECURSIVELY to 3 leaf core params (no `value-decode` — an
+  implementation gap, not an ABI wall). Brick 2 (`9361f77f`, byte-neutral) made the CORE rebuild recursive:
+  `TupleArgRebuild.fields: Vec<FieldRebuild>` (`Scalar` | `Nested`), `emit_tuple_rebuild` → recursive
+  `emit_cell_rebuild` threading a leaf cursor depth-first. Brick 3 (next, the big one): recurse
+  `tuple_field_abi` into nested fields + mint the inner `tuple<…>` defined type by index in the envelope
+  (16 sites), then flip the decline + add e2e corpus.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
-  compound args** (two tuple args) + (2) **NESTED compound fields** (a tuple/record inside a tuple/record) —
-  `single_compound_among_scalars`/`fixed_shape_scalar_tuple_arg` reject >1 tuple + non-scalar fields, and
-  `TupleArgRebuild` + ~65 envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a
-  `Vec<TupleArgRebuild>` + recursive `tuple_field_abi` generalization is a large multi-tick vertical (decompose
-  like the C-HOST bricks before attempting). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
+  compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
+  envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
+  generalization is a large multi-tick vertical. (2) **NESTED compound fields** — vertical started (above),
+  brick 3 remaining. (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
   these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
