@@ -213,12 +213,26 @@ fn emit_signature(
             result.render_name()
         )));
     }
-    let ret = types::rust_type(result).ok_or_else(|| {
-        Reject::decline(format!(
-            "`{name}`: result type {} has no native Rust representation",
-            result.render_name()
-        ))
-    })?;
+    // A DIVERGING body — its core is provably `Core::Trap` (a bare `(trap …)`, a zero-arm match on a
+    // `Never` scrutinee, a call reduced to one) — has a `Never` result type (a fresh `Ty::Var`/`Any`) with
+    // no native Rust rep, but NO value ever returns: the body `panic!`s. Emit Rust's NEVER type `!` as the
+    // return type (`fn main() -> ! { panic!(…) }` is valid), mirroring the wasm backend which crosses such
+    // an export as a no-result function (`Core::Trap` guard there too). Checked BEFORE the `rust_type`
+    // decline so a diverging `Any`/`Var` result is not misdiagnosed as an unrepresentable type. Gated on
+    // `Core::Trap` specifically — a genuinely-unconstrained (non-diverging) result var still declines, as it
+    // has no defined value to return.
+    let ret = if types::rust_type(result).is_none()
+        && matches!(crate::lower::core_of(db, body), crate::core::Core::Trap)
+    {
+        "!".to_string()
+    } else {
+        types::rust_type(result).ok_or_else(|| {
+            Reject::decline(format!(
+                "`{name}`: result type {} has no native Rust representation",
+                result.render_name()
+            ))
+        })?
+    };
     // Render the body against the parameter environment. Selection reads the core + type columns on
     // demand, so a fault deep in the body surfaces here as a decline. In async mode the body's calls
     // become `Box::pin(callee(env, …)).await`; a self-tail-recursive body becomes a `loop` (so `def` is

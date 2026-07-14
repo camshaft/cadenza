@@ -3089,6 +3089,75 @@ fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
+/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ in their FIELD
+/// SET — the value is MISSING a field the type requires, and/or carries an EXTRA one the type has no
+/// place for. Naming both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x Int64))`)
+/// buries the actual difference; this names the specific fields instead (rustc's "missing field `y`" /
+/// "no field `z`"). `None` unless both are records AND their field-name sets differ (a same-fields
+/// different-field-TYPE mismatch — `(x Int64)` vs `(x Bool)` — is a per-field type error the full render
+/// already shows clearly, not a set difference, so it is left alone). Field names are compared as SETS
+/// (the `BTreeMap` keys), so the hint is deterministic (sorted) and order-independent.
+fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
+        return None;
+    };
+    let missing: Vec<&str> = want
+        .keys()
+        .filter(|k| !got.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    let extra: Vec<&str> = got
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    if missing.is_empty() && extra.is_empty() {
+        return None; // same field names — a per-field type mismatch, not a set difference
+    }
+    let quote = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        let plural = if missing.len() == 1 { "" } else { "s" };
+        parts.push(format!("missing field{plural} {}", quote(&missing)));
+    }
+    if !extra.is_empty() {
+        let plural = if extra.len() == 1 { "" } else { "s" };
+        parts.push(format!(
+            "no such field{plural} {} on the expected record",
+            quote(&extra)
+        ));
+    }
+    Some(format!(" — {}", parts.join("; ")))
+}
+
+/// An actionable message TAIL when `expected` and `actual` are BOTH tuples of DIFFERENT ARITY — the value
+/// has more or fewer elements than the type. Naming both full tuple types (`(Tuple Int64 Int64 Int64)` vs
+/// `(Tuple Int64 Int64)`) buries the count difference; this names the arities (rustc's "expected a tuple
+/// with 3 elements, found one with 2"). `None` unless both are tuples with DIFFERENT lengths (a
+/// same-arity per-position TYPE mismatch — `(Tuple Int64 Bool)` vs `(Tuple Int64 Int64)` — is left to the
+/// full render, which already shows the differing element clearly, exactly as the record helper leaves a
+/// same-field-set type mismatch alone).
+fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual)
+        && want.len() != got.len()
+    {
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        return Some(format!(
+            " — expected a tuple with {} element{}, but this one has {}",
+            want.len(),
+            plural(want.len()),
+            got.len(),
+        ));
+    }
+    None
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
@@ -4821,6 +4890,35 @@ fn check_application(
                             message: format!("{}{hint}", reject.message),
                             ..reject
                         });
+                    } else if crate::eval::effect_op_of(db, head).is_some() {
+                        // A wrong-type argument PERFORMED to an effect operation — `(E.put true)` where
+                        // `put`'s declared type is `(-> Int64 Unit)`. The head is the op VALUE (a `(. E put)`
+                        // member access), so the generic unify mismatch ("Int64 and Bool must be the same
+                        // type here") does not say WHAT the author got wrong — it reads like an internal
+                        // clash, not "you performed `put` with the wrong argument". Name the operation and
+                        // its declared argument type, the perform-site analogue of the variant-ctor payload
+                        // message above (which does the same for `(T.Mk "x")`). The op name is the head's
+                        // member key `(. E put)` → `put`; fall back to "this operation" if unreadable.
+                        let op = db
+                            .ast
+                            .as_form(head, ".")
+                            .and_then(|t| t.get(1).copied())
+                            .and_then(|k| db.ast.as_name(k))
+                            .map(|n| format!("`{n}`"))
+                            .unwrap_or_else(|| "this operation".to_string());
+                        let mut reject = Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "operation {op} expects an argument of type {}, but a value of type {} \
+                                 was performed",
+                                sparam.render_name(),
+                                sat.render_name()
+                            ),
+                        );
+                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     } else {
                         out.push(reject);
                     }
@@ -5915,7 +6013,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             }
             collect(db, scrutinee, out);
-            for (_, body) in &arms {
+            for (pat, body) in &arms {
+                // A GUARDED arm `(guard <pattern> <cond>)`: the guard condition is a boolean predicate
+                // gating the arm (`core-semantics.md` §A Guard Refines A Pattern With A Boolean Test), so
+                // it must have type Bool — exactly like an `if` condition. A non-Bool guard (`(guard x (+
+                // x 1))`) was NOT checked (nor descended into): it compiled, using an Int64 as a branch
+                // condition. Type-check the cond against Bool (CDZ0203, the `if`-condition message) and
+                // descend into it so a fault INSIDE the guard (an unbound name, a type error) also surfaces.
+                if let Some(g) = db.ast.as_form(*pat, "guard").filter(|g| g.len() == 2) {
+                    let cond = g[1];
+                    let cond_ty = type_of(db, cond);
+                    if !cond_ty.agrees_with(&Ty::Bool) {
+                        trace!(target: "rcdzc::infer", node = cond.0, cond_ty = %cond_ty.render_name(), "fault: guard condition not Bool (CDZ0203)");
+                        out.push(
+                            Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "guard condition must be Bool, found {}",
+                                    cond_ty.render_name()
+                                ),
+                            )
+                            .at(cond),
+                        );
+                    }
+                    collect(db, cond, out);
+                }
                 collect(db, *body, out);
             }
         }
@@ -6597,10 +6719,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // Two RECORDS that differ only in their FIELD SET — the value is missing a
+                            // field the type requires, or carries one the type has no place for. Naming
+                            // both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x
+                            // Int64))`) buries the actual difference; name the specific missing/extra
+                            // fields instead (rustc's "missing field `y`" / "no field `z`"). Tail only.
+                            let record_tail = if wrap.is_none() && option_tail.is_none() {
+                                record_field_diff_hint(&annot_ty, &expr_ty)
+                                    .or_else(|| tuple_arity_mismatch_hint(&annot_ty, &expr_ty))
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
+                                .or(record_tail)
                                 .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,

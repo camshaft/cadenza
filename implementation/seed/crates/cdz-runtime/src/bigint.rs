@@ -324,6 +324,68 @@ impl Big {
         }
     }
 
+    /// Read the value DIRECTLY from its canonical sign-magnitude heap-leaf bytes as an `i128`, or `None`
+    /// if it needs more than 127 magnitude bits (i.e. cannot fit `i128`). Like `i64_checked_from_sign_
+    /// magnitude_bytes` but into the wider `i128`, so the SMALL-operand arithmetic fast path (add/sub/mul
+    /// of runtime BigInts, which are usually small — a value is a `BigInt` by TYPE, not because its
+    /// magnitude is huge) can compute with native `checked_*` ops and NO limb `Vec`. Bytes are
+    /// `[sign][LE magnitude, trailing-zeros-stripped]`; >16 magnitude bytes cannot fit i128, and exactly
+    /// 16 bytes fit only if the magnitude ≤ `i128::MAX`+1 (that boundary is `i128::MIN`). A canonical zero
+    /// is `[0]`/empty → `Some(0)`. Differential-tested against `from_sign_magnitude_bytes` (round-trip via
+    /// the `Big` path). NO allocation.
+    pub fn i128_from_sign_magnitude_bytes(bytes: &[u8]) -> Option<i128> {
+        let neg = bytes.first().copied().unwrap_or(0) != 0;
+        let mag = bytes.get(1..).unwrap_or(&[]); // LE magnitude bytes, trailing zeros stripped
+        if mag.len() > 16 {
+            return None; // needs >128 bits — cannot fit i128
+        }
+        let mut m: u128 = 0;
+        for (i, &byte) in mag.iter().enumerate() {
+            m |= (byte as u128) << (8 * i);
+        }
+        if neg {
+            // Negative: fits iff m <= 2^127 (that boundary is exactly i128::MIN). `-(m as i128)` would
+            // overflow at exactly m == 2^127, so handle that endpoint explicitly.
+            if m < (i128::MAX as u128) + 1 {
+                Some(-(m as i128))
+            } else if m == (i128::MAX as u128) + 1 {
+                Some(i128::MIN)
+            } else {
+                None
+            }
+        } else if m <= i128::MAX as u128 {
+            Some(m as i128)
+        } else {
+            None
+        }
+    }
+
+    /// Serialize an `i128` DIRECTLY to the canonical sign-magnitude heap-leaf bytes in `buf`, returning the
+    /// byte length — or `None` if they don't fit `buf`. The write half of the small-operand arithmetic fast
+    /// path: an `i128` result boxes with NO intermediate `Big`/`Vec` (mirrors `to_sign_magnitude_bytes_into`
+    /// for a `Big`). Byte-IDENTICAL to `Big::from_i128(v).to_sign_magnitude_bytes()` — `[sign][LE magnitude,
+    /// trailing-zeros-stripped]`, zero → `[0]`, never negative-zero. `unsigned_abs` handles `i128::MIN`.
+    pub fn i128_to_sign_magnitude_bytes_into(v: i128, buf: &mut [u8]) -> Option<usize> {
+        if buf.is_empty() {
+            return None;
+        }
+        let neg = v < 0;
+        let m = v.unsigned_abs(); // u128; exact for i128::MIN (= 2^127)
+        let le = m.to_le_bytes(); // 16 bytes, little-endian
+        // Significant magnitude length = 16 minus the trailing (high) zero bytes.
+        let mut mlen = 16;
+        while mlen > 0 && le[mlen - 1] == 0 {
+            mlen -= 1;
+        }
+        if 1 + mlen > buf.len() {
+            return None; // caller falls back to the heap `Big` path
+        }
+        // Zero is never negative on the wire (matches the `Big` canonical form).
+        buf[0] = (neg && mlen > 0) as u8;
+        buf[1..1 + mlen].copy_from_slice(&le[..mlen]);
+        Some(1 + mlen)
+    }
+
     // ─── sign-magnitude bytes (the HEAP-LEAF form) ──────────────────────────────────────────────
     // byte 0: sign (0 = non-negative, 1 = negative). bytes 1..: magnitude as LITTLE-ENDIAN bytes with
     // no trailing zero bytes. Zero is exactly `[0x00]` (sign 0, empty magnitude). Canonical.
@@ -625,6 +687,31 @@ mod tests {
                 a.to_i64_checked(),
                 "byte-form i64-narrow agrees with to_i64_checked {a:?}"
             );
+            // The BYTE-form i128 read (the arithmetic FAST PATH's operand decode, no `Big`): whenever it
+            // returns Some, that i128 must ROUND-TRIP to byte-identical canonical bytes (`i128_to_sign_
+            // magnitude_bytes_into`), and equal the original value; when it returns None the value must
+            // genuinely exceed i128 (> 16 significant magnitude bytes, or exactly the ±2^127 endpoints).
+            let a_bytes = a.to_sign_magnitude_bytes();
+            match Big::i128_from_sign_magnitude_bytes(&a_bytes) {
+                Some(v) => {
+                    let mut buf = [0u8; 17];
+                    let n = Big::i128_to_sign_magnitude_bytes_into(v, &mut buf).unwrap();
+                    assert_eq!(
+                        &buf[..n],
+                        &a_bytes[..],
+                        "i128 byte round-trip is byte-identical {a:?}"
+                    );
+                    assert_eq!(
+                        Big::from_sign_magnitude_bytes(&buf[..n]),
+                        a,
+                        "i128 round-trip value {a:?}"
+                    );
+                }
+                None => assert!(
+                    a_bytes.get(1..).map_or(0, |m| m.len()) >= 16,
+                    "i128 None only for >i64-ish wide {a:?}"
+                ),
+            }
 
             if !b.is_zero() {
                 let (q, r) = a.divmod(&b).unwrap();

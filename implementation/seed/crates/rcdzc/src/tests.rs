@@ -12208,6 +12208,113 @@ mod match_engine {
     }
 
     #[test]
+    fn a_record_field_set_mismatch_names_the_specific_missing_or_extra_fields() {
+        // Two records that differ in their FIELD SET — the value is missing a field the type requires, or
+        // carries one it has no place for. Naming both full record types buries the difference; the
+        // message names the specific fields (rustc's "missing field `y`" / "no field `z`").
+        let missing = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
+               (def (g) (h (record (x 1)))) (export g))",
+        )
+        .expect("a record missing a field rejects");
+        assert_eq!(
+            missing.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            missing.message
+        );
+        assert!(
+            missing.message.contains("missing field `y`"),
+            "names the missing field: {}",
+            missing.message
+        );
+        // An EXTRA field the expected record has no place for.
+        let extra = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
+               (def (g) (h (record (x 1) (y 2) (z 3)))) (export g))",
+        )
+        .expect("a record with an extra field rejects");
+        assert!(
+            extra.message.contains("no such field `z`"),
+            "names the extra field: {}",
+            extra.message
+        );
+        // Two missing fields → plural, sorted (deterministic, order-independent).
+        let two = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64) (w Int64)))) (. p x)) \
+               (def (g) (h (record (x 1)))) (export g))",
+        )
+        .expect("a record missing two fields rejects");
+        assert!(
+            two.message.contains("missing fields `w`, `y`"),
+            "names both missing fields, sorted: {}",
+            two.message
+        );
+        // NO field-diff hint when the field NAMES match but a field's TYPE differs — that is a per-field
+        // type mismatch the full render already shows, not a set difference.
+        let type_diff = reject_full(
+            "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
+               (def (g) (h (record (x true)))) (export g))",
+        )
+        .expect("a same-fields different-type record rejects");
+        assert!(
+            !type_diff.message.contains("missing field")
+                && !type_diff.message.contains("no such field"),
+            "a same-field-set type mismatch gets no field-diff hint: {}",
+            type_diff.message
+        );
+    }
+
+    #[test]
+    fn a_tuple_arity_mismatch_names_the_element_counts() {
+        // The tuple analogue of the record field-set hint: a tuple of the wrong ARITY names the element
+        // counts (rustc's "expected a tuple with 3 elements, found one with 2") instead of dumping both
+        // full tuple renders. Fires only on an arity difference; a same-arity per-position TYPE mismatch is
+        // left to the full render.
+        let fewer = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64 Int64))) (. t 0)) \
+               (def (g) (h (tuple 1 2))) (export g))",
+        )
+        .expect("a 2-tuple where a 3-tuple is wanted rejects");
+        assert_eq!(
+            fewer.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            fewer.message
+        );
+        assert!(
+            fewer
+                .message
+                .contains("expected a tuple with 3 elements, but this one has 2"),
+            "names the arity delta: {}",
+            fewer.message
+        );
+        // More elements than the type has room for.
+        let more = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64))) (. t 0)) \
+               (def (g) (h (tuple 1 2 3))) (export g))",
+        )
+        .expect("a 3-tuple where a 2-tuple is wanted rejects");
+        assert!(
+            more.message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "names the arity delta the other direction: {}",
+            more.message
+        );
+        // NO arity hint when the arities MATCH but an element's TYPE differs.
+        let type_diff = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Bool))) (. t 0)) \
+               (def (g) (h (tuple 1 2))) (export g))",
+        )
+        .expect("a same-arity element-type mismatch rejects");
+        assert!(
+            !type_diff.message.contains("expected a tuple with"),
+            "a same-arity element-type mismatch gets no arity hint: {}",
+            type_diff.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -20400,6 +20507,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_condition_must_be_bool_and_its_faults_surface() {
+        // A guarded arm's guard `(guard <pattern> <cond>)` is a boolean predicate gating the arm, so
+        // `<cond>` must be Bool — like an `if` condition. A non-Bool guard (`(guard x (+ x 1))`, an Int64)
+        // used to compile, using a non-boolean as a branch condition; and a fault INSIDE the guard (an
+        // unbound name) was silently accepted because the guard cond was never walked. Both now surface.
+        let err = |src: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("no error for {src}"))
+        };
+        // A non-Bool guard condition → CDZ0203, the same "must be Bool" the `if` condition gives.
+        let d = err(
+            "(module m (def (g (: n Int64)) (match n ((guard x (+ x 1)) x) (_ 0))) (export g))",
+        );
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("guard condition must be Bool") && d.message.contains("Int64"),
+            "names the guard + the offending type: {}",
+            d.message
+        );
+        // A String guard is likewise rejected (the check is general, not int-specific).
+        assert!(
+            err("(module m (def (g (: n Int64)) (match n ((guard x \"y\") x) (_ 0))) (export g))")
+                .message
+                .contains("guard condition must be Bool"),
+        );
+        // A fault INSIDE a guard condition (an unbound name) now surfaces — the cond is walked.
+        assert_eq!(
+            err("(module m (def (g (: n Int64)) (match n ((guard x (> x zzz)) x) (_ 0))) (export g))")
+                .code
+                .as_deref(),
+            Some("CDZ0101"),
+        );
+        // NO false positive: a valid Bool guard compiles clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export g))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a Bool guard produces no fault"
+        );
+    }
+
+    #[test]
     fn a_guarded_arm_over_a_runtime_scrutinee_gates_and_falls_through() {
         // A guarded arm over a RUNTIME scrutinee (an exported param, so no fold): `(classify n)` returns
         // -1 when n<0, else n's own value via a later guard, else 0. Exercises the runtime probe chain's
@@ -23853,6 +24006,35 @@ mod stage1 {
         let stmts2: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
         let src2 = format!("(do (def x 7) {stmts2}x)");
         assert_eq!(run_main(&src2), 7);
+    }
+
+    #[test]
+    fn a_wide_do_block_of_functions_resolves_every_call_in_bounded_time() {
+        // REGRESSION (perf): `resolve`'s do-block scope answered "does an earlier form declare `name`? and
+        // (for mutual recursion) does ANY form declare it as a function?" by SCANNING every do-form per
+        // reference — a reverse scan then an UNCONDITIONAL forward scan for a `Lambda`, both running to
+        // completion on a NEGATIVE lookup (a reference to a prelude/outer name the block doesn't declare).
+        // So a `(do (def (f0 …)) … (def (fN …)) <N calls>)` was O(forms × refs) = O(N²) — likewise a wide
+        // do-local `(module …)` accessed from N sites (`module_sibling_binds`' member scan). The fix indexes
+        // each do-block's / module's declarations by name once at load (`Db::do_binder_index`), so a
+        // reference is an O(1)/O(log N) lookup over only the forms declaring that name. N=200 defs, each
+        // called once from a wide flat sum — well into the old quadratic regime; must resolve + compile in
+        // bounded time and return the right value.
+        let n = 200;
+        let defs: String = (0..n)
+            .map(|i| format!("(def (g{i} (: x Int64)) (+ x {i})) "))
+            .collect();
+        // Sum all N calls: `(+ (g0 0) (+ (g1 0) (+ … 0)))`, nested right — 200 levels, under the parser's
+        // 1024-nesting guard, and it forces resolution of EVERY call (the O(N²)-per-reference path). No List
+        // (a scalar Int64 result runs without the value-heap runtime). Σ g_i(0) = Σ i = 199·200/2 = 19900.
+        let mut body = String::from("0");
+        for i in (0..n).rev() {
+            body = format!("(+ (g{i} 0) {body})");
+        }
+        let src = format!("(do {defs}{body})");
+        // Σ_{i=0}^{199} i = 19900. Resolution of all N calls must stay linear (seconds at N=200 pre-fix on
+        // the O(N²) path); that it runs + returns 19900 is the gate.
+        assert_eq!(run_main(&src), 19900);
     }
 
     #[test]
@@ -27365,9 +27547,17 @@ mod stage1 {
         // argument is caught first.
         let src = "(do (effect E (op op (-> Int64 Int64))) \
                    (def (main) ((. E op) true)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a wrong-type perform argument must be rejected");
+        // The message NAMES the operation + its declared argument type — the perform-site analogue of the
+        // variant-ctor payload message — not the generic "Int64 and Bool must be the same type here"
+        // (which reads like an internal clash, not "you performed `op` with the wrong argument").
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a wrong-type perform argument must be rejected"
+            err.message.contains("operation `op`")
+                && err.message.contains("Int64")
+                && err.message.contains("Bool"),
+            "names the operation + expected/actual types: {}",
+            err.message
         );
     }
 
@@ -28571,6 +28761,60 @@ mod stage1 {
             )))
             .is_ok(),
             "a nested-module effect delegation must not be false-flagged as a non-effect"
+        );
+    }
+
+    #[test]
+    fn an_effect_operation_with_no_name_is_rejected() {
+        // An operation clause is `(op <name> <type>)`; its name must be a bare name. `(op (-> Unit Int64))`
+        // puts the TYPE where the name belongs — `scan_effect_decl` recorded it with an EMPTY name and a
+        // `name_occ` at the type node, silently registering a nameless (unreachable) operation. Now
+        // `collect_faults` rejects it CDZ0201: an operation must be named, like a def or a variant.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op (-> Unit Int64))) (def (main) 5) (export main))",
+        )))
+        .expect_err("a nameless effect operation must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("named") && d.message.contains("op"),
+            "the message explains an operation must be named: {}",
+            d.message
+        );
+        // A well-formed effect declaration still compiles (regression).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ((get (u) s (resume s s))) (E.get))) (export main))",
+            )))
+            .is_ok(),
+            "a well-formed effect declaration must compile"
+        );
+    }
+
+    #[test]
+    fn a_host_delegating_the_same_effect_twice_is_rejected() {
+        // A `host`'s effect list is a SET — the manifest is the union of escaping effects — so `(host (A A)
+        // …)` names the same effect twice, the same fixed-set-no-duplicates ill-formedness a duplicate effect
+        // operation and a duplicate handler arm are rejected for (CDZ0201). Left unchecked it double-imports
+        // at the boundary and TRAPS at run time; `check_no_home` now rejects the second occurrence.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect A (op a (-> Unit Int64))) (def (main) (host (A A) (A.a))) (export main))",
+        )))
+        .expect_err("delegating the same effect twice must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("more than once") || d.message.contains("delegated"),
+            "the message explains the duplicate delegation: {}",
+            d.message
+        );
+        // A single delegation of a declared effect still compiles (regression).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (ask.ask))) (export main))",
+            )))
+            .is_ok(),
+            "a single valid host delegation must compile"
         );
     }
 
@@ -40486,6 +40730,141 @@ mod closure_host_resource {
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// BRICK B (compound closure ARG, DIRECT-CALL path): the production serializer's `call` rebuilds a
+    /// FLATTENED fixed-shape scalar tuple argument into the single value-heap CELL its lifted closure body
+    /// expects — `arr-alloc N` + per field (index, the flattened core param, box, `arr-set`) — then dispatches
+    /// `call_indirect`, and drops the rebuilt cell afterward (an owned per-call temporary). Models
+    /// `(def (mk) (fn (p) (+ (. p 0) (. p 1))))` whose closure arg `(Tuple Int64 Int64)` crosses the boundary
+    /// FLATTENED into two `s64` core params (`arg_vts = [I64, I64]`) — the `a_fixed_shape_tuple_closure_arg_
+    /// crosses_by_native_flattening` oracle proved that ABI runs. This pins the serializer's byte shape
+    /// (validated by `wasmparser`); the runnable end-to-end path wires this core into the tuple-typed
+    /// envelope (Brick C) + `emit_closure_resource` routing (Brick D). `TupleArgRebuild = None` is byte-
+    /// identical to the scalar path (the 53 closure tests above prove that).
+    #[test]
+    fn closure_tuple_arg_resource_core_rebuilds_the_cell_and_validates() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{
+            ClosureMake, TupleArgRebuild, multi_closure_resource_core_module_with_host_borrow,
+        };
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let tuple_ty = Ty::Tuple(vec![s64.clone(), s64.clone()].into());
+        // The closure is `(-> (Tuple Int64 Int64) Int64)`; the lifted body reads its arg (a tuple cell) via
+        // two projections. Imports (SORTED, as `collect_used_ops` produces): arr-alloc, arr-get, arr-set,
+        // box-int, drop, get-int. The `call` rebuild uses arr-alloc/box-int/arr-set/drop; the lifted body's
+        // projections use arr-get/get-int; the make cell build arr-alloc/box-int/arr-set.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `mk : () -> own<closure>` — build the 1-slot code cell (slot 0),
+        // returning the cell handle (no captures). Uses arr-alloc/box-int/arr-set.
+        let fn_ty = Ty::Fn(Box::new(tuple_ty.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, p: i32) -> i64` = `(. p 0) + (. p 1)` — two tuple
+        // projections over the REBUILT cell `call` hands it: arr-get(p,i) → get-int, added.
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I32], // env cell, the tuple arg cell
+            ret: s64.clone(),
+            code: vec![
+                Lir::LocalGet(1),
+                Lir::ConstI32(0),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::LocalGet(1),
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::I64Add,
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        let export = ExportPlan {
+            name: "mk".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        // The lifted lambda takes ONE param — the tuple cell (an i32 handle) — NOT the two flattened fields;
+        // the `call` wrapper does the reassembly, so the `call_indirect` functype is `(env i32, p i32) -> i64`.
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), tuple_ty.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        // The tuple `(Tuple Int64 Int64)` crosses FLATTENED as two s64 core params; each field boxes with
+        // `box-int` (which takes an i64). A 64-bit field's core param is ALREADY i64, so NO i32→i64 extend
+        // (`field_extend_signed = None`); the extend is only for a NARROW int field (an i32-width core param).
+        // The `call`'s boundary/core arg list is thus `[I64, I64]` (the flattened fields), NOT one i32 handle.
+        let rebuild = TupleArgRebuild {
+            field_box_ops: vec![Some("box-int"), Some("box-int")],
+            field_extend_signed: vec![None, None],
+        };
+        let core = multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64, ValType::I64], // the FLATTENED tuple fields
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(&rebuild),
+        )
+        .expect("tuple-arg closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("tuple-arg closure-resource core module validates");
     }
 
     /// HOST-COMPOSED closure-resource core (`multi_closure_resource_core_module_with_host`): the build-time-

@@ -1271,16 +1271,58 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
     if forms.get(k) != Some(&from) {
         return None; // `from` is not a direct do-form (defensive; a genuine child always matches)
     }
-    // Reverse-scan the earlier forms so the LAST declaration of `name` wins, stopping at the first hit.
-    for &f in forms[..k].iter().rev() {
+    // The forms declaring `name`, as ascending `(position, form)` pairs. `do_forms_declaring` gives them
+    // in O(1) for a LOAD-TIME do-block (the per-block declaration index, `Db::do_binder_index`) — so a
+    // reference to a name the block never declares (a prelude/outer name — `+`, `unit`, a member access's
+    // own head, BY FAR the common case) is an O(1) miss, not the old per-reference O(forms) scan that made
+    // a wide `(do (def …)… <N uses>)` O(N²). It returns `None` only for a do-block APPENDED AFTER load (a
+    // copied recursive-do-local body from inlining, past the load-time arena — not in the index); there we
+    // fall back to a LIVE scan of the forms building the same candidate list (correctness over speed — a
+    // copied body is small and re-resolved a bounded number of times).
+    let owned;
+    let cands: &[(u32, StructId)] = match db.do_forms_declaring(form, name) {
+        Some(indexed) => indexed,
+        None => {
+            owned = forms
+                .iter()
+                .enumerate()
+                .filter(|&(_, &f)| {
+                    let is_def = db
+                        .ast
+                        .as_form(f, "def")
+                        .and_then(|t| t.first())
+                        .map(|&sig| match db.ast.get(sig) {
+                            Struct::Atom(_) => db.ast.as_name(sig) == Some(name),
+                            Struct::List(children) => {
+                                children.first().and_then(|&c| db.ast.as_name(c)) == Some(name)
+                            }
+                        })
+                        .unwrap_or(false);
+                    let is_mod = db
+                        .ast
+                        .as_form(f, "module")
+                        .and_then(|t| t.first())
+                        .and_then(|&n| db.ast.as_name(n))
+                        == Some(name);
+                    is_def || is_mod
+                })
+                .map(|(pos, &f)| (pos as u32, f))
+                .collect::<Vec<_>>();
+            &owned
+        }
+    };
+    // Reverse (sequential) scope: the LAST declaration of `name` at a position < `k` wins (a form sees
+    // earlier declarations, not itself or later ones). `cands` is ascending, so `partition_point` finds
+    // the highest such position — byte-identical to the old reverse scan's first-hit-walking-backward.
+    let before = cands.partition_point(|&(pos, _)| (pos as usize) < k);
+    if let Some(&(_, f)) = before.checked_sub(1).map(|last| &cands[last]) {
+        // The same per-form logic the old reverse scan ran (a `def` binder, else a `(module …)` record).
         if let Some(binder) = do_def_binds(db, f, name) {
             return Some(binder);
         }
         // A do-local `(module NAME …)` binds `NAME` to its synthesized record (fields = its exported defs,
         // built at load by `modules::synthesize`) — a `Ref` to the record, so `(. NAME field)` is ordinary
-        // member access. The module analogue of a do-local `def` binding, resolved off the occurrence-keyed
-        // `modules` index (no name special-case) — so the module's name is bound in its enclosing scope by
-        // its own declaration, and a reference resolves to that record under the ordinary lexical rules.
+        // member access.
         //= spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope
         //# Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
         //= spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope
@@ -1295,15 +1337,14 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
     // No SEQUENTIAL (backward-visible) declaration bound `name`. A do-local FUNCTION declaration, though,
     // is in scope in its OWN body (self-recursion) and in a SIBLING function's body regardless of order
     // (mutual recursion) — a function group in a `do` is mutually visible exactly like a module's members
-    // or the top-level defs, not strictly sequential like a value binding. So scan EVERY form (including
-    // `from` itself and the ones after it) for a FUNCTION def of `name` — accepting ONLY a `Lambda` (a
-    // `(def (f p…) BODY)` with parameters), never a `Ref`. This keeps a VALUE def strictly backward
-    // (`(do (def x 5) (def x (+ x 10)) x)` = 15 — the second `x` sees only the first, not itself), while a
-    // recursive/forward FUNCTION reference resolves. First match wins across the block (a duplicate
-    // function name is a separate well-formedness concern).
-    forms
+    // or the top-level defs, not strictly sequential like a value binding. So check EVERY declaring form
+    // (including `from` itself and the ones after it) for a FUNCTION def of `name` — accepting ONLY a
+    // `Lambda` (a `(def (f p…) BODY)` with parameters), never a `Ref`. This keeps a VALUE def strictly
+    // backward (`(do (def x 5) (def x (+ x 10)) x)` = 15 — the second `x` sees only the first, not
+    // itself), while a recursive/forward FUNCTION reference resolves. First (lowest-position) match wins.
+    cands
         .iter()
-        .filter_map(|&f| match do_def_binds(db, f, name) {
+        .filter_map(|&(_, f)| match do_def_binds(db, f, name) {
             lam @ Some(Resolved::Lambda { .. }) => lam,
             _ => None,
         })
@@ -1321,13 +1362,29 @@ fn module_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved>
     // reverse of `modules::synthesize`); its members are the module form's tail after NAME.
     let module_form = db.module_by_synth_record(form)?;
     let members = db.ast.as_form(module_form, "module")?.get(1..)?;
+    // O(1) via the per-module member index (`Db::do_binder_index` also indexes `(module …)` forms) — the
+    // members declaring `name`, ascending. A name no member declares is absent → an O(1) negative; before,
+    // this `find_map`-scanned ALL members on EVERY sibling/member reference, so a wide module referenced
+    // from N sites was O(members × refs) = O(N²) (the do-scope trap of this same fix, in the module scope).
+    // A module APPENDED after load (a copied body from inlining, not in the index) falls back to a live
+    // member scan — the same correctness-over-speed fallback the do-scope uses.
+    let owned;
+    let cands: &[(u32, StructId)] = match db.do_forms_declaring(module_form, name) {
+        Some(indexed) => indexed,
+        None => {
+            owned = members
+                .iter()
+                .enumerate()
+                .map(|(pos, &m)| (pos as u32, m))
+                .collect::<Vec<_>>();
+            &owned
+        }
+    };
     // FIRST-wins across the members (a duplicate name is a separate concern; the sum/def indices resolve a
-    // shared name first-wins too). A NESTED `(module inner …)` member binds `inner` to its synthesized
-    // record — the same `Ref` the `(. outer inner)` projection folds to — so a sibling def's body may
-    // reference the inner module by bare name, exactly as it references a sibling def. `do_def_binds`
-    // yields exactly the `Ref`/`Lambda` a top-level/do-local def of the same shape would — so the ordinary
-    // application/fold paths apply uniformly.
-    members.iter().find_map(|&m| {
+    // shared name first-wins too), so take the LOWEST-position declaring member. A NESTED `(module inner …)`
+    // member binds `inner` to its synthesized record — the same `Ref` the `(. outer inner)` projection folds
+    // to — so a sibling def's body may reference the inner module by bare name, exactly as a sibling def.
+    cands.iter().find_map(|&(_, m)| {
         if db
             .ast
             .as_form(m, "module")
