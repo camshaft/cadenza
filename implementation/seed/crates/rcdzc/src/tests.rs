@@ -26303,6 +26303,21 @@ mod match_engine {
                 .message
                 .contains("did you mean `second`?"),
         );
+        // An ABBREVIATION with no confident typo neighbour (`mph`'s nearest units by edit distance are the
+        // unrelated `bps`/`mbps`/`bit`) does NOT get a misleading "closest matches" list — it gets
+        // ACTIONABLE guidance: how to COMPOSE a compound unit and how to DECLARE the name with `Unit.define`.
+        let mph =
+            find("(module m (def (main) (Qty.of 45 (Unit.of #\"mph\"))) (export main))").message;
+        assert!(
+            !mph.contains("closest matches") && !mph.contains("`bps`"),
+            "no misleading closest-matches noise: {mph}"
+        );
+        assert!(
+            mph.contains("compose a compound unit")
+                && mph.contains("(Unit.of #\"hour\")")
+                && mph.contains("(Unit.define #\"mph\""),
+            "actionable compound/declare guidance carrying the unknown name: {mph}"
+        );
         // An unknown BASE unit inside a `Unit.define` is caught too.
         assert!(
             find("(module m (Unit.define #\"furlong\" (Unit.of #\"zorks\") 660 1) (def (main) 1) (export main))")

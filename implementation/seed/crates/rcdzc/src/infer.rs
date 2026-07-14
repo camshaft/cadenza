@@ -5261,8 +5261,11 @@ pub(crate) fn check_malformed_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
 /// (`unit_families`) nor a user `Unit.define` — `5zorks` / `5gram` (a plausible-but-undefined unit). The
 /// unit fails to reduce (`eval::unit_of` → `None`), so `Qty.of`'s type falls through to a non-`Qty` and
 /// the value later declines "no machine representation" — a GENERIC message that never mentions the unit.
-/// Name it here (CDZ0201, a malformed quantity literal, the code a malformed numeric literal gets), with
-/// a did-you-mean over the KNOWN unit names (families + user defines), so `5gram` points at a near unit.
+/// Name it here (CDZ0201, a malformed quantity literal, the code a malformed numeric literal gets). A
+/// CONFIDENT typo of a known unit (`metre`→`meter`) gets a "did you mean?"; an unrecognized name that is
+/// NOT a near-miss (an abbreviation like `mph`, whose edit-distance neighbours are unrelated data-rate
+/// units) instead gets ACTIONABLE guidance — how to COMPOSE a compound unit and how to DECLARE a new one
+/// with `Unit.define` — rather than a misleading "closest matches" list.
 /// Well-formedness independent of reachability — checked over every `(Unit.of #"…")` occurrence.
 pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     // The known unit vocabulary (built-in families + every user `Unit.define` name) is built LAZILY — only
@@ -5298,7 +5301,21 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
         if known.contains(&name) {
             continue; // a known family / user-defined unit
         }
-        let hint = crate::diag::suggest::did_you_mean(&name, known.iter(), 3);
+        // Two-tiered hint. A CONFIDENT typo of a real unit (`metre`→`meter`, `secnd`→`second`) gets a
+        // "did you mean?". Otherwise DON'T fall back to `did_you_mean`'s raw "closest matches" list: for
+        // an ABBREVIATION like `mph`/`kmh`/`rpm` the nearest units by edit distance are semantically
+        // unrelated noise (`mph` → `bps`, `mbps`, `bit`) — misleading, and it never says what to DO.
+        // Give ACTIONABLE guidance instead — a compound unit is COMPOSED from known units, and a genuinely
+        // new named unit is introduced with `Unit.define` (the example carries the actual unknown name, so
+        // it is a copy-paste starting point).
+        let hint = match crate::diag::suggest::nearest(&name, known.iter()) {
+            Some(near) => format!(" — did you mean `{near}`?"),
+            None => format!(
+                " — compose a compound unit from known units \
+                 (e.g. miles per hour is `(Unit./ (Unit.of #\"mile\") (Unit.of #\"hour\"))`), \
+                 or declare it with `(Unit.define #\"{name}\" <base-unit> <num> <den>)`"
+            ),
+        };
         out.push(
             Reject::coded(
                 Code::Malformed,
