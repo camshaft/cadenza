@@ -49464,6 +49464,62 @@ mod cross_component_oracle {
         let _ = &mut db;
     }
 
+    /// A MALFORMED `(extern …)` — its first element (the peer interface) missing or a bare NAME instead of
+    /// a STRING literal — is CDZ0201, not silently dropped. `scan_extern_decl` returns `None` for such a
+    /// form (`as_str(*tail.first()?)?`), so it registered no `ExternDecl` and any op it would bind went
+    /// unbound, surfacing a misleading "unbound name `neg` — did you mean `Neg`?" (an unrelated prelude
+    /// type). Now the extern form is rejected naming the real fix (the interface is a string), and the
+    /// consequent unbound-name faults for the extern's own op names are DEDUPED — one primary "no".
+    #[test]
+    fn a_malformed_extern_interface_is_cdz0201_not_a_silent_drop() {
+        use crate::testkit::parse;
+        // (a) a non-string interface (`foo` a bare name) — CDZ0201, and the `neg` it binds is NOT reported
+        // unbound (the malformed-extern reject explains the real defect).
+        let bad = "(do (extern foo (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a peer INTERFACE as a string")),
+            "a non-string extern interface is CDZ0201: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("unbound name `neg`")),
+            "the consequent unbound-`neg` is deduped: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (b) a bare `(extern)` with no interface at all — likewise CDZ0201.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (extern) (def (main) 1) (export main))"
+            )))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a peer INTERFACE")),
+            "a bare (extern) with no interface is CDZ0201"
+        );
+        // (c) NO REGRESSION: a well-formed extern (string interface) is clean, and a GENUINELY unbound name
+        // unrelated to any extern is still reported.
+        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.message.contains("names a peer INTERFACE")),
+            "a well-formed extern is not flagged"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (frobnicate 5)) (export main))"
+            )))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("unbound name `frobnicate`")),
+            "a genuine unbound name (no extern) is still CDZ0101"
+        );
+    }
+
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
     // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via

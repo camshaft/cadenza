@@ -1757,6 +1757,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         }
         faults.push(reject);
     }
+    // A MALFORMED `(extern …)` cross-component declaration — one whose first element (the peer INTERFACE)
+    // is missing or not a STRING literal. `scan_extern_decl` returns `None` for such a form (the interface
+    // read is `as_str(*tail.first()?)?`), so it registers NO `ExternDecl` and is SILENTLY DROPPED: any op
+    // it was meant to bind becomes unbound, surfacing as a misleading "unbound name `neg` — did you mean
+    // `Neg`?" (an unrelated prelude type), and the real defect — the interface must be a string — is lost.
+    // Reject it here (CDZ0201) at the extern form so BOTH `check` and `compile` name it, the extern
+    // analogue of the malformed-export scan-and-drop check. Walked over every `(extern …)` in the arena; a
+    // WELL-FORMED extern (`(extern "cadenza:pkg/iface" …)`, first element a string) registers an
+    // `ExternDecl` and is NOT flagged.
+    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+        let Some(etail) = db.ast.as_form(form, "extern").map(<[_]>::to_vec) else {
+            continue;
+        };
+        let interface_ok = etail.first().is_some_and(|&i| db.ast.as_str(i).is_some());
+        if !interface_ok {
+            let anchor = etail.first().copied().unwrap_or(form);
+            faults.push(
+                Reject::coded(Code::Malformed, crate::diag::MALFORMED_EXTERN_MESSAGE).at(anchor),
+            );
+        }
+    }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
     // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed
     // (`Any`) — cannot cross the component boundary. The backend rejects it deep in closure-resource
@@ -2100,6 +2121,37 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_malformed_host_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
     });
+    // A MALFORMED `(extern …)` (non-string interface) does not register, so each op it would bind goes
+    // unbound — a misleading consequent "unbound name `neg`" the malformed-extern reject already explains.
+    // When such a reject is present, collect the op NAMES from every malformed extern in the arena so the
+    // consequent unbound-name faults for exactly those names are dropped (one primary "no"). Re-derived
+    // here (not threaded from `collect_faults`) because `dedup_faults` re-computes its flags from `faults`.
+    let malformed_extern_op_names: std::collections::HashSet<String> = if faults
+        .iter()
+        .any(|r| r.message.starts_with(crate::diag::MALFORMED_EXTERN_PREFIX))
+    {
+        let mut names = std::collections::HashSet::new();
+        for form in (0..db.ast.structure.len() as u32).map(StructId) {
+            let Some(etail) = db.ast.as_form(form, "extern") else {
+                continue;
+            };
+            let etail = etail.to_vec();
+            let interface_ok = etail.first().is_some_and(|&i| db.ast.as_str(i).is_some());
+            if !interface_ok {
+                for &clause in etail.iter().skip(1) {
+                    if let crate::ast::Struct::List(parts) = db.ast.get(clause)
+                        && let Some(&name_occ) = parts.first()
+                        && let Some(name) = db.ast.as_name(name_occ)
+                    {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        names
+    } else {
+        std::collections::HashSet::new()
+    };
     // Likewise: a COMPARISON whose operands are a genuine TYPE MISMATCH (`(< 1 "x")`) is rejected by
     // `infer` as a coded "… are different types …" (CDZ0201/CDZ0203 naming the kind boundary). Because one
     // operand is a compound/text the emit path cannot fold to a scalar, `lower` ALSO returns the uncoded
@@ -2373,6 +2425,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             // to the no-home walk — a consequent CDZ0401. Drop it for the malformed-host CDZ0201 (the real,
             // fixable defect is the host's shape, not a missing handler).
             if has_malformed_host_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A MALFORMED extern's op names go unbound (the extern didn't register). Drop the consequent
+            // "unbound name `<op>`" CDZ0101 for exactly those names, keeping the malformed-extern CDZ0201
+            // (which names the real defect + the fix). The op name is the identifier between the first
+            // backtick pair of the unbound message (`unbound name `neg`[ — did you mean …]`).
+            if !malformed_extern_op_names.is_empty()
+                && r.code == Some(Code::Unbound)
+                && let Some(name) = r.message.split('`').nth(1)
+                && malformed_extern_op_names.contains(name)
+            {
                 return false;
             }
             // A mismatched-type comparison (`(< 1 "x")`) reports the coded "… are different types" reject;
