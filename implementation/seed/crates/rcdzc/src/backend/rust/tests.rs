@@ -1222,6 +1222,48 @@ fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
 }
 
 #[test]
+fn a_generic_sum_emits_a_parameterized_descriptor_for_the_gate_renderer() {
+    // A GENERIC user sum emits a `// cdz-sum[Ident]:` descriptor whose payload tokens carry `T{k}`
+    // PLACEHOLDERS (not concrete types), plus a `// cdz-sum-params[Ident]: N` note giving the parameter
+    // count — so the gate's rust-target value renderer can substitute the result type's concrete args and
+    // render a generic-sum escape (was: no descriptor → the escape fell to a scalar `Display` of the enum
+    // → rustc E0277). A bare-param payload `(W a)` renders `T0`; a nested one `(W (Option a))` renders
+    // `(Option T0)`.
+    let bare = compile_rust("(module m (type Box (W a) (E)) (def (main) (Box.W 42)) (export main))");
+    assert!(
+        bare.contains("// cdz-sum[Box]: (W T0) (E)"),
+        "bare-param generic sum descriptor uses T0 placeholder:\n{bare}"
+    );
+    assert!(
+        bare.contains("// cdz-sum-params[Box]: 1"),
+        "generic sum records its parameter count:\n{bare}"
+    );
+
+    // A nested-param payload renders the placeholder inside the nesting: `(W (Option a))` → `(Option T0)`.
+    let nested = compile_rust(
+        "(module m (type Box (E) (W (Option a))) (def (main) (Box.W (Option.Some 42))) (export main))",
+    );
+    assert!(
+        nested.contains("// cdz-sum[Box]: (E) (W (Option T0))"),
+        "nested-param generic sum descriptor places T0 inside the payload:\n{nested}"
+    );
+
+    // A MONOMORPHIC sum still emits its descriptor WITHOUT a params note (concrete payload types, no
+    // placeholders) — the generic path must not regress the monomorphic one.
+    let mono = compile_rust(
+        "(module m (type W (V (Option Int64)) (Z)) (def (main) (W.V (Option.Some 5))) (export main))",
+    );
+    assert!(
+        mono.contains("// cdz-sum[W]: (V (Option Int64)) (Z)"),
+        "monomorphic descriptor keeps concrete payload types:\n{mono}"
+    );
+    assert!(
+        !mono.contains("// cdz-sum-params[W]:"),
+        "a monomorphic sum emits no params note:\n{mono}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_three_level_nested_sum_match_folds_through_known_constructors() {
     // THREE sum levels — `Outer.Q → Inner.Y → Result.Ok` — where the two OUTER variants are known
     // constructors (built inline) and only the innermost `Result` disc is runtime. `lower`'s disc-fold

@@ -3970,6 +3970,22 @@
   (call   main)
   (output (: (W 42) (Box Int64))))
 
+(case "a generic sum whose payload NESTS the parameter escapes with the instantiated inner type"
+  (doc    "The nested-parameter companion: `(type Box (E) (W (Option a)))` — the type parameter `a` sits
+           INSIDE the `W` variant's `(Option a)` payload, not as the whole payload. At `(Box Int64)` the
+           value `(Box.W (Option.Some 42))` escapes `(: (W (Some 42)) (Box Int64))` — the inner `Option`'s
+           payload observable, the parameter instantiated to Int64. Pins that the escape-render descriptor
+           carries a NESTED parameter's instantiation (not just a bare-param payload): the wasm value-encode
+           walks the `Option` inside the `W`, and the rust gate substitutes the result frame's arg into the
+           generic descriptor's `T0` placeholder (`(W (Option T0))` → `(W (Option Int64))`).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (E) (W (Option a)))
+            (def (main) (: (Box.W (Option.Some 42)) (Box Int64)))
+            (export main)))
+  (call   main)
+  (output (: (W (Some 42)) (Box Int64))))
+
 (case "an all-nullary enum dispatches its runtime-selected variant and escapes"
   (doc    "An enum whose variants are ALL nullary — `(type Color Red Green Blue)` — each variant is the
            inline-unit CONSTANT (no arr-alloc(0) payload). A function selects one at runtime via nested

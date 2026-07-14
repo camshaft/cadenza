@@ -958,9 +958,12 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // …and the erased-newtype descriptors (`// cdz-newtype[Pt]: <inner>`) — a newtype-typed boundary value
     // renders by its inner type (the tag erased), not `Display` of the erased Rust tuple.
     let newtypes = cdz_newtype_descriptors(&module);
+    // …and the per-generic-sum parameter COUNT (`// cdz-sum-params[Box]: 1`) — the driver substitutes a
+    // generic sum's `T{k}` payload placeholders with the result type's concrete args when it renders one.
+    let sum_params = cdz_sum_params(&module);
     let body = match ret_ty
         .as_deref()
-        .map(|ty| cdz_render_expr(ty, &sums, &newtypes))
+        .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params))
     {
         Some(render) => {
             format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
@@ -1125,10 +1128,13 @@ fn cdz_render_expr(
     ty: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
+    sum_params: &std::collections::HashMap<String, usize>,
 ) -> String {
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
-    let expr = cdz_render_at(ty, "__r", sums, newtypes, &mut helpers, &mut on_path);
+    let expr = cdz_render_at(
+        ty, "__r", sums, newtypes, sum_params, &mut helpers, &mut on_path,
+    );
     // The recursive-sum render helpers (if any) are hoisted ahead of the expression, then the expression
     // is a block that defines them and evaluates. Each helper is a `fn`, so mutual/self recursion works.
     if helpers.is_empty() {
@@ -1154,6 +1160,7 @@ fn cdz_render_at(
     path: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
+    sum_params: &std::collections::HashMap<String, usize>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
 ) -> String {
@@ -1167,7 +1174,7 @@ fn cdz_render_at(
     // to the scalar `Display` of the erased Rust tuple `(i64, i64)` (rustc E0277). Checked before the user-
     // sum arm (a newtype has no `cdz-sum` descriptor) and the scalar fallthrough.
     if let Some(inner) = newtypes.get(ty) {
-        return cdz_render_at(inner, path, sums, newtypes, helpers, on_path);
+        return cdz_render_at(inner, path, sums, newtypes, sum_params, helpers, on_path);
     }
     // `(Tuple T0 T1 …)` → `(tuple …)`. The EMPTY tuple `(Tuple)` (a variant's explicit empty-tuple payload,
     // distinct from `Unit`) renders the literal `(tuple)` — no elements, no `path` read, and NO trailing
@@ -1186,6 +1193,7 @@ fn cdz_render_at(
                     &format!("({path}).{i}"),
                     sums,
                     newtypes,
+                    sum_params,
                     helpers,
                     on_path,
                 )
@@ -1222,6 +1230,7 @@ fn cdz_render_at(
                 &format!("({path}).{i}"),
                 sums,
                 newtypes,
+                sum_params,
                 helpers,
                 on_path,
             ));
@@ -1241,7 +1250,7 @@ fn cdz_render_at(
     let vbind = format!("__v{}", path.len());
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
-        let inner = cdz_render_at(payload, &vbind, sums, newtypes, helpers, on_path);
+        let inner = cdz_render_at(payload, &vbind, sums, newtypes, sum_params, helpers, on_path);
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
         );
@@ -1252,6 +1261,7 @@ fn cdz_render_at(
             &vbind,
             sums,
             newtypes,
+            sum_params,
             helpers,
             on_path,
         );
@@ -1260,6 +1270,7 @@ fn cdz_render_at(
             &vbind,
             sums,
             newtypes,
+            sum_params,
             helpers,
             on_path,
         );
@@ -1267,14 +1278,72 @@ fn cdz_render_at(
             "match &{path} {{ Ok({vbind}) => format!(\"(Ok {{}})\", {ok}), Err({vbind}) => format!(\"(Err {{}})\", {err}) }}"
         );
     }
+    // A GENERIC user sum at a concrete instantiation — `(Box Int64)`, a HEAD-APPLIED type whose head names
+    // a sum with a `// cdz-sum-params[Head]: N` note. Its descriptor's payload tokens carry `T{k}`
+    // placeholders (`(W T0) (E)`); substitute the instantiation's args (`[Int64]`) for the placeholders,
+    // then render INLINE via a `match` (no helper `fn`, so no Rust generic type signature to spell — Rust
+    // infers `Box<i64>` from the matched value). This is what lets a generic-sum boundary value render on
+    // the rust gate the way it does on wasm; without it a generic-sum escape fell to the scalar path and
+    // failed rustc E0277 ("doesn't implement Display").
+    if let Some((head, args)) = parse_applied_type(ty)
+        && let Some(variants) = sums.get(&head)
+        && sum_params.get(&head).copied().unwrap_or(0) == args.len()
+        && !args.is_empty()
+    {
+        let vbind = format!("__g{}", path.len());
+        let mut arms = Vec::with_capacity(variants.len());
+        for (vname, payloads) in variants {
+            let vident = rust_ident(vname);
+            // Substitute the instantiation args for the `T{k}` placeholders in each payload token.
+            let subst: Vec<String> = payloads
+                .iter()
+                .map(|p| subst_type_params(p, &args))
+                .collect();
+            match subst.len() {
+                0 => arms.push(format!(
+                    "prog::{head}::{vident} => \"({vname} unit)\".to_string()"
+                )),
+                1 => {
+                    let inner = cdz_render_at(
+                        &subst[0], &vbind, sums, newtypes, sum_params, helpers, on_path,
+                    );
+                    arms.push(format!(
+                        "prog::{head}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
+                    ));
+                }
+                n => {
+                    let placeholders = vec!["{}"; n].join(" ");
+                    let parts: Vec<String> = subst
+                        .iter()
+                        .enumerate()
+                        .map(|(i, pty)| {
+                            cdz_render_at(
+                                pty,
+                                &format!("({vbind}).{i}"),
+                                sums,
+                                newtypes,
+                                sum_params,
+                                helpers,
+                                on_path,
+                            )
+                        })
+                        .collect();
+                    arms.push(format!(
+                        "prog::{head}::{vident}({vbind}) => format!(\"({vname} {placeholders})\", {})",
+                        parts.join(", ")
+                    ));
+                }
+            }
+        }
+        return format!("match &{path} {{ {} }}", arms.join(", "));
+    }
     // A USER sum — a bare type name (`Opt`, `P`, `E`) with an emitted `// cdz-sum[…]` descriptor giving its
     // variants (name + payload type) in discriminant order. Render by MATCHING into cdz-run's BARE form,
     // uniform with a built-in sum: a payload variant → `(<Variant> <payload>)` (payload rendered
     // recursively from its type); a nullary variant → `(<Variant> unit)`. The Rust variant identifier is
     // the SANITIZED name (matching the emitted enum); the printed name is the CADENZA variant name (the
-    // descriptor's first token). A generic user sum has no descriptor (its payload is a type parameter) —
-    // it falls through to the scalar path, which does not `Display` an enum, so the compile error stays a
-    // clear signal rather than a silent wrong render (no corpus case escapes a generic user sum).
+    // descriptor's first token). A MONOMORPHIC user sum is a bare name here; a GENERIC one is handled by the
+    // head-applied arm above.
     if let Some(variants) = sums.get(ty) {
         // The enum is defined INSIDE `mod prog { … }` (the driver wraps the emitted module), so the
         // driver's `fn main` names it qualified: `prog::<Enum>::<Variant>`. (A built-in Option/Result is
@@ -1312,6 +1381,7 @@ fn cdz_render_at(
                                 "__p",
                                 sums,
                                 newtypes,
+                                sum_params,
                                 helpers,
                                 on_path,
                             );
@@ -1334,6 +1404,7 @@ fn cdz_render_at(
                                         &format!("(__p).{i}"),
                                         sums,
                                         newtypes,
+                                        sum_params,
                                         helpers,
                                         on_path,
                                     )
@@ -1410,6 +1481,62 @@ fn cdz_sum_descriptors(
         map.insert(ident.trim().to_string(), variants);
     }
     map
+}
+
+/// Parse the `// cdz-sum-params[<Ident>]: N` notes into a map `Ident → parameter count`. A GENERIC user
+/// sum emits one so the driver knows how many `T{k}` placeholders its descriptor's payloads carry (hence
+/// how many concrete args to bind from the result type). A monomorphic sum emits none (count 0, absent).
+fn cdz_sum_params(module: &str) -> std::collections::HashMap<String, usize> {
+    let mut map = std::collections::HashMap::new();
+    for line in module.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("// cdz-sum-params[") else {
+            continue;
+        };
+        if let Some((ident, n)) = rest.split_once("]:")
+            && let Ok(count) = n.trim().parse::<usize>()
+        {
+            map.insert(ident.trim().to_string(), count);
+        }
+    }
+    map
+}
+
+/// Split a HEAD-APPLIED type `(<Head> <Arg>…)` into `(head, args)` — `"(Box Int64)"` → `("Box", ["Int64"])`,
+/// `"(M Int64 Bool)"` → `("M", ["Int64", "Bool"])`. `None` if `ty` is not a parenthesized head-applied form
+/// (a bare name like `Box`, or a scalar). Respects nesting via `split_top_level` (an arg that is itself a
+/// `(Option …)` stays one arg). Used to recognize a generic-sum instantiation at the render site.
+fn parse_applied_type(ty: &str) -> Option<(String, Vec<String>)> {
+    let inner = ty.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
+    let toks = split_top_level(inner);
+    let (head, args) = toks.split_first()?;
+    Some((head.trim().to_string(), args.to_vec()))
+}
+
+/// Substitute the type-parameter placeholders `T0`, `T1`, … in a descriptor payload token with the concrete
+/// instantiation `args` — `"T0"` with `["Int64"]` → `"Int64"`; `"(Option T0)"` → `"(Option Int64)"`. A
+/// placeholder is a WHOLE token `T{k}` (a nested one inside `(Option T0)` is replaced by a bounded scan
+/// over `Tk` word-boundaries). Only `k < args.len()` is substituted; a `T{k}` out of range is left as-is
+/// (should not occur — the param count matches).
+fn subst_type_params(payload: &str, args: &[String]) -> String {
+    let mut s = payload.to_string();
+    // Replace longest index first (T10 before T1) so a prefix match doesn't corrupt a two-digit index.
+    for k in (0..args.len()).rev() {
+        let placeholder = format!("T{k}");
+        // Replace `Tk` only at token boundaries — surrounded by start/end, whitespace, or parens — so a
+        // type name that merely CONTAINS "T0" is not mangled. Rebuild by scanning tokens split on the
+        // structural chars; simplest robust form: replace `(Tk)`, ` Tk`, `Tk `, and a bare whole `Tk`.
+        if s == placeholder {
+            s = args[k].clone();
+            continue;
+        }
+        s = s
+            .replace(&format!("({placeholder} "), &format!("({} ", args[k]))
+            .replace(&format!(" {placeholder})"), &format!(" {})", args[k]))
+            .replace(&format!(" {placeholder} "), &format!(" {} ", args[k]))
+            .replace(&format!("({placeholder})"), &format!("({})", args[k]));
+    }
+    s
 }
 
 /// Parse the `// cdz-newtype[<Ident>]: <inner-render-name>` descriptor notes into a map `Ident → inner
@@ -2937,7 +3064,7 @@ mod trap_grading_tests {
                 ("Nil".to_string(), Vec::new()),
             ],
         );
-        let expr = cdz_render_expr("IntList", &sums, &std::collections::HashMap::new());
+        let expr = cdz_render_expr("IntList", &sums, &std::collections::HashMap::new(), &std::collections::HashMap::new());
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
         assert!(
@@ -2964,7 +3091,7 @@ mod trap_grading_tests {
                 ("Pos".to_string(), Vec::new()),
             ],
         );
-        let s = cdz_render_expr("Sign", &mono, &std::collections::HashMap::new());
+        let s = cdz_render_expr("Sign", &mono, &std::collections::HashMap::new(), &std::collections::HashMap::new());
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
             "{s}"
@@ -2984,6 +3111,7 @@ mod trap_grading_tests {
             "(Record (a Int64) (b Int64))",
             &sums,
             &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         );
         assert!(
             expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -2997,6 +3125,7 @@ mod trap_grading_tests {
         let nested = cdz_render_expr(
             "(Record (x Int64) (y (Tuple Int64 Int64)))",
             &sums,
+            &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
         );
         assert!(
@@ -3014,7 +3143,7 @@ mod trap_grading_tests {
         let sums = std::collections::HashMap::new();
         let mut newtypes = std::collections::HashMap::new();
         newtypes.insert("Pt".to_string(), "(Tuple Int64 Int64)".to_string());
-        let expr = cdz_render_expr("Pt", &sums, &newtypes);
+        let expr = cdz_render_expr("Pt", &sums, &newtypes, &std::collections::HashMap::new());
         assert!(
             expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
             "a newtype over a tuple renders the bare inner tuple, not Display: {expr}"
@@ -3026,7 +3155,7 @@ mod trap_grading_tests {
         // A newtype over a SCALAR resolves to that scalar (Display is correct for an Int64).
         let mut nt2 = std::collections::HashMap::new();
         nt2.insert("UserId".to_string(), "Int64".to_string());
-        let s = cdz_render_expr("UserId", &sums, &nt2);
+        let s = cdz_render_expr("UserId", &sums, &nt2, &std::collections::HashMap::new());
         assert!(
             s.contains("format!(\"{}\""),
             "a newtype over Int64 renders the scalar: {s}"
@@ -3047,7 +3176,7 @@ mod trap_grading_tests {
             Some(&[][..]),
             "an empty (Tuple) parses as a zero-arg Tuple head"
         );
-        let expr = cdz_render_expr("(Tuple)", &sums, &nt);
+        let expr = cdz_render_expr("(Tuple)", &sums, &nt, &std::collections::HashMap::new());
         assert_eq!(
             expr, "\"(tuple)\".to_string()",
             "an empty tuple renders the literal `(tuple)`, no path read, no trailing space: {expr}"
@@ -3084,7 +3213,7 @@ mod trap_grading_tests {
         );
 
         // The multi-payload variant renders its two payloads FLAT — `(P {} {})` reading `(__p).0`/`(__p).1`.
-        let expr = cdz_render_expr("W", &ds, &nt);
+        let expr = cdz_render_expr("W", &ds, &nt, &std::collections::HashMap::new());
         assert!(
             expr.contains("(P {} {})") && expr.contains("(__p).0") && expr.contains("(__p).1"),
             "a multi-payload variant spreads its payloads flat under the name: {expr}"
@@ -3094,7 +3223,7 @@ mod trap_grading_tests {
             "a multi-payload variant must NOT render as one nested tuple payload: {expr}"
         );
         // A single-tuple-payload variant keeps the nested tuple — `(Q {})` where `{}` is `(tuple …)`.
-        let vexpr = cdz_render_expr("V", &ds, &nt);
+        let vexpr = cdz_render_expr("V", &ds, &nt, &std::collections::HashMap::new());
         assert!(
             vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
             "a single tuple payload stays nested: {vexpr}"
