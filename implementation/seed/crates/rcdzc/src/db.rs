@@ -108,6 +108,17 @@ thread_local! {
     /// `a_wide_list_pattern_resolves_element_binders_in_bounded_time`.
     pub(crate) static LIST_PATTERN_BINDER_ELEMS_SCANNED: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total nodes VISITED by `lower::collect_binding_uses` since the last reset. `lower_let`
+    /// collects each binding's use facts by walking its whole `let` REGION (all inits + body); for a DEEP
+    /// nested `let` chain `(let ((v0 …)) (let ((v1 …)) … body))` each of the N levels' `lower_let` re-walked
+    /// its body — the entire deeper O(N−k) chain — so Σ = O(N²) (the deep-nested twin of the fix-44 wide
+    /// case). The `Db::binding_uses_cache` per-node memo makes each subtree contribute its facts ONCE, so
+    /// the total nodes visited is O(N). Noise-free regression signal — see
+    /// `a_deep_nested_let_chain_collects_binding_uses_in_bounded_time`.
+    pub(crate) static COLLECT_BINDING_USES_VISITS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -1118,6 +1129,21 @@ pub struct Db {
         crate::fxhash::FxHashMap<StructId, Option<std::rc::Rc<SimpleListBinders>>>,
     >,
 
+    /// Memo of a `let` region's binding USE-FACTS (`lower::BindingUses`), keyed by the `(let …)` node whose
+    /// region (all its initializers + body) was walked to build it. `lower::lower_let` decides per binding
+    /// keep-vs-copy-propagate from these facts, collected in ONE walk of the region (fix-44). For a DEEP
+    /// nested chain `(let ((v0 …)) (let ((v1 …)) … body))`, each of the N levels' `lower_let` re-walked its
+    /// body — the entire deeper O(N−k) chain — so Σ = O(N²) (the deep-nested TWIN of fix-44's wide case; the
+    /// wide case fused a single let's per-binding walks, this fuses the per-LEVEL body re-walks). `let*`
+    /// scoping makes an OUTER let's whole-region facts EXACT for every nested binding too — a binding `v_k`'s
+    /// references live only from its own init onward (an earlier init cannot name a later binding), a subset
+    /// of the outer region — so a nested `lower_let` reuses the nearest enclosing cached region's map instead
+    /// of re-collecting. The `Rc` is shared across all levels of one nest; the map only grows (an entry, once
+    /// built, is stable), so interior mutation via the `RefCell` is sound (single-threaded / `!Send`).
+    pub(crate) let_region_uses: std::cell::RefCell<
+        crate::fxhash::FxHashMap<StructId, std::rc::Rc<crate::lower::BindingUses>>,
+    >,
+
     /// Memo for the wasm backend's `mutual_loop_group(self_def)` — the tail-recursive SCC a def compiles
     /// its shared loop over. `select_function_of` computes it for EVERY def, and the computation is a
     /// double BFS over tail-callees (forward-reach + reach-back-to-self per member), so N mutually
@@ -1879,6 +1905,7 @@ impl Db {
             scheme_cache: crate::fxhash::FxHashMap::default(),
             record_field_index: crate::fxhash::FxHashMap::default(),
             simple_list_binders: std::cell::RefCell::new(crate::fxhash::FxHashMap::default()),
+            let_region_uses: std::cell::RefCell::new(crate::fxhash::FxHashMap::default()),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),

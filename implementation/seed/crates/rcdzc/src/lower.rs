@@ -335,7 +335,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // or constant binding is copy-propagated / erased (its references follow through to its value).
         // So naming adds no cost and the emitted bytes are unchanged for a program with no multi-use
         // runtime binding (`reference-compiler.md` §The Core Representation Is In A-Normal Form).
-        Resolved::Let { bindings, body } => lower_let(db, &bindings, body),
+        Resolved::Let { bindings, body } => lower_let(db, id, &bindings, body),
         // A NULLARY VARIANT used as a value (`None`) — its ctor record carries `(meta variant)` and its
         // type is the sum (no payload arrow). It constructs `sum-new(disc, unit)` with no payloads. A
         // PAYLOAD variant record used WITHOUT being applied (`Some` bare) is a function value with no
@@ -2506,7 +2506,58 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
     }
 }
 
-fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
+/// The binding use-facts (`BindingUses`) covering the `let` region rooted at `node`. Reuses the nearest
+/// ENCLOSING cached let-region's facts when there is one (sound: `let*` scoping confines a binding's
+/// references to its own sub-region, so the outer region's counts/escapes read identically for a nested
+/// binding), otherwise collects this region in ONE walk and caches it (`Db::let_region_uses`). Together
+/// these make a DEEP nested chain O(N) total: the OUTERMOST let walks the whole nest once, every inner let
+/// reuses that map in O(1). Returns an `Rc` shared across the nest.
+fn enclosing_or_collected_region_uses(
+    db: &mut Db,
+    node: StructId,
+    bindings: &[(StructId, StructId)],
+    body: StructId,
+) -> std::rc::Rc<BindingUses> {
+    // Already collected for THIS node (a memoized re-entry)? (Scope the borrow — the arms below take `&mut
+    // db` / `borrow_mut`, so never hold a `borrow()` across them.)
+    if let Some(hit) = db.let_region_uses.borrow().get(&node).cloned() {
+        return hit;
+    }
+    // Walk up to the nearest ANCESTOR `let` node; if its region is already cached, its whole-region facts
+    // cover this nested region exactly (an inner binding's refs are a subset of the outer region), so reuse
+    // it. The walk stops at the first `let` ancestor — O(1) for a nested chain (an inner let's parent IS the
+    // enclosing let), and bounded by the local non-let nesting otherwise.
+    let mut cur = db.parent_of(node);
+    while let Some(p) = cur {
+        if matches!(resolved_of(db, p), Resolved::Let { .. }) {
+            let cached = db.let_region_uses.borrow().get(&p).cloned();
+            if let Some(rc) = cached {
+                // Alias THIS node to the enclosing region too, so a demand keyed by `node` is also O(1).
+                db.let_region_uses.borrow_mut().insert(node, rc.clone());
+                return rc;
+            }
+            // A let ancestor with no cached region — stop (we are the outermost still-uncollected; collect).
+            break;
+        }
+        cur = db.parent_of(p);
+    }
+    // No enclosing cached region — collect this region's facts in one walk and cache them.
+    let mut uses = BindingUses::default();
+    for &(_name_occ, v) in bindings.iter() {
+        collect_binding_uses(db, v, false, &mut uses);
+    }
+    collect_binding_uses(db, body, false, &mut uses);
+    let rc = std::rc::Rc::new(uses);
+    db.let_region_uses.borrow_mut().insert(node, rc.clone());
+    rc
+}
+
+fn lower_let(
+    db: &mut Db,
+    node: StructId,
+    bindings: &[(StructId, StructId)],
+    body: StructId,
+) -> Core {
     // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
     // what the body's `Ref`s point at and what a kept binding is keyed by.
     // Collect every binding's use facts (reference count + whole-value escape) in ONE walk of the whole
@@ -2515,11 +2566,14 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
     // whole-region count equals each binding's exact in-scope count — no over-count. This replaces the
     // per-binding `should_keep_binding` scope walk (each O(region)), which was O(bindings × body) = O(N²)
     // on a wide `let` (the fix-16/18 class).
-    let mut uses = BindingUses::default();
-    for &(_name_occ, v) in bindings.iter() {
-        collect_binding_uses(db, v, false, &mut uses);
-    }
-    collect_binding_uses(db, body, false, &mut uses);
+    //
+    // A DEEP nested chain `(let ((v0 …)) (let ((v1 …)) … body))` would re-walk its body — the entire deeper
+    // O(N−k) chain — at each of the N levels → O(N²) (the deep-nested twin of the wide case). But an OUTER
+    // let's whole-region facts are EXACT for every nested binding too: a binding's references live only from
+    // its own init onward (a subset of the outer region), so its count/escape reads identically off the
+    // outer map. So reuse the nearest enclosing cached region's map (`Db::let_region_uses`) instead of
+    // re-collecting; only a let with NO cached enclosing region walks (once per whole nest → O(N) total).
+    let uses = enclosing_or_collected_region_uses(db, node, bindings, body);
     let mut kept: Vec<(StructId, StructId)> = Vec::new();
     for &(_name_occ, init) in bindings.iter() {
         if should_keep_binding(db, init, &uses) {
@@ -8382,7 +8436,7 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
 /// scope walks (each O(scope)), which made a wide `let` O(bindings × body) = O(N²) (the fix-16/18 class: a
 /// per-item predicate walking the whole body per item → collect the facts in ONE walk).
 #[derive(Default)]
-struct BindingUses {
+pub(crate) struct BindingUses {
     count: crate::fxhash::FxHashMap<StructId, u32>,
     escapes_whole: crate::fxhash::FxHashSet<StructId>,
 }
@@ -8394,6 +8448,8 @@ struct BindingUses {
 /// STILL counts as a use (mirrors `uses_in`, which counts every ref). The combined walk reproduces both
 /// `uses_in` (the `count`) and `ref_escapes_whole` (the `escapes_whole` set) in a single traversal.
 fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &mut BindingUses) {
+    #[cfg(test)]
+    crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.set(c.get() + 1));
     match resolved_of(db, node) {
         Resolved::Ref { value } => {
             *out.count.entry(value).or_insert(0) += 1;

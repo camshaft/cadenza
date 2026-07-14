@@ -9369,6 +9369,65 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_deep_nested_let_chain_collects_binding_uses_in_bounded_time() {
+        // REGRESSION (perf): `lower::lower_let` collects each binding's use facts by walking its whole `let`
+        // REGION (all inits + body) in one pass (fix-44, which fused a WIDE let's per-binding walks). But a
+        // DEEP nested chain `(let ((v0 e0)) (let ((v1 e1)) … body))` re-walked its body — the entire deeper
+        // O(N−k) chain — at each of the N levels' `lower_let` → Σ = O(N²) (the deep-nested TWIN of the wide
+        // case; profile showed `collect_binding_uses` ~90% inclusive, growth ~2.5×/dbl). FIX: `let*` scoping
+        // makes an OUTER let's whole-region facts EXACT for every nested binding (a binding's refs live only
+        // from its own init onward — a subset of the outer region), so a nested `lower_let` reuses the
+        // nearest enclosing cached region's `BindingUses` (`Db::let_region_uses`) instead of re-collecting.
+        // The OUTERMOST let walks the whole nest once; every inner let reuses that map in O(1) → O(N) total.
+        //
+        // The NOISE-FREE signal is `COLLECT_BINDING_USES_VISITS` — the nodes the collection walk visits, a
+        // pure function of the program. A depth-N chain should visit O(N) nodes (one whole-nest walk), not
+        // O(N²) (a re-walk of the tail per level). Correctness (the chain evaluates + kept-vs-propagated
+        // decisions) is pinned by the run-value + wide-let tests.
+        fn deep_let_chain_src(n: usize) -> String {
+            // `(let ((v0 0)) (let ((v1 (+ v0 1))) … (let ((v{n-1} (+ v{n-2} 1))) v{n-1})))` — each binding
+            // reads the previous once (a realistic sequential-let pipeline).
+            let mut expr = format!("v{}", n - 1);
+            for i in (0..n).rev() {
+                let init = if i == 0 {
+                    "0".to_string()
+                } else {
+                    format!("(+ v{} 1)", i - 1)
+                };
+                expr = format!("(let ((v{i} {init})) {expr})");
+            }
+            format!("(module m (def (main) {expr}) (export main))")
+        }
+        // A small instance compiles with no error diagnostics (a valid nested-let chain).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&deep_let_chain_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deep nested-let chain compiles with no error diagnostics: {diags:?}"
+        );
+        fn uses_visits(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.get())
+            })
+        }
+        // Depth 200→400 is a 2× chain; linear (one whole-nest walk) ⇒ ~2×, the O(N²) per-level re-walk was
+        // ~4×. Require < 3× (between the regimes, with margin for constant terms).
+        let n200 = uses_visits(&deep_let_chain_src(200));
+        let n400 = uses_visits(&deep_let_chain_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            n200 > 0 && ratio < 3.0,
+            "a deep nested-let chain must collect its binding uses in O(N) node-visits, not O(N²) (each \
+             level's `lower_let` re-walking its deeper body needs the enclosing-region reuse — \
+             `Db::let_region_uses`): depth 200→400 grew collect visits {ratio:.1}× (n200={n200}, \
+             n400={n400}); linear is ~2×, the per-level re-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn a_multi_use_binding_of_a_comparison_names_the_bool() {
         // The named value need not be an integer — a runtime comparison used twice is named too (its
         // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
