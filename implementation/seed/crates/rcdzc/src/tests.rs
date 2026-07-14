@@ -14497,6 +14497,16 @@ mod match_engine {
             "wraps the char in its scalar-value conversion: {}",
             ch.message
         );
+        // The LEAD reads as an argument-type mismatch, NOT the raw internal-clash unify wording
+        // ("type mismatch: Int64 and Char must be the same type here, but differ") — the Char case is
+        // deliberately routed to the coercion path, and that path now REWORDS the lead too.
+        assert!(
+            ch.message
+                .contains("this argument is a Char, but a value of type Int64 is expected here")
+                && !ch.message.contains("must be the same type here"),
+            "the Char-arg lead is polished, not the raw unify clash: {}",
+            ch.message
+        );
         let sym = reject_full(
             "(module m (def (f (: s String)) s) (def (g (: sym Symbol)) (f sym)) (export g))",
         )

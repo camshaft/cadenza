@@ -6710,12 +6710,26 @@ fn check_application(
                         ));
                     } else if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
                         // A NUMERIC/TEXT mismatch a total conversion repairs — int→float (`of-int`),
-                        // int-width (`.of`), int-valued-float-literal drop (`2.0`→`2`), or String→Bytes
-                        // (`to-bytes`). The reject KEEPS its unify-produced message + code (CDZ0301/0203);
-                        // the coercion fix rides alongside. Shared with the variant-ctor payload position
-                        // via `numeric_text_coercion_fix` so the SAME mismatch offers the SAME repair
-                        // everywhere (the D33 lesson, consolidated D40).
-                        out.push(reject.with_fix(fix));
+                        // int-width (`.of`), int-valued-float-literal drop (`2.0`→`2`), String→Bytes
+                        // (`to-bytes`), or Char→Int64 (`Char.to-int`, the `(+ #\a 1)` case that is
+                        // deliberately not caught by the bool/kind-boundary branch so it can flow here for
+                        // the wrap). REWORD the raw unify LEAD ("type mismatch: Int64 and Char must be the
+                        // same type here, but differ" — an internal-clash read) to the arg-site phrasing the
+                        // member-op / effect-op / annotation siblings use, keeping the code + the coercion
+                        // fix. (Only when a coercion applies; a non-coercible clash keeps the raw message via
+                        // the branches below.) The D33 "same repair wherever the same mismatch surfaces"
+                        // lesson, now with the same READABLE lead too.
+                        out.push(
+                            Reject {
+                                message: format!(
+                                    "this argument is {}, but a value of type {} is expected here",
+                                    sat.render_with_article(),
+                                    sparam.render_name()
+                                ),
+                                ..reject
+                            }
+                            .with_fix(fix),
+                        );
                     } else if let Some(variant) = wrap_variant_for(db, &sparam, &sat) {
                         // A value of the sum's PAYLOAD type where the SUM itself is expected — `5 : Int64`
                         // where `(Option Int64)` is required, in an OPERATOR/ctor argument position. The
