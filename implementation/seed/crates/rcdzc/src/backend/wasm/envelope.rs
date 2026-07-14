@@ -2303,6 +2303,7 @@ pub fn assemble_closure_bytes_resource_borrow(
         None,
         &[],
         &[],
+        None,
     )
 }
 
@@ -2323,6 +2324,9 @@ pub fn assemble_closure_bytes_resource_borrow_tuple(
     tuple_arg_bytes: Option<&[u8]>,
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
+    // A NESTED fixed-shape compound tuple arg's recursive field shape (mints inner `tuple<…>` types by index).
+    // `None` = an all-scalar tuple (the flat `tuple_arg_bytes` path). Only the single-export path threads this.
+    tuple_shape: Option<&[TupleFieldShape]>,
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -2442,7 +2446,24 @@ pub fn assemble_closure_bytes_resource_borrow_tuple(
             own_item(1)
         };
         let n_items: usize;
-        if let Some(fields) = tuple_arg_bytes {
+        if let Some(shape) = tuple_shape {
+            // NESTED tuple arg: mint the (multi-level) tuple types starting at type 5; the OUTERMOST tuple
+            // index is the `call` arg, then `list<u8>`, then the functype.
+            let mut next_type = 5u32;
+            let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
+            let list_ty = next_type;
+            items.extend_from_slice(&list_u8_defined_type());
+            next_type += 1;
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                4,
+                tuple_prefix_bytes,
+                outer_tup,
+                tuple_suffix_bytes,
+                list_ty,
+            ));
+            call_ft_idx = next_type;
+            n_items = 1 + nested_tuple_type_count(shape) as usize + 2; // handle + tuple types + list + functype
+        } else if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 5
             items.extend_from_slice(&list_u8_defined_type()); // type 6
             items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
@@ -2480,6 +2501,7 @@ pub fn assemble_closure_bytes_resource_borrow_tuple(
             tuple_arg_bytes,
             tuple_prefix_bytes,
             tuple_suffix_bytes,
+            tuple_shape,
         ),
     ));
     out.extend_from_slice(&section(
@@ -4692,6 +4714,7 @@ fn resource_inner_component_closure_bytes_borrow(
         None,
         &[],
         &[],
+        None,
     )
 }
 
@@ -4701,6 +4724,7 @@ fn resource_inner_component_closure_bytes_borrow(
 /// type (own/borrow + tuple + list + functype = 4, vs the scalar-arg own + list + functype = 3), which shifts
 /// the re-exported resource type index + all export-side indices up by 1. `None` = the scalar-arg path
 /// (byte-identical). A running type counter keeps both shapes' indices consistent.
+#[allow(clippy::too_many_arguments)]
 fn resource_inner_component_closure_bytes_borrow_tuple(
     make_param_bytes: &[u8],
     arg_bytes: &[u8],
@@ -4708,6 +4732,7 @@ fn resource_inner_component_closure_bytes_borrow_tuple(
     tuple_arg_bytes: Option<&[u8]>,
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
+    tuple_shape: Option<&[TupleFieldShape]>,
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -4717,13 +4742,29 @@ fn resource_inner_component_closure_bytes_borrow_tuple(
         }
     };
     // Emit the `call` type block (self handle at `block_base` wrapping `resource_ty`; for a tuple arg the
-    // `tuple<…>` type; the `list<u8>` result type; the `(self, <prefix…>, tuple, <suffix…>) -> list<u8>`
+    // `tuple<…>` type(s); the `list<u8>` result type; the `(self, <prefix…>, tuple, <suffix…>) -> list<u8>`
     // functype). Returns the emitted items + the call-functype index + how many types the block added
-    // (3 scalar / 4 tuple). Prefix/suffix scalar bytes surround the tuple when it sits AMONG scalar args.
+    // (3 scalar / 4 flat-tuple / 3 + nested-tuple-count for a NESTED tuple). Prefix/suffix scalar bytes
+    // surround the tuple when it sits AMONG scalar args.
     let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
         let handle_ty = block_base;
         let mut items = call_handle(resource_ty);
-        if let Some(fields) = tuple_arg_bytes {
+        if let Some(shape) = tuple_shape {
+            let mut next_type = block_base + 1;
+            let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
+            let list_ty = next_type;
+            items.extend_from_slice(&list_u8_defined_type());
+            next_type += 1;
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                handle_ty,
+                tuple_prefix_bytes,
+                outer_tup,
+                tuple_suffix_bytes,
+                list_ty,
+            ));
+            let added = 1 + nested_tuple_type_count(shape) + 2; // handle + tuple types + list + functype
+            (items, next_type, added)
+        } else if let Some(fields) = tuple_arg_bytes {
             let tup_ty = block_base + 1;
             let list_ty = block_base + 2;
             items.extend_from_slice(&tuple_defined_type(fields));

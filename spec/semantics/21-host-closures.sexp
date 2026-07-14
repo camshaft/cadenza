@@ -3169,6 +3169,52 @@
   (call   mk (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64)))
 
+; A NESTED compound ARG composes with EVERY result shape (single-export): the list-result cores rebuild the
+; nested cell recursively (`emit_cell_rebuild`), and the list<u8> envelope mints the inner `tuple<…>` types by
+; index (`tuple_shape`, the same recursive minting as the scalar-result path). So a nested arg crosses with a
+; byte-rope, a fixed-shape compound value-form, or a variable-length collection result.
+
+(case "a NESTED Tuple ARG with a LIST result crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` — a nested tuple arg AND a collection
+           result. The value-encode `call` rebuilds the nested cell recursively, dispatches, then value-encodes
+           the returned List. `call(handle, (100, (10, 3)))` → `(list p.0 p.1.0 p.1.1)` = `(list 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) Bytes)` — a nested tuple arg + a byte rope. The bytes
+           `call` rebuilds the nested cell, dispatches, copies the returned Bytes out as `list<u8>`.
+           `call(handle, (100, (10, 3)))` → the bytes `(100 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (bin (u8 (. p 0)) (u8 (. (. p 1) 0)) (u8 (. (. p 1) 1)))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (100 10 3) Bytes)))
+
+(case "a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (Tuple Int64 Int64 Int64))` — a nested tuple arg + a
+           fixed-shape compound result. The value-form `call` rebuilds the nested arg cell, dispatches, walks
+           the returned handle into the template. `call(handle, (100, (10, 3)))` → `(tuple 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (tuple (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
+
+(case "a NESTED Record ARG with a LIST result crosses the direct-call boundary"
+  (doc    "`mk : (-> (Record (n Int64) (inner (Record (x Int64) (y Int64)))) (List Int64))` — a nested RECORD
+           arg + a collection result (both the nested-record rebuild + the value-encode result compose).
+           `call(handle, (record (n 100) (inner (record (x 10) (y 3)))))` → `(list 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: r (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+                         (list (. r n) (. (. r inner) x) (. (. r inner) y))))
+              (export mk)))
+  (call   mk (: (record (n 100) (inner (record (x 10) (y 3))))
+                (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+  (output (: (list 100 10 3) (List Int64))))
+
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
 

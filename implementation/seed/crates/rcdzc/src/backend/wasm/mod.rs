@@ -2018,6 +2018,23 @@ fn emit_closure_resource(
     let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
+    // A fixed-shape tuple ARG threads through the LIST-result cores + envelope identically whether it is FLAT
+    // (`tuple_arg`) or NESTED (`nested_tuple`): the core rebuilds the cell from the same `TupleArgRebuild`, the
+    // envelope mints a flat `tuple<…>` (from `tuple_bytes`) OR a recursive nested one (from `tuple_shape`). A
+    // nested tuple carries `tuple_bytes = None` (its shape drives the mint) + `tuple_shape = Some`; a flat one
+    // the reverse; the scalar-result paths below use `tuple_arg`/`nested_tuple` directly.
+    let list_rebuild: Option<&serialize::TupleArgRebuild> = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, _, rb)| rb)
+        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _)| rb));
+    let list_tuple_bytes: Option<&[u8]> = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+    let list_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
+        .as_ref()
+        .map(|(_, _, _, shape)| shape.as_slice());
+    let (list_tpre, list_tsuf): (&[u8], &[u8]) = tuple_arg
+        .as_ref()
+        .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
+        .unwrap_or((&[], &[])); // a nested arg is the SOLE arg → no prefix/suffix scalars
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
     // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
     if ret_is_bytes {
@@ -2025,12 +2042,6 @@ fn emit_closure_resource(
         // reclaims the cell). The byte-rope copy path is unaffected; only the cell rep-recovery + release
         // change (rep passed directly, no self-drop). A fixed-shape tuple ARG is threaded via `tuple_arg`:
         // the bytes `call` rebuilds the cell from the flattened fields, the envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -2040,7 +2051,7 @@ fn emit_closure_resource(
             lifted_type_idx,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -2051,9 +2062,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
@@ -2063,12 +2075,6 @@ fn emit_closure_resource(
         // C-HOST-6 borrow<t> `call` — the compound-walk path is unaffected; the cell is kept (repeatable). A
         // fixed-shape tuple ARG is threaded via `tuple_arg`: the value-form `call` rebuilds the arg cell from
         // the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -2079,7 +2085,7 @@ fn emit_closure_resource(
             template,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -2090,9 +2096,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
@@ -2102,12 +2109,6 @@ fn emit_closure_resource(
         // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable). A
         // fixed-shape tuple ARG is threaded via `tuple_arg`: the value-encode `call` rebuilds the arg cell
         // from the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -2118,7 +2119,7 @@ fn emit_closure_resource(
             descriptor,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -2129,9 +2130,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // DIRECT-CALL COMPOUND ARG: a fixed-shape scalar tuple/record closure argument crosses as a native
@@ -2175,20 +2177,13 @@ fn emit_closure_resource(
             None, // an all-scalar-field tuple — no nested shape
         ));
     }
-    // DIRECT-CALL NESTED COMPOUND ARG (single-export, scalar result): a SOLE fixed-shape compound arg with a
+    // DIRECT-CALL NESTED COMPOUND ARG (single-export, SCALAR result): a SOLE fixed-shape compound arg with a
     // NESTED compound field crosses as a nested `tuple<…, tuple<…>>` the canonical ABI flattens RECURSIVELY to
     // leaf scalar core params. The core `call` rebuilds the nested cell via the recursive `TupleArgRebuild`;
-    // the envelope mints the inner `tuple<…>` types by index (`TupleFieldShape`). SCOPE: scalar result only
-    // this increment (a nested arg with a list<u8>-crossing result declines below via the result guards, since
-    // `nested_tuple` is not threaded into the compound-result cores yet).
+    // the envelope mints the inner `tuple<…>` types by index (`TupleFieldShape`). A nested arg with a
+    // list<u8>-crossing result (byte-rope / compound / collection) was already handled by the list-result
+    // routings above (which thread `nested_tuple`'s shape); only a SCALAR result reaches here.
     if let Some((_leaf_bytes, _leaf_vts, rebuild, shape)) = &nested_tuple {
-        if ret_is_bytes || ret_is_compound || ret_is_collection {
-            return Err(Reject::decline(
-                "a closure with a NESTED fixed-shape compound argument AND a byte-rope/compound/collection \
-                 result is not yet emitted (the nested-tuple rebuild threads through the SCALAR-result `call` \
-                 this increment; the list-result cores are a later widening)",
-            ));
-        }
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
