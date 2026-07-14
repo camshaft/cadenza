@@ -27324,6 +27324,53 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_outer_handler_reduces_a_reducible_inner_handle_first() {
+        // NESTED-HANDLE PRE-REDUCTION: an OUTER handler whose arm is NON-tail-resumptive, over a body that
+        // is (or contains) a reducible inner handle of a DIFFERENT effect. The inside-out `thread` path
+        // reduces an inner handle only while THREADING (which needs the outer arm tail-resumptive), so
+        // `(handle A non-tail (handle B tail (+ (A.a) (B.b))))` used to decline — B never got reduced before
+        // A's E5 pure-one-hole check ran and saw the raw inner `handle` node. Reducing B FIRST turns the body
+        // into `(+ (A.a) 20)`, a single A-perform in a pure one-hole context A's E5 fold serves:
+        //   B tail `(resume 20 t)` → `(B.b)` = 20; A arm `(+ 1 (resume 10 s))`, `C = (+ (A.a≡10) □)` →
+        //   `(+ 1 (+ 10 20))` = 31.
+        let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (+ 1 (resume 10 s)))) \
+                     (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail outer handler reduces a reducible inner handle first"),
+                "main"
+            ),
+            31
+        );
+        // REGRESSION: both handlers tail-resumptive still folds via the existing threading path (the
+        // pre-reduction is gated to the non-tail-resumptive regime, so this path is untouched).
+        let both_tail = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (resume 10 s))) \
+                     (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(both_tail)))
+                    .expect("both-tail nested distinct effects fold"),
+                "main"
+            ),
+            30
+        );
+        // BOUNDARY: when the INNER handle is itself non-tail with a FOREIGN perform sibling in its body
+        // (`(A.a)` is undischarged by B), B cannot reduce — its continuation is not pure (a foreign effect
+        // would be duplicated by a multi-shot resume). This genuinely needs the frame vertical, so it stays
+        // a clean decline (not a miscompile).
+        let both_non_tail = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (+ 1 (resume 10 s)))) \
+                     (handle B 0 ((b (u) t (+ 2 (resume 20 t)))) (+ (A.a) (B.b))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(both_non_tail))).is_err(),
+            "a non-tail inner handle with a foreign perform sibling stays declined (needs frames)"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
         // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
         // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must

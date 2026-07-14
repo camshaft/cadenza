@@ -554,6 +554,7 @@ pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
+pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a single-arity function taking unit
 pass	a nullary do-local def followed by a use of it computes over its result

@@ -932,6 +932,27 @@
               (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
 
+(case "a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold"
+  (doc    "Nested handlers of DISTINCT effects where the OUTER handler's arm resumes NON-tail. The
+           inside-out reduction reduces the inner handle only while THREADING the outer body — which
+           requires the outer arm to be tail-resumptive. When the outer arm is non-tail, its delimited
+           continuation is the E5 pure one-hole fold, which sees the whole inner `handle` as an opaque
+           non-uniform continuation and would decline. Reducing the inner (tail-resumptive) handler FIRST
+           discharges `B`: `(handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b)))` folds `B.b` to its
+           resume value 20 (B threads no observable effect and A.a is left untouched as B does not discharge
+           it), leaving `(+ (A.a) 20)`. That is a single `A`-perform in a pure one-hole context `C = (+ □
+           20)`, so the outer arm `(+ 1 (resume 10 s))` folds to `(+ 1 (+ 10 20))` = 31. Sound and
+           frame-free: reducing the inner handler is the same reduction the threading path performs, only
+           sequenced before the outer fold rather than during it.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (+ 1 (resume 10 s))))
+                (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b)))))
+            (export main)))
+  (output (: 31 Int64)))
+
 (case "a recursive function that installs a fresh handler on each call grows its context without bound"
   (doc    "Witnesses the LIMIT of effect-context monomorphization: `loop` wraps its own recursive
            call in a FRESH `(handle …)`, so each recursive call runs under a handler context one
