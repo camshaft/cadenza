@@ -48,6 +48,13 @@ use crate::prelude::{meta_field, push_atom, push_list};
 /// lookup against `db.type_decls` (an occurrence-keyed Vec), so two same-named declarations each keep
 /// their own record and identity (a name-keyed map could not — the second would clobber the first). A
 /// declaration with an empty name (malformed `(type)`) still gets a record but binds no name.
+///
+/// Each variant field holds a CONSTRUCTOR value (a record carrying the constructor's `(meta t)` type),
+/// never a pre-applied Sum value — even a NULLARY variant like `None` is a constructor (typed as the
+/// sum), built only when APPLIED `(None unit)`. So the built-in sums the prelude installs (Option/Result
+/// /Ordering/Sign, via the same path) likewise bind Constructor values, not pre-constructed Sum values.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# The prelude MUST bind Constructor values only for sum type variants, not pre-applied Sum values.
 pub fn synthesize(ast: &mut Arenas, decls: &mut [TypeDecl]) {
     for decl in decls.iter_mut() {
         let (record, ctors) = sum_record(ast, decl);

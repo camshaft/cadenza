@@ -89,7 +89,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
-        // A symbol literal (`#"metre"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
+        // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
         Resolved::SymbolConst(_) => Ty::Symbol,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
@@ -101,6 +101,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 Ty::int()
             }
             Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
+            // A `utf8` segment decodes its bytes to a well-formed `String` (a non-match on ill-formed).
+            Some(crate::resolved::SegKind::Utf8 { .. }) => Ty::String,
             None => Ty::Any,
         },
         // A MAP PATTERN binder: a VALUE binder (`key = Some`) has the map's VALUE type; the REST binder
@@ -652,6 +654,23 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     crate::eval::typeval_of(db, ty_expr)
 }
 
+/// The "type position holds a non-type" message for a `ty_expr` that `typeval_of` rejected and whose own
+/// `collect` surfaced no fault (so it is bound / well-formed, not an unbound-name typo). When `ty_expr` is
+/// a bare NAME, it is a bound VALUE (a def / parameter / prelude value — a type name would have made
+/// `typeval_of` succeed), so name it: "`helper` is a value, not a type — a type belongs here (annotate
+/// `(: value Int64)`)". This is the type-position analogue of the apply-position category message (M76):
+/// a bound name misused as a type gets NAMED, not the opaque "found a non-type". A NON-name operand (a
+/// literal `5`, a compound `(+ 1 2)`) keeps the generic phrasing — naming a literal adds nothing. `lead`
+/// prefixes the sentence ("a parameter's annotation" / "the type position of an annotation").
+fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String {
+    match db.ast.as_name(ty_expr) {
+        Some(name) => format!(
+            "`{name}` is a value, not a type — {lead} requires a type (e.g. annotate `(: value Int64)`)"
+        ),
+        None => format!("{lead} requires a type, but found a non-type"),
+    }
+}
+
 /// Faults in a DEF PARAMETER's annotation `(: name T)` — the signature-side companion of the value
 /// annotation checked in `collect_node`. A parameter's TYPE OPERAND `T` must denote a TYPE; a non-type
 /// (an unbound name, a value, a malformed type application `(Int64 Int64)`) is REJECTED, not
@@ -713,7 +732,7 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
             out.push(
                 Reject::coded(
                     Code::TypeMismatch,
-                    "a parameter's annotation requires a type, but found a non-type",
+                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
                 )
                 .at(ty_expr),
             );
@@ -978,7 +997,7 @@ fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
     } else {
         parent
     };
-    if let Some(i) = db.defs.iter().position(|d| d.sig_occ == sig) {
+    if let Some(i) = db.def_index_by_sig(sig) {
         return Some(i);
     }
     // A MODULE-MEMBER internal def (`Def::internal`, `modules::register_callable`) reuses the member's
@@ -1101,18 +1120,25 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
 /// read-only scan — it never mutates `db.param_types` and only READS argument types the caller already
 /// has (a caller's own params were solved by its own pass, or are concrete literals/constructors).
 fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Option<Ty>> {
-    // Collect candidate call sites first (immutable scan), then type their args (mutable `type_of`).
-    let mut call_args: Vec<Vec<StructId>> = Vec::new();
-    let def_count = db.defs.len();
-    for other in 0..def_count {
-        let Some(other_body) = db.defs[other].body else {
-            continue;
-        };
-        if other_body == own_body {
-            continue; // this def's own body — a self-call carries no external type information
-        }
-        collect_calls_to(db, other_body, def, &mut call_args);
-    }
+    // The call sites of `def` — from the CALL-SITE INDEX (built once), not a fresh whole-program scan per
+    // query (which was O(defs × program) → O(N²) for N mutually-recursive defs each seeded this way). A
+    // call site in `def`'s OWN body carries no external type info (its args reference the very params
+    // being solved), so those are excluded when the index is built (keyed to exclude the callee's own body
+    // is not possible — a def can call itself — so the index records the CALLER body with each site and we
+    // skip `own_body` here).
+    ensure_call_site_index(db);
+    let call_args: Vec<Vec<StructId>> = db
+        .call_sites_by_callee
+        .as_ref()
+        .and_then(|m| m.get(&def))
+        .map(|sites| {
+            sites
+                .iter()
+                .filter(|(caller_body, _)| *caller_body != own_body)
+                .map(|(_, args)| args.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     // The widest arg list seen determines the result arity; take the first call site that fixes each
     // position (a determined `type_of`), so multiple call sites together can seed distinct positions.
     let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
@@ -1120,7 +1146,22 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
     for args in &call_args {
         for (i, &arg) in args.iter().enumerate() {
             if out[i].is_none() {
-                let t = type_of(db, arg);
+                let mut t = type_of(db, arg);
+                if matches!(t, Ty::Any | Ty::Var(_))
+                    && let Some((d, j)) = arg_is_other_def_param(db, arg)
+                    && !db.seed_transitive.contains(&d)
+                {
+                    db.seed_transitive.insert(d);
+                    if let Some(d_body) = db.defs[d].body {
+                        let d_args = call_site_arg_types(db, d, d_body);
+                        if let Some(Some(at)) = d_args.get(j)
+                            && !matches!(at, Ty::Any | Ty::Var(_))
+                        {
+                            t = at.clone();
+                        }
+                    }
+                    db.seed_transitive.remove(&d);
+                }
                 if !matches!(t, Ty::Any | Ty::Var(_)) {
                     out[i] = Some(t);
                 }
@@ -1130,18 +1171,62 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
     out
 }
 
-/// Walk `node` collecting the ARGUMENT lists of every application whose head resolves to def `target`
-/// (`callee_def_index_for_infer`). Recurses through all structural children so a call nested anywhere in
-/// the body is found. Read-only over the AST (append-only into `out`).
-fn collect_calls_to(db: &mut Db, node: StructId, target: usize, out: &mut Vec<Vec<StructId>>) {
+fn arg_is_other_def_param(db: &mut Db, arg: StructId) -> Option<(usize, usize)> {
+    let binder = match resolved_of(db, arg) {
+        Resolved::Ref { value } => value,
+        Resolved::Param { binder } => binder,
+        _ => return None,
+    };
+    let d = def_of_param(db, binder)?;
+    let pos = db.defs[d].params.iter().position(|&p| {
+        let name_occ = db
+            .ast
+            .as_form(p, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(p);
+        name_occ == binder
+    })?;
+    Some((d, pos))
+}
+
+/// Build the CALL-SITE INDEX (`db.call_sites_by_callee`) if not already built: `callee def index → the
+/// (caller-body, argument-occurrences) of every application whose head resolves to that callee`. ONE
+/// whole-program walk over every def body (`callee_def_index_for_infer` per application) replaces the
+/// per-query all-bodies scan `call_site_arg_types` did — O(program) once instead of O(defs × program).
+/// The caller body is recorded with each site so `call_site_arg_types` can skip the callee's OWN body (a
+/// self-call carries no external type info). A pure function of the resolved program.
+fn ensure_call_site_index(db: &mut Db) {
+    if db.call_sites_by_callee.is_some() {
+        return;
+    }
+    let mut index: crate::db::CallSiteIndex = crate::fxhash::FxHashMap::default();
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    for body in bodies {
+        collect_calls_into_index(db, body, body, &mut index);
+    }
+    db.call_sites_by_callee = Some(index);
+}
+
+/// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
+/// resolves to a user def — keyed by that callee's index, valued by `(caller_body, argument-occurrences)`.
+/// Recurses through all structural children so a call nested anywhere is found.
+fn collect_calls_into_index(
+    db: &mut Db,
+    node: StructId,
+    caller_body: StructId,
+    index: &mut crate::db::CallSiteIndex,
+) {
     if let Resolved::Apply { head, args } = resolved_of(db, node)
-        && callee_def_index_for_infer(db, head) == Some(target)
+        && let Some(callee) = callee_def_index_for_infer(db, head)
     {
-        out.push(args.to_vec());
+        index
+            .entry(callee)
+            .or_default()
+            .push((caller_body, args.to_vec()));
     }
     if let crate::ast::Struct::List(children) = db.ast.get(node) {
         for c in children.clone() {
-            collect_calls_to(db, c, target, out);
+            collect_calls_into_index(db, c, caller_body, index);
         }
     }
 }
@@ -1930,7 +2015,7 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
 /// stack frame — that function is on the deep `type_of`↔`apply_type` recursion.
 ///
 /// This is a dimension-DERIVING operation: `Qty.pow` produces the dimension its rule defines (the unit
-/// raised to `n`, e.g. `metre` → `metre²`) carried on the result `Ty::Qty`, rather than discarding the
+/// raised to `n`, e.g. `meter` → `meter²`) carried on the result `Ty::Qty`, rather than discarding the
 /// dimensional information to a bare numeric.
 //= spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error
 //# An operation that derives a dimension MUST produce the dimension the operation's rule defines rather than discard dimensional information.
@@ -2071,7 +2156,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // shapes alone (project keeps the named subset, without drops them, merge unions, extend/with insert)
     // — it never mutates an operand type and never leaves a row variable open in the result, so the
     // reshaped record is a fresh value with a statically-fixed field set and the emitted component carries
-    // no runtime field-set computation.
+    // no runtime field-set computation. A shape change happens ONLY through such an explicit `Record.*`
+    // operation — inference never widens or narrows a record's field set, so a reshape is always written.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# A program MUST be able to derive a new record from existing records by an explicit row operation — restricting to named fields, dropping named fields, or combining two records — rather than by an implicit widening or narrowing that inference introduces, so that a shape change is always something the program wrote.
     //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
     //# A record row operation MUST yield a new record value and MUST NOT alter the operand records, consistent with the immutable value heap, so that reshaping a record is the derivation of a new value with a new shape and not a mutation of an existing one.
     //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
@@ -2272,8 +2360,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         return ty;
     }
     // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
-    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in metre (Qty.of 3.0 km))` :
-    // `(Qty Float64 metre)`. A dimensional mismatch (target dimension ≠ q's) is reported by
+    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in meter (Qty.of 3.0 km))` :
+    // `(Qty Float64 meter)`. A dimensional mismatch (target dimension ≠ q's) is reported by
     // `check_application` (CDZ0501); here we fill the value-column type. If the target unit doesn't
     // reduce, or q isn't a quantity, fall through (→ Any, faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
@@ -2301,6 +2389,21 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             let a = type_of(db, args[0]);
             let b = type_of(db, args[1]);
+            // A `+`/`-`/`*`/`/` over BIGINT operands is `BigInt` — the unbounded arithmetic, NOT the
+            // fixed-width int scheme (whose `∀a. (Int a) → …` would reject a `BigInt` operand). `lower`
+            // routes it to the runtime `bigint-*` op (or folds a constant). A `BigInt`/fixed mix is
+            // rejected in `check_application` (CDZ0301), so if one operand is `BigInt` the well-typed
+            // case has both — return `BigInt`. (Comparison over BigInt is `Bool`, via the generic path.)
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
+            {
+                return Ty::BigInt;
+            }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
             if a_qty || b_qty {
@@ -2308,7 +2411,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     crate::resolved::Prim::Add | crate::resolved::Prim::Sub => {
                         // The result unit: when both operands are at the SAME unit (scale), keep it (the
                         // common Layer-1 case — no conversion); when they share a dimension but DIFFER in
-                        // scale (`metre` + `kilometre`), the result is the dimension's REFERENCE unit (the
+                        // scale (`meter` + `kilometer`), the result is the dimension's REFERENCE unit (the
                         // deterministic common unit each operand converts to — units-of-measure.md
                         // §Combining Units Of One Dimension Is Well-Formed). The inner numeric type is the
                         // lhs quantity's (both share it; the fault check enforces agreement). The choice is
@@ -2344,7 +2447,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     }
                     crate::resolved::Prim::Mul | crate::resolved::Prim::Div => {
                         // Compose the units. A bare-number operand contributes `Unit.one` (scaling keeps
-                        // the other's dimension — `(* (Qty 2 metre) 3)` stays metre).
+                        // the other's dimension — `(* (Qty 2 meter) 3)` stays meter).
                         let ua = match &a {
                             Ty::Qty { unit, .. } => unit.clone(),
                             _ => crate::ty::Unit::one(),
@@ -3354,8 +3457,8 @@ fn check_application(
         collect(db, args[0], out);
         return;
     }
-    // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
-    // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
+    // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert meters to
+    // kilometers, not meters to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
     // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
     if args.len() == 2
@@ -3581,7 +3684,7 @@ fn check_application(
     //  - `+`/`-`/comparison/`=`: the two operands' DIMENSIONS must be EQUAL (Layer 1 = same unit exactly;
     //    conversion between different units of one dimension is Layer 2). A length + a time, or a quantity
     //    + a bare number (no implicit dimensionless coercion), is CDZ0501. The inner numeric types must
-    //    ALSO agree (the numeric core is unchanged under a unit — an Int64 metre + a Float64 metre is the
+    //    ALSO agree (the numeric core is unchanged under a unit — an Int64 meter + a Float64 meter is the
     //    numeric mismatch CDZ0301, reported here so it is not masked).
     //  - `*`/`/`: ALWAYS well-formed on quantities — the dimensions COMPOSE (they are not required equal),
     //    so no dimensional fault; the result unit is computed in `apply_type`. (A quantity × a bare number
@@ -3618,6 +3721,36 @@ fn check_application(
             }
             return;
         }
+        // A `+`/`-`/`*`/`/` over BIGINT operands is the unbounded arithmetic — well-typed, but the
+        // operator's `∀a. (Int a) → …` scheme does NOT accept a `BigInt`, so the generic scheme-unify
+        // below would spuriously reject it CDZ0301. Skip it (both operands are BigInt in the well-typed
+        // case; `lower` routes to the runtime bigint op), descend for operand faults, and return. A
+        // genuine `BigInt`/fixed MIX still faults: `agrees_with` is false, so `type_of` gave one operand
+        // BigInt and the other a fixed Int — the mismatch is caught by the operand check here.
+        if (is_additive || is_multiplicative)
+            && (matches!(a0, Ty::BigInt) || matches!(b0, Ty::BigInt))
+        {
+            // A mix (one BigInt, one non-BigInt-non-Any) is the no-promotion error CDZ0301.
+            let a_big = matches!(a0, Ty::BigInt);
+            let b_big = matches!(b0, Ty::BigInt);
+            let a_ok = a_big || matches!(a0, Ty::Any);
+            let b_ok = b_big || matches!(b0, Ty::Any);
+            if !(a_ok && b_ok) {
+                out.push(Reject::coded(
+                    Code::NumericMismatch,
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    ),
+                ));
+            }
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         if is_additive {
             let a = a0;
             let b = b0;
@@ -3636,8 +3769,8 @@ fn check_application(
                         },
                     ) => {
                         // COMPATIBILITY is DIMENSIONAL, not by-unit: two units of one dimension at
-                        // DIFFERENT scales (`metre` + `kilometre`) are well-formed and auto-convert; only
-                        // a DIMENSION mismatch (`metre` + `second`) is CDZ0501 (units-of-measure.md §A
+                        // DIFFERENT scales (`meter` + `kilometer`) are well-formed and auto-convert; only
+                        // a DIMENSION mismatch (`meter` + `second`) is CDZ0501 (units-of-measure.md §A
                         // Dimensional Mismatch Is An Error / §Combining Units Of One Dimension Is
                         // Well-Formed). So gate on `same_dimension` (the exponent map), NOT `==` (which
                         // also compares scale — that distinction is TYPE identity, checked at annotation).
@@ -4131,15 +4264,36 @@ fn check_application(
             if !args.is_empty() && crate::eval::meta_apply_of(db, head).is_none() {
                 let ht = type_of(db, head);
                 if is_definite_non_function(&ht) {
+                    // When the head is a bare name that DECLARES a type or effect, name the CATEGORY —
+                    // `(E 5)` for an effect `E`, `(Color 5)` for a type `Color`. Rendering `ht.render_name()`
+                    // for an effect leaks its SYNTHESIZED record type verbatim (`(Record (foo (Record (apply
+                    // Any) …)) …)`) — an internal representation dumped at the user, the leaky-message
+                    // anti-pattern. Say "`E` is an effect, not a function" (the apply-position analogue of
+                    // the M74 export-a-type category message). A non-name head (a literal `(5 3)`, a value)
+                    // keeps the type-named message — the type IS the useful fact there.
+                    let name_category = db.ast.as_name(head).and_then(|n| {
+                        if db.type_decl_by_name(n).is_some() {
+                            Some((n.to_string(), "a type"))
+                        } else if db.effect_decl_by_name(n).is_some() {
+                            Some((n.to_string(), "an effect"))
+                        } else {
+                            None
+                        }
+                    });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!(
+                    let message = match name_category {
+                        Some((name, cat)) => {
+                            format!(
+                                "`{name}` is {cat}, not a function — it cannot be applied to arguments"
+                            )
+                        }
+                        None => format!(
                             "{} {} — it is not a function",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             ht.render_name()
                         ),
-                    ));
+                    };
+                    out.push(Reject::coded(Code::Malformed, message));
                 }
             }
             return;
@@ -4279,14 +4433,31 @@ fn check_application(
                     out.push(reject);
                 } else {
                     trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
+                    // A head that DENOTES A TYPE applied in call position (`(Color 5)`, `(Option 5)`,
+                    // `(Int64 5)`) — name the CATEGORY, mirroring the M75 effect/type message (and the M74
+                    // export-a-type message): "`Color` is a type, not a function". A type belongs in an
+                    // ANNOTATION `(: value Color)`, not a call — say so. The discriminator is GENERIC:
+                    // `typeval_of(head)` succeeds iff the head reduces to a type-value (a user `(type …)`
+                    // name, a prelude type like `Int64`/`Option`), so no hard-coded name list is needed
+                    // (the no-keys-outside-the-prelude rule). Names the head's SOURCE spelling. Any other
+                    // scheme-typed non-function head keeps the type-named message (the type IS the fact).
+                    // Read the head's source name first (releasing the `&db.ast` borrow), THEN check it
+                    // denotes a type via `typeval_of` (which needs `&mut db`) — a name AND a type-value.
+                    let head_name = db.ast.as_name(head).map(str::to_string);
+                    let type_name =
+                        head_name.filter(|_| crate::eval::typeval_of(db, head).is_some());
+                    let message = match type_name {
+                        Some(name) => format!(
+                            "`{name}` is a type, not a function — a type appears in an annotation \
+                             `(: value {name})`, not in call position"
+                        ),
+                        None => format!(
                             "{} {}",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             other.render_name()
                         ),
-                    ));
+                    };
+                    out.push(Reject::coded(Code::TypeMismatch, message));
                 }
                 return;
             }
@@ -5026,10 +5197,27 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ));
                         }
                     }
+                    // A `utf8` segment is byte-aligned (a string is a byte sequence); it is always sized,
+                    // so there is no non-final-unsized fault to check (unlike `bytes`).
+                    crate::resolved::SegKind::Utf8 { .. } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                format!(
+                                    "a bin utf8 segment must start on a byte boundary, but {} of \
+                                     bit-fields precede it — {}",
+                                    open_bits_phrase(bit_cursor),
+                                    bits_to_byte_boundary_hint(bit_cursor),
+                                ),
+                            ));
+                        }
+                    }
                 }
                 collect(db, seg.slot, out);
-                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &seg.kind {
-                    collect(db, *n, out);
+                match &seg.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => collect(db, *n, out),
+                    crate::resolved::SegKind::Utf8 { size } => collect(db, *size, out),
+                    _ => {}
                 }
             }
             // The whole form must be byte-aligned: any open bits at the end are ill-formed.
@@ -5104,6 +5292,34 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     && let Some(reject) = literal_width_fault(db, value, ann[1])
                 {
                     out.push(reject);
+                }
+                // VALIDATE the binder annotation TYPE itself — the let-binding analogue of
+                // `param_annotation_faults` (and the value-annotation / variant-payload / effect-op checks).
+                // `check_binding_pattern` above only checks the annotation AGREES with the value's type; an
+                // UNKNOWN annotation type (`(let (((: x Nonesuch) 5)) …)`) resolves to nothing and agrees
+                // vacuously, so it slipped through and typed `x` as `Any`. A garbage annotation type — an
+                // unbound name (→ CDZ0101, recursing into `(List Nonesuch)`), or a well-formed non-type (a
+                // literal `(: x 5)` → CDZ0203) — must be rejected here, exactly as a parameter annotation is.
+                if let Some(ann) = db.ast.as_form(lhs, ":").map(<[_]>::to_vec)
+                    && ann.len() == 2
+                    && crate::eval::typeval_of(db, ann[1]).is_none()
+                {
+                    let before = out.len();
+                    collect(db, ann[1], out);
+                    if out.len() == before {
+                        // Name a bound VALUE misused as a type (`(: x helper)` where `helper` is a value)
+                        // — the SHARED `non_type_annotation_message` the parameter + value annotation sites
+                        // use (M77), so the let-binder is not the odd one out with a generic "found a
+                        // non-type". (Parallel producers drift — the sibling's `@5fc3bc85` unknown-type
+                        // check landed here without the category message the other two sites already had.)
+                        out.push(
+                            Reject::coded(
+                                Code::TypeMismatch,
+                                non_type_annotation_message(db, ann[1], "a binder's annotation"),
+                            )
+                            .at(ann[1]),
+                        );
+                    }
                 }
                 collect(db, value, out);
             }
@@ -5481,6 +5697,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // type error (CDZ0201) — the same static-bounds rule an out-of-arity `(. x N)` gets
                 // (`type-system.md` §A Tuple Is Split At A Position …, 2nd sentence). A non-literal `k`, or
                 // a non-tuple operand, falls through (declines/faulted elsewhere).
+                //= spec/capabilities/type-system.md#a-tuple-is-split-at-a-position-into-a-prefix-and-a-suffix
+                //# A split position that is not within the operand tuple's static arity range MUST be rejected at compile time as a type error, consistent with a positional tuple access whose index is out of the tuple's static arity being rejected, so that a split can never name a position the tuple does not have.
                 collect(db, args[0], out);
                 if let Ty::Tuple(elems) = type_of(db, args[0])
                     && let Resolved::Int(k) = resolved_of(db, args[1])
@@ -5647,8 +5865,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     && au != eu
                 {
                     // A DIMENSIONAL annotation conflict — the value derives one dimension but the
-                    // annotation asserts another (`(: (* (Qty 2 metre) (Qty 3 metre)) (Qty Float64
-                    // metre))` — the product is metre², annotated metre). This is the dimensional
+                    // annotation asserts another (`(: (* (Qty 2 meter) (Qty 3 meter)) (Qty Float64
+                    // meter))` — the product is meter², annotated meter). This is the dimensional
                     // specialization of the annotation conflict: CDZ0501, not the CDZ0203 the generic
                     // unify below would give (units-of-measure.md §A Dimensional Mismatch Is An Error;
                     // the erasure fence's dimensional case). The inner types are irrelevant when the
@@ -5816,7 +6034,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
                     out.push(Reject::coded(
                         Code::TypeMismatch,
-                        "the type position of an annotation requires a type, but found a non-type",
+                        non_type_annotation_message(
+                            db,
+                            ty_expr,
+                            "the type position of an annotation",
+                        ),
                     ));
                 }
             }

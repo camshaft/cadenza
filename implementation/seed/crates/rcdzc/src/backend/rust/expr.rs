@@ -53,6 +53,10 @@ type Env = HashMap<StructId, String>;
 #[derive(Clone)]
 pub struct Ctx<'a> {
     pub mode: Mode,
+    /// The boundary layout — read by a `Core::Call` to derive the callee's UNIQUED Rust `fn` ident
+    /// ([`super::fn_ident`]), so a call to a β-copied do-local worker names ITS copy, matching the copy's
+    /// declaration (the two agree because both go through `fn_ident`, which suffixes a colliding def index).
+    pub layout: &'a Layout,
     /// `Some` iff the function being emitted is compiled as a `loop` (it tail-calls into its own tail-
     /// recursion group). A tail call to a group member reassigns the shared parameter locals (+ the
     /// `which` state, for a mutual group) and `continue`s instead of recursing; every other tail
@@ -63,6 +67,14 @@ pub struct Ctx<'a> {
     /// here (the arm's Rust `match` pattern bound the payload to it), instead of re-extracting it. Empty
     /// outside a sum match; extended (a fresh `Ctx`) per arm by `emit_sum_match`.
     pub sum_binds: Vec<SumBind>,
+    /// The SOLVED TYPE of a sub-value at a switch/bind path, recorded as each match arm DESCENDS — the
+    /// Rust-backend twin of `lower`'s `path_types`. A `Payload` step's target type depends on WHICH variant
+    /// the enclosing arm entered (`(type W (A Int64) (V (Option Int64)))`: `V`'s payload is `Option Int64`,
+    /// `A`'s is `Int64`), which the FLATTENED path cannot encode. An arm at disc `d` records its payload's
+    /// type (`variant_payload_ty(subject, d)`) here, keyed by the bind path; a NESTED switch then resolves
+    /// its subject type by lookup (longest-prefix match + walk the remaining `Elem`s) instead of
+    /// re-deriving it variant-0-first. Empty at the root (the scrutinee's own type resolves directly).
+    pub sum_path_types: Vec<(Vec<crate::core::PathStep>, Ty)>,
 }
 
 /// A payload bound by a sum-match arm's Rust pattern: the scrutinee occurrence + access path the
@@ -116,7 +128,7 @@ pub fn emit_body(
     body: StructId,
     params: &[(StructId, Ty)],
     self_def: usize,
-    _layout: &Layout,
+    layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
     // The tail-recursion group this function belongs to, compiled as a shared `loop` (§keeps deep tail
@@ -129,7 +141,7 @@ pub fn emit_body(
         loop_group(db, self_def)
     };
     if !members.is_empty() {
-        return emit_loop_body(db, params, self_def, &members, mode);
+        return emit_loop_body(db, params, self_def, &members, layout, mode);
     }
     // No loop: render the body directly.
     let mut env: Env = HashMap::new();
@@ -138,8 +150,10 @@ pub fn emit_body(
     }
     let ctx = Ctx {
         mode,
+        layout,
         loop_group: None,
         sum_binds: Vec::new(),
+        sum_path_types: Vec::new(),
     };
     let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
@@ -154,6 +168,7 @@ fn emit_loop_body(
     params: &[(StructId, Ty)],
     self_def: usize,
     members: &[usize],
+    layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
     let shared_params: Vec<String> = (0..params.len()).map(|i| format!("__p{i}")).collect();
@@ -168,8 +183,10 @@ fn emit_loop_body(
     };
     let ctx = Ctx {
         mode,
+        layout,
         loop_group: Some(&group),
         sum_binds: Vec::new(),
+        sum_path_types: Vec::new(),
     };
     // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
     let mut init = String::new();
@@ -669,7 +686,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
-            let ident = super::sanitize_ident(&name);
+            // The callee ident via `fn_ident` — the SAME uniqued name its declaration emits, so a call to a
+            // β-copied do-local worker names ITS copy (`fac_7`), not a sibling copy's identically-named fn.
+            let ident = super::fn_ident(db, ctx.layout, callee);
             if ctx.mode.is_async() {
                 // Async/gas mode: thread `env` as the callee's first argument, and `Box::pin(…).await`
                 // the call. The pin is what makes a RECURSIVE `async fn` well-sized (a recursive future
@@ -805,6 +824,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesConcat { .. }
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
+        // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
+        // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
+        // and reaches this backend as a `Core::ConstInt`, which emits fine).
+        | Core::BigIntOfI64 { .. }
+        | Core::BigIntToI64 { .. }
+        | Core::BigIntBinOp { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapLookup { .. }
@@ -1079,6 +1104,13 @@ fn emit_match_impl(
                     "a runtime string-literal match is not yet emitted",
                 ));
             }
+            // A `ListLen` probe only ever FOLDS (a constant list payload); a runtime list payload declines
+            // at `build_lit_test` before a decision tree is emitted, so it never reaches a runtime match.
+            crate::core::Probe::ListLen { .. } => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime list-pattern match is not yet emitted",
+                ));
+            }
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {
@@ -1265,13 +1297,24 @@ fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Rej
 /// payload (`Option Int64`'s `Some` payload is `Int64`, not `?0`). The rust-backend twin of the wasm
 /// backend's `sum_single_payload_ty`; used by `ty_at_sum_path` to walk a nested switch's subject type.
 fn sum_disc0_payload_ty(db: &mut Db, sum: &Ty) -> Option<Ty> {
+    variant_payload_ty(db, sum, 0)
+}
+
+/// The payload type of a sum's variant `disc` at THIS instantiation — `None` for a nullary or
+/// unresolvable variant. Generalizes [`sum_disc0_payload_ty`] to ANY discriminant: a nested switch on a
+/// variant at disc ≥ 1 (`(type W (A Int64) (V (Option Int64)))` matched `(W.V (Some n))`) must read the
+/// payload of the ACTUAL entered variant (`V` → `Option Int64`), not variant 0's (`A` → `Int64`). Reading
+/// variant 0 unconditionally made a nested constructor match on a non-first variant resolve to the wrong
+/// sub-value type and decline (`sum construction node is not a sum type`). Substitutes the sum's actual
+/// type args (`Option a`'s `V` payload at `W Int64` → `Option Int64`).
+fn variant_payload_ty(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
     let stripped = sum.strip_nominal().clone();
     let Ty::Sum { decl, .. } = &stripped else {
         return None;
     };
     let ctor = {
         let td = db.type_decl_by_occ(*decl)?;
-        td.variants.first()?.ctor?
+        td.variants.get(disc as usize)?.ctor?
     };
     crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
 }
@@ -1299,19 +1342,21 @@ fn emit_sum_match(
     // The root is normally a Switch on the scrutinee's own discriminant (path empty). A non-root-Switch
     // continuation (a Guarded arm or a bare Leaf as the ROOT) is a shape this slice does not yet render —
     // decline. A `Switch` root (empty or a disc-folded deeper path) recurses through `emit_sum_switch`.
+    // A `Switch` root recurses through `emit_sum_switch`. A NON-Switch root arises when the disc-fold in
+    // `lower` collapses the root `Switch` on a STATICALLY-KNOWN discriminant (a constant `SumNew`
+    // scrutinee) to the selected arm's continuation — a `LitTest` (`(match (Cons x Nil) ((Cons 0 t) …))`
+    // where the `Cons` tag is known but the payload `x` is runtime), a `Guarded`, or a bare `Leaf`. Those
+    // continuations are exactly what `emit_sum_cont` renders (it reads a sub-value via `emit_sum_payload`,
+    // which folds against the constant scrutinee's payload nodes), so route them there rather than
+    // declining. Before this, a constant-disc recursive/literal match declined on Rust while wasm compiled
+    // it — the last non-Switch-root gap.
     match root {
         crate::core::SumCont::Switch { path, arms } => {
             emit_sum_switch(db, scrutinee, path, arms, env, ctx)
         }
-        crate::core::SumCont::Guarded { .. } => Err(Reject::decline(
-            "a sum-scrutinee guard is not yet rendered by the Rust backend",
-        )),
-        crate::core::SumCont::Leaf(_) => Err(Reject::decline(
-            "a bare-leaf sum match is not yet rendered by the Rust backend",
-        )),
-        crate::core::SumCont::LitTest { .. } => Err(Reject::decline(
-            "a literal-payload sum pattern is not yet rendered by the Rust backend",
-        )),
+        crate::core::SumCont::Guarded { .. }
+        | crate::core::SumCont::Leaf(_)
+        | crate::core::SumCont::LitTest { .. } => emit_sum_cont(db, scrutinee, root, env, ctx),
     }
 }
 
@@ -1332,6 +1377,17 @@ fn emit_sum_switch(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
+    // ERASED-NEWTYPE ALIGNMENT: a `Payload` step over a NOMINAL newtype sub-value is a runtime no-op (the
+    // tag erases; the value IS the inner). `lower` drops such steps from the BODY's `SumPayload` read
+    // paths (`erase_nominal_steps`), but the decision-tree's switch/bind paths keep them, so a switch on a
+    // sum WRAPPED in an erased newtype (`(type W (V (Result …)))` matched `(W.V (Result.Ok n))`) carries a
+    // leading nominal `[Payload]` the erased body read does not — the bind (`sw_path+[Payload]`) and the
+    // read (erased) then disagree by one step ("sum payload has no bound match arm"). Erase the switch
+    // path the same way here so the subject reads the inner sum directly and every bind path this switch
+    // mints aligns with the erased body reads. (wasm tolerates the raw path via its runtime-rep
+    // coincidence; the Rust backend's path-keyed binds need the alignment.)
+    let sw_path_owned = erase_nominal_switch_path(db, scrutinee, sw_path);
+    let sw_path = &sw_path_owned[..];
     // The value this switch dispatches on: the scrutinee (root, empty path) or the sub-value at `sw_path`
     // (a nested switch — read the enclosing arm's payload binding). `emit_sum_payload` folds a constant
     // scrutinee or reads the bound `__pay` name.
@@ -1340,6 +1396,14 @@ fn emit_sum_switch(
     } else {
         emit_sum_payload(db, scrutinee, scrutinee, sw_path, env, ctx)?
     };
+    // The SOLVED TYPE of the value this switch dispatches on. At the root (`sw_path == []`) it is the
+    // scrutinee's own type; at a nested switch it is the sub-value type an ENCLOSING arm recorded in
+    // `sum_path_types` when it descended into this variant (`variant_payload_ty` of the entered disc). A
+    // recorded hint is authoritative — it carries which variant was entered, which the flattened path
+    // cannot; only if none is recorded (the root, or a path with no hint) do we walk the type from the
+    // scrutinee via `ty_at_sum_path` (which then falls back to the disc-0 payload for a `Payload` step).
+    let subject_ty = lookup_sum_path_type(ctx, sw_path)
+        .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, sw_path));
     let mut out = format!("match {subject} {{ ");
     for (i, arm) in arms.iter().enumerate() {
         match arm.disc {
@@ -1348,8 +1412,8 @@ fn emit_sum_switch(
                 // arm's `SumPayload { scrutinee, sw_path + [Payload] (…) }` resolves to; a nullary variant
                 // binds nothing. The bind's path is FROM THE ROOT scrutinee (`sw_path + [Payload]`), so a
                 // deeper `SumPayload` (a binder in this arm's body, or a nested switch's subject) resolves.
-                let vpath = sum_variant_path_at(db, scrutinee, sw_path, disc)?;
-                let arity = variant_payload_arity_at(db, scrutinee, sw_path, disc);
+                let vpath = sum_variant_path_of_ty(db, &subject_ty, disc)?;
+                let arity = variant_arity_of_ty(db, &subject_ty, disc);
                 let (pat_tail, arm_ctx) = if arity == 0 {
                     (String::new(), ctx.clone())
                 } else {
@@ -1357,16 +1421,21 @@ fn emit_sum_switch(
                     let mut payload_path = sw_path.to_vec();
                     payload_path.push(crate::core::PathStep::Payload);
                     // A RECURSIVE variant's field is a `Box<…>` (the enum boxes it), so the bind is boxed —
-                    // a read derefs. The switched variant's type is the sub-value at `sw_path`.
-                    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
-                    let boxed = super::enums::variant_is_recursive(db, &sub_ty, disc);
+                    // a read derefs. The switched variant's type is THIS switch's subject type.
+                    let boxed = super::enums::variant_is_recursive(db, &subject_ty, disc);
                     let mut c = ctx.clone();
                     c.sum_binds.push(SumBind {
                         scrutinee,
-                        path: payload_path,
+                        path: payload_path.clone(),
                         name: name.clone(),
                         boxed,
                     });
+                    // RECORD the entered variant's payload type at the bind path, so a NESTED switch on this
+                    // arm's payload (a disc-≥1 variant carrying a sum) resolves its subject to the ACTUAL
+                    // payload type, not variant-0's. This is what the flattened path alone cannot supply.
+                    if let Some(pty) = variant_payload_ty(db, &subject_ty, disc) {
+                        c.sum_path_types.push((payload_path, pty));
+                    }
                     (format!("({name})"), c)
                 };
                 let cont = emit_sum_cont(db, scrutinee, &arm.cont, env, &arm_ctx)?;
@@ -1426,8 +1495,11 @@ fn emit_sum_cont(
             let lit = match probe {
                 crate::core::Probe::Int(v) => {
                     // The sub-value's integer type gives the literal's suffix; a `Payload`/`Elem` path ends
-                    // at an Int leaf, so `ty_at_sum_path` yields its width.
-                    let it = match ty_at_sum_path(db, scrutinee, path) {
+                    // at an Int leaf. Prefer an arm-recorded path type (the entered-variant type, exact for
+                    // a disc-≥1 payload), falling back to a scrutinee-rooted walk.
+                    let sub = lookup_sum_path_type(ctx, path)
+                        .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, path));
+                    let it = match sub {
                         Ty::Int(it) => it,
                         _ => IntTy {
                             sign: Sign::Fixed(true),
@@ -1440,7 +1512,9 @@ fn emit_sum_cont(
                     format!("{}{target}", int_value_signed_decimal(v))
                 }
                 crate::core::Probe::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
-                crate::core::Probe::Str(_) | crate::core::Probe::Wild => {
+                crate::core::Probe::Str(_)
+                | crate::core::Probe::ListLen { .. }
+                | crate::core::Probe::Wild => {
                     return Err(Reject::decline(
                         "a non-scalar literal-payload probe is not rendered by the Rust backend",
                     ));
@@ -1455,31 +1529,97 @@ fn emit_sum_cont(
     }
 }
 
-/// The Rust `<Enum>::<Variant>` path for the `disc`-th variant of the sum at sub-value `sw_path` of
-/// `scrutinee` — [`sum_variant_path`] generalized to a nested position. The sub-value's TYPE is the
-/// scrutinee's type walked down `sw_path`; the variant path is read from that type's declaration.
-fn sum_variant_path_at(
+/// The TYPE of the sub-value reached by walking `sw_path` from `scrutinee`'s type — a `Payload` step
+/// descends a variant's payload (the sum's disc-0 single payload at its instantiation, or a nominal's
+/// inner), an `Elem(i)` a tuple element. Returns `Ty::Any` on an unwalkable path (the caller then reads
+/// arity 0 / declines). Enough for the nested-sum-switch subject: a nested switch's `path` ends at a sum
+/// sub-value, so the walk reaches a `Ty::Sum` whose declaration names the variant.
+/// Drop `Payload` steps that land on an ERASED NOMINAL newtype from a switch/bind path — the Rust-backend
+/// twin of `lower::erase_nominal_steps` (which does this for the BODY's `SumPayload` read paths). A newtype
+/// tag erases at runtime (the value IS the inner), so its `Payload` step is a no-op; keeping it in a switch
+/// path would put the switch one level too shallow and mint bind paths one step deeper than the erased body
+/// reads. Walking the scrutinee's TYPE, a `Payload` over a `Ty::Nominal` advances to its inner and is
+/// dropped; a `Payload` over a real sum is KEPT (and the type advances through the sum's disc-0 payload,
+/// enough to detect a nominal deeper in the path); an `Elem(i)` is kept (advancing through a tuple/list).
+/// A boxed non-newtype path has no nominal `Payload` step, so it is returned unchanged (no regression).
+fn erase_nominal_switch_path(
     db: &mut Db,
     scrutinee: StructId,
     sw_path: &[crate::core::PathStep],
-    disc: u32,
-) -> Result<String, Reject> {
-    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
-    sum_variant_path_of_ty(db, &sub_ty, disc)
+) -> Vec<crate::core::PathStep> {
+    let mut cur = type_of(db, scrutinee);
+    let mut out = Vec::with_capacity(sw_path.len());
+    for step in sw_path {
+        match step {
+            crate::core::PathStep::Payload => match &cur {
+                // A nominal newtype's payload step erases — advance to the inner, drop the step.
+                Ty::Nominal { inner, .. } => cur = (**inner).clone(),
+                // A real (boxed-sum) payload step — keep it, advance through the sum's payload shape.
+                _ => {
+                    out.push(*step);
+                    cur = sum_disc0_payload_ty(db, &cur).unwrap_or(Ty::Any);
+                }
+            },
+            crate::core::PathStep::Elem(i) => {
+                out.push(*step);
+                cur = match cur.strip_nominal() {
+                    Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                    Ty::List(elem) => (**elem).clone(),
+                    _ => Ty::Any,
+                };
+            }
+            // A list-rest step is not a nominal `Payload` (never erased) — keep it, type stays the list.
+            crate::core::PathStep::RestFrom(_) => {
+                out.push(*step);
+                cur = match cur.strip_nominal() {
+                    Ty::List(_) => cur.strip_nominal().clone(),
+                    _ => Ty::Any,
+                };
+            }
+        }
+    }
+    out
 }
 
-/// The payload arity of the `disc`-th variant of the sum at sub-value `sw_path` — [`variant_payload_arity`]
-/// generalized to a nested position (reads the sub-value's type's declaration).
-fn variant_payload_arity_at(
-    db: &mut Db,
-    scrutinee: StructId,
-    sw_path: &[crate::core::PathStep],
-    disc: u32,
-) -> usize {
-    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
-    let decl_occ = match sub_ty {
-        Ty::Sum { decl, .. } => decl,
-        Ty::Nominal { decl, .. } => decl,
+/// Resolve the solved type of the sub-value at `path` from the arm-recorded `sum_path_types` hints —
+/// the entered-variant type an enclosing switch recorded when it descended. Longest-prefix match: find the
+/// deepest recorded path that is a prefix of `path`, then walk the remaining `Elem`/nominal-`Payload`
+/// steps from its type (a tuple-payload destructure). `None` if no recorded path is a prefix (the root, or
+/// a genuinely un-hinted path) — the caller then falls back to a scrutinee-rooted type walk.
+fn lookup_sum_path_type(ctx: &Ctx, path: &[crate::core::PathStep]) -> Option<Ty> {
+    let (best_path, best_ty) = ctx
+        .sum_path_types
+        .iter()
+        .filter(|(p, _)| path.starts_with(p))
+        .max_by_key(|(p, _)| p.len())?;
+    let rest = &path[best_path.len()..];
+    let mut ty = best_ty.clone();
+    for step in rest {
+        ty = match step {
+            crate::core::PathStep::Elem(i) => match ty.strip_nominal() {
+                Ty::Tuple(elems) => elems.get(*i).cloned()?,
+                Ty::List(elem) => (**elem).clone(),
+                _ => return None,
+            },
+            // A nominal-newtype Payload peels a layer (a no-op); a sum Payload beyond a recorded hint only
+            // arises through a nested switch, which records its OWN hint — so here it is not resolvable.
+            crate::core::PathStep::Payload => match &ty {
+                Ty::Nominal { inner, .. } => (**inner).clone(),
+                _ => return None,
+            },
+            crate::core::PathStep::RestFrom(_) => return None,
+        };
+    }
+    Some(ty)
+}
+
+/// The payload arity of variant `disc` of the sum TYPE `ty` — the type-keyed twin of
+/// [`variant_payload_arity_at`], reading the arity off the (possibly hint-supplied) subject type rather
+/// than re-walking from the scrutinee. `strip_nominal` first so an erased-newtype-wrapped sum reads the
+/// inner sum's variant arity.
+fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
+    let decl_occ = match ty.strip_nominal() {
+        Ty::Sum { decl, .. } => *decl,
         _ => return 0,
     };
     match db.type_decl_by_occ(decl_occ) {
@@ -1492,20 +1632,33 @@ fn variant_payload_arity_at(
     }
 }
 
-/// The TYPE of the sub-value reached by walking `sw_path` from `scrutinee`'s type — a `Payload` step
-/// descends a variant's payload (the sum's disc-0 single payload at its instantiation, or a nominal's
-/// inner), an `Elem(i)` a tuple element. Returns `Ty::Any` on an unwalkable path (the caller then reads
-/// arity 0 / declines). Enough for the nested-sum-switch subject: a nested switch's `path` ends at a sum
-/// sub-value, so the walk reaches a `Ty::Sum` whose declaration names the variant.
 fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::PathStep]) -> Ty {
     let mut ty = type_of(db, scrutinee);
+    // A parallel CONSTANT-VALUE cursor: the `Core` node the sub-value currently is, when the scrutinee is
+    // a compile-time-known value (a folded `SumNew`/`Tuple`). A `Payload` step over a `Ty::Sum` must
+    // descend the ENTERED variant's payload — but the flattened path does not carry which discriminant the
+    // enclosing arm selected. When the value is a constant `SumNew { disc }`, its `disc` IS the entered
+    // variant, so read THAT variant's payload type (not variant 0's). This is what lets a nested match on a
+    // variant at disc ≥ 1 (`(type W (A Int64) (V (Option Int64)))` matched `(W.V (Some n))`, folded to a
+    // known `W.V`) resolve its inner switch's subject to `Option Int64` (V's payload), not `Int64` (A's).
+    // A non-constant scrutinee falls back to variant 0 — a fully-runtime nested match on a disc-≥1 variant
+    // is not reachable here (a sum-typed value can't cross the export boundary, so `f` folds or declines).
+    let mut val: Option<Core> = Some(crate::lower::core_of(db, scrutinee));
     for step in sw_path {
+        // The disc of the current constant value, if it is a `SumNew` — the entered variant at a `Payload`.
+        let cur_disc = match &val {
+            Some(Core::SumNew { disc, .. }) => Some(*disc),
+            _ => None,
+        };
         ty = match step {
             crate::core::PathStep::Payload => match ty.strip_nominal() {
-                Ty::Sum { .. } => match sum_disc0_payload_ty(db, &ty) {
-                    Some(t) => t,
-                    None => return Ty::Any,
-                },
+                Ty::Sum { .. } => {
+                    let disc = cur_disc.unwrap_or(0);
+                    match variant_payload_ty(db, &ty, disc) {
+                        Some(t) => t,
+                        None => return Ty::Any,
+                    }
+                }
                 Ty::Nominal { inner, .. } => (**inner).clone(),
                 _ => return Ty::Any,
             },
@@ -1522,6 +1675,23 @@ fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::Path
                 Ty::List(_) => ty.clone(),
                 _ => return Ty::Any,
             },
+        };
+        // Advance the value cursor alongside the type: a `Payload` enters a `SumNew`'s sole payload (a
+        // multi-payload variant's payloads become the following `Elem`s), an `Elem` a `Tuple`/`SumNew`
+        // element. Anything else drops the cursor to `None` (fall back to variant 0 / structural type).
+        val = match (step, val.take()) {
+            (crate::core::PathStep::Payload, Some(Core::SumNew { payloads, .. }))
+                if payloads.len() == 1 =>
+            {
+                Some(crate::lower::core_of(db, payloads[0]))
+            }
+            (crate::core::PathStep::Elem(i), Some(Core::SumNew { payloads, .. })) => {
+                payloads.get(*i).map(|&p| crate::lower::core_of(db, p))
+            }
+            (crate::core::PathStep::Elem(i), Some(Core::Tuple { elems })) => {
+                elems.get(*i).map(|&e| crate::lower::core_of(db, e))
+            }
+            _ => None,
         };
     }
     ty
@@ -1551,6 +1721,55 @@ fn variant_payload_arity(db: &mut Db, id: StructId, disc: u32) -> usize {
 /// arm's direct payload — a `PathStep::Elem(i)` after the `Payload` (a tuple-payload destructure) —
 /// reads a tuple field off that binding (`(<bound>).i`). Declines if no binding is in scope (a sum
 /// pattern shape this slice does not yet render — e.g. a nested switch's payload).
+/// Walk `path` through the CONSTANT value tree rooted at `root`, returning the single `Core` node it
+/// selects — or `None` if the path lands between nodes (a multi-payload `Payload`, or a step over a
+/// non-constant node). A `Payload` over a single-payload `SumNew` enters its sole payload (`(W.V x)` →
+/// `x` — the disc-fold-flattened nested-match subject read, several `Payload`s deep); an `Elem(i)` indexes
+/// a `SumNew`'s / `Tuple`'s / `ListNew`'s element. The value-tree twin of `lower::fold_sum_path`, but
+/// returning the NODE (for `emit`) rather than its folded `Core`.
+fn fold_const_sum_path(
+    db: &mut Db,
+    root: StructId,
+    path: &[crate::core::PathStep],
+) -> Option<StructId> {
+    let mut cur = root;
+    let mut i = 0;
+    while i < path.len() {
+        let step = &path[i];
+        match (step, crate::lower::core_of(db, cur)) {
+            (crate::core::PathStep::Payload, Core::SumNew { payloads, .. })
+                if payloads.len() == 1 =>
+            {
+                cur = payloads[0];
+                i += 1;
+            }
+            // A MULTI-payload variant's payload IS the tuple of its payloads (no single node). A following
+            // `Elem(j)` indexes payload `j` DIRECTLY — consume BOTH steps. A bare `Payload` ending here has
+            // no single node (`None` — the caller renders the payload tuple).
+            (crate::core::PathStep::Payload, Core::SumNew { payloads, .. }) => {
+                match path.get(i + 1) {
+                    Some(crate::core::PathStep::Elem(j)) => {
+                        cur = *payloads.get(*j)?;
+                        i += 2;
+                    }
+                    _ => return None,
+                }
+            }
+            (crate::core::PathStep::Elem(j), Core::Tuple { elems }) => {
+                cur = *elems.get(*j)?;
+                i += 1;
+            }
+            (crate::core::PathStep::Elem(j), Core::ListNew { elems }) => {
+                cur = *elems.get(*j)?;
+                i += 1;
+            }
+            // A `RestFrom`, or a step over a non-constant node.
+            _ => return None,
+        }
+    }
+    Some(cur)
+}
+
 fn emit_sum_payload(
     db: &mut Db,
     _id: StructId,
@@ -1568,33 +1787,29 @@ fn emit_sum_payload(
     // already works via `emit_sum_match`'s binding, and a single-payload constant already folds in `lower`
     // to a bare value; only a constant MULTI-payload match reached here unresolved — the wasm backend emits
     // runtime `sum-payload`/`arr-get` reads of the constant, the Rust one folds to the payload node).
-    if let Core::SumNew { payloads, .. } = crate::lower::core_of(db, scrutinee) {
-        match path {
-            // `[Payload]` — the whole payload. A single-payload variant IS `payloads[0]`; a multi-payload
-            // variant's payload is the tuple of all payloads (emit as a Rust tuple `(p0, p1, …)`).
-            [crate::core::PathStep::Payload] => {
-                return match payloads.len() {
-                    1 => emit(db, payloads[0], env, ctx),
-                    _ => {
-                        let mut parts = Vec::with_capacity(payloads.len());
-                        for &p in &payloads {
-                            parts.push(emit(db, p, env, ctx)?);
-                        }
-                        Ok(format!("({})", parts.join(", ")))
-                    }
-                };
+    if matches!(crate::lower::core_of(db, scrutinee), Core::SumNew { .. }) {
+        // Walk the path through the CONSTANT value tree, descending each step into the node it selects. A
+        // `Payload` over a single-payload `SumNew` enters its sole payload (a `(W.V …)` → the inner value —
+        // this is what lets a disc-fold-FLATTENED nested match, whose single switch sits at a deep path like
+        // `[Payload, Payload]` with NO enclosing binds, read its subject directly off the constant); a
+        // `Payload` over a MULTI-payload variant yields the tuple of all payloads; an `Elem(i)` indexes a
+        // tuple/multi-payload node. If the whole path resolves to a single node, emit it; a path that lands
+        // "between" nodes (a multi-payload `Payload` not at the end) falls through to the bind lookup.
+        if let Some(node) = fold_const_sum_path(db, scrutinee, path) {
+            return emit(db, node, env, ctx);
+        }
+        // A `[…, Payload]` ending on a MULTI-payload variant is the tuple of its payloads (no single node).
+        if let Some((last, prefix)) = path.split_last()
+            && matches!(last, crate::core::PathStep::Payload)
+            && let Some(parent) = fold_const_sum_path(db, scrutinee, prefix)
+            && let Core::SumNew { payloads, .. } = crate::lower::core_of(db, parent)
+            && payloads.len() != 1
+        {
+            let mut parts = Vec::with_capacity(payloads.len());
+            for &p in &payloads {
+                parts.push(emit(db, p, env, ctx)?);
             }
-            // `[Payload, Elem(i)]` — the i-th payload of a multi-payload variant (or the i-th tuple element
-            // of a single tuple-typed payload). A constant `SumNew`'s payloads are indexed directly.
-            [
-                crate::core::PathStep::Payload,
-                crate::core::PathStep::Elem(i),
-            ] => {
-                if let Some(&p) = payloads.get(*i) {
-                    return emit(db, p, env, ctx);
-                }
-            }
-            _ => {}
+            return Ok(format!("({})", parts.join(", ")));
         }
     }
     // The binding covers the arm's direct payload (path prefix `[Payload]`); any trailing `Elem(i)` steps

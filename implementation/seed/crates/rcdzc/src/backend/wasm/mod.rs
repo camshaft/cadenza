@@ -1471,13 +1471,14 @@ fn emit_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -1629,7 +1630,10 @@ fn emit_closure_resource(
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
     // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
     if ret_is_bytes {
-        let main_core = serialize::closure_bytes_resource_core_module(
+        // C-HOST-6: the `call` takes `borrow<t>` (repeatable — the host keeps the handle; the `t-dtor`
+        // reclaims the cell). The byte-rope copy path is unaffected; only the cell rep-recovery + release
+        // change (rep passed directly, no self-drop).
+        let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1637,22 +1641,25 @@ fn emit_closure_resource(
             &make_param_vts,
             lifted_type_idx,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
     // the bytes path (so the SAME envelope), but the core walks the closure's returned handle to fill the
     // value-form template. The host decodes the bytes to `(: value T)`.
     if let Some(template) = &ret_template {
-        let main_core = serialize::closure_value_resource_core_module(
+        // C-HOST-6 borrow<t> `call` — the compound-walk path is unaffected; the cell is kept (repeatable).
+        let main_core = serialize::closure_value_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1661,22 +1668,25 @@ fn emit_closure_resource(
             lifted_type_idx,
             template,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
     // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
     // the descriptor Bytes, `value-encode(rep, desc)` → the value-form document, copy out). Same `list<u8>`
     // envelope as the bytes/compound paths; cdz-run try-decodes to `(: (list …) (List <e>))` etc.
     if let Some(descriptor) = &ret_descriptor {
-        let main_core = serialize::closure_value_encode_resource_core_module(
+        // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable).
+        let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1685,18 +1695,27 @@ fn emit_closure_resource(
             lifted_type_idx,
             descriptor,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
-    let main_core = serialize::closure_resource_core_module(
+    // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a
+    // REPEATABLE callback, the natural host-closure shape), and the `t-dtor` reclaims the cell when the host
+    // finally drops it (`resource_dtor_module_with_drop`, already used above). This replaces the earlier
+    // own/self-drop single-use posture (`resource.rep` on a borrow traps in wasmtime 37 — dodged by using the
+    // rep the borrow-lift passes DIRECTLY, no `resource.rep`). Still leak-free: make allocs the cell, the dtor
+    // drops it. (The compound/collection `call` results above keep own/self-drop for now — a later widening;
+    // borrow there also needs the value form's own memory handling, out of this increment's scope.)
+    let main_core = serialize::closure_resource_core_module_borrow(
         &funcs,
         &imports,
         export_abs,
@@ -1705,9 +1724,10 @@ fn emit_closure_resource(
         &make_param_vts,
         lifted_type_idx,
         &layout,
+        true,
     )
     .map_err(Reject::decline)?;
-    Ok(envelope::assemble_closure_resource(
+    Ok(envelope::assemble_closure_resource_borrow(
         &main_core,
         &dtor_core,
         &imports,
@@ -1715,6 +1735,7 @@ fn emit_closure_resource(
         &make_param_bytes,
         &arg_bytes,
         result_byte,
+        true,
     ))
 }
 
@@ -1961,13 +1982,14 @@ fn emit_multi_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -2294,13 +2316,14 @@ fn emit_mixed_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -2657,13 +2680,11 @@ fn emit_distinct_sig_resource(
         let ret_descriptor =
             if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&ret_ty).is_some() {
                 None
-            } else if matches!(
-                ret_ty.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             } else {
-                None
+                // Any other value-encodable result (collection, sum, or compound-containing-collection) →
+                // the runtime `value-encode` descriptor path; `sum_shape_descriptor` returns `None` for a
+                // scalar or unrenderable shape. (A fixed-shape compound took the static `ret_template` path.)
+                crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             };
         let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
             0
@@ -3202,13 +3223,12 @@ fn emit_roundtrip_resource(
             if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&c.result).is_some()
             {
                 None
-            } else if matches!(
-                c.result.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
             } else {
-                None
+                // Any other value-encodable consumer result (a collection, a SUM — `Option`/`Result`/a user
+                // sum — or a compound containing a variable-length element) crosses as `list<u8>` via the
+                // runtime `value-encode` descriptor path. `sum_shape_descriptor` returns `None` for a scalar
+                // (handled above) or an unrenderable shape. (A fixed-shape compound took `ret_template`.)
+                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
             };
         let consumer_result_byte =
             if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
@@ -3625,13 +3645,11 @@ fn emit_distinct_sig_roundtrip_resource(
                 || closure_boundary_byte(&e.result).is_some()
             {
                 None
-            } else if matches!(
-                e.result.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
             } else {
-                None
+                // Any other value-encodable consumer result (a collection, a SUM, or a compound containing a
+                // variable-length element) → the runtime `value-encode` descriptor path. `sum_shape_descriptor`
+                // returns `None` for a scalar or unrenderable shape. (A fixed-shape compound took `ret_template`.)
+                crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
             };
             let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some()
             {
@@ -4107,6 +4125,8 @@ fn emit_recursive_sum_resource(
 //= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
 //# Exactly one such runtime interface MUST be exempt — the value-heap runtime the compiler emits programs against, fixed at the declared-default location — and every other import a program carries MUST be treated as a host function and therefore a capability, so that the exemption is a closed allowlist of one and not an open class of non-effect imports.
 ///
+//= spec/contracts/component-abi.md#the-value-heap-runtime-crosses-by-a-well-known-import
+//# A derived program MUST reach its runtime values — constructing a compound value and inspecting a value's contents — through the single, well-known value-heap runtime interface it imports, rather than by open-coding a value heap into its own component, so that the heap representation is one shared artifact the compiler emits programs against.
 //= spec/contracts/component-abi.md#the-value-heap-runtime-crosses-by-a-well-known-import
 //# The identity of that runtime interface MUST be fixed at the declared-default location and MUST be the same for every program a generation emits, so that any conforming host can satisfy the import and the interface is a stable part of the ABI rather than a per-program choice.
 ///

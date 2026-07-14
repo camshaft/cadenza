@@ -276,6 +276,49 @@
   (input  (do (def (main) ((. UInt8 of) (BigInt.of 300))) (export main)))
   (error  CDZ0302))
 
+; --- RUNTIME BigInt arithmetic — the unbounded ops run on the runtime limb library (B3b) ----------
+; When an operand is not a compile-time constant (a BigInt PARAMETER, a derived value), the arithmetic
+; runs at RUN TIME on the runtime's arbitrary-precision limb library: `BigInt.of` widens a runtime int
+; into a BigInt, `+`/`-`/`*`/`/` never overflow (the representation grows — the whole point of the type),
+; and `Int64.of` narrows back CHECKED. A value that overflows a fixed width mid-computation is still exact
+; as a BigInt; only the final narrowing back to Int64 is range-checked.
+
+(case "runtime BigInt addition runs on the arbitrary-precision runtime"
+  (doc    "`(Int64.of (+ (BigInt.of a) (BigInt.of b)))` with runtime a,b widens each to a BigInt, adds on
+           the runtime limb library, and narrows the in-range sum back: a=40,b=2 → 42. Pins the runtime
+           path (a constant pair would fold; these are parameters, so the runtime `bigint-of-i64`/
+           `bigint-add`/`bigint-to-i64-checked` ops run).")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (+ (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: 40 Int64) (: 2 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime BigInt intermediate that overflows Int64 does not trap"
+  (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
+           2.5e19 OVERFLOWS Int64 (max ~9.2e18), but BigInt's representation grows rather than trapping —
+           the exact intermediate is carried, then `/big` brings it back to 5000000000, in range for the
+           final narrowing. THE reason BigInt exists (numeric-model.md §An Arbitrary-Precision Integer Has
+           Unbounded Range): the same expression over Int64 would trap at the multiply. Pins that the
+           unbounded intermediate never overflows at run time.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (Int64.of (/ (* big big) big))))
+            (export main)))
+  (call   main (: 5000000000 Int64))
+  (output (: 5000000000 Int64)))
+
+(case "a runtime BigInt operation does not silently promote a fixed-width operand"
+  (doc    "`(+ (BigInt.of a) b)` with `a`,`b` runtime Int64 mixes a BigInt and an Int64 — rejected
+           (CDZ0301) exactly as the constant mix is, at run-time-typed operands too. The no-promotion rule
+           holds regardless of whether the operands are constant; to add, both must be BigInt.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) b)))
+            (export main)))
+  (error  CDZ0301))
+
 ; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------
 ; A module MAY declare `(pragma default-integer <T>)` so a bare integer literal with no other constraint
 ; takes `<T>` instead of Int64 within that module (numeric-model.md #A Module May Declare Its Default

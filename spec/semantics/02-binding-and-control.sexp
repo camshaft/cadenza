@@ -520,6 +520,48 @@
               (if (ev 10) 1 0)))
   (output (: 1 Int64)))
 
+; A recursive do-local function nested INSIDE a HELPER that is itself INLINED at its call site still
+; recurses: β-reduction COPIES the helper's body (fresh occurrences), so the copied recursive self-call
+; must still lower to a runtime call — the copy's do-local function is registered as an emittable function
+; exactly as the original is. A compiler that registers only the LOAD-TIME occurrence declines the copied
+; call "needs runtime specialization"; one that registers the reduced copy's do-local functions runs it.
+
+(case "a recursive do-local function nested in an inlined helper recurses"
+  (doc    "`helper` carries a do-local recursive `fac`; `(helper 5)` inlines `helper`, COPYING its body —
+           so the copied `(fac (- n 1))` self-call must still resolve to an emittable function and lower to
+           a runtime call. fac(5) = 120, and `helper` folds away. Pins that recursion survives β-copy of an
+           enclosing function: the reduced copy's do-local function is registered like the original, not
+           left as an un-lowerable copy.")
+  (input  (do (def (helper x)
+                (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))
+                    (fac x)))
+              (def (main) (helper 5)) (export main)))
+  (output (: 120 Int64)))
+
+(case "a recursive do-local function survives two inlinings of its helper"
+  (doc    "The helper is called TWICE — `(helper 5)` and `(helper 3)` — so its body (with the do-local
+           recursive `fac`) is copied twice, each copy's `fac` its own emittable function. fac(5)+fac(3) =
+           120 + 6 = 126. Pins that EACH β-copy of the enclosing helper registers its own copy of the
+           recursive function (one call site's copy is not confused for another's).")
+  (input  (do (def (helper x)
+                (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))
+                    (fac x)))
+              (def (main) (+ (helper 5) (helper 3))) (export main)))
+  (output (: 126 Int64)))
+
+(case "a nullary do-local def followed by a use of it computes over its result"
+  (doc    "The `def helper … then use it` idiom: `main`'s body is a do-block with a nullary do-local
+           `(def (a) 10)` followed by `(+ (a) 5)` = 15. Pins the intended semantics of a def-body sequence
+           whose declaration ends in a NUMBER and whose next statement STARTS with a name — the exact shape
+           the ML surface's unit-quantity sugar (`5 feet` → Qty) corrupted by greedily reading the def RHS
+           `10` and the next statement's leading `a` as one quantity `(Qty.of 10 (Unit.of #\"a\"))`, dropping
+           main's real tail. The ML reader now gates that sugar to a single line (no crossing a newline /
+           statement boundary), so this program's ML spelling parses like this s-expr and runs to 15. The
+           s-expr surface was always correct (it has no juxtaposition sugar); this is the semantics witness.")
+  (input  (do (def (main) (do (def (a) 10) (+ (a) 5))) (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
 ; An ARGUMENT to a user-function call is an expression evaluated in the CALL SITE's scope, and its
 ; names bind there — a compiler that reduces a call by substituting the argument into the callee's
 ; body must not thereby resolve the argument's names in the callee's scope. The witnesses below pin

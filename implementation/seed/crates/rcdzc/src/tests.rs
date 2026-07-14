@@ -1785,6 +1785,129 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// Mint ONE closure handle with `make` and `call` it TWICE, returning both results. Proves the
+    /// `borrow<t>` `call` is REPEATABLE — the host keeps the handle across calls (versus `own<t>`, which
+    /// consumes it, so a second call on the same handle traps "unknown handle index"). The handle is
+    /// resource-dropped after the two calls (via wasmtime's `ResourceAny` scope on `store` teardown, which
+    /// fires the `t-dtor` to reclaim the cell).
+    fn closure_make_call_twice(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args_1: &[wasmtime::component::Val],
+        call_args_2: &[wasmtime::component::Val],
+    ) -> (wasmtime::component::Val, wasmtime::component::Val) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        // make(make_args…) → ONE closure handle.
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        // call #1 on the handle — `borrow<t>` does NOT consume it.
+        let mut args1 = vec![handle[0].clone()];
+        args1.extend_from_slice(call_args_1);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args1, &mut out1)
+            .expect("first call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        // call #2 on the SAME handle — with `own<t>` this would trap "unknown handle index"; with
+        // `borrow<t>` the host still holds it, so it succeeds.
+        let mut args2 = vec![handle[0].clone()];
+        args2.extend_from_slice(call_args_2);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args2, &mut out2)
+            .expect("second call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        (out1[0].clone(), out2[0].clone())
+    }
+
+    /// Like [`closure_make_call_twice`] but for a closure whose `call` returns a `list<u8>` (a byte-rope /
+    /// compound value-form / collection value-encode result): mint ONE handle, `call` it twice, return both
+    /// results as raw byte vectors. Proves a value-form-result closure's `borrow<t>` `call` is REPEATABLE —
+    /// the same handle serves both calls and yields the SAME value-form bytes (an `own<t>` cell would be
+    /// consumed on the first call).
+    fn closure_make_call_list_twice(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        // Extract a `list<u8>` result Val into a byte vector.
+        let bytes = |v: &Val| -> Vec<u8> {
+            match v {
+                Val::List(items) => items
+                    .iter()
+                    .map(|it| match it {
+                        Val::U8(b) => *b,
+                        other => panic!("expected u8 list element, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected a list<u8> call result, got {other:?}"),
+            }
+        };
+        let mut args = vec![handle[0].clone()];
+        args.extend_from_slice(call_args);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out1)
+            .expect("first call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let first = bytes(&out1[0]);
+        // Second call on the SAME handle — borrow<t> keeps it live.
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out2)
+            .expect("second call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        let second = bytes(&out2[0]);
+        (first, second)
+    }
+
     /// Like [`closure_make_call`] but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
     /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
     /// dispatches whichever the named `make` built.
@@ -5519,6 +5642,121 @@ mod runtime_ops {
         assert!(traps("(: a Int64)", "(<< a 64)", &[Val::S64(1)]));
         assert!(traps("(: a Int64)", "(<< a 100)", &[Val::S64(0)]));
         assert!(traps("(: a Int64)", "(<< a -1)", &[Val::S64(1)]));
+    }
+
+    #[test]
+    fn a_masked_runtime_shift_count_elides_the_count_guard() {
+        // A RUNTIME shift count the value-range lattice proves is in `[0, N-1]` — the masked-count idiom
+        // `(<< x (& k 63))` / `(>> x (& k 7))`, where `(& k M)` with `M < N` bounds the count — needs no
+        // `count >=ᵤ N` trap guard (it can never fire). Elided; `<<`'s overflow round-trip is unaffected
+        // (a masked count can still shift bits out), and an UNMASKED (unknown-range) count keeps the guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The count guard is the `i64.const N ; i64.ge_u ; if unreachable` triple. For `>>` (no overflow
+        // round-trip) a masked count leaves ONLY the machine `shr` — no `ge_u` at all.
+        let shr = lir("(: x Int64) (: k Int64)", "(>> x (& k 63))");
+        assert!(
+            !shr.iter().any(|i| matches!(i, Lir::I64GeU)),
+            ">> by a masked count elides the count guard, got: {shr:?}"
+        );
+        // `<<` by a masked count: the count guard (`ge_u`) is gone, but the overflow round-trip (`i64.ne`)
+        // STAYS — a masked count can still shift bits out of the type.
+        let shl = lir("(: x Int64) (: k Int64)", "(<< x (& k 63))");
+        assert!(
+            !shl.iter().any(|i| matches!(i, Lir::I64GeU)),
+            "<< by a masked count elides the count guard, got: {shl:?}"
+        );
+        assert!(
+            shl.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "<< keeps its overflow round-trip even with a masked count, got: {shl:?}"
+        );
+        // An UNMASKED (unknown-range) count KEEPS the count guard.
+        let unmasked = lir("(: x Int64) (: k Int64)", "(>> x k)");
+        assert!(
+            unmasked.iter().any(|i| matches!(i, Lir::I64GeU)),
+            "an unmasked count keeps the count guard, got: {unmasked:?}"
+        );
+
+        // VALUE PARITY: the mask semantics are preserved (a count ≥ N wraps mod the mask, exactly as the
+        // machine shift does after the mask). `256 >> (k & 63)`.
+        for (k, want) in [
+            (0i64, 256),
+            (1, 128),
+            (4, 16),
+            (63, 0),
+            (64, 256),
+            (65, 128),
+        ] {
+            assert_eq!(
+                run::<i64>(
+                    "(: x Int64) (: k Int64)",
+                    "(>> x (& k 63))",
+                    &[Val::S64(256), Val::S64(k)]
+                ),
+                want,
+                ">> masked count @k={k}"
+            );
+        }
+        // `<<` overflow STILL traps with a masked count (1 << 63 overflows signed i64); a valid one computes.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: k Int64)",
+                "(<< x (& k 63))",
+                &[Val::S64(1), Val::S64(4)]
+            ),
+            16
+        );
+        assert!(traps(
+            "(: x Int64) (: k Int64)",
+            "(<< x (& k 63))",
+            &[Val::S64(1), Val::S64(63)]
+        ));
+        // NARROW type: `(& k 7)` on UInt8 (width 8) is in `[0,7]` → count guard elided; `(& k 15)` ([0,15])
+        // is NOT within [0,7], so the guard STAYS. The COUNT guard is `ConstI32(width=8) ; I32GeU` — the
+        // separate `<<` range-check compares against `ConstI32(2^8=256)`, so look for the `8`-valued bound
+        // specifically. A run confirms the trap behavior end to end.
+        let count_guard_u8 = |code: &[Lir]| {
+            code.windows(2)
+                .any(|w| matches!(w, [Lir::ConstI32(8), Lir::I32GeU]))
+        };
+        assert!(
+            !count_guard_u8(&lir("(: x UInt8) (: k UInt8)", "(<< x (& k 7))")),
+            "UInt8 << (& k 7) elides the count guard"
+        );
+        assert!(
+            count_guard_u8(&lir("(: x UInt8) (: k UInt8)", "(<< x (& k 15))")),
+            "UInt8 << (& k 15) keeps the count guard (mask exceeds width)"
+        );
+        assert!(traps(
+            "(: x UInt8) (: k UInt8)",
+            "(<< x (& k 15))",
+            &[Val::U8(3), Val::U8(10)]
+        ));
     }
 
     #[test]
@@ -10614,6 +10852,54 @@ mod match_engine {
     }
 
     #[test]
+    fn an_effect_valued_export_reports_one_clean_error_not_a_leaked_cascade() {
+        // Exporting a bare EFFECT name — `(def (main) E)` — evaluates the effect's SYNTHESIZED record,
+        // which leaked a 4-error cascade of INTERNAL errors ("unknown intrinsic", `unbound name effect-op`,
+        // "a nullary lambda has no runtime closure form", `unbound name effect`). The effect analogue of
+        // the type-valued-export cascade: `collect_faults` now reports ONE coded CDZ0201 naming the
+        // category, and `dedup_faults` drops the leaked internals. One clear error, not four leaks.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (effect E (op f (-> Int64))) (def (main) E) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an effect-valued export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0]
+                .message
+                .contains("is an effect, not a runtime value"),
+            "the surviving error names the category: {}",
+            errors[0].message
+        );
+        // NONE of the leaked internals accompany it — no `Record`/`Any`/`effect-op`/intrinsic dump.
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                d.message.contains("unknown intrinsic")
+                    || d.message.contains("effect-op")
+                    || d.message == crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+            }),
+            "the leaked effect-record internals must not accompany the clean reject: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn an_exported_unannotated_param_surfaces_in_check_with_an_annotate_fix() {
         // An exported def with an unannotated param `(def (f x) …)` has an ambiguous boundary parameter —
         // it MUST be reported by the always-run `Diagnostics` set (`cdz check`), not only the emit path
@@ -10699,6 +10985,51 @@ mod match_engine {
             d2.fix.is_none(),
             "no fix without a plausible candidate: {:?}",
             d2.fix
+        );
+    }
+
+    #[test]
+    fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
+        // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
+        // declared, just not a value. The old "export `Color` names no definition" misled (it reads as
+        // "unknown name"); it now names the CATEGORY — a type / an effect is not a value definition, and
+        // only definitions are exported (core-semantics.md §a module's exports are its definitions' values).
+        let ty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type Color R G B) (export Color))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `Color`"))
+        .expect("exporting a type is rejected");
+        assert_eq!(ty.code.as_deref(), Some("CDZ0101"), "got: {}", ty.message);
+        assert!(
+            ty.message.contains("names a type, not a value definition"),
+            "names the category (a type), not the misleading 'no definition': {}",
+            ty.message
+        );
+        let eff = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op foo (-> Int64))) (export E))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `E`"))
+        .expect("exporting an effect is rejected");
+        assert!(
+            eff.message
+                .contains("names an effect, not a value definition"),
+            "names the category (an effect): {}",
+            eff.message
+        );
+        // A GENUINELY unknown export name (no type/effect/def) keeps the plain "names no definition".
+        let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export zzzz))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `zzzz`"))
+        .expect("an unknown export is rejected");
+        assert!(
+            unknown.message.contains("names no definition")
+                && !unknown.message.contains("not a value"),
+            "an unknown name keeps the plain message: {}",
+            unknown.message
         );
     }
 
@@ -13178,6 +13509,64 @@ mod match_engine {
     }
 
     #[test]
+    fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
+        // `(E 5)` applies an EFFECT name as a function. The head's type is the effect's SYNTHESIZED record,
+        // so rendering it dumped an internal representation at the user (`cannot apply a value of type
+        // (Record (foo (Record (apply Any) …)) …)`). It now names the CATEGORY — "`E` is an effect, not a
+        // function" — the apply-position analogue of the export-a-type category message. A leaky internal
+        // type is never shown.
+        let d = reject_full(
+            "(module m (effect E (op foo (-> Int64))) (def (main) (E 5)) (export main))",
+        )
+        .expect("applying an effect is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`E` is an effect, not a function"),
+            "names the category: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("Record") && !d.message.contains("Any"),
+            "the leaked synthesized record type must never appear: {}",
+            d.message
+        );
+        // A non-name head keeps the type-named message (the type IS the useful fact for a literal/value).
+        let lit = reject_full("(module m (def (main) (5 3)) (export main))")
+            .expect("applying a literal is rejected");
+        assert!(
+            lit.message.contains("cannot apply a value of type Int64"),
+            "a literal head keeps the type message: {}",
+            lit.message
+        );
+    }
+
+    #[test]
+    fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
+        // `(Color 5)` / `(Option 5)` / `(Int64 5)` apply a TYPE name in call position. The head reduces to
+        // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
+        // list — the no-keys-outside-the-prelude rule) and the message names the CATEGORY + where a type
+        // belongs: "`Color` is a type, not a function — a type appears in an annotation `(: value Color)`,
+        // not in call position". Covers a USER type (Color) and PRELUDE types (Option/Int64).
+        for (src, name) in [
+            (
+                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
+                "Color",
+            ),
+            ("(module m (def (main) (Option 5)) (export main))", "Option"),
+            ("(module m (def (main) (Int64 5)) (export main))", "Int64"),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
+            assert!(
+                d.message
+                    .contains(&format!("`{name}` is a type, not a function"))
+                    && d.message.contains("appears in an annotation"),
+                "names the type category + annotation position for {name}: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not
@@ -15314,6 +15703,104 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mutually_recursive_decoder_infers_and_emits_valid_wasm() {
+        // Two fixes compose here: (1) TRANSITIVE call-site inference — `dn`'s param `b` (a `(List Int64)`)
+        // is decided only via `main → top → dn` / `dac → dn`, threaded through the pass-through param by
+        // seeding `dac`/`top`'s params from THEIR call sites; (2) an EMIT scratch-floor fix — `SumExpect`
+        // (Option.expect) reserves its handle slot ABOVE `*high`, and `Core::Tuple`/`ListNew` advance each
+        // element's scratch base past the prior element's high-water, so an i32 heap handle never re-types
+        // an i64 slot a sibling element uses (`(tuple (AInt (expect …)) (+ i 1))` clashed before →
+        // `expected i64, found i32`). The decoder normalizes `(list 42 7)` → `(AInt 42)`, matched to 42.
+        let Some(v) = run_heap_value(
+            "(module m (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+               (def (dn b i) (if (= i 0) (tuple (AInt ((. Option expect) ((. List at) b 0) \"in range\")) (+ i 1)) \
+                                         (tuple (AList (dac b i (- i 1) (list))) (+ i 1)))) \
+               (def (dac b i n acc) (if (< n 1) acc \
+                   (match (dn b i) ((tuple child nx) (dac b nx (- n 1) ((. List push) acc child)))))) \
+               (def (top b) (match (dn b 0) ((tuple ast pos) ast))) \
+               (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping mutually-recursive decoder run");
+            return;
+        };
+        assert_eq!(
+            v, "42",
+            "the decoder normalizes (list 42 7) to (AInt 42) → 42"
+        );
+    }
+
+    #[test]
+    fn many_pass_through_defs_each_infer_their_param_via_the_call_site_index() {
+        // Call-site inference (`call_site_arg_types`) seeds an open param from a caller's argument — it
+        // needs "every call of this def", which it now reads from a CALL-SITE INDEX built once, not by
+        // re-scanning every def body per query (the O(defs × program) = O(N²) a decoder pipeline of N
+        // pass-through pairs hit). This locks in that the index preserves the inference at width: 12
+        // INDEPENDENT pass-through chains `a{i}(b) → c{i}(b) → (List.len b)` — each `a{i}`'s param `b` is
+        // decided ONLY transitively through its own chain's call site — all compile to valid wasm (the
+        // seed threaded each `b` to `(List Int64)`; a broken index would leave `b` `Any` and decline).
+        let n = 12;
+        let mut defs = String::new();
+        for i in 0..n {
+            defs.push_str(&format!(
+                "(def (a{i} b) (c{i} b)) (def (c{i} b) (+ (List.len b) {i})) "
+            ));
+        }
+        let src = format!("(module m {defs} (def (main) (a0 (list 1 2))) (export main))");
+        // Compiles (every `a{i}`/`c{i}` param inferred `(List Int64)` via the call-site seed) — a broken
+        // index (missing a chain's call site) would leave a param `Any` and decline.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
+            "every pass-through chain's param is inferred via the call-site index"
+        );
+    }
+
+    #[test]
+    fn many_recursive_defs_resolve_their_params_via_the_sig_index() {
+        // `infer::def_of_param` ("which def owns this parameter?") reads a `sig_occ → def index` INDEX
+        // (`Db::def_index_by_sig`), not a linear `defs.iter().position(|d| d.sig_occ == sig)` — the O(N²)
+        // a wide module hit once transitive inference calls `def_of_param` per parameter reference (8000
+        // defs: `def_of_param` was 42% self-time). This locks in that the index resolves each param to the
+        // RIGHT def at width: N recursive defs each fold over their own param, and each must run to its own
+        // answer (`sm{i}(3)` = 3·i via the threaded accumulator), proving no param is mis-attributed.
+        let n = 40;
+        let defs = (0..n)
+            .map(|i| format!("(def (sm{i} n acc) (if (= n 0) acc (sm{i} (- n 1) (+ acc {i}))))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // main sums sm0(3,0)=0 + sm1(3,0)=3 + sm2(3,0)=6 = 9 (0·3 + 1·3 + 2·3).
+        let src = format!(
+            "(module m {defs} (def (main) (+ (sm0 3 0) (+ (sm1 3 0) (sm2 3 0)))) (export main))"
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src))).expect("compiles"),
+                "main"
+            ),
+            9,
+            "each recursive def's param resolves to its own def (0·3 + 1·3 + 2·3 = 9)"
+        );
+    }
+
+    #[test]
+    fn a_sum_expect_in_a_tuple_beside_an_i64_element_emits_valid_wasm() {
+        // Regression guard for the scratch-slot clash: a `(tuple <Option.expect result> <i64 arith>)` — an
+        // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
+        // (the SumExpect handle above `*high`, the per-element scratch base advanced), else the i32 handle
+        // and the i64 value share a slot and wasm rejects the module. `(tuple (expect (List.at xs 0)) (+ i 1))`.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (go xs i) (. (tuple ((. Option expect) ((. List at) xs 0) \"x\") (+ i 1)) 0)) \
+                   (def (main) (go (list 7 8) 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "7",
+            "SumExpect beside an i64 tuple element gets a disjoint scratch slot"
+        );
+    }
+
+    #[test]
     fn a_recursive_def_infers_its_params_from_a_call_site() {
         // CALL-SITE INFERENCE: a recursive def whose parameter types the BODY alone cannot ground — they
         // are decided only by HOW a caller invokes it — is now seeded from a NON-recursive call site.
@@ -15916,6 +16403,46 @@ mod match_engine {
                 "String.from-bytes [{bytes}] decode"
             );
         }
+    }
+
+    #[test]
+    fn a_utf8_bin_segment_decodes_a_length_prefixed_string() {
+        // `(bin (u8 n) (utf8 s n))` reads a length byte then decodes exactly `n` bytes as strict UTF-8,
+        // binding `s : String` on well-formed input and being a NON-MATCH (→ catch-all) on ill-formed
+        // bytes — never a trap (collections-and-text.md #Decoding Bytes To A String Is Total). The decode
+        // is CONSTANT-FOLDED here (a constant `Bytes.of` scrutinee), so the match reduces to a bool via
+        // string equality: `[3 102 111 111]` = len-3 "foo" → matches, binds "foo" (= "foo" → 1); `[1 255]`
+        // = len-1 then 0xFF (invalid UTF-8) → non-match → catch-all (→ 0).
+        for (bytes, want) in [
+            ("3 102 111 111", 1), // len 3, "foo" — well-formed, binds and equals "foo"
+            ("1 255", 0),         // len 1, 0xFF — ill-formed, falls to the catch-all
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (Bytes.of (list {bytes})) \
+                   ((bin (u8 n) (utf8 name n)) (if (= name \"foo\") 1 2)) \
+                   (_ 0))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "utf8 bin segment [{bytes}]"
+            );
+        }
+    }
+
+    #[test]
+    fn a_utf8_bin_match_with_no_catch_all_is_non_exhaustive() {
+        // A `utf8` segment can fail to match (ill-formed bytes), so a `bin` match whose only arm carries a
+        // `(utf8 …)` segment does not cover every byte sequence → CDZ0210 (the exhaustiveness rule every
+        // `bin` match obeys, made pointed by the decode itself being a source of non-match).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (Bytes.of (list 3 102 111 111)) \
+                   ((bin (u8 n) (utf8 name n)) name))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210")
+        );
     }
 
     #[test]
@@ -16610,6 +17137,109 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mirrored_equality_pair_folds_by_commutativity() {
+        // `=` is COMMUTATIVE, so `(= a b)` and `(= b a)` are the SAME predicate — `core_equiv` now matches
+        // them (swapped operands, both trap-free), letting `(and (= a b) (= b a))` fold to one `(= a b)` via
+        // idempotence, and `(and (= a b) (not (= b a)))` fold to `false` via the complement law. Ordering
+        // comparisons are NOT commutative and must not swap-fold. A trapping operand declines the swap.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let eqs = |params: &str, body: &str| -> usize {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+                .iter()
+                .filter(|i| matches!(i, Lir::I64Eq | Lir::I64Ne))
+                .count()
+        };
+        // Mirrored equality folds to ONE compare under both connectives.
+        assert_eq!(
+            eqs("(: a Int64) (: b Int64)", "(: (and (= a b) (= b a)) Bool)"),
+            1,
+            "and mirrored eq → one eq"
+        );
+        assert_eq!(
+            eqs("(: a Int64) (: b Int64)", "(: (or (= a b) (= b a)) Bool)"),
+            1,
+            "or mirrored eq → one eq"
+        );
+        // Complement composes: `(and (= a b) (not (= b a)))` is `X && !X` → false, no compare at all.
+        assert_eq!(
+            eqs(
+                "(: a Int64) (: b Int64)",
+                "(: (and (= a b) (not (= b a))) Bool)"
+            ),
+            0,
+            "and eq/not-mirrored-eq → false"
+        );
+        // ORDERING is NOT commutative — `(< a b)` and `(< b a)` are DIFFERENT (a disjoint pair), so they must
+        // not collapse via a bogus swap-idempotence; both compares are consumed by the (correct) disjoint
+        // handling, which yields a constant here, so 0 eq/ne is fine — the point is the VALUE is right.
+        use wasmtime::component::Val;
+        let f = |params: &str, body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f {params}) (if {body} 1 0)) (export f))"
+            ))))
+            .expect("compile")
+        };
+        // VALUE PARITY: mirrored-eq forms equal `(= a b)`.
+        let andm = f("(: a Int64) (: b Int64)", "(and (= a b) (= b a))");
+        let orm = f("(: a Int64) (: b Int64)", "(or (= a b) (= b a))");
+        for (a, b) in [(3, 3), (3, 5), (0, 0)] {
+            let want = if a == b { 1 } else { 0 };
+            assert_eq!(
+                run_returns_with::<i64>(&andm, "f", &[Val::S64(a), Val::S64(b)]),
+                want,
+                "and-mirrored @{a},{b}"
+            );
+            assert_eq!(
+                run_returns_with::<i64>(&orm, "f", &[Val::S64(a), Val::S64(b)]),
+                want,
+                "or-mirrored @{a},{b}"
+            );
+        }
+        // `(< a b)` && `(< b a)` is a contradiction → always false (must NOT mis-fold to one comparison).
+        let lt = f("(: a Int64) (: b Int64)", "(and (< a b) (< b a))");
+        for (a, b) in [(3, 5), (5, 3), (4, 4)] {
+            assert_eq!(
+                run_returns_with::<i64>(&lt, "f", &[Val::S64(a), Val::S64(b)]),
+                0,
+                "ordering-mirror contradiction @{a},{b}"
+            );
+        }
+        // TRAP SAFETY: a trapping operand declines the commutative swap (needs trap-free), so both compares
+        // stay and the trap fires. `(/ 10 a)` traps at a=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (and (= (/ 10 a) b) (= b (/ 10 a))) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::S64(5)]),
+            "a trapping operand keeps both compares and traps"
+        );
+    }
+
+    #[test]
     fn a_short_circuit_connective_absorbs_a_repeated_conjunct() {
         // NESTED IDEMPOTENCE: `(and (and a b) a)` → `(and a b)`, `(or (or a b) b)` → `(or a b)` — one operand
         // is a nested SAME-connective node already containing the other, so re-applying it is redundant. The
@@ -16974,11 +17604,13 @@ mod match_engine {
             0,
             "or (<ab)(>=ab) → true"
         );
-        // A NON-complement pair (`<`/`<=`) does NOT fold — both compares stay.
+        // `(or (< x 5) (<= x 5))` is NOT a complement (both are upper bounds), but it IS a same-direction
+        // subsumption — `x < 5` implies `x <= 5`, so `or` keeps the looser `x <= 5`: ONE compare (folded by
+        // `subsuming_comparison`, not the complement fold). See `a_same_direction_comparison_pair_subsumes`.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")),
-            2,
-            "non-complement kept"
+            1,
+            "same-direction subsumption (not a complement)"
         );
         // A SWAPPED operand pair (`(< a b)` vs `(>= b a)`) is NOT a complement — kept (and NOT a tautology).
         assert_eq!(
@@ -17090,7 +17722,7 @@ mod match_engine {
             1,
             "mirrored operand"
         );
-        // NON-subsumable: distinct variable, different operator, different side — all kept (2 compares).
+        // NON-subsumable: a distinct variable keeps both compares.
         assert_eq!(
             cmps(&lir(
                 "(: x Int64) (: y Int64)",
@@ -17099,10 +17731,13 @@ mod match_engine {
             2,
             "distinct var kept"
         );
+        // DIFFERENT-operator SAME-DIRECTION bounds now subsume via inclusive normalization: `< 5` and
+        // `<= 4` both mean `x <= 4`, so they collapse to ONE compare (see the mixed-operator test
+        // `a_mixed_operator_same_direction_comparison_pair_subsumes`).
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")),
-            2,
-            "different op kept"
+            1,
+            "different op same direction subsumes"
         );
         // A DIFFERENT operand on the other side is not subsumable — `(< x 5)` and `(< 10 y)` share no
         // variable, so neither the same-side subsumption nor the disjoint-interval fold applies: both
@@ -17140,6 +17775,106 @@ mod match_engine {
         assert!(
             call_traps(&tb, "f", &[Val::S64(0)]),
             "the kept comparison preserves the operand's trap"
+        );
+    }
+
+    #[test]
+    fn a_mixed_operator_same_direction_comparison_pair_subsumes() {
+        // SUBSUMPTION now handles MIXED operators via inclusive-bound normalization (`comparison_halfline`):
+        // `(< x 5)` and `(<= x 4)` both mean `x <= 4`; `(<= x 10)` subsumes `(< x 5)` under `or`. `and` keeps
+        // the tighter inclusive bound, `or` the looser — regardless of which of `<`/`<=` (or `>`/`>=`) each
+        // side uses. Opposite-direction pairs are NOT subsumed here (the disjoint/coincident folds own those).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let cmps = |params: &str, body: &str| -> usize {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+                .iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Each mixed-operator same-direction pair subsumes to ONE compare.
+        for body in [
+            "(: (and (< x 5) (<= x 4)) Bool)",  // both x<=4
+            "(: (or (<= x 10) (< x 5)) Bool)",  // or → x<=10
+            "(: (and (< x 10) (<= x 5)) Bool)", // and → x<=5
+            "(: (or (> x 5) (>= x 3)) Bool)",   // or → x>=3
+            "(: (and (>= x 5) (> x 3)) Bool)",  // and → x>=5
+            "(: (and (< 5 x) (<= 3 x)) Bool)",  // mirrored: x>5 & x>=3 → x>5
+        ] {
+            assert_eq!(cmps("(: x Int64)", body), 1, "mixed-op subsumes: {body}");
+        }
+        // Opposite-direction (a real range) is NOT subsumed — both compares stay.
+        assert_eq!(
+            cmps("(: x Int64)", "(: (and (> x 5) (< x 100)) Bool)"),
+            2,
+            "opposite-direction range kept"
+        );
+
+        // VALUE PARITY at the exact boundaries (the inclusive normalization must not shift a bound).
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) (if {body} 1 0)) (export f))"
+            ))))
+            .expect("compile")
+        };
+        // `(and (< x 5) (<= x 4))` = x<=4.
+        let a = f("(and (< x 5) (<= x 4))");
+        for (x, want) in [(3, 1), (4, 1), (5, 0), (6, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&a, "f", &[Val::S64(x)]),
+                want,
+                "and-mixed @{x}"
+            );
+        }
+        // `(or (<= x 10) (< x 5))` = x<=10.
+        let o = f("(or (<= x 10) (< x 5))");
+        for (x, want) in [(5, 1), (10, 1), (11, 0), (12, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&o, "f", &[Val::S64(x)]),
+                want,
+                "or-mixed @{x}"
+            );
+        }
+        // `(or (> x 5) (>= x 3))` = x>=3.
+        let l = f("(or (> x 5) (>= x 3))");
+        for (x, want) in [(2, 0), (3, 1), (4, 1), (6, 1)] {
+            assert_eq!(
+                run_returns_with::<i64>(&l, "f", &[Val::S64(x)]),
+                want,
+                "or-lower-mixed @{x}"
+            );
+        }
+        // TRAP SAFETY: the surviving compare still evaluates the trapping operand.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (<= (/ 100 z) 4)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "the kept mixed-op comparison preserves the operand's trap"
         );
     }
 
@@ -18125,6 +18860,90 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_sub_pattern_destructures_a_sum_variant_payload() {
+        // The decision-tree matcher destructures a `(list …)` sub-pattern inside a sum-variant PAYLOAD —
+        // the general capability quote patterns rest on (`` `(+ ,a ,b) `` desugars to `(Ast.List (list
+        // (Ast.Name "+") a b))`, whose `(list …)` payload binds element-wise). A fixed-arity list pattern
+        // tests length + descends each element at `[Payload, Elem(i)]` (folded against a constant list —
+        // the corpus quote-pattern scrutinees are constant `(quote …)` values). SCOPE: constant fold only
+        // (a runtime list payload declines); a `.. rest` in a payload declines (task #51 runtime tail).
+        // A user sum wrapping a list, binding two elements — checks clean (it compiles + folds to 3).
+        assert!(
+            reject_code(
+                "(module m (type W (Wrap (List Int64))) \
+                   (def (main) (match (W.Wrap (list 1 2)) ((W.Wrap (list a b)) (+ a b)) (_ 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a (list a b) sub-pattern binds a sum variant's list payload"
+        );
+        // A quote pattern `` `(+ ,a ,b) `` IS `(Ast.List (list (Ast.Name "+") a b))` — the literal head
+        // `+` matches `(Ast.Name "+")` by equality, `,a`/`,b` bind the operand sub-ASTs. Against `(quote
+        // (+ 3 5))` the arm returns `b` = `(Ast.Int 5)`; the desugar + list-payload matcher compose.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (+ 3 5)) (`(+ ,a ,b) b) (other other))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quote pattern binds an unquoted operand via the Ast.List list-payload matcher"
+        );
+        // A literal HEAD constrains by equality: `` `(+ ,a ,b) `` does NOT match a `-`-headed form, so
+        // control falls to the catch-all. (The string-literal payload `(Ast.Name "+")` folds by value.)
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (- 3 5)) (`(+ ,a ,b) 1) (other 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a literal head in a quote pattern constrains by equality (falls through on a mismatch)"
+        );
+        // A `.. rest` tail inside a variant payload now BINDS (a `RestFrom(lead)` step, folded against a
+        // constant list) — `(W.Wrap (list a .. rest))` over `(list 1 2 3)` binds `a`=1 (and `rest`=[2,3]).
+        // Compiles clean.
+        assert!(
+            reject_code(
+                "(module m (type W (Wrap (List Int64))) \
+                   (def (main) (match (W.Wrap (list 1 2 3)) ((W.Wrap (list a .. rest)) a) (_ 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a rest-binder list sub-pattern binds the leading element + tail"
+        );
+    }
+
+    #[test]
+    fn a_quote_pattern_final_splice_binds_the_rest_and_a_non_final_splice_is_cdz0221() {
+        // 12-metaprogramming §A Quasiquote In Pattern Position: a FINAL `,@name` binds the remaining
+        // elements as a list. `` `(f ,@args) `` desugars to `(Ast.List (list (Ast.Name "f") .. args))`,
+        // whose `.. args` rest binder folds against the constant `(quote (f 1 2 3))` → `args` = the three
+        // operand nodes; `List.len args` = 3. Compiles clean.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (f 1 2 3)) (`(f ,@args) ((. List len) args)) (other 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a final `,@` in a quote pattern binds the rest of the elements"
+        );
+        // A NON-FINAL `,@` — `` `(f ,@init ,last) `` — is ill-formed (a rest binds the tail, so it is
+        // meaningful only last), rejected CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (f 1 2 3)) (`(f ,@init ,last) last) (other other))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0221"),
+            "a non-final `,@` in a quote pattern is CDZ0221"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_linked_list_folds_at_runtime() {
         // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
         // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
@@ -18455,20 +19274,20 @@ mod match_engine {
                 inner: Box::new(Ty::int64()),
                 unit: Unit::one(),
             },
-            // A base-unit quantity over Float64 — `{metre: 1}`.
+            // A base-unit quantity over Float64 — `{meter: 1}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre"),
+                unit: Unit::base("meter"),
             },
-            // A DERIVED unit (velocity) over Float64 — metre·second⁻¹, `{metre: 1, second: -1}`.
+            // A DERIVED unit (velocity) over Float64 — meter·second⁻¹, `{meter: 1, second: -1}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre").div(&Unit::base("second")),
+                unit: Unit::base("meter").div(&Unit::base("second")),
             },
-            // A SQUARED unit (area) over Float64 — `{metre: 2}`.
+            // A SQUARED unit (area) over Float64 — `{meter: 2}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre").pow(2),
+                unit: Unit::base("meter").pow(2),
             },
         ];
         for ty in cases {
@@ -18543,24 +19362,24 @@ mod match_engine {
     #[test]
     fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
         // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
-        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
-        // `kilometre` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
-        // `metre` and `kilometre` are DISTINCT types). `scaled` applies a prefix; the scales multiply
+        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `meter` and
+        // `kilometer` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
+        // `meter` and `kilometer` are DISTINCT types). `scaled` applies a prefix; the scales multiply
         // under `mul`/`pow`.
         use crate::ty::Unit;
-        let metre = Unit::base("metre");
-        let km = metre.scaled(1000, 1).expect("kilo scales");
+        let meter = Unit::base("meter");
+        let km = meter.scaled(1000, 1).expect("kilo scales");
         // Same dimension (both length), different type identity (different scale).
         assert!(
-            metre.same_dimension(&km),
-            "metre and kilometre share the length dimension"
+            meter.same_dimension(&km),
+            "meter and kilometer share the length dimension"
         );
         assert_ne!(
-            metre, km,
-            "metre and kilometre are DISTINCT units (different scale)"
+            meter, km,
+            "meter and kilometer are DISTINCT units (different scale)"
         );
         assert_eq!(
-            metre.scale(),
+            meter.scale(),
             (1, 1),
             "a base unit is the scale-1 reference"
         );
@@ -18572,36 +19391,36 @@ mod match_engine {
         // A different DIMENSION is not compatible.
         let second = Unit::base("second");
         assert!(
-            !metre.same_dimension(&second),
-            "metre and second are different dimensions"
+            !meter.same_dimension(&second),
+            "meter and second are different dimensions"
         );
         // `at_reference` drops the scale (the common unit a conversion lands at).
         assert_eq!(
             km.at_reference(),
-            metre,
-            "km at its reference scale IS metre"
+            meter,
+            "km at its reference scale IS meter"
         );
         // Prefix scales MULTIPLY under `pow`: (km)² has scale 10⁶.
         assert_eq!(km.pow(2).scale(), (1_000_000, 1), "(km)² scales by 10^6");
         // A milli prefix is an exact rational scale 1/1000 (a machine-int ratio, no bignum).
-        let mm = metre.scaled(1, 1000).expect("milli scales");
+        let mm = meter.scaled(1, 1000).expect("milli scales");
         assert_eq!(
             mm.scale(),
             (1, 1000),
-            "millimetre scales the reference by 1/1000"
+            "millimeter scales the reference by 1/1000"
         );
         assert!(
-            metre.same_dimension(&mm) && metre != mm,
+            meter.same_dimension(&mm) && meter != mm,
             "mm: same dimension, distinct unit"
         );
     }
 
     #[test]
     fn a_quantity_erases_to_its_inner_numeric_value() {
-        // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
+        // L1-1b: `Qty.value (Qty.of 5.0 meter)` recovers the erased inner `5.0` — a quantity is CHECKED
         // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
         // Float64 (byte-identical to the bare `5.0`). Compiles + runs to the recovered value.
-        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"metre\")))) \
+        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"meter\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -18618,7 +19437,7 @@ mod match_engine {
         // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
         // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
         // is a compile-time rejection (units erase before the program runs), never a runtime trap.
-        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"meter\")) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a length + a time must reject CDZ0501 (dimensional mismatch)");
@@ -18627,7 +19446,7 @@ mod match_engine {
         // the equal-dimensions rule — the rustc-gold form, not a bare type dump.
         assert!(
             err.message.contains("adding")
-                && err.message.contains("metre")
+                && err.message.contains("meter")
                 && err.message.contains("second")
                 && !err.message.contains("(Qty"),
             "names the op + bare units + rule, no full-type dump: {}",
@@ -18637,10 +19456,10 @@ mod match_engine {
 
     #[test]
     fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
-        // L1-2: `(/ (Qty 6.0 metre) (Qty 2.0 second))` derives metre/second (the classic velocity) with
+        // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with
         // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
         // (float) division. `Qty.value` recovers the erased magnitude; this pins that it COMPILES + RUNS.
-        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"metre\")) \
+        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
                    ((. Qty of) 2.0 ((. Unit base) #\"second\"))))) (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -18676,12 +19495,12 @@ mod match_engine {
     #[test]
     fn a_family_unit_auto_converts_to_the_reference_over_float() {
         // F2-2: `1 inch + 1 mm` over Float64 — two named FAMILY units of `length` (inch = 127/5000 m, mm
-        // = 1/1000 m) — each converts to the reference `metre` and sums to 127/5000 + 1/1000 = 33/1250 =
+        // = 1/1000 m) — each converts to the reference `meter` and sums to 127/5000 + 1/1000 = 33/1250 =
         // 0.0264 m. The family vocabulary is prelude DATA (`Db::unit_families`); the scales are machine-
         // int metadata, so `Unit.of` families convert over Float with NO bignum. Compiles + RUNS.
         let src = "(do (def (main) ((. Qty value) \
                    (+ ((. Qty of) 1.0 ((. Unit of) #\"inch\")) \
-                      ((. Qty of) 1.0 ((. Unit of) #\"millimetre\"))))) (export main))";
+                      ((. Qty of) 1.0 ((. Unit of) #\"millimeter\"))))) (export main))";
         assert_eq!(
             run_returns::<f64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -18718,11 +19537,11 @@ mod match_engine {
 
     #[test]
     fn a_named_rate_unit_combined_with_a_length_is_cdz0501() {
-        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 metre))` — a rate (`information/time`) plus a length —
+        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 meter))` — a rate (`information/time`) plus a length —
         // different dimensions → CDZ0501. A named DERIVED-dimension unit obeys the same dimensional
-        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{metre:1}`).
+        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{meter:1}`).
         let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit of) #\"mbps\")) \
-                   ((. Qty of) 1.0 ((. Unit of) #\"metre\")))) (export main))";
+                   ((. Qty of) 1.0 ((. Unit of) #\"meter\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
                 .err()
@@ -18740,7 +19559,7 @@ mod match_engine {
         // The user family-declaration surface, RUNS.
         let src = "(do \
                    ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
-                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"metre\") \
+                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"meter\") \
                      ((. Qty of) 1.0 ((. Unit of) #\"furlong\"))))) \
                    (export main))";
         assert_eq!(
@@ -18755,11 +19574,11 @@ mod match_engine {
 
     #[test]
     fn redeclaring_a_builtin_unit_with_a_conflicting_conversion_is_cdz0502() {
-        // F2-6: `(Unit.define #"foot" (Unit.of #"metre") 2 1)` redeclares the built-in `foot` (381/1250 m)
+        // F2-6: `(Unit.define #"foot" (Unit.of #"meter") 2 1)` redeclares the built-in `foot` (381/1250 m)
         // as 2 m — a conflicting conversion → CDZ0502 (units-of-measure.md §A Named Unit's Conversion Is
         // Unique). CDZ0502 is now REACHABLE by a program (was previously only a reserved code). An
         // AGREEING redeclaration would be admissible.
-        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"metre\") 2 1) \
+        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"meter\") 2 1) \
                    (def (main) 0) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -18776,7 +19595,7 @@ mod match_engine {
         // CDZ0502 must carry a source location, not print an unanchored `cdz:` prefix. The unit-conflict
         // rejects (built-in redecl + duplicate declaration) now `.at()` the offending declaration's
         // base-unit occurrence, so the error maps to `file:line:col`.
-        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"metre\") 2 1) \
+        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"meter\") 2 1) \
                    (def (main) 0) (export main))";
         let mut db = crate::db::Db::load(parse(src));
         let d = crate::diagnostics(&mut db)
@@ -18794,11 +19613,11 @@ mod match_engine {
 
     #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
-        // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
+        // F2-3: `(Unit.in kilometer (Qty.of 2000 meter))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
         // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
         let src = "(do (def (main) ((. Qty value) \
-                   ((. Unit in) ((. Unit of) #\"kilometre\") ((. Qty of) 2000 ((. Unit of) #\"metre\"))))) \
+                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\"))))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -18818,8 +19637,8 @@ mod match_engine {
         // (`lower_runtime_combine` synthesizes `(+ (* v 1000) 500)` and lowers it).
         use wasmtime::component::Val;
         let src = "(do (def (main (: v Int64)) \
-                   ((. Qty value) (+ ((. Qty of) v ((. Unit prefix) kilo ((. Unit base) #\"metre\"))) \
-                                     ((. Qty of) 500 ((. Unit base) #\"metre\"))))) \
+                   ((. Qty value) (+ ((. Qty of) v ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                     ((. Qty of) 500 ((. Unit base) #\"meter\"))))) \
                    (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a runtime mixed-unit sum compiles");
@@ -18832,9 +19651,9 @@ mod match_engine {
 
     #[test]
     fn unit_in_across_dimensions_is_cdz0501() {
-        // F2-3: `(Unit.in metre (Qty.of 3.0 second))` asks to convert a time to a length — different
+        // F2-3: `(Unit.in meter (Qty.of 3.0 second))` asks to convert a time to a length — different
         // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
-        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"metre\") \
+        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
                    ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -18856,8 +19675,8 @@ mod match_engine {
         // A conflict: `foot` twice with different scales (dimension is the `(base, exponent)` list).
         let conflict = register_families(
             [
-                ("foot", &[("metre", 1i64)][..], 381i128, 1250i128),
-                ("foot", &[("metre", 1)][..], 1, 3), // a bogus, disagreeing scale
+                ("foot", &[("meter", 1i64)][..], 381i128, 1250i128),
+                ("foot", &[("meter", 1)][..], 1, 3), // a bogus, disagreeing scale
             ]
             .into_iter(),
         );
@@ -18870,7 +19689,7 @@ mod match_engine {
         assert!(
             register_families(
                 [
-                    ("x", &[("metre", 1i64)][..], 1i128, 1i128),
+                    ("x", &[("meter", 1i64)][..], 1i128, 1i128),
                     ("x", &[("second", 1)][..], 1, 1)
                 ]
                 .into_iter()
@@ -18881,14 +19700,14 @@ mod match_engine {
         // An AGREEING duplicate is idempotent (harmless), not an error.
         let ok = register_families(
             [
-                ("inch", &[("metre", 1i64)][..], 127i128, 5000i128),
-                ("inch", &[("metre", 1)][..], 127, 5000),
+                ("inch", &[("meter", 1i64)][..], 127i128, 5000i128),
+                ("inch", &[("meter", 1)][..], 127, 5000),
             ]
             .into_iter(),
         );
         assert_eq!(
             ok.ok().and_then(|m| m.get("inch").cloned()),
-            Some((vec![("metre".to_string(), 1)], 127, 5000)),
+            Some((vec![("meter".to_string(), 1)], 127, 5000)),
             "an agreeing re-registration is idempotent"
         );
         // A DERIVED-dimension unit (a rate) registers with a multi-entry dimension.
@@ -18921,7 +19740,7 @@ mod match_engine {
         // F2-1: a prefix scales WITHIN a dimension, never across — `km + second` is still CDZ0501. Pins
         // that the family/prefix relaxation (auto-convert within a dimension) does not weaken the
         // dimensional safety the layer exists for.
-        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #\"metre\"))) \
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -18936,14 +19755,14 @@ mod match_engine {
     #[test]
     fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
         // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
-        // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,
+        // quantity to a Float64 quantity (SAME dimension `meter`, DIFFERENT inner type) must be REFUSED,
         // never miscompiled to a running value (the honest decline-don't-miscompile signal). It rejects
         // via the inner-type conflict; the code is CDZ0203 today and ALIGNS to the numeric no-promotion
         // CDZ0301 when the operator unit rules land (L1-2 — the `+`/`-`/comparison dimensional check that
         // reads the operands' units and dispatches the numeric mismatch as CDZ0301). Either way the
         // ill-typed program is a compile-time REJECTION, not a run.
-        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"metre\")) \
-                   ((. Qty of) 3.0 ((. Unit base) #\"metre\")))) (export main))";
+        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"meter\")) \
+                   ((. Qty of) 3.0 ((. Unit base) #\"meter\")))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an Int64 quantity + a Float64 quantity must be REJECTED (a numeric mismatch under a unit), not compiled"
@@ -18977,6 +19796,90 @@ mod match_engine {
             compile_component(&crate::codec::encode(&parse(rec))).is_ok(),
             "a generic sum with a type param in a RECORD payload must compile — not reject B as nullary"
         );
+    }
+
+    #[test]
+    fn an_unknown_type_in_a_variant_payload_is_rejected() {
+        // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
+        // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
+        // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
+        // annotation. Nested in a `(List …)`/`(Tuple …)`, INSIDE a record field, and a record nested in a
+        // tuple are all caught (the record-aware position walk validates each field's type).
+        for src in [
+            "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
+            "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple a Nonesuch)) (Leaf)) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (val Nonesuch))) N) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple Int64 (Record (v Nonesuch)))) (Leaf)) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("an unknown type in a variant payload must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
+            assert!(
+                err.message.contains("Nonesuch"),
+                "names the unknown payload type: {}",
+                err.message
+            );
+        }
+        // A payload that is a well-formed NON-type (a literal) → the "requires a type" reject.
+        let lit = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A 5)) (def (main) 0) (export main))",
+        )))
+        .expect_err("a non-type payload must be rejected");
+        assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
+
+        // NO false positive on the valid parametric / recursive / known payloads — these MUST compile:
+        // a bare type param, a param nested in a tuple, a param-parameterized application `(Option a)`,
+        // self-recursion, mutual/forward refs, generic self, a known concrete type, and a record payload
+        // mentioning a param (bare AND inside an application).
+        for ok in [
+            "(module m (type Opt (Some a) (Non)) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple a a)) (Leaf)) (def (main) 0) (export main))",
+            "(module m (type C (A (Option a)) (N)) (def (main) 0) (export main))",
+            "(module m (type T (Nil) (Cons Int64 T)) (def (main) 0) (export main))",
+            "(module m (type A (MkA B)) (type B (MkB A)) (def (main) 0) (export main))",
+            "(module m (type Tree (Leaf a) (Node (Tuple Tree Tree))) (def (main) 0) (export main))",
+            "(module m (type C (A Int64)) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (v (Option a)))) N) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (val a))) N) \
+               (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid parametric/recursive/known variant payload must compile: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_type_in_an_effect_operation_type_is_rejected() {
+        // The effect-declaration sibling of the variant-payload check: an unknown type in an operation's
+        // arg/result — `(op e (-> Nonesuch Unit))` / `(-> Unit Nonesuch)` / `(-> (List Zzz) Unit)` — was
+        // silently accepted (the name resolved to nothing and the op's `(meta t)` arrow was corrupted to
+        // `Any`, so performing it reported a garbled "cannot apply … (Record (apply Any) …)"). Now the
+        // declaration-site check rejects it CDZ0101, via the SAME record-aware `validate_type_position` the
+        // variant-payload check uses. Each `(-> A B …)` element past the arrow is a type position.
+        for src in [
+            "(module m (effect E (op e (-> Nonesuch Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> Unit Nonesuch))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> (List Zzz) Unit))) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("an unknown type in an effect op type must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
+        }
+        // NO false positive: a known concrete arg/result, a generic `(Option Int64)`, and a bare lowercase
+        // type-variable `(-> a a)` must all compile.
+        for ok in [
+            "(module m (effect E (op e (-> Int64 Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> (Option Int64) Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> a a))) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid effect operation type must compile: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -20337,6 +21240,48 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_unknown_type_in_a_let_binder_annotation_is_rejected() {
+        // The let-binding sibling of the parameter/value-annotation type check: an unknown type in a
+        // `(let (((: x Nonesuch) …)) …)` binder annotation was silently accepted (`check_binding_pattern`
+        // only checks the annotation AGREES with the value, and an unresolvable type agrees vacuously, so
+        // `x` typed `Any`). Now the annotation type is validated — an unknown name → CDZ0101 (recursing
+        // into `(List Nonesuch)`), a well-formed non-type → CDZ0203.
+        let d = first_error("(module m (def (main) (let (((: x Nonesuch) 5)) x)) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert!(
+            d.message.contains("Nonesuch"),
+            "names the unknown annotation type: {}",
+            d.message
+        );
+        let nested = first_error(
+            "(module m (def (main) (let (((: x (List Nonesuch)) (list 1))) x)) (export main))",
+        );
+        assert_eq!(
+            nested.code.as_deref(),
+            Some("CDZ0101"),
+            "got: {}",
+            nested.message
+        );
+        // A well-formed NON-type annotation (a literal) → CDZ0203.
+        let lit = first_error("(module m (def (main) (let (((: x 5) 3)) x)) (export main))");
+        assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
+        // NO false positive: a KNOWN type annotation compiles; a mismatch keeps its M63 coercion fix
+        // (not a spurious "requires a type").
+        assert!(
+            all_errors("(module m (def (main) (let (((: x Int64) 5)) x)) (export main))")
+                .is_empty(),
+            "a known-type let-binder annotation compiles"
+        );
+        let m63 = first_error("(module m (def (main) (let (((: x Float64) 3)) x)) (export main))");
+        assert_eq!(m63.code.as_deref(), Some("CDZ0203"), "got: {}", m63.message);
+        assert!(
+            m63.message.contains("bound to a value") && m63.fix.is_some(),
+            "a KNOWN-type mismatch keeps its coercion fix, not the unknown-type reject: {}",
+            m63.message
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
@@ -21132,6 +22077,46 @@ mod stage1 {
         // forward VALUE reference is still unbound (checked in
         // `a_do_local_declaration_scope_is_backward_only`).
         assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
+    }
+
+    #[test]
+    fn a_recursive_do_local_function_survives_inlining_of_its_helper() {
+        // 02-binding-and-control "a recursive do-local function nested in an inlined helper recurses": a
+        // do-local recursive `fac` inside `helper`'s body must still recurse when `(helper 5)` INLINES
+        // `helper` — β-reduction COPIES the body, so the copied `(fac (- n 1))` self-call resolves to the
+        // COPY's lambda, whose body is registered as an emittable function at reduction time
+        // (`Db::register_reduced_callables`, the copy-time twin of the load-time do-local registration) so
+        // the call lowers to a `Core::Call`. Without it the copied call declined "needs runtime
+        // specialization". fac(5) = 120.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
+                   (def (main) (helper 5)) (export main))"
+            ),
+            120
+        );
+        // The helper inlined TWICE — each β-copy registers its OWN copy of `fac` (one call site's copy is
+        // not confused for another's, and neither is a spurious "defined more than once"). 120 + 6 = 126.
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
+                   (def (main) (+ (helper 5) (helper 3))) (export main))"
+            ),
+            126
+        );
+        // MUTUAL recursion nested in an inlined helper — both copied functions lower and call each other.
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (ev n) (if (= n 0) true (od (- n 1)))) \
+                     (def (od n) (if (= n 0) false (ev (- n 1)))) (if (ev x) 1 0))) \
+                   (def (main) (helper 10)) (export main))"
+            ),
+            1
+        );
     }
 
     #[test]
@@ -22739,6 +23724,47 @@ mod stage1 {
         assert_eq!(
             code("(module m (def (main) (: 5 Bool)) (export main))").as_deref(),
             Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn a_value_name_in_type_position_is_named_a_value_not_a_generic_non_type() {
+        // A bound VALUE name misused as a type (`(: x helper)` where `helper` is a value def) is CDZ0203,
+        // but the message now NAMES it — "`helper` is a value, not a type" — instead of the opaque "found
+        // a non-type", the type-position analogue of the M76 apply-position category message. Both the
+        // parameter annotation and the value annotation get it; a NON-name (a literal) keeps the generic
+        // phrasing (naming a literal adds nothing).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {src}"))
+                .message
+        };
+        let param = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
+        assert!(
+            param.contains("`helper` is a value, not a type"),
+            "param annotation names the value: {param}"
+        );
+        let value = msg("(module m (def helper 5) (def (main) (: 3 helper)) (export main))");
+        assert!(
+            value.contains("`helper` is a value, not a type"),
+            "value annotation names the value: {value}"
+        );
+        // The LET-BINDER annotation is the THIRD producer of this message (a parallel producer that
+        // drifted — a sibling's unknown-type check landed there without the category naming); it now
+        // shares the helper too.
+        let binder =
+            msg("(module m (def helper 5) (def (main) (let (((: x helper) 3)) x)) (export main))");
+        assert!(
+            binder.contains("`helper` is a value, not a type"),
+            "let-binder annotation names the value: {binder}"
+        );
+        // A NON-name operand (a literal) keeps the generic "found a non-type" (no name to blame).
+        let lit = msg("(module m (def (main) (: 5 42)) (export main))");
+        assert!(
+            lit.contains("found a non-type") && !lit.contains("is a value"),
+            "a literal in type position keeps the generic message: {lit}"
         );
     }
 
@@ -32874,6 +33900,44 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_classifies_the_effect_construct_not_as_unbound() {
+        // An effect declaration + a handler: the declaration/effect-form HEADS (`effect`/`op`/`handle`/
+        // `resume`) are keywords, the effect NAME + its OPERATION name are `effect`, and NOTHING is
+        // `unbound`. Regression guard: the effect-syntax change left `effect`/`op` out of the highlighter's
+        // keyword set (→ their heads + the op name painted `unbound`), and `desugar_handles` orphaned the
+        // `handle` head (parent lost → also painted `unbound`) — spurious red squiggles under every effect
+        // example in the guide, though the program compiles clean.
+        let src = "(module m \
+                   (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (handle Ask unit ((ask (u) s (resume 42 s))) (Ask.ask))) \
+                   (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean effect program is unbound:\n{text}"
+        );
+        // The declaration/control heads are keywords.
+        assert_eq!(highlight_kinds_of(src, "effect"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "op"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "handle"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "resume"), vec!["keyword"]);
+        // The effect NAME (declaration + the `handle E` head) and the OPERATION name are `effect`. `ask`
+        // occurs as the op-signature name AND the arm op; both read `effect` (the member key `Ask.ask` is
+        // a `label`, so the trailing `ask` there is not counted here).
+        assert!(
+            highlight_kinds_of(src, "Ask").iter().all(|k| k == "effect"),
+            "the effect name is `effect` everywhere it is a value: {:?}",
+            highlight_kinds_of(src, "Ask")
+        );
+        assert!(
+            highlight_kinds_of(src, "ask").contains(&"effect".to_string()),
+            "the effect operation name reads as `effect`: {:?}",
+            highlight_kinds_of(src, "ask")
+        );
+    }
+
+    #[test]
     fn highlight_treats_a_record_field_and_member_key_as_labels() {
         // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
         // they are `label`, not a spurious unbound name.
@@ -37426,8 +38490,78 @@ mod closure_host_resource {
             Val::S64(6),
             "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
         );
-        // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
+        // A fresh handle called with 41 → 42. (`call` now takes `borrow<t>`, so ONE handle could serve both;
+        // this still mints a fresh handle per call, which is equally fine — see the twice-call test below for
+        // the repeatability proof.)
         assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
+    }
+
+    /// C-HOST-6 (`borrow<t>` REPEATABLE call): a closure `call` takes `borrow<t>`, so the host keeps the
+    /// handle across calls — ONE `make` handle serves MANY `call`s (the natural callback shape), versus
+    /// `own<t>`'s consume-per-call (a second call on the same handle trapped "unknown handle index"). The
+    /// body uses the rep the borrow-lift passes DIRECTLY (no `resource.rep`, which traps on a borrow in
+    /// wasmtime 37), and does NOT self-drop — the `t-dtor` reclaims the cell when the host drops the handle.
+    /// This is the value-heap `encode` borrow pattern reused for a callable closure. A CAPTURING closure
+    /// (`adder(10)`) makes it real — the SAME captured `k` must be readable on both calls (a consumed cell
+    /// would be gone). `#[ignore]` gate: needs the runtime wasm in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_borrow_closure_handle_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A CAPTURING closure: `adder(10)` builds a cell holding k=10; the returned closure is `(+ x k)`.
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(10) → ONE handle; call(5) = 15, then call(7) = 17 on the SAME handle. `own<t>` would trap on
+        // the second call; `borrow<t>` keeps the handle (and the captured k=10) live.
+        let (first, second) =
+            rt.closure_make_call_twice(&[Val::S64(10)], &[Val::S64(5)], &[Val::S64(7)]);
+        assert_eq!(first, Val::S64(15), "adder(10) applied to 5 = 15");
+        assert_eq!(
+            second,
+            Val::S64(17),
+            "the SAME handle applied to 7 = 17 — borrow<t> keeps it live (repeatable)"
+        );
+    }
+
+    /// C-HOST-6, value-form results: a closure whose `call` returns a `list<u8>` value form (here a COMPOUND
+    /// tuple) is ALSO a repeatable `borrow<t>` handle. Mint one handle, `call` it twice, and confirm the SAME
+    /// value-form bytes come back both times (an `own<t>` cell would be consumed on the first call). The
+    /// value-form paths (byte-rope / compound / collection) share the `list<u8>` envelope, so proving the
+    /// compound one exercises the same borrow rep-recovery + no-self-drop the byte-rope/collection cores use.
+    /// `#[ignore]` — needs the runtime wasm in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_borrow_compound_result_closure_handle_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A capturing closure returning a COMPOUND: `pair(100)` builds a cell holding k=100; the returned
+        // closure `(fn (x) (tuple x (+ x k)))` yields a tuple whose value form crosses as list<u8>.
+        let src = "(module m (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(100) → ONE handle; call(5) twice on the SAME handle — both yield the value form of
+        // `(tuple 5 105)`. Equal bytes ⇒ the handle (and captured k=100) survived the first call.
+        let (first, second) = rt.closure_make_call_list_twice(&[Val::S64(100)], &[Val::S64(5)]);
+        assert!(
+            !first.is_empty(),
+            "the first call returns a non-empty value-form document"
+        );
+        assert_eq!(
+            first, second,
+            "the SAME handle yields the SAME compound value form on a repeated call — borrow<t> keeps it live"
+        );
     }
 
     /// C-HOST-5 (the leak fix): a closure `make`+`call` round-trip leaves NO live heap cell. `make` builds

@@ -14,7 +14,14 @@
 //! condition, a `let` binding and body, arithmetic/comparison/conversion operands, a call's
 //! arguments, a match scrutinee, and tuple/record/sum construction — but NOT a conditional's branches
 //! or a match arm's body, so a fault shielded by an untaken branch stays a runtime trap rather than
-//! failing the build (`reference-compiler.md` §Reachability Is A Consequence Of Reduction).
+//! failing the build (`reference-compiler.md` §Reachability Is A Consequence Of Reduction). These are
+//! exactly the OBSERVED positions — a value flows to the result, a host call, or an operation that
+//! inspects it — so a trap in an observed computation is not elided: its computation is evaluated (or,
+//! for a compile-provable trap, faults the build here) rather than skipped.
+//= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+//# A trap MUST occur when the computation that would raise it is observed — when its value flows to the program's result, to a host call, or to an operation that inspects it (an arithmetic or comparison operand, an `if` condition, a match scrutinee, a projected tuple element or record field, a referenced binding, or an argument bound to a parameter the function body uses).
+//= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+//# A computation whose value is observed in this sense MUST be evaluated, so its trap MUST occur.
 
 use crate::abi::{Artifact, CompileOutput, Diagnostic, Severity};
 use crate::ast::StructId;
@@ -459,8 +466,148 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 ///
 //= constitution.md#vii-strong-static-typing-is-mandatory
 //# The compiler MUST reject a program that is not well-typed rather than emit a component carrying a deferred type error.
+/// Collect the TYPE-EXPRESSION POSITIONS to validate within a variant payload type expression at `occ`,
+/// pushing `(position, params)` for each. A `(Record (field Type)…)` form descends only into each field
+/// pair's TYPE (the second element) — a record type's field NAME is a label, never a global type, so it
+/// must not be validated (validating the whole record form out-of-context mis-resolves the field name as
+/// unbound). Every OTHER form (a bare name, a `(Tuple …)`/`(List …)`/`(Option …)` application) is ONE
+/// position validated whole — its inner unknown names surface via the ordinary resolver descent. This is
+/// the validation-position twin of `db::collect_type_params`'s record-aware descent (which collects the
+/// PARAMS from the same positions), so records are handled WITHOUT the field-name false positive.
+fn push_payload_type_positions(
+    db: &Db,
+    occ: StructId,
+    params: &[String],
+    out: &mut Vec<(StructId, Vec<String>)>,
+) {
+    if db.ast.head_name(occ) == Some("Record")
+        && let crate::ast::Struct::List(children) = db.ast.get(occ)
+    {
+        // Descend into each `(name Type)` field pair's TYPE (the second element), skipping the name.
+        for &pair in children.iter().skip(1) {
+            if let crate::ast::Struct::List(items) = db.ast.get(pair)
+                && items.len() == 2
+            {
+                push_payload_type_positions(db, items[1], params, out);
+            }
+        }
+        return;
+    }
+    // A non-record position: validate the whole expression. (A nested record inside a `(Tuple … (Record
+    // …))` is reached because the ordinary resolver descent inside `type_errors` handles it — but a record
+    // at the TOP of a payload, or as a tuple element, would carry its field names into that walk; splitting
+    // record fields out HERE keeps the validated positions record-free. A `(Tuple (Record …) …)` element
+    // that is itself a record is split by recursing on Tuple children.)
+    if let crate::ast::Struct::List(children) = db.ast.get(occ)
+        && children
+            .iter()
+            .skip(1)
+            .any(|&c| db.ast.head_name(c) == Some("Record") || is_record_bearing(db, c))
+        && matches!(db.ast.head_name(occ), Some("Tuple" | "List" | "Option"))
+    {
+        // A container whose elements may be records — descend so a record element's fields are split out,
+        // not carried whole into the resolver walk.
+        for &c in children.iter().skip(1) {
+            push_payload_type_positions(db, c, params, out);
+        }
+        return;
+    }
+    out.push((occ, params.to_vec()));
+}
+
+/// Whether the type-expression subtree at `id` contains a `(Record …)` form at any depth — the guard the
+/// payload-position collector uses to decide whether a container element needs record-splitting descent.
+fn is_record_bearing(db: &Db, id: StructId) -> bool {
+    if db.ast.head_name(id) == Some("Record") {
+        return true;
+    }
+    match db.ast.get(id) {
+        crate::ast::Struct::List(children) => children.iter().any(|&c| is_record_bearing(db, c)),
+        _ => false,
+    }
+}
+
+/// Validate ONE declaration-site type-expression position (a variant payload, an effect-operation
+/// arg/result). `params` are the enclosing declaration's type parameters (empty for an effect op). Pushes
+/// a reject to `out` iff the position is not a valid type: a genuinely-unknown Capitalized type name
+/// (CDZ0101, `Nonesuch`) or a well-formed non-type (`5` → CDZ0203, `<what> requires a type`). A type
+/// PARAMETER (a name in `params`, or — since a free lowercase name IS a type variable by the language
+/// convention — any lowercase name) is valid and never faults; a param-parameterized application
+/// (`(Option a)`) fails `typeval_of` out-of-context but is valid, so ONLY a real unknown Capitalized name
+/// (not a param) survives the filter — every other artifact of out-of-context resolution (`cannot apply`,
+/// a nested-param `unbound name`) is dropped. `what` names the position for the non-type message.
+fn validate_type_position(
+    db: &mut Db,
+    pos: StructId,
+    params: &[String],
+    what: &str,
+    out: &mut Vec<Reject>,
+) {
+    // A bare position that is a type PARAMETER (declared, or a free lowercase variable) is valid — skip it.
+    if let Some(name) = db.ast.as_name(pos)
+        && (params.iter().any(|p| p == name) || name.starts_with(|c: char| c.is_ascii_lowercase()))
+    {
+        return;
+    }
+    if crate::eval::typeval_of(db, pos).is_some() {
+        return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
+    }
+    let raw = type_errors(db, pos);
+    let raw_count = raw.len();
+    // KEEP only a genuinely-unknown type name: a CDZ0101 whose name is neither a declared param NOR a
+    // lowercase type-variable. Drop every other out-of-context artifact.
+    let kept: Vec<Reject> = raw
+        .into_iter()
+        .filter(|f| {
+            f.code == Some(Code::Unbound)
+                && unbacktick(&f.message).is_none_or(|n| {
+                    !params.iter().any(|p| p == n)
+                        && !n.starts_with(|c: char| c.is_ascii_lowercase())
+                })
+        })
+        .collect();
+    if !kept.is_empty() {
+        out.extend(kept);
+    } else if raw_count == 0 {
+        // No faults AND not a type — a well-formed NON-type (a literal, a value). (When faults WERE
+        // surfaced but were all param/variable artifacts, the position IS a valid parametric type.)
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                format!("{what} requires a type, but found a non-type"),
+            )
+            .at(pos),
+        );
+    }
+}
+
+/// The first backtick-quoted substring of `msg` (`` unbound name `x` `` → `x`), or `None` if there is no
+/// `` `…` `` pair. Used to read the offending NAME out of a coded message when the `Reject` carries only
+/// the rendered string (the variant-payload check filters a type-parameter's unbound-name fault by name).
+fn unbacktick(msg: &str) -> Option<&str> {
+    let start = msg.find('`')? + 1;
+    let rest = &msg[start..];
+    let end = rest.find('`')?;
+    Some(&rest[..end])
+}
+
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // NON-FINAL `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts a tail-binding `,@` before
+    // a fixed element (`metaprogramming.md`: a `,@<name>` MUST appear only as the final element). Detected
+    // at load by `quote::reify_quotes` (which leaves the offending quasiquote un-reified); reported here as
+    // CDZ0221, the quote-pattern analogue of the binary-form CDZ0220 (an unsized `bytes` segment is legal
+    // only last).
+    for &occ in &db.nonfinal_splice_patterns.clone() {
+        faults.push(
+            Reject::coded(
+                crate::diag::Code::NonFinalSplice,
+                "a `,@` splice in a quote pattern binds the remaining elements, so it must be the \
+                 final element of its template",
+            )
+            .at(occ),
+        );
+    }
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
     // recognized declaration (`def`/`export`/`type`/`effect`) nor a grammar head nor a bound name. Two
     // real cases reach here, and they are STRUCTURALLY INDISTINGUISHABLE (both a list led by an unbound
@@ -606,11 +753,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // which the scan does not yet name) is SKIPPED here: it does not register a name, so it cannot
     // collide. Only genuinely NAMED definitions participate in the fixed-name-set check, so two
     // distinct un-named defs are not mistaken for a duplicate of the empty name.
+    // An INTERNAL def (`Def::internal`) is compiler bookkeeping — a module-member / do-local FUNCTION
+    // registered so a recursive call can lower to a `Core::Call`, keyed by its (possibly β-COPIED) body.
+    // It does NOT declare a user name (its name resolves by lexical scope, not the fixed export set), and
+    // the SAME source function may be registered more than once (once at load by its original body, again
+    // per β-copy of an enclosing inlined helper). So it must NOT participate in the duplicate-name check —
+    // else a legitimately-once-declared recursive function inlined at a call site would spuriously report
+    // "defined more than once". Only genuine (non-internal) user definitions form the fixed name set.
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let dups: Vec<(String, StructId)> = db
         .defs
         .iter()
-        .filter(|d| !d.name.is_empty() && !seen.insert(d.name.as_str()))
+        .filter(|d| !d.internal && !d.name.is_empty() && !seen.insert(d.name.as_str()))
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {
@@ -803,6 +957,64 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for p in &all_params {
         crate::infer::param_annotation_faults(db, *p, &mut faults);
     }
+    // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
+    // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
+    // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a
+    // nullary variant takes the unit value"), a correctness gap. This is the declaration-site companion of
+    // the parameter/value-annotation type check: a payload type position REQUIRES a real type, exactly as
+    // an annotation does. The resolver already handles self-recursion (`(Cons Int64 T)`), mutual/forward
+    // references, and generic self-application (`(Node (Tuple Tree Tree))`) — those resolve to real types,
+    // so only a genuinely UNKNOWN name faults. A bare type-PARAMETER name (`a` in `(Some a)`, recorded in
+    // the decl's `params`) is a valid payload and is skipped — it is NOT a global type. Collected per
+    // payload across ALL type declarations so a garbage payload type is caught whether or not constructed.
+    // Each variant payload's TYPE-EXPRESSION POSITIONS to validate, paired with the declaration's type
+    // params. A `(Record (field Type)…)` payload contributes each FIELD's Type — NOT the whole record form
+    // or the field NAMES (a record type's field names are labels, not global types; validating the whole
+    // form out-of-context mis-resolves them as unbound). So an unknown type INSIDE a record payload
+    // (`(Record (val Nonesuch))`) IS caught, at the field-type position, with no field-name false positive.
+    // The record-aware descent mirrors `db::collect_type_params` (which collects the params from the same
+    // positions). A non-record payload validates as a single position (the whole payload expression).
+    let mut type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
+    for d in &db.type_decls {
+        let params = &d.params;
+        for v in &d.variants {
+            for &payload in &v.payloads {
+                push_payload_type_positions(db, payload, params, &mut type_positions);
+            }
+        }
+    }
+    for (payload, params) in &type_positions {
+        validate_type_position(db, *payload, params, "a variant payload", &mut faults);
+    }
+    // Validate every EFFECT OPERATION's declared TYPE — `(op e (-> ArgT ResultT))`. An unknown type in an
+    // operation's arg/result (`(op e (-> Nonesuch Unit))`) was silently accepted, exactly as a variant
+    // payload was: the name resolved to nothing and the op's `(meta t)` arrow was corrupted to `Any`, so
+    // performing it reported a garbled "cannot apply a value of type (Record (apply Any) …)". The op TYPE
+    // is a `(-> A B …)` arrow — every element past the `->` head is a type position; validate each with the
+    // same record-aware walk. Effect ops carry no declared type params (an empty param set), so the walk's
+    // lowercase-name leniency (a bare lowercase name is a type-variable artifact, not a global type) covers
+    // a `(-> a a)`-style variable.
+    let mut op_type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
+    for e in &db.effect_decls {
+        for op in &e.ops {
+            let Some(ty) = op.ty else { continue };
+            match db.ast.get(ty) {
+                // `(-> A B …)` — each element after the arrow head is a type position (record-split).
+                crate::ast::Struct::List(children)
+                    if children.first().and_then(|&h| db.ast.as_name(h)) == Some("->") =>
+                {
+                    for &pos in children.iter().skip(1) {
+                        push_payload_type_positions(db, pos, &[], &mut op_type_positions);
+                    }
+                }
+                // A non-arrow op type (a bare type / malformed) — validate whole.
+                _ => op_type_positions.push((ty, Vec::new())),
+            }
+        }
+    }
+    for (pos, params) in &op_type_positions {
+        validate_type_position(db, *pos, params, "an operation type", &mut faults);
+    }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
     // most once … rather than silently shadowing an earlier binder"). `(def (f x x) …)` binds `x` twice;
@@ -966,13 +1178,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 faults.push(reject);
             }
             None => {
-                faults.push(
-                    Reject::coded(
-                        Code::Unbound,
-                        format!("export `{name}` names no definition"),
-                    )
-                    .at(occ),
-                );
+                // No near-miss DEFINITION. But the name may be a declared TYPE or EFFECT — a real
+                // declaration, just not an exportable one: a module's exports are its DEFINITIONS' values
+                // (core-semantics.md §Evaluating a module produces a record of its definitions' values), and
+                // a type/effect is not a value. Saying "names no definition" misleads (the name IS
+                // declared); name the real reason instead, so the author knows the export is not a typo but
+                // a category error (there is no mechanical fix — removing the export or defining a value of
+                // that name is the author's choice).
+                let kind = if db.type_decl_by_name(&name).is_some() {
+                    Some("a type")
+                } else if db.effect_decl_by_name(&name).is_some() {
+                    Some("an effect")
+                } else {
+                    None
+                };
+                let message = match kind {
+                    Some(k) => format!(
+                        "export `{name}` names {k}, not a value definition — only definitions are exported \
+                         (a module's exports are the values its definitions bind)"
+                    ),
+                    None => format!("export `{name}` names no definition"),
+                };
+                faults.push(Reject::coded(Code::Unbound, message).at(occ));
             }
         }
     }
@@ -1024,6 +1251,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         "export `{name}` is a TYPE, not a runtime value — a type is compile-time only \
                          and cannot cross the component boundary (export a value of the type, or a \
                          function, not the type itself)"
+                    ),
+                )
+                .at(occ),
+            );
+            continue;
+        }
+        // An EFFECT-VALUED export — `(def (main) E)` exports a bare effect name. An effect is not a runtime
+        // value; its body's type is the effect's SYNTHESIZED record, so evaluating it leaked a 4-error
+        // cascade of internal errors ("unknown intrinsic", unbound `effect-op`/`effect`, nullary-lambda-no-
+        // closure) — the effect analogue of the type-valued export cascade above. Detect it by the body
+        // being a bare name that `effect_decl_by_name` resolves (the same category check the M74 export-an-
+        // effect and M75 apply-an-effect messages use), report ONE clean coded reject naming the category
+        // (carrying `TYPE_EXPORT_MARKER` so `dedup_faults` drops the downstream leaky declines the same way
+        // it does for a type-valued export), and skip the downstream checks.
+        if db
+            .ast
+            .as_name(body)
+            .is_some_and(|n| db.effect_decl_by_name(n).is_some())
+        {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}` is an effect, not a runtime value — an effect is a capability \
+                         an operation performs, not a value that crosses the component boundary; export a \
+                         function that performs the effect, not the effect itself"
                     ),
                 )
                 .at(occ),
@@ -1184,6 +1437,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_type_export_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::TYPE_EXPORT_MARKER));
+    // The EFFECT-valued-export analogue: exporting a bare effect name evaluates its synthesized record,
+    // leaking a cascade (an "unknown intrinsic" decline, a nullary-lambda-no-closure decline, and two
+    // `unbound name effect-op`/`effect` CDZ0101s from the internal `(meta …)` field names). Drop that
+    // cascade when the clean effect-export reject is present, keeping the one category message.
+    let has_effect_export_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::EFFECT_EXPORT_MARKER));
     // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean fix)
     // AND the emit-side member fold (fix-less) is ONE fault shown twice. Where the member node is a USER
     // node, both copies now anchor at that SAME node (`lower`'s `Member::NoField` poison carries an
@@ -1336,6 +1596,25 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                         | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
                         | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
                 )
+            {
+                return false;
+            }
+            // The EFFECT-valued-export cascade: the two DECLINES (`unknown intrinsic`, nullary-lambda-no-
+            // closure) AND the two `unbound name effect-op`/`effect` CDZ0101s (the effect record's internal
+            // `(meta …)` field names, never user-written) are all consequences of evaluating the effect
+            // value the clean reject already reports. Drop them when the effect-export reject is present.
+            if has_effect_export_reject
+                && (r.is_decline()
+                    && matches!(
+                        r.message.as_str(),
+                        crate::diag::UNKNOWN_INTRINSIC_DECLINE
+                            | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                    )
+                    || (r.code == Some(Code::Unbound)
+                        && matches!(
+                            r.message.as_str(),
+                            "unbound name `effect-op`" | "unbound name `effect`"
+                        )))
             {
                 return false;
             }
@@ -1603,6 +1882,12 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
+        Core::BigIntBinOp { lhs, rhs, .. } => {
+            collect_reached_poisons(db, lhs, out);
+            collect_reached_poisons(db, rhs, out);
+        }
+        Core::BigIntOfI64 { value } => collect_reached_poisons(db, value, out),
+        Core::BigIntToI64 { operand } => collect_reached_poisons(db, operand, out),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1928,8 +2213,12 @@ fn walk_for_dead_traps(
         Resolved::Bin { segs } => {
             for s in segs.iter() {
                 discarded(db, s.slot, out, seen);
-                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &s.kind {
-                    discarded(db, *n, out, seen);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => {
+                        discarded(db, *n, out, seen)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => discarded(db, *size, out, seen),
+                    _ => {}
                 }
             }
         }
