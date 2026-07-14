@@ -264,8 +264,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // rejects, no silent promotion). A literal whose magnitude exceeds the finite Float64 range
             // rounds to `±inf`, which has no written form the reader accepts — so it is a MALFORMED
             // literal (CDZ0201), the float analogue of the out-of-range integer literal
-            // `9223372036854775808` (numeric-model.md §A Floating-Point Literal That Denotes No
-            // Representable Value Is Malformed). A finite literal resolves to its exact `Decimal`.
+            // `9223372036854775808`. A finite literal resolves to its exact `Decimal`.
+            //= spec/capabilities/numeric-model.md#a-floating-point-literal-that-denotes-no-representable-value-is-malformed
+            //# A floating-point literal whose magnitude exceeds the largest finite value its type can represent MUST be rejected as a malformed literal at the reader boundary, rather than silently producing a non-finite value that has no written form, exactly as an integer literal outside its type's range is rejected.
             Leaf::Float(d) => {
                 if d.is_finite_f64() {
                     Resolved::Float(d.clone())
