@@ -1609,17 +1609,15 @@ fn emit_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
-    // A fixed-shape scalar tuple/record ARGUMENT is supported only with a SCALAR result this increment: the
-    // byte-rope/compound/collection RESULT paths use SEPARATE core serializers (`closure_bytes_/value_/
-    // value_encode_resource_core_module`) that inline their own `call` bodies + do NOT thread the
-    // `TupleArgRebuild`, and their envelopes take `arg_bytes` (empty for a tuple arg) — so combining the two
-    // would emit a scalar-arg envelope over a flattened-field core (an INVALID component). Decline cleanly
-    // (a later widening: thread the rebuild through the three list-result serializers + their envelopes).
-    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+    // A fixed-shape scalar tuple/record ARGUMENT now works with a BYTE-ROPE result too (the bytes core +
+    // envelope thread the `TupleArgRebuild`). A COMPOUND (value-form) or COLLECTION (value-encode) result
+    // combined with a tuple arg still declines: those two cores don't yet thread the rebuild, and combining
+    // would emit a scalar-arg envelope over a flattened-field core (an INVALID component). Decline cleanly.
+    if tuple_arg.is_some() && (ret_is_compound || ret_is_collection) {
         return Err(Reject::decline(
-            "a closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/collection RESULT \
-             is not yet emitted (the compound-result core serializers do not yet rebuild a flattened tuple \
-             argument — a later widening; a scalar-result compound arg works)",
+            "a closure with BOTH a fixed-shape compound ARGUMENT and a compound/collection RESULT is not yet \
+             emitted (the value-form + value-encode result cores do not yet rebuild a flattened tuple \
+             argument — a later widening; a scalar-result or byte-rope-result compound arg works)",
         ));
     }
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -1783,7 +1781,10 @@ fn emit_closure_resource(
     if ret_is_bytes {
         // C-HOST-6: the `call` takes `borrow<t>` (repeatable — the host keeps the handle; the `t-dtor`
         // reclaims the cell). The byte-rope copy path is unaffected; only the cell rep-recovery + release
-        // change (rep passed directly, no self-drop).
+        // change (rep passed directly, no self-drop). A fixed-shape tuple ARG is threaded via `tuple_arg`:
+        // the bytes `call` rebuilds the cell from the flattened fields, the envelope emits the `tuple<…>` type.
+        let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
+        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
         let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1793,9 +1794,10 @@ fn emit_closure_resource(
             lifted_type_idx,
             &layout,
             true,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource_borrow(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
             &main_core,
             &dtor_core,
             &imports,
@@ -1803,6 +1805,7 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
+            tuple_bytes,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as

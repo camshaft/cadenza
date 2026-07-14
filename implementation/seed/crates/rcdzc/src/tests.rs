@@ -42861,6 +42861,20 @@ mod closure_host_resource {
         );
     }
 
+    /// A fixed-shape scalar tuple closure ARG now composes with a BYTE-ROPE result: the bytes-result core +
+    /// envelope thread the `TupleArgRebuild` (the `call` rebuilds the flattened tuple cell, then copies the
+    /// closure's `Bytes` result out as `list<u8>`). Emits a valid component. A COMPOUND/COLLECTION result
+    /// combined with a tuple arg still declines (its cores don't yet thread the rebuild — the companion test).
+    #[test]
+    fn a_tuple_arg_with_a_bytes_result_emits() {
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+                   (bin (u8 (. p 0)) (u8 (. p 1))))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a tuple arg with a Bytes result now emits (rebuild threaded through the bytes core)",
+        );
+    }
+
     /// A fixed-shape compound ARGUMENT combined with a COMPOUND (or byte-rope / collection) RESULT must
     /// DECLINE cleanly — NOT emit an invalid component. The list-returning result cores inline their own
     /// `call` bodies and do not thread the `TupleArgRebuild`, while their envelopes take the scalar `arg_bytes`
