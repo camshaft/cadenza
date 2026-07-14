@@ -1755,3 +1755,42 @@
   (needs  effects)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
+
+(case "an effect operation taking a SUM parameter matches it in the handler arm"
+  (doc    "The mirror of the sum-RESULT case: `Exec.run` is typed `(-> Cmd Int64)` where `Cmd` is a user
+           sum `(Add Int64) | (Mul Int64)`. The PERFORM passes a runtime-built sum `(Exec.run (Cmd.Mul k))`,
+           and the handler arm MATCHES the operation's `Cmd` parameter to dispatch — `Cmd.Mul n` resumes
+           `(* n 2)`, `Cmd.Add n` resumes `(+ n 1)`. `(Exec.run (Cmd.Mul 5))` → `2*5` = 10. Pins that a sum
+           flows INTO an effect operation as its argument, built at the perform site and deconstructed by
+           the handler — the operand companion of the sum-result case above.")
+  (input  (do
+            (type Cmd (Add Int64) (Mul Int64))
+            (effect Exec (op run (-> Cmd Int64)))
+            (def (main (: k Int64))
+              (handle Exec unit
+                ((run (c) s (match c ((Cmd.Add n) (resume (+ n 1) s)) ((Cmd.Mul n) (resume (* n 2) s)))))
+                (Exec.run (Cmd.Mul k))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "a SUM is threaded as a handler's folded state across operations"
+  (doc    "A handler's STATE is a user sum `St = (Cnt Int64)` — the value threaded across the operations it
+           discharges (capabilities-and-effects.md #A Handler Threads State Across The Operations It
+           Discharges). Seeded `(St.Cnt 0)`, each `bump` arm reads the current count out of the sum state
+           (`cur`), resumes with it, and threads the incremented sum (`nxt`) as the new state — so two
+           `(Tick.bump)`s see 0 then 1. `(+ (bump) (bump))` = 0 + 1 = 1. Pins that a sum is a valid handler
+           state value, deconstructed and rebuilt across resumes (the sum companion of the Int-state cases).")
+  (input  (do
+            (type St (Cnt Int64))
+            (effect Tick (op bump (-> Unit Int64)))
+            (def (cur (: s St)) (match s ((St.Cnt c) c)))
+            (def (nxt (: s St)) (match s ((St.Cnt c) (St.Cnt (+ c 1)))))
+            (def (main (: k Int64))
+              (handle Tick (St.Cnt 0) ((bump (u) s (resume (cur s) (nxt s))))
+                (+ (Tick.bump) (Tick.bump))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
