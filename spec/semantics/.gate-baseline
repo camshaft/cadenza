@@ -1092,11 +1092,14 @@ pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
+pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
+pass	a runtime less-than-or-equal holds at the equal-operand boundary
+pass	a runtime less-than-or-equal is signed at the integer extremes
 pass	a runtime list of lists escapes with its nested element type
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend

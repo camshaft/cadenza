@@ -1644,6 +1644,40 @@
   (input  (> 9223372036854775807 -9223372036854775808))
   (output (: true Bool)))
 
+; The relational cases above are all CONSTANT (they fold), and the runtime relational cases elsewhere use
+; the STRICT `<`/`>`. The INCLUSIVE `<=`/`>=` have a distinct emit (`i64.le_s`/`i64.ge_s`) and differ from
+; strict precisely at the EQUAL-operand boundary. These pin runtime `<=`/`>=` over boundary parameters (so
+; the comparison runs as an emitted instruction, not a fold): the equal-operand case (where inclusive is
+; true but strict would be false) and the signed extremes (where an unsigned `le_u` would answer wrong).
+
+(case "a runtime less-than-or-equal holds at the equal-operand boundary"
+  (doc    "`(<= a b)` over boundary parameters: true when `a < b` (3 ≤ 5) AND when `a = b` (5 ≤ 5) — the
+           equal-operand case is where the INCLUSIVE `<=` differs from the strict `<` (which is false at
+           `5 < 5`). a=3,b=5 → 1; a=5,b=5 → 1; a=9,b=5 → 0. Pins that the runtime `<=` emits the inclusive
+           signed compare (`i64.le_s`), distinct from the strict `<` a runtime case elsewhere pins.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (<= a b) 1 0)) (export main)))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64) (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a runtime greater-than-or-equal holds at the equal-operand boundary"
+  (doc    "The `>=` companion: `(>= a b)` is true when `a > b` (9 ≥ 5) AND when `a = b` (5 ≥ 5), false when
+           `a < b` (3 ≥ 5). The equal-operand case distinguishes inclusive `>=` from strict `>`. Pins the
+           runtime inclusive `i64.ge_s` emit.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (>= a b) 1 0)) (export main)))
+  (call   main (: 9 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a runtime less-than-or-equal is signed at the integer extremes"
+  (doc    "The signed-vs-unsigned discriminator for the inclusive form: `(<= Int64.min Int64.max)` over
+           runtime parameters is true under signed order — but Int64.min's two's-complement pattern is the
+           LARGEST unsigned value, so an `i64.le_u` lowering would wrongly answer false. Pins that the
+           runtime `<=` is SIGNED at the extremes, the inclusive companion of the strict signed-extremes
+           cases above.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (<= a b) 1 0)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: 9223372036854775807 Int64)) (output (: 1 Int64)))
+
 (case "integer to byte (truncate to 0-255)"
   (doc    "The compiler converts integers to single bytes for wasm encoding by TRUNCATING to a UInt8 with
            `UInt8.wrap` — the width-indexed truncating conversion (numeric-model.md #Truncation Is
