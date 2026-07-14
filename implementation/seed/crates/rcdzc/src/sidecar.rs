@@ -1104,23 +1104,11 @@ fn hover_text(db: &mut Db, id: StructId) -> String {
 /// The definition a node IDENTIFIES, if any: the def's `(def …)` form, its signature list
 /// (`(NAME param…)`), or its NAME atom (the signature's first child). Returns the `db.defs` index.
 /// Used so hovering any part of a definition's "header" shows the def's signature rather than the
-/// body's type (the form) or `Any` (the `def` keyword handled separately).
-fn def_identified_by(db: &Db, id: StructId) -> Option<usize> {
-    for (i, d) in db.defs.iter().enumerate() {
-        // The def FORM `(def sig body)` — its parent-less shape is `(def …)`; match by its signature's
-        // parent (the form) or the signature/name directly.
-        let name_occ = if let Struct::List(kids) = db.ast.get(d.sig_occ) {
-            kids.first().copied()
-        } else {
-            None
-        };
-        // The `(def …)` form is the parent of the signature occurrence.
-        let def_form = db.parent_of(d.sig_occ);
-        if id == d.sig_occ || Some(id) == name_occ || Some(id) == def_form {
-            return Some(i);
-        }
-    }
-    None
+/// body's type (the form) or `Any` (the `def` keyword handled separately). O(1) via the header→index
+/// map (`Db::def_index_by_ident`) — was a linear `defs.iter().enumerate()` scan per query, O(N²) under
+/// `cdz query --where`'s per-match `TypeAt`.
+fn def_identified_by(db: &mut Db, id: StructId) -> Option<usize> {
+    db.def_index_by_ident(id)
 }
 
 /// The grammar keyword this atom spells, if it is one — the syntactic heads that are NOT expressions

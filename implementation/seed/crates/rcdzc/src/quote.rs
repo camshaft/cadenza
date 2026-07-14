@@ -430,14 +430,56 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             let inner = reify_active(ast, items[1], depth + 1)?;
             Some(reify_escape_list(ast, "quasiquote", inner))
         }
-        // Any other compound: structural `(Ast.List (list <child…>))`, recursing at the SAME depth so an
-        // active unquote nested anywhere inside still fires.
+        // Any other compound: `(Ast.List <element-list>)`, recursing at the SAME depth so an active
+        // unquote nested anywhere inside still fires. A child that is an ACTIVE `(unquote-splicing e)`
+        // (depth 1) SPLICES e's elements into the parent (`metaprogramming.md`: ,@ evaluates its operand
+        // to a LIST and splices its elements), so the element list is built by CONCATENATING runs of
+        // ordinary reified elements with `(ast-splice-lift e)` segments (each lifts e's Int64 elements to
+        // `Ast.Int` nodes). With NO splice child, this reduces to the plain `(list <reified…>)` form.
         _ => {
-            let mut reified_children = Vec::with_capacity(items.len());
-            for child in items {
-                reified_children.push(reify_active(ast, child, depth)?);
+            let has_active_splice = items.iter().any(|&c| {
+                depth == 1
+                    && ast.head_name(c) == Some("unquote-splicing")
+                    && matches!(ast.get(c), Struct::List(l) if l.len() == 2)
+            });
+            if !has_active_splice {
+                let mut reified_children = Vec::with_capacity(items.len());
+                for child in items {
+                    reified_children.push(reify_active(ast, child, depth)?);
+                }
+                return Some(wrap_ast_list(ast, reified_children));
             }
-            Some(wrap_ast_list(ast, reified_children))
+            // Build the element list as a concat of segments: a run of ordinary reified elements is a
+            // `(list e…)`; an active `(unquote-splicing e)` is `(ast-splice-lift e)` (e stays LIVE). The
+            // segments concat left-to-right (`List.concat`), then wrap in `(Ast.List …)`.
+            let mut segments: Vec<StructId> = Vec::new();
+            let mut run: Vec<StructId> = Vec::new();
+            for child in &items {
+                if depth == 1
+                    && let Some([spliced]) = ast
+                        .as_form(*child, "unquote-splicing")
+                        .map(<[StructId]>::to_vec)
+                        .as_deref()
+                {
+                    // Flush the pending ordinary run as one `(list …)` segment, then the lift segment.
+                    if !run.is_empty() {
+                        segments.push(list_form(ast, std::mem::take(&mut run)));
+                    }
+                    segments.push(ast_splice_lift(ast, *spliced));
+                } else {
+                    run.push(reify_active(ast, *child, depth)?);
+                }
+            }
+            if !run.is_empty() {
+                segments.push(list_form(ast, run));
+            }
+            // Concat the segments left-to-right into ONE element list, then `(Ast.List <it>)`. At least one
+            // segment exists (a splice child guaranteed it).
+            let mut elem_list = segments[0];
+            for &seg in &segments[1..] {
+                elem_list = list_concat(ast, elem_list, seg);
+            }
+            Some(ast_ctor(ast, "List", elem_list))
         }
     }
 }
@@ -531,12 +573,38 @@ fn reify_escape_list(ast: &mut Arenas, head: &str, inner: StructId) -> StructId 
 /// Wrap already-reified child `Ast` nodes in `(Ast.List (list <child…>))` — the shared tail of every
 /// compound reification (plain-quote list, active-quasiquote list, escape-head list).
 fn wrap_ast_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
-    let list_head = push_atom(ast, Leaf::Name("list".to_string()));
-    let mut list_form = Vec::with_capacity(children.len() + 1);
-    list_form.push(list_head);
-    list_form.extend(children);
-    let list_val = push_list(ast, list_form);
+    let list_val = list_form(ast, children);
     ast_ctor(ast, "List", list_val)
+}
+
+/// Build a `(list <child…>)` value-constructor form — the reader-shaped list literal the `list` prelude
+/// alias resolves to (`ListNew`). Shared by `wrap_ast_list` and the splice element-list assembly.
+fn list_form(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
+    let list_head = push_atom(ast, Leaf::Name("list".to_string()));
+    let mut form = Vec::with_capacity(children.len() + 1);
+    form.push(list_head);
+    form.extend(children);
+    push_list(ast, form)
+}
+
+/// Build `((intrinsic "ast-splice-lift") operand)` — the compiler-internal lift `(List Int64) → (List
+/// Ast)` applied to an active `,@` splice's LIVE operand (it stays live — evaluated code). At lowering a
+/// constant operand list folds to a `(List Ast)` of `Ast.Int` nodes (`lower::lower_ast_splice_lift`).
+fn ast_splice_lift(ast: &mut Arenas, operand: StructId) -> StructId {
+    let intr = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+    let who = push_atom(ast, Leaf::Name("ast-splice-lift".to_string()));
+    let prim = push_list(ast, vec![intr, who]);
+    push_list(ast, vec![prim, operand])
+}
+
+/// Build `((. List concat) a b)` — the `List.concat` member-access application that joins two element
+/// lists. A constant `a`/`b` folds to one merged `Core::ListNew` at lowering (`Prim::ListConcat`).
+fn list_concat(ast: &mut Arenas, a: StructId, b: StructId) -> StructId {
+    let dot = push_atom(ast, Leaf::Name(".".to_string()));
+    let list_mod = push_atom(ast, Leaf::Name("List".to_string()));
+    let concat = push_atom(ast, Leaf::Name("concat".to_string()));
+    let proj = push_list(ast, vec![dot, list_mod, concat]);
+    push_list(ast, vec![proj, a, b])
 }
 
 /// Build the constructor application `(Ast.<variant> payload)` — i.e. the list `[(. Ast <variant>),

@@ -305,6 +305,8 @@ pub enum Lir {
 /// machine slots — never any type information, so nothing the compiler could not erase can affect it.
 //= spec/capabilities/type-system.md#types-are-erased-from-the-component
 //# The compiler MUST erase types from the emitted component so that the runnable form carries no runtime type reflection.
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# The compiler MUST erase types from the emitted component so that the runnable form carries no runtime type reflection.
 //= spec/capabilities/type-system.md#types-are-erased-from-the-component
 //# The behavior of an emitted component MUST NOT depend on any type information the compiler could not erase.
 pub fn valtype_of(ty: &Ty) -> Option<ValType> {

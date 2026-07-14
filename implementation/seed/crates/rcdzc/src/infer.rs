@@ -2005,8 +2005,22 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
             }
             Ty::List(Box::new(elem_ty))
         }
+        // `ast-splice-lift : (List Int64) → (List Ast)` — the quasiquote-splice lift (compiler-internal).
+        // Its result is a list of `Ast` nodes; a bad operand shape is caught at the fold (declines), so
+        // typing is unconditional here.
+        Prim::AstSpliceLift => match ast_sum_ty(db) {
+            Some(ast_ty) => Ty::List(Box::new(ast_ty)),
+            None => Ty::Any,
+        },
         _ => Ty::Any,
     }
+}
+
+/// The `Ty::Sum` of the built-in `Ast` prelude sum (a monomorphic sum — no args), or `None` if the
+/// declaration is somehow absent. Used to type `ast-splice-lift`'s `(List Ast)` result.
+fn ast_sum_ty(db: &Db) -> Option<Ty> {
+    let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
+    Some(db.normalize_sum(occ, "Ast".to_string(), Vec::new()))
 }
 
 /// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
@@ -2495,6 +2509,13 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     ) = crate::eval::meta_apply_of(db, head)
     {
         return compound_ctor_type(db, prim, args);
+    }
+    // The COMPILER-INTERNAL `ast-splice-lift` intrinsic (`(intrinsic "ast-splice-lift") args`) — its head
+    // resolves DIRECTLY to a prim (no `(meta apply)` module record), so read it via `prim_of`. Result is
+    // `(List Ast)` (`compound_ctor_type`'s `AstSpliceLift` arm). Only the quasiquote-splice desugar emits
+    // it, never user surface.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift) {
+        return compound_ctor_type(db, crate::resolved::Prim::AstSpliceLift, args);
     }
     // The `map` VALUE-constructor alias applied — `(map (k v) …)` written as a bare NAME head. Its `args`
     // are the ENTRY-PAIR nodes (each a two-element `(key value)` list), NOT curried arguments — so type
@@ -3444,6 +3465,32 @@ fn check_application(
     args: &[StructId],
     out: &mut Vec<Reject>,
 ) {
+    // `ast-splice-lift` (the quasiquote-splice desugar's `(intrinsic "ast-splice-lift") e`) requires its
+    // operand to be a LIST — `,@` splices the ELEMENTS of a list (`metaprogramming.md`), so an operand
+    // that is PROVABLY not a list has no elements to splice → CDZ0201, the same reject the pre-desugar
+    // `collect_quote_body_syntax` gave a raw `(unquote-splicing 5)`. CONSERVATIVE (`provably_not_list`):
+    // only a concrete non-list rejects; an open/unknown type does not (never a false reject).
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift)
+        && args.len() == 1
+    {
+        let ty = type_of(db, args[0]);
+        if provably_not_list(&ty) {
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "unquote-splicing (,@) splices the elements of a list, but its operand is {} \
+                         — a value with no elements to splice",
+                        ty.render_name()
+                    ),
+                )
+                .at(args[0]),
+            );
+        }
+        // The operand's own faults are collected by the caller's `collect(head/operand)`; return so the
+        // generic scheme-unify below does not ALSO fault (the intrinsic has no HM scheme).
+        return;
+    }
     // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
     // integer. `CheckedOf`'s HM scheme source is `(Int a)`, which does NOT unify with a `BigInt` — so
     // the generic scheme-unify below would wrongly fault CDZ0203. Skip it for a `BigInt` source: the
@@ -3885,24 +3932,37 @@ fn check_application(
             _ => Vec::new(), // not a visible list literal — the generic path handles it
         };
         let mut subst = Subst::new();
-        let mut mixed = false;
-        if let Some(&first) = elems.first() {
-            let first_ty = type_of(db, first);
+        // Capture the FIRST clashing element (occurrence + type) so the message can name the two types and
+        // offer the int-literal→float retype fix, like the list-homogeneity check — the set twin of M57.
+        let mut clash: Option<(StructId, Ty)> = None;
+        let first_pair = elems.first().map(|&f| (f, type_of(db, f)));
+        if let Some((_, first_ty)) = &first_pair {
             for &e in elems.iter().skip(1) {
                 let et = type_of(db, e);
-                if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
-                    mixed = true;
+                if crate::unify::unify(&mut subst, first_ty, &et).is_err() {
+                    clash = Some((e, et));
+                    break;
                 }
             }
         }
-        if mixed {
+        if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
-            out.push(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a set contains elements of one type (its elements do not share a type)",
-            ));
-            for &e in &elems {
-                collect(db, e, out);
+                format!(
+                    "a set contains elements of one type, but the elements differ: {} and {}",
+                    first_ty.render_name(),
+                    et.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, *first, first_ty, et)
+                .or_else(|| float_literal_retype_fix(db, *e, et, first_ty))
+            {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
+            for &el in &elems {
+                collect(db, el, out);
             }
             return;
         }
@@ -3987,17 +4047,40 @@ fn check_application(
             for &(k, v) in entries.iter().skip(1) {
                 let kt = type_of(db, k);
                 if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
-                    out.push(Reject::coded(
+                    // Name the two clashing key types (like the list-homogeneity message) and, for an
+                    // int-literal-vs-float clash, offer the same `3.0` retype fix — the map-key twin of the
+                    // list/if/match "same repair wherever the same mismatch surfaces" (M57).
+                    let mut reject = Reject::coded(
                         Code::Malformed,
-                        "a map associates keys of one type (its keys do not share a type)",
-                    ));
+                        format!(
+                            "a map associates keys of one type, but the keys differ: {} and {}",
+                            fkt.render_name(),
+                            kt.render_name()
+                        ),
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, fk, &fkt, &kt)
+                        .or_else(|| float_literal_retype_fix(db, k, &kt, &fkt))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
-                    out.push(Reject::coded(
+                    let mut reject = Reject::coded(
                         Code::Malformed,
-                        "a map associates values of one type (its values do not share a type)",
-                    ));
+                        format!(
+                            "a map associates values of one type, but the values differ: {} and {}",
+                            fvt.render_name(),
+                            vt.render_name()
+                        ),
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, fv, &fvt, &vt)
+                        .or_else(|| float_literal_retype_fix(db, v, &vt, &fvt))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
             }
         }
@@ -5367,6 +5450,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // its "add the missing arm" fix), never a not-yet-lowerable decline — so this adds the
             // actionable fix to `check`/`--json`/`fix` without raising false alarms.
             if let Some(r) = crate::lower::match_nonexhaustive_fault(db, id) {
+                out.push(r);
+            }
+            // PATTERN-HEAD WELL-FORMEDNESS: a MISTYPED variant pattern head (`((C.Gren) …)` on `(type C
+            // Red Green)`), a foreign-sum variant, a payload-arity mismatch, or a non-linear binder is a
+            // CODED fault (CDZ0201 "record has no field `Gren` — did you mean `Green`?" carrying a replace
+            // fix, CDZ0203, CDZ0102). It was produced ONLY by the emit-path lowering walk
+            // (`collect_reached_poisons`), which runs on nullary-EXPORTED bodies alone — so a variant typo
+            // in ANY parameterized function's match silently PASSED `cdz check` (exit 0, no diagnostic)
+            // while `compile` rejected it, hiding the very "did you mean?" fix from the fast check path.
+            // Surface it here, where `collect` visits EVERY match in every body — the pattern-fault twin of
+            // the exhaustiveness accessor above. `match_pattern_fault` returns only a CODED non-CDZ0210
+            // pattern fault (never a not-yet-lowerable decline, never the exhaustiveness code the accessor
+            // already reports), so it adds the actionable fix to `check`/`--json`/`fix` with no false
+            // alarm. A scrutinee/body poison it also bubbles up is independently collected below and shares
+            // its (code, node, message), so `dedup_faults` collapses the duplicate; a genuine pattern-head
+            // fault is produced by no other `collect` path, so it appears exactly once.
+            if let Some(r) = crate::lower::match_pattern_fault(db, id) {
                 out.push(r);
             }
             // SCRUTINEE / PATTERN TYPE COMPATIBILITY: a VARIANT-constructor pattern (`(C.Red)`, `(Some x)`)

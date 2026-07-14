@@ -146,6 +146,10 @@ fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
             | Ty::Bytes
             | Ty::String
             | Ty::Symbol
+            // A BigInt is a heap handle with NO scalar boundary valtype (only the fixed-width int aliases
+            // 8/16/32/64 cross as scalars), so it crosses via the value-form escape like Bytes/String —
+            // the value-encode walk renders it as a KIND_INT leaf (`Shape::BigInt`, descriptor tag 17).
+            | Ty::BigInt
             | Ty::Nominal { .. }
             | Ty::Qty { .. }
     )
@@ -2130,6 +2134,7 @@ fn emit_multi_closure_resource(
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
     if let Some(template) = &ret_template {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); the value-form walk is unaffected.
         let main_core = serialize::multi_closure_value_resource_core_module(
             &funcs,
             &imports,
@@ -2139,9 +2144,10 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             template,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2149,11 +2155,13 @@ fn emit_multi_closure_resource(
             &abi_makes,
             &arg_bytes,
             &[],
+            true,
         ));
     }
     // A VARIABLE-LENGTH collection shared result → the N-makes-one-list-`call` VALUE-ENCODE core (each `call`
     // dispatches, then value-encodes the returned collection handle) + the SAME memory/realloc envelope.
     if let Some(descriptor) = &ret_descriptor {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); the value-encode is unaffected.
         let main_core = serialize::multi_closure_value_encode_resource_core_module(
             &funcs,
             &imports,
@@ -2163,9 +2171,10 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             descriptor,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2173,11 +2182,13 @@ fn emit_multi_closure_resource(
             &abi_makes,
             &arg_bytes,
             &[],
+            true,
         ));
     }
     // A byte-rope shared result → the N-makes-one-list-`call` bytes core + memory/realloc envelope. No plain
     // (non-closure) exports on the pure multi-export path.
     if ret_is_bytes {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); the byte-rope copy is unaffected.
         let main_core = serialize::multi_closure_bytes_resource_core_module(
             &funcs,
             &imports,
@@ -2186,9 +2197,10 @@ fn emit_multi_closure_resource(
             &arg_vts,
             lifted_type_idx,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2196,6 +2208,7 @@ fn emit_multi_closure_resource(
             &abi_makes,
             &arg_bytes,
             &[],
+            true,
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
@@ -2520,6 +2533,7 @@ fn emit_mixed_closure_resource(
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
     if let Some(template) = &ret_template {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); plain exports unaffected.
         let main_core = serialize::multi_closure_value_resource_core_module(
             &funcs,
             &imports,
@@ -2529,9 +2543,10 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             template,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2539,11 +2554,13 @@ fn emit_mixed_closure_resource(
             &abi_makes,
             &arg_bytes,
             &abi_plain,
+            true,
         ));
     }
     // A VARIABLE-LENGTH collection shared closure result → the mixed VALUE-ENCODE core (N makes + shared
     // value-encode `call` + the plain exports as top-level funcs), same `list<u8>` envelope.
     if let Some(descriptor) = &ret_descriptor {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); plain exports unaffected.
         let main_core = serialize::multi_closure_value_encode_resource_core_module(
             &funcs,
             &imports,
@@ -2553,9 +2570,10 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             descriptor,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2563,11 +2581,13 @@ fn emit_mixed_closure_resource(
             &abi_makes,
             &arg_bytes,
             &abi_plain,
+            true,
         ));
     }
     // A byte-rope shared closure result → the mixed BYTES envelope (N makes + shared list-`call` + the plain
     // exports as top-level funcs). A scalar result takes the by-value mixed envelope.
     if ret_is_bytes {
+        // C-HOST-6: the shared list-`call` takes `borrow<t>` (repeatable); plain exports unaffected.
         let main_core = serialize::multi_closure_bytes_resource_core_module(
             &funcs,
             &imports,
@@ -2576,9 +2596,10 @@ fn emit_mixed_closure_resource(
             &arg_vts,
             lifted_type_idx,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource(
+        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
@@ -2586,6 +2607,7 @@ fn emit_mixed_closure_resource(
             &abi_makes,
             &arg_bytes,
             &abi_plain,
+            true,
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across
@@ -4150,6 +4172,8 @@ fn emit_recursive_sum_resource(
 ///
 //= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
 //# The compiler MUST emit a component that names the exact host-interface version it targets.
+//= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
+//# The runnable form of a program MUST be a content-addressed binary component behind a versioned host interface.
 ///
 //= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
 //# The identity of the value-heap runtime a program is emitted against MUST be the content address of that runtime component, so that "which runtime" is a hash rather than a version label and a program's observable behavior — which depends on the runtime's construction, storage, and reclamation of values — is pinned to exact bytes (component-abi.md §The Value-Heap Runtime).

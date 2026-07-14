@@ -830,6 +830,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BigIntOfI64 { .. }
         | Core::BigIntToI64 { .. }
         | Core::BigIntBinOp { .. }
+        | Core::BigIntCmp { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapLookup { .. }
@@ -852,13 +853,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // declines (the wasm backend is the host-boundary target). A sequencing block only ever holds a
         // host-call statement today, so the Rust backend declines it too.
         | Core::HostCall { .. }
-        | Core::Seq { .. }
-        // Runtime structural equality is a value-heap walk — the Rust backend's scalar slice does not
-        // emit heap ops, so it declines (decline-don't-miscompile), as it does every compound op.
-        | Core::ValueEq { .. } => Err(Reject::decline(
+        | Core::Seq { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
+        // Runtime structural equality over a COMPOUND value. On the wasm backend this is a value-heap
+        // equality walk; on the Rust backend a sum/tuple/record maps to a native type that
+        // `#[derive(PartialEq, Eq)]` — so when the operand type is `Eq`-derivable (a sum of Int/Bool/nested
+        // comparable payloads, a tuple/record of such), emit a native `a == b` (the derived structural
+        // equality, which agrees with the wasm heap walk). A non-`Eq` operand (a float-carrying sum, a
+        // fn/collection payload) has no derived `==` and DECLINES (decline-don't-miscompile).
+        Core::ValueEq { lhs, rhs } => {
+            let ty = type_of(db, lhs);
+            if ty_supports_native_eq(db, &ty) {
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                Ok(format!("({l} == {r})"))
+            } else {
+                Err(Reject::decline(
+                    "runtime structural equality over this compound is not yet rendered by the Rust backend",
+                ))
+            }
+        }
     }
+}
+
+/// Whether a runtime `(= a b)` over type `ty` can emit a native Rust `==` — the operand type maps to a
+/// Rust type that derives `Eq`/`PartialEq`. Delegates to `enums::ty_supports_eq` (which handles sums,
+/// built-in Option/Result, tuples, records, nominals, and rejects floats/fns/collections), so the `==`
+/// this emits type-checks against the emitted enum's derives.
+fn ty_supports_native_eq(db: &mut Db, ty: &Ty) -> bool {
+    super::enums::ty_supports_eq(db, ty)
 }
 
 /// Render an integer constant at the node's OWN solved type. Used only where the node stands in a

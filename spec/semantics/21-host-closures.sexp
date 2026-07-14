@@ -1659,6 +1659,23 @@
   (call   mkdbl (: 5 Int64))
   (output (: (tuple 5 10) (Tuple Int64 Int64))))
 
+; The multi-export VALUE-FORM shared `call` (byte-rope/compound/collection — all cross as `list<u8>`) is a
+; repeatable `borrow<t>` method too (C-HOST-6): one `make-<name>` handle serves repeated shared calls, each
+; re-walking/re-encoding the value form (the host keeps the cell; the `t-dtor` reclaims). Repeatability is
+; pinned by `a_multi_export_value_form_shared_borrow_call_is_repeatable` (one `make-lo` handle → the SAME
+; `(tuple 5 6)` value form on two shared calls).
+
+(case "a multi-export compound-result shared call is a repeatable (borrow<t>) callback"
+  (doc    "The SAME two-tuple-closure program witnessed as a borrow<t> value-form shared call: `make-mkpair()`
+           → a handle the host keeps, the shared list-`call(5)` → `(: (tuple 5 6) (Tuple Int64 Int64))`. `call`
+           borrows the handle (does NOT consume it), so the same handle serves repeated value-form calls
+           (proven twice-over in the unit test).")
+  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+              (export mkpair) (export mkdbl)))
+  (call   mkpair (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
 (case "multi-export record result — canonical field order"
   (doc    "Two closures returning a `(Record (lo Int64) (hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
            (hi 103))`, rendered in CANONICAL sorted-name order `(record (hi 103) (lo 3))`.")

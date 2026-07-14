@@ -2718,6 +2718,84 @@ fn recursive_call_reaches_discharged(db: &mut Db, head: &StructId, ctx: &Handler
     rec && reaches
 }
 
+/// Whether the subtree at `node` MIGHT transitively reach ANY effect operation — a perform of ANY declared
+/// effect (`effect_op_of`), a `resume`, or a nested `handle`, following NON-RECURSIVE calls into their
+/// bodies (bounded depth). CTX-INDEPENDENT — unlike `subtree_performs` (which asks only about THIS
+/// handler's discharged ops), this asks whether the computation is effect-free in the ABSOLUTE sense, the
+/// predicate an effect-free continuation `C` needs: `C` may be spliced many times, so it must contain no
+/// observable effect of ANY kind. CONSERVATIVE (over-reports, NEVER under-reports — a wrong "effect-free"
+/// would duplicate a hidden effect): a RECURSIVE callee, an UNRESOLVABLE call head (a higher-order
+/// function-valued parameter, an indirect call — its body is unknown, so it MIGHT perform), or a chain
+/// deeper than the depth bound all report `true`. Used to admit a non-recursive, transitively-pure USER
+/// call inside `C` — the frame-free generalization of the pure one-hole continuation beyond
+/// primitive-only operands (`call_is_effect_free_nonrecursive`).
+fn reaches_any_effect(db: &mut Db, node: StructId, depth: u32) -> bool {
+    // Depth backstop — a cross-function chain deeper than this is treated as possibly-effectful (a safe
+    // over-report), mirroring `body_reaches_discharged`'s bound.
+    if depth > 16 {
+        return true;
+    }
+    // A `resume` or a nested `handle` is a control-flow effect.
+    if matches!(
+        resolved_of(db, node),
+        Resolved::Resume { .. } | Resolved::Handle { .. }
+    ) {
+        return true;
+    }
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        // A perform of ANY declared effect operation (not just a discharged one).
+        if crate::eval::effect_op_of(db, head).is_some() {
+            return true;
+        }
+        // A PURE primitive operator (arith/cmp/ctor): its head is effect-free; an effect can only come
+        // from an ARGUMENT.
+        if is_pure_operator_head(db, head) {
+            return args.iter().any(|&a| reaches_any_effect(db, a, depth + 1));
+        }
+        // A USER call. Resolve the callee to a known def body; an UNRESOLVABLE head (a function-valued
+        // parameter / indirect call) MIGHT perform — over-report. A RECURSIVE callee is conservatively
+        // effectful (its body cannot be cheaply proven pure). Otherwise the call reaches an effect iff
+        // the callee body does OR any argument does.
+        let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        else {
+            return true; // unknown callee — assume it may perform
+        };
+        if crate::eval::is_recursive(db, callee) {
+            return true;
+        }
+        return reaches_any_effect(db, callee, depth + 1)
+            || args.iter().any(|&a| reaches_any_effect(db, a, depth + 1));
+    }
+    // Any other shape (`let`/`if`/`match`/tuple/list/…) — descend into children structurally (an
+    // over-approximation for a conditional, which is safe: an effect in EITHER branch counts).
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| reaches_any_effect(db, c, depth + 1)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the application `head` names a NON-RECURSIVE user function whose body is transitively
+/// EFFECT-FREE — so a call to it may appear in a pure one-hole continuation `C`. Cadenza is strict, so the
+/// call's arguments are evaluated (checked separately, at their own positions); this asks only that the
+/// CALLEE itself introduces no effect when `C` is spliced (once or, for a multi-shot resume, many times).
+/// `false` for a non-function head (an operator — handled elsewhere — or a bare value), a recursive
+/// callee, or a callee whose body might perform (`reaches_any_effect`). Sound because `reaches_any_effect`
+/// over-reports: a callee this admits provably reaches no effect on any resolvable path.
+fn call_is_effect_free_nonrecursive(db: &mut Db, head: StructId) -> bool {
+    let Some(body) = crate::eval::lambda_body(db, head)
+        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+    else {
+        return false;
+    };
+    if crate::eval::is_recursive(db, body) {
+        return false;
+    }
+    !reaches_any_effect(db, body, 0)
+}
+
 /// Whether a type contains an undetermined `Ty::Any` component (structurally). Used to reject a
 /// specialization whose state type is not fully determined — an `Any` most often an empty-list seed's
 /// element type — since a synthesized state-param annotation must be a definite type.
@@ -3123,20 +3201,22 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
             pure_hole_seq(db, elems.iter().copied(), ctx)
         }
         Resolved::Apply { head, args } => {
-            // The head must be a PRIMITIVE operator (a strict n-ary op) — a user/recursive call could
-            // perform, so `strongly_pure` treats it as effectful; here mirror that: only a pure-operator
-            // head is a strict operator whose operands have uniform continuations. A perform head was
-            // handled above.
-            if !is_pure_operator_head(db, head) {
-                // Not a primitive operator: if it reaches an effect it is Impure, else opaque-pure.
-                return if strongly_pure(db, node, ctx) {
-                    PureHole::Pure
-                } else {
-                    PureHole::Impure
-                };
+            // A STRICT, effect-free head — a PRIMITIVE operator (arith/cmp/ctor) OR a NON-RECURSIVE user
+            // function whose body reaches no effect (`call_is_effect_free_nonrecursive`) — evaluates each
+            // argument exactly once, unconditionally, before the call, and adds no effect of its own. So a
+            // hole in one argument has a UNIFORM continuation `C = (f a0 … □ … an)` (splicing `C` re-runs
+            // the pure call), foldable like a primitive operator. A perform head was handled above.
+            if is_pure_operator_head(db, head) || call_is_effect_free_nonrecursive(db, head) {
+                // The head is pure; find the single hole across the args, left to right.
+                return pure_hole_seq(db, args.iter().copied(), ctx);
             }
-            // The head itself is pure (an operator); find the single hole across the args, left to right.
-            pure_hole_seq(db, args.iter().copied(), ctx)
+            // A possibly-effectful call (recursive / unresolvable / reaches an effect): if it reaches an
+            // effect it is Impure, else opaque-pure.
+            if strongly_pure(db, node, ctx) {
+                PureHole::Pure
+            } else {
+                PureHole::Impure
+            }
         }
         // Any other shape (a literal, a bare ref, a param, a record, a type value, …) has no discharged
         // perform reachable on a pure spine here — classify by strong purity.
@@ -3193,16 +3273,22 @@ fn strongly_pure(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     ) {
         return false;
     }
-    // An APPLICATION whose head is NOT a pure primitive operator is a user/recursive/host call whose body
-    // may perform an effect this handler does not discharge — reject it (a multi-shot splice would
-    // duplicate that effect). A primitive operator (arith/comparison/ctor/…) is pure, so descend into its
-    // operands.
+    // An APPLICATION whose head is neither a pure primitive operator NOR an effect-free non-recursive user
+    // function is a possibly-effectful call — reject it (a multi-shot splice would duplicate any hidden
+    // effect). A primitive operator (arith/comparison/ctor/…) is pure; a user call whose callee is
+    // non-recursive and transitively reaches NO effect (`call_is_effect_free_nonrecursive`) is also pure —
+    // splicing the CALL (once or many times) re-runs an effect-free computation, observationally identical
+    // to running it once. In BOTH cases the head is safe and the operands (checked by the structural
+    // descent below) must themselves be strongly pure.
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && !is_pure_operator_head(db, head)
+        && !call_is_effect_free_nonrecursive(db, head)
     {
         return false;
     }
-    // Descend structurally — every child must be strongly pure.
+    // Descend structurally — every child must be strongly pure. For an admitted application the head is a
+    // name atom (pure) and this checks each argument; the effect-free callee's own body is NOT spliced (the
+    // call stays a call), so it is validated by `call_is_effect_free_nonrecursive`, not descended here.
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().all(|&c| strongly_pure(db, c, ctx)),
         Struct::Atom(_) => true,

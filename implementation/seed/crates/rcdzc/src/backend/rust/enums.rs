@@ -162,15 +162,15 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         }
     }
 
-    // An ALL-NULLARY enum (every variant fieldless) is a bare discriminant — exactly the sums the seed
-    // permits `=` on (a payload-carrying sum has no structural `=` in the seed). The `=` intrinsic lowers
-    // (rust backend) to a native `x == y`, which needs `PartialEq`; the wasm backend compares the i32
-    // discriminant directly, so the derive is what makes the two backends AGREE on realizability. Gate the
-    // `PartialEq, Eq` derive on all-nullary: a payload-carrying variant would need its fields to be
-    // `PartialEq` too (not guaranteed), so deriving unconditionally could fail to compile — all-nullary is
-    // the safe, sufficient condition (mirrors the wasm backend's always-available discriminant compare).
-    let all_nullary = decl.variants.iter().all(|v| v.payloads.is_empty());
-    let derives = if all_nullary {
+    // The `=` intrinsic lowers (rust backend) to a native `x == y`, which needs `PartialEq`/`Eq`; the wasm
+    // backend does a value-heap equality walk, so the derive is what makes the two backends AGREE on
+    // realizability of a runtime sum `=`. Derive `PartialEq, Eq` whenever every payload type is itself
+    // equality-derivable (an all-nullary enum trivially is; a payload of Int/Bool/nested comparable sum/
+    // tuple/record is too) — a `derive(PartialEq, Eq)` over such fields compiles, so a runtime `(= a b)`
+    // over the sum emits `a == b`. A payload that is NOT `Eq`-derivable (a float — `PartialEq` but not
+    // `Eq`; a fn/closure; a `List`/`Map`/`Set`; a recursive `Box` field IS fine — `Box<T: Eq>: Eq`) keeps
+    // `Clone` only, so its `ValueEq` still declines (decline-don't-miscompile), as before.
+    let derives = if sum_derives_eq(db, &decl) {
         "Clone, PartialEq, Eq"
     } else {
         "Clone"
@@ -362,6 +362,87 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
         // paths can't handle). Delegate to `types::rust_type`, which declines — consistent with a bare
         // `List` payload declining.
         _ => types::rust_type(ty),
+    }
+}
+
+/// Whether declaration `decl`'s emitted enum can `#[derive(PartialEq, Eq)]` — i.e. every payload type of
+/// every variant is itself `Eq`-derivable ([`ty_derives_eq`]). An all-nullary enum trivially qualifies
+/// (no fields). This is the rust-backend condition under which a runtime `(= a b)` over the sum emits a
+/// native `a == b`; a sum with a non-`Eq` payload (a float, a fn/closure, a collection) does not derive
+/// it and its `ValueEq` declines. Recursion terminates via a `visited` set (a self-referential payload
+/// `Box<Self>` is `Eq` iff `Self` is — the cycle is assumed `Eq` and confirmed by the other variants).
+pub(super) fn sum_derives_eq(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(decl.occ);
+    decl.variants.iter().all(|v| {
+        v.payloads.clone().iter().all(|&pty| {
+            crate::eval::typeval_of(db, pty).is_some_and(|ty| ty_derives_eq(db, &ty, &mut visited))
+        })
+    })
+}
+
+/// Public entry: whether a runtime `(= a b)` over `ty` can emit a native Rust `==` — i.e. `ty` maps to a
+/// Rust type that derives `Eq`/`PartialEq`. Wraps [`ty_derives_eq`] with a fresh `visited` set. Used by the
+/// expr backend's `Core::ValueEq` to decide `==` vs decline; mirrors the enum-emit derive condition so the
+/// `==` type-checks against the emitted derives.
+pub(super) fn ty_supports_eq(db: &mut Db, ty: &crate::ty::Ty) -> bool {
+    ty_derives_eq(db, ty, &mut std::collections::HashSet::new())
+}
+
+/// Whether the solved type `ty` maps to a Rust type that derives `Eq` (hence `PartialEq`) — the condition
+/// for a native `==`. Int/Bool/Unit/enum-disc + a nominal newtype over such + a tuple/record/Option/Result/
+/// user-sum of such all qualify; a FLOAT (`PartialEq` but not `Eq`), a FUNCTION, a `List`/`Map`/`Set`, or a
+/// `Ty::Var`/`Any` (unknown) do NOT. Recurses with a `visited` set of sum decls so a recursive sum
+/// (`Box<Self>`) terminates: a back-edge to an in-progress decl is treated as `Eq` (its own variants are
+/// checked at the top level), so `enum L { Cons(Box<(i64, L)>), Nil }` derives `Eq` iff `i64` does.
+fn ty_derives_eq(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    visited: &mut std::collections::HashSet<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // A float is `PartialEq` but NOT `Eq` — exclude it (a sum carrying a float can't `#[derive(Eq)]`).
+        Ty::Float(_) => false,
+        Ty::Tuple(elems) => elems.iter().all(|e| ty_derives_eq(db, e, visited)),
+        Ty::Record(fields) => fields.values().all(|t| ty_derives_eq(db, t, visited)),
+        Ty::Nominal { inner, args, .. } => {
+            ty_derives_eq(db, inner, visited) && args.iter().all(|a| ty_derives_eq(db, a, visited))
+        }
+        Ty::Sum { decl, args, .. } => {
+            // The type args must be Eq (`Option<f64>` is not Eq); check them first.
+            if !args.iter().all(|a| ty_derives_eq(db, a, visited)) {
+                return false;
+            }
+            // A built-in Option/Result maps to std's `Option`/`Result`, which derive `Eq` iff their type
+            // args do — already checked above. Don't walk their (parametric) decl payloads (a `Some`
+            // payload resolves to the unsubstituted param `a` = a `Ty::Var`, which would spuriously fail).
+            if let Some(d) = db.type_decl_by_occ(*decl).cloned()
+                && is_builtin_std_sum(db, &d)
+            {
+                return true;
+            }
+            // A USER sum is Eq iff its own variants' payloads are — recurse into its declaration (once,
+            // visited-guarded); a back-edge to an in-progress decl is assumed Eq (confirmed at top level).
+            if !visited.insert(*decl) {
+                return true;
+            }
+            match db.type_decl_by_occ(*decl) {
+                Some(d) => {
+                    let payloads: Vec<crate::ast::StructId> =
+                        d.variants.iter().flat_map(|v| v.payloads.clone()).collect();
+                    payloads.iter().all(|&pty| {
+                        crate::eval::typeval_of(db, pty)
+                            .is_some_and(|pt| ty_derives_eq(db, &pt, visited))
+                    })
+                }
+                None => false,
+            }
+        }
+        // A function/closure, a `List`/`Map`/`Set`, a free `Ty::Var`/`Any`, a `Qty` — not `Eq`-derivable
+        // here (either no native rep or not `Eq`). Conservative: an unknown type declines the derive.
+        _ => false,
     }
 }
 
