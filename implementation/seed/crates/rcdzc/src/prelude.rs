@@ -1050,6 +1050,14 @@ fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
 /// A family unit's conversion: its DIMENSION (a `(base-name, exponent)` list — one entry atomic, several
 /// derived) and its exact scale `(num, den)` to that dimension's reference. The value in the family
 /// registry.
+///
+/// The scale is an EXACT machine-integer ratio to the dimension's reference unit, so a conversion between
+/// two units of one dimension is an exact ratio (`(qn·td)/(qd·tn)`, see `lower_unit_in`) — exact when the
+/// inner numeric type is exact (Int), losing precision only where the inner type is itself inexact (Float).
+//= spec/capabilities/units-of-measure.md#a-unit-carries-an-exact-scale-to-its-dimension-s-reference
+//# Each unit of a dimension MUST carry an exact scale relating it to that dimension's reference unit, so that a conversion between two units of one dimension is an exact ratio rather than an approximation.
+//= spec/capabilities/units-of-measure.md#a-unit-carries-an-exact-scale-to-its-dimension-s-reference
+//# A conversion between two units of the same dimension MUST preserve the exact value when the underlying numeric type is exact, losing precision only where the underlying numeric type is itself inexact.
 pub type UnitConversion = (Vec<(String, i64)>, i128, i128);
 
 /// One family-registration ROW: `(name, dimension, scale-num, scale-den)`, where dimension is a borrowed
@@ -1064,6 +1072,16 @@ pub type FamilyRow<'a> = (&'a str, &'a [(&'a str, i64)], i128, i128);
 /// `byte/second` dimension scaled by 10⁶/8. Every scale fits a machine int, so a family unit
 /// auto-converts over Float/Int with NO bignum. A build MAY supply its own families; this is the SI +
 /// common imperial/information set plus common data-rate and frequency units.
+///
+/// A dimension GROUPS its named units: several rows share one dimension (metre, millimetre, foot, inch
+/// are all `length`), so they name measures of one dimension rather than each being distinct. Two units
+/// of the same dimension are interconvertible (each carries an exact scale to the shared reference, so
+/// `Unit.in` composes their ratio); two units of DIFFERENT dimension are not (the `same_dimension` gate
+/// rejects — `metre + second` is CDZ0501).
+//= spec/capabilities/units-of-measure.md#a-dimension-groups-interconvertible-units
+//# A dimension MUST admit more than one named unit, so that several units — such as a metre, a millimetre, and an inch — name measures of one dimension rather than each being a distinct dimension.
+//= spec/capabilities/units-of-measure.md#a-dimension-groups-interconvertible-units
+//# Two units of the same dimension MUST be interconvertible, and two units of different dimension MUST NOT be.
 pub fn unit_families() -> BTreeMap<String, UnitConversion> {
     // Each row: `(name, dimension, num, den)`. The DIMENSION is a `(base, exponent)` list — one entry for
     // an ATOMIC dimension (length/time/information), several for a DERIVED one (a rate = information/time
