@@ -13867,6 +13867,72 @@ mod match_engine {
     }
 
     #[test]
+    fn a_join_site_record_field_typo_offers_the_rename_fix() {
+        // The PEER-JOIN twin of the argument/annotation/let-binder record-field-typo rename: two branches /
+        // arms / list-elements are records differing only by a misspelled field (`(record (foo 1))` vs
+        // `(record (fooo 2))`). Each join site now offers the `fooo`→`foo` key rename on whichever side is
+        // the OUTLIER (the one that broke homogeneity against the established first type), consistent with
+        // where the diagnostic anchors. Verified fixes.
+        // LIST-element.
+        let list = reject_full(
+            "(module m (def (g) (list (record (foo 1)) (record (fooo 2)))) (export g))",
+        )
+        .expect("a list of records with a field typo rejects");
+        assert_eq!(
+            list.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            list.message
+        );
+        assert!(
+            list.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the list-element record typo carries the rename: {} fix={:?}",
+            list.message,
+            list.fix
+        );
+        // IF-branch.
+        let iff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (foo 1)) (record (fooo 2)))) (export f))",
+        )
+        .expect("if branches with a record field typo reject");
+        assert!(
+            iff.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the if-branch record typo carries the rename: {} fix={:?}",
+            iff.message,
+            iff.fix
+        );
+        // MATCH-arm.
+        let m = reject_full(
+            "(module m (type C (A) (B)) \
+               (def (f (: c C)) (match c ((A) (record (foo 1))) ((B) (record (fooo 2))))) (export f))",
+        )
+        .expect("match arms with a record field typo reject");
+        assert!(
+            m.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the match-arm record typo carries the rename: {} fix={:?}",
+            m.message,
+            m.fix
+        );
+        // NO false rename: a genuinely different field-SET across branches (not a typo) → message only.
+        let diff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (a 1) (b 2)) (record (a 3)))) (export f))",
+        )
+        .expect("if branches with a differing field set reject");
+        assert!(
+            diff.fix.is_none(),
+            "a genuine field-set difference gets no rename: {} fix={:?}",
+            diff.message,
+            diff.fix
+        );
+    }
+
+    #[test]
     fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
         // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
         // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
