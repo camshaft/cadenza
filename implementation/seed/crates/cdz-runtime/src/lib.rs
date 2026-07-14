@@ -16972,6 +16972,66 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// TRIPWIRE (STRING-KEY sibling of the int-key contract above) — the case the compiler-in-Cadenza port
+    /// ACTUALLY hits. Its symbol tables / free-var environments are STRING-keyed (`Map String Ast`,
+    /// `Set String`), and the compiler-ml agent's enumeration-gap finding (`spec@d1724597`) reasoned "the
+    /// runtime walks a Map/Set in canonical order already" — which is FALSE: a STRING key takes the arity-0
+    /// heap-byte-leaf champ path (slot from a raw-byte FNV hash), so the cursor's order is HASH order, NOT
+    /// the LEXICOGRAPHIC (canonical byte-form) order the spec's *Map Iteration Is Deterministic* second
+    /// clause requires. The int-key tripwire above proves the divergence for numeric-vs-LE-byte order; this
+    /// proves it for the string keyspace the port will feed a future `Map.to-list`/`keys`/`fold` — so a
+    /// front-end built directly on the raw cursor would emit the self-hosting compiler's bindings in HASH
+    /// order (spec-violating, and disagreeing with the map's own `print`). The FIX when iteration is exposed
+    /// is the same as the int case: re-sort the cursor output through the canonical (here lexicographic)
+    /// order — the runtime already does this internally in `map_entries_canonical`'s `Shape::Str` arm, or a
+    /// coordinated canonical-order cursor op could expose it. Realistic identifier-like keys (a lexer/parser
+    /// token table) make the two orders concretely differ.
+    #[test]
+    fn map_string_key_cursor_is_hash_order_not_lexicographic() {
+        reset();
+        let before = live_nodes();
+        // Identifier-like keys (a symbol-table / keyword-set shape) whose FNV-hash order ≠ lexicographic.
+        let names = ["let", "in", "lambda", "app", "var", "if", "match", "case"];
+        let mut m = op_map_empty();
+        for (i, nm) in names.iter().enumerate() {
+            m = op_map_insert(m, op_str_new(String::from(*nm)), op_box_int(i as i64));
+        }
+        // (A) the raw cursor's visiting order.
+        let mut cursor_keys: Vec<String> = Vec::new();
+        let mut cur = op_map_iter(m);
+        loop {
+            let k = op_map_iter_key(cur);
+            if k == Handle::NULL {
+                break;
+            }
+            cursor_keys.push(op_str_get(k));
+            cur = op_map_iter_next(cur);
+        }
+        op_drop(cur);
+        // (B) the canonical byte-form key order for strings = lexicographic (what value-encode's
+        //     `canonical_scalar_order` Str arm produces + what a spec-conformant `Map.fold` must match).
+        let mut lex: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        lex.sort();
+        // The cursor visits EVERY key exactly once (a correct, complete traversal)…
+        let mut cursor_sorted = cursor_keys.clone();
+        cursor_sorted.sort();
+        assert_eq!(
+            cursor_sorted, lex,
+            "the string-key cursor visits exactly the map's keys (complete traversal)"
+        );
+        // …but NOT in lexicographic (canonical) order — the contract gap the port must not build on blindly.
+        assert_ne!(
+            cursor_keys, lex,
+            "the STRING-key cursor walks FNV-hash order, which differs from the canonical (lexicographic) \
+             byte-form order — a `Map.to-list`/`keys`/`fold` emitted over the raw cursor would violate \
+             *Map Iteration Is Deterministic*'s agree-with-canonical clause AND emit the self-hosting \
+             compiler's string-keyed bindings in hash order; the compiler must re-sort (or use a \
+             canonical-order runtime op) when exposing iteration"
+        );
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn map_iter_fork_independence() {
         reset();
