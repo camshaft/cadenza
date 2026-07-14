@@ -2003,6 +2003,7 @@ pass	the length of a grown list is its element count
 pass	the length of a list looked up from a map by a runtime key
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
+pass	the manifest is DERIVED from what entrypoints delegate, not from effect declarations
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
