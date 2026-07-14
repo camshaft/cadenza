@@ -41,7 +41,17 @@ const editorTheme = EditorView.theme({
     border: "1px solid #334155",
     borderRadius: "6px",
     padding: "3px 8px",
+    maxWidth: "42ch",
   },
+  // The compilation-disposition section of the hover (below the type) — see PlaygroundEditor.
+  ".cm-cadenza-hover-disp": {
+    color: "#fbbf24",
+    marginTop: "3px",
+    paddingTop: "3px",
+    borderTop: "1px solid #1e293b",
+  },
+  ".cm-cadenza-hover-gloss": { color: "#64748b", fontSize: "11.5px" },
+  ".cm-cadenza-hover-inst": { color: "#a5b4fc", paddingLeft: "10px" },
   ".cm-cadenza-ref": {
     backgroundColor: "rgba(251, 191, 36, 0.18)",
     borderRadius: "2px",

@@ -34,7 +34,18 @@ const editorTheme = EditorView.theme({
     border: "1px solid #334155",
     borderRadius: "6px",
     padding: "3px 8px",
+    maxWidth: "42ch",
   },
+  // The compilation-disposition section of the hover (below the type): the disposition word in amber,
+  // its gloss dimmed, and each concrete instantiation indented.
+  ".cm-cadenza-hover-disp": {
+    color: "#fbbf24",
+    marginTop: "3px",
+    paddingTop: "3px",
+    borderTop: "1px solid #1e293b",
+  },
+  ".cm-cadenza-hover-gloss": { color: "#64748b", fontSize: "11.5px" },
+  ".cm-cadenza-hover-inst": { color: "#a5b4fc", paddingLeft: "10px" },
   // Every occurrence of the name the caret rests on (find-all-references).
   ".cm-cadenza-ref": {
     backgroundColor: "rgba(251, 191, 36, 0.18)",
