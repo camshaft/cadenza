@@ -2935,10 +2935,11 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
 /// analogue of `non_exhaustive_sum_reject`'s missing-match-arm fix — `spec/capabilities/diagnostics.md`
 /// §A Diagnostic Carries A Route To A Fix, realizing `capabilities-and-effects.md` §A Handler Discharges
 /// Its Effect's "SHOULD identify the omitted operations"). Names the omitted operations and appends a
-/// TEMPLATE arm per omission to the handler's arms LIST — each `(op (_p0 …) s (resume unit s))` in the
-/// canonical bare-op surface, with the op's arm arity of `_`-prefixed parameter binders (so it does not
-/// itself warn unused), the state binder `s`, and a stateless `(resume unit s)` body the author fills
-/// in. Heuristic: the arms are shaped right but their bodies are the author's to write. `handle_id` is
+/// TEMPLATE arm per omission to the handler's arms LIST — each `(op (_p0 …) s (resume (trap …) s))` in
+/// the canonical bare-op surface, with the op's arm arity of `_`-prefixed parameter binders (so it does
+/// not itself warn unused), the state binder `s`, and a `(resume (trap "TODO: op") s)` body the author
+/// fills in (the trap resume value type-checks whatever the op's result type is). Heuristic: the arms are
+/// shaped right but their bodies are the author's to write. `handle_id` is
 /// the `(handle seed (arms…) body)` form (internal shape after desugar); the fix anchors on its arms
 /// LIST (child index 2), whose source span the in-place desugar preserved. Falls back to the plain
 /// reject (no fix) if that arms node is absent.
@@ -2947,14 +2948,26 @@ fn non_exhaustive_handler_reject(
     handle_id: StructId,
     missing: &[crate::effects::MissingOp],
 ) -> Reject {
-    // One template arm per missing op: `(op (_p0 …) s (resume unit s))`. A nullary op → empty params;
-    // an N-ary op → N `_`-prefixed binders (so an unfilled placeholder does not itself warn unused). The
-    // state binder is `s` and the body a `(resume unit s)` placeholder the author fills in.
+    // One template arm per missing op: `(op (_p0 …) s (resume (trap "TODO: op") s))`. A nullary op → empty
+    // params; an N-ary op → N `_`-prefixed binders (so an unfilled placeholder does not itself warn
+    // unused). The state binder is `s`; the RESUME VALUE is `(trap "TODO: op")` — a DIVERGING placeholder
+    // the author replaces. `trap : ∀a. String → a`, so it type-checks as the resume value whatever the
+    // operation's declared RESULT type is; a bare `unit` resume value cascaded to a CDZ0201 "a handler
+    // resumes with a value of type Unit but the operation's result type is <T>" the moment the op returned
+    // non-Unit (`(op get (-> Unit Int64))`), trading one fault for another — a fix must resolve in ONE
+    // shot (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix, the same lesson as
+    // the match add-arm fix's trap body). The `resume … s` scaffold is kept so the author sees the
+    // canonical tail-resumptive shape to fill, and `s` stays used (no unused-binder warning).
     let arms: Vec<String> = missing
         .iter()
         .map(|m| {
             let binders: Vec<String> = (0..m.arity).map(|i| format!("_p{i}")).collect();
-            format!("({} ({}) s (resume unit s))", m.name, binders.join(" "))
+            format!(
+                "({} ({}) s (resume (trap \"TODO: {}\") s))",
+                m.name,
+                binders.join(" "),
+                m.name
+            )
         })
         .collect();
     // The message NAMES the omitted operations AND spells the arm(s) to add inline — the guidance is

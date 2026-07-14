@@ -23267,20 +23267,70 @@ mod stage1 {
         );
         // The message NAMES the omitted operation AND spells the arm to add inline; AND a machine-
         // applicable "add the missing arm" fix carries the same template arm (`collect` is nullary → empty
-        // params, a `(resume unit s)` placeholder body the author fills). The structural fix is possible
-        // because the in-place desugar preserved the arms-list's source span.
+        // params, a `(resume (trap "TODO: collect") s)` placeholder body the author fills). The resume
+        // VALUE is a diverging `trap`, NOT `unit`: `collect`'s result type is `(List Int64)`, so a bare
+        // `unit` resume value would cascade to a CDZ0201 "a handler resumes with a value of type Unit but
+        // the operation's result type is (List Int64)"; `trap : ∀a. String → a` type-checks whatever the
+        // op returns, so the fix resolves in ONE shot. The structural fix is possible because the in-place
+        // desugar preserved the arms-list's source span.
         assert!(
             err.message.contains("`collect`")
-                && err.message.contains("add (collect () s (resume unit s))"),
+                && err
+                    .message
+                    .contains("add (collect () s (resume (trap \"TODO: collect\") s))"),
             "names the omitted op AND spells the arm to add: {}",
             err.message
         );
         let fix = err.fix.expect("a missing-arm fix is carried");
         assert_eq!(
-            fix.replacement, "(collect () s (resume unit s))",
+            fix.replacement, "(collect () s (resume (trap \"TODO: collect\") s))",
             "the fix appends a template arm for the missing op"
         );
         assert!(!fix.verified, "a template-body arm is heuristic");
+    }
+
+    #[test]
+    fn the_handler_add_arm_fix_resume_value_type_checks_in_one_shot() {
+        // The `trap`-resume-value add-arm fix (M61's match-arm lesson applied to CDZ0405): the covering arm
+        // the fix inserts must CLEAR the fault in ONE shot even when the missing op's RESULT type is
+        // non-Unit. The old `(resume unit s)` body cascaded to a CDZ0201 "a handler resumes with a value of
+        // type Unit but the operation's result type is <T>" the moment the op returned non-Unit; the
+        // diverging `(resume (trap …) s)` resumes with a ∀a value that unifies with any result type, so the
+        // repaired handler type-checks. Verified against the `diagnostics()` walk (`cdz check` / what
+        // `fix --verify` runs), not full emit — this handler shape's emission is a separate effects gap.
+        // These are the exact arms the fix inserts (asserted in the sibling test).
+        fn no_type_error(src: &str) {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| {
+                    d.severity == crate::abi::Severity::Error
+                        && matches!(d.code.as_deref(), Some("CDZ0201" | "CDZ0203" | "CDZ0405"))
+                })
+                .map(|d| (d.code, d.message))
+                .collect();
+            assert!(
+                errs.is_empty(),
+                "the handler add-arm fix's resume value must type-check against the op's result type \
+                 (no CDZ0201/0203/0405 cascade): {errs:?}\nsrc: {src}"
+            );
+        }
+        // `get : Unit → Int64` — the missing op returns Int64; the fix's `(resume (trap …) s)` type-checks.
+        no_type_error(
+            "(module m (effect E (op tick (-> Unit Unit)) (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((tick () s (resume unit s)) (get () s (resume (trap \"TODO: get\") s))) (E.get))) (export main))",
+        );
+        // And the OLD `unit` resume value genuinely DID cascade — pin the regression.
+        let with_unit: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op tick (-> Unit Unit)) (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((tick () s (resume unit s)) (get () s (resume unit s))) (E.get))) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+        assert!(
+            !with_unit.is_empty(),
+            "a `unit` resume value where the op returns Int64 is the CDZ0201 cascade the trap value avoids"
+        );
     }
 
     #[test]
