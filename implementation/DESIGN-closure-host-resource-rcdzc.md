@@ -691,12 +691,25 @@ the component type. The new work:
   ret_is_bytes` now = "crosses as `list<u8>`" (byte-rope OR compound OR collection). `cdz-run` already
   try-decodes. +6 corpus (two distinct-sig list closures; a collection + a compound + a byte-rope + a scalar
   group all in one component, each driven).
-- **REMAINING (all optional, none blocking):** a variable-length collection result on the round-trip path
-  (single/multi/mixed/distinct-sig List/Map/Set are done); a compound closure ARG (host→guest decode —
-  harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
-  `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
-  fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
-  collection result is DONE on single-export + multi-export + mixed + distinct-sig.**
+- **✅ VARIABLE-LENGTH collection RESULT on the ROUND-TRIP path COMPLETE `@6cbe22e0` — the collection-result
+  surface is CLOSED across ALL shapes.** A round-trip CONSUMER that applies a handed-back closure and RETURNS
+  a List/Map/Set now crosses: it returns `list<u8>` carrying the value form, rendered by `value-encode(rep,
+  desc)` against its shape descriptor. A collection consumer coexists with a scalar consumer of the same
+  closure. Pieces: (1) `serialize::ClosureConsume.ret_descriptor` + `roundtrip_resource_core_module` — a
+  collection consumer's wrapper builds the descriptor Bytes, value-encodes the body's returned handle, and
+  copies the doc out PAST all compound-template data (`bytes_out_off`); shared memory + `cabi_realloc` fires
+  whenever any consumer crosses as `list<u8>`. (2) `envelope::ClosureConsumeAbi.ret_is_bytes` now = "crosses
+  as `list<u8>`" (byte-rope OR compound OR collection). (3) `emit_roundtrip_resource` per-consumer
+  `ret_descriptor`. `cdz-run` already try-decodes. +5 corpus (List/Set/Map consumer results; a List consumer +
+  a scalar consumer of the same closure).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the DISTINCT-SIG
+  round-trip path (single/multi/mixed/distinct-sig/round-trip are done; only distinct-sig-round-trip is left —
+  its `ClosureConsume.ret_descriptor` is `None` there today); a compound/collection result on the distinct-sig
+  round-trip; a compound closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both
+  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire
+  byte-rope (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result
+  surface, AND the variable-length collection (List/Map/Set) result surface are DONE across single-export +
+  multi-export + mixed + distinct-sig + round-trip.**
 
 ## Risks / open questions
 
