@@ -2669,6 +2669,30 @@ impl Db {
         }
         out
     }
+
+    /// Each well-formed-SHAPE constructor-export element `(. T A)` / `(. T *)` in a top-level `(export …)`
+    /// clause, as `(element_occ, type_name_occ, ctor_name_occ)`. `element_occ` anchors a diagnostic at the
+    /// `(. …)` element; `type_name_occ`/`ctor_name_occ` are the `T`/`A` atoms (the ctor is the reserved `*`
+    /// for the wildcard). Used by `collect_faults` to SEMANTICALLY validate a ctor-export (the type is a
+    /// real sum, the ctor is one of its variants) — the shape is already accepted by `malformed_exports`
+    /// (`is_ctor_export_shape`), but the linker's `as_ctor_export` records it WITHOUT checking the type/ctor
+    /// exist, so `(export (. T Nonesuch))` / `(export (. undeclared A))` was silently accepted.
+    pub fn ctor_export_elements(&self) -> Vec<(StructId, StructId, StructId)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            let Some(tail) = self.ast.as_form(item, "export") else {
+                continue;
+            };
+            for &s in tail {
+                if is_ctor_export_shape(&self.ast, s)
+                    && let Some(dot) = self.ast.as_form(s, ".")
+                {
+                    out.push((s, dot[0], dot[1]));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Whether `s` is a well-formed CONSTRUCTOR-EXPORT element — the opaque-types export surface `(. T A)`
