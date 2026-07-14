@@ -2240,6 +2240,42 @@
             (def (main) (f (build 1 3 (list)))) (export main)))
   (output (: 10 Int64)))
 
+; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
+; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
+; map containing the named keys) AND binds the values, so it desugars to a fresh binder + a key-presence
+; guard + a body re-match that binds the values (the direct map matcher). The map was the one collection
+; element kind the list-arm element repertoire lacked (tuple / sum-ctor / nested-list already work).
+
+(case "a map pattern as a list-arm element binds its value binder"
+  (doc    "`(match xs ((list (map (1 a)) .. rest) a) …)` on `(list (map (1 77)))` — a MAP key-value pattern
+           as the leading element of a list arm, binding the value at key 1 to `a` → 77. Once rejected
+           CDZ0201 (the list-arm element check accepted tuple/sum/nested-list elements but had no `map` arm),
+           though a direct map match binds and a map nested in a tuple binds. The map element desugars to a
+           fresh binder + a key-presence guard + a body re-match, exactly as a refutable constructor element
+           does. Expected 77.")
+  (input  (do
+            (def (f (: xs (List (Map Int64 Int64))))
+              (match xs
+                ((list (map (1 a)) .. rest) a)
+                (_ (- 0 1))))
+            (def (main) (f (list (map (1 77)))))
+            (export main)))
+  (output (: 77 Int64)))
+
+(case "a list-arm map element whose key is absent falls through"
+  (doc    "The refutability of a map list element: the same arm naming key 9, against a list whose map lacks
+           key 9, does NOT match — the key-presence guard fails — so it falls through to the wildcard → -1.
+           Pins that a map list element is genuinely REFUTABLE (a runtime key-presence test), not an
+           irrefutable binder that always matches on length, so an arm naming an absent key is skipped.")
+  (input  (do
+            (def (f (: xs (List (Map Int64 Int64))))
+              (match xs
+                ((list (map (9 a)) .. rest) a)
+                (_ (- 0 1))))
+            (def (main) (f (list (map (1 77)))))
+            (export main)))
+  (output (: -1 Int64)))
+
 (case "a literal list element dispatches a runtime list by its value"
   (doc    "A list element position MAY be a refutable SCALAR/STRING LITERAL — `((list 0 a .. rest) …)` matches
            only a list whose FIRST element is 0, binding the SECOND to `a`. This is the opcode/keyword

@@ -2548,7 +2548,9 @@ struct LoadedFile {
 /// child; a bare single top-level form is its own root. A malformed/aliased import (no string path)
 /// contributes nothing here — `link()` reports it as a diagnostic once the file is pulled in.
 fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
-    let root = arenas.root;
+    // Peel a leading `(comment/doc …)` off the root before matching `(do …)` — a doc'd program root is
+    // wrapped, and we must see the `(do …)` inside it to find the imports.
+    let root = unwrap_comment(arenas, arenas.root);
     // The items to scan: a `(do …)` root's children, else the single root form itself.
     let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
         Some(tail) => tail.to_vec(),
@@ -2556,6 +2558,9 @@ fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
     };
     let mut paths = Vec::new();
     for item in items {
+        // A `//` line comment / `///` doc on an import wraps it as `(comment "…" (import …))`; peel the
+        // wrapper so the import is detected (else the closure walk misses it and `import` looks unmodeled).
+        let item = unwrap_comment(arenas, item);
         if let Some(tail) = arenas.as_form(item, "import")
             && let Some(&path_id) = tail.first()
             && let Some(path) = arenas.as_str(path_id)

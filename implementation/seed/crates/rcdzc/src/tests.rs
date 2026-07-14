@@ -3658,6 +3658,28 @@ fn a_match_scrutinee_selfcall_then_arm_perform_declines_cleanly() {
     );
 }
 
+/// A recursive effectful walk whose self-call is in the `if` CONDITION and whose perform is in a BRANCH —
+/// `(if (< (walk (- n 1)) 100) (Ctr.tick) 99)` — is the same out-state-observing shape: the condition runs
+/// the recursion, then a branch perform reads its OUT-state. Before the `if`-cond arm of
+/// `selfcall_precedes_perform_in_operands`, this leaked the internal `walk#eff2$s0` name. It must decline
+/// CLEANLY. The OPPOSITE order — a perform in the COND and a self-call in a BRANCH (countdown
+/// `(if (= (tick) 0) 0 (+ 1 (loop)))`) — still folds: the guard fires only when the CONDITION contains a
+/// self-call.
+#[test]
+fn an_if_condition_selfcall_then_branch_perform_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (if (< (walk (- n 1)) 100) (Ctr.tick) 99))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing if-condition post-order shape must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
@@ -21519,6 +21541,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_list_element_dispatches_by_key_presence() {
+        // The MAP twin of the refutable-ctor list element: a list of key-value records matched by KEY in one
+        // arm — `(match xs ((list (map (1 a)) .. rest) a) …)`. A `(map (k v)…)` element is REFUTABLE (matches
+        // only a map containing the named keys) AND binds the values, so it desugars to a fresh binder + a
+        // key-presence guard + a body re-match binding the values (`desugar_refutable_map_list_elements`,
+        // reusing the direct map matcher). Before, it declined CDZ0201 "not a tuple, record, or constructor"
+        // — the list-arm element check had tuple/sum/nested-list arms but no `map`.
+        assert!(
+            reject_code(
+                "(module m (def (f (: xs (List (Map Int64 Int64)))) \
+                   (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
+                 (def (main) (f (list (map (1 77))))) (export main))"
+            )
+            .is_none(),
+            "a map list element now compiles (dispatches by key presence)"
+        );
+        // RUN: the value at the named key is bound and returned; an absent key falls through.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List (Map Int64 Int64)))) \
+               (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
+             (def (main) (f (list (map (1 77))))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping map-list-element run");
+            return;
+        };
+        assert_eq!(v, "77", "the map element binds the value at key 1");
+        // An ABSENT key: the key-presence guard fails, so the arm falls through to the catch-all → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List (Map Int64 Int64)))) \
+                   (match xs ((list (map (9 a)) .. rest) a) (_ (- 0 1)))) \
+                 (def (main) (f (list (map (1 77))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a map element naming an absent key falls through (a genuine key-presence test)"
+        );
+        // TWO named keys, both present → both values bind: 100 + 5 = 105.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List (Map Int64 Int64)))) \
+                   (match xs ((list (map (1 a) (2 b)) .. rest) (+ a b)) (_ (- 0 1)))) \
+                 (def (main) (f (list (map (1 100) (2 5))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "105",
+            "a map element with two named keys binds both values"
+        );
+    }
+
+    #[test]
     fn a_nested_list_element_dispatches_by_inner_length() {
         // A list element MAY itself be a nested LIST pattern (`core-semantics.md §145`: "an element MAY
         // itself be … a nested element pattern"). The binder RESOLUTION descends a nested `(list …)` element
@@ -26281,6 +26357,21 @@ mod match_engine {
                 .message
                 .contains("did you mean `second`?"),
         );
+        // An ABBREVIATION with no confident typo neighbour (`mph`'s nearest units by edit distance are the
+        // unrelated `bps`/`mbps`/`bit`) does NOT get a misleading "closest matches" list — it gets
+        // ACTIONABLE guidance: how to COMPOSE a compound unit and how to DECLARE the name with `Unit.define`.
+        let mph =
+            find("(module m (def (main) (Qty.of 45 (Unit.of #\"mph\"))) (export main))").message;
+        assert!(
+            !mph.contains("closest matches") && !mph.contains("`bps`"),
+            "no misleading closest-matches noise: {mph}"
+        );
+        assert!(
+            mph.contains("compose a compound unit")
+                && mph.contains("(Unit.of #\"hour\")")
+                && mph.contains("(Unit.define #\"mph\""),
+            "actionable compound/declare guidance carrying the unknown name: {mph}"
+        );
         // An unknown BASE unit inside a `Unit.define` is caught too.
         assert!(
             find("(module m (Unit.define #\"furlong\" (Unit.of #\"zorks\") 660 1) (def (main) 1) (export main))")
@@ -30903,6 +30994,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_form_keyword_head_suppresses_its_cascade() {
+        // A misspelled keyword head makes the whole form (mis)parse as an APPLICATION, so its arms/bindings
+        // fault too — `(mtch n (0 1) (_ 2))` → "cannot apply Int64" on the arm `(0 1)` + "unbound `_`";
+        // `(le ((x 5)) x)` → "unbound `x`" (the bindings never took effect). Those are CONSEQUENT on the
+        // head typo. The diagnostics now report ONLY the head's did-you-mean CDZ0101 (with its fix); the
+        // cascade inside the mis-parsed form is dropped.
+        let all = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        let mtch = all("(module m (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f))");
+        assert_eq!(
+            mtch.iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .count(),
+            1,
+            "only the head typo remains, no cascade: {:?}",
+            mtch.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            mtch[0].message.contains("did you mean `match`?"),
+            "the surviving error is the head typo: {}",
+            mtch[0].message
+        );
+        // The `let` case: the two spurious "unbound `x`" (from the never-bound body) are gone too.
+        let le = all("(module m (def (f) (le ((x 5)) x)) (export f))");
+        assert!(
+            le.iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .all(|d| d.message.contains("did you mean `let`?")),
+            "only the `let` typo remains, no spurious unbound-x cascade: {:?}",
+            le.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVERREACH: an ordinary misspelled FUNCTION head keeps its argument's independent fault — the
+        // suggestion `helper` is not a grammar keyword, so the cascade suppression does not apply.
+        let fn_typo = all("(module m (def (helper a) a) (def (f) (helpr nonesuch)) (export f))");
+        assert!(
+            fn_typo
+                .iter()
+                .any(|d| d.message.contains("did you mean `helper`?"))
+                && fn_typo.iter().any(|d| d.message.contains("`nonesuch`")),
+            "a function-head typo keeps its genuine argument fault: {:?}",
+            fn_typo.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVERREACH: a CORRECT `match` with a genuine unbound in an arm still reports that arm fault.
+        let ok_match =
+            all("(module m (def (f (: n Int64)) (match n (0 nonesuch) (_ 2))) (export f))");
+        assert!(
+            ok_match.iter().any(|d| d.message.contains("`nonesuch`")),
+            "a well-formed match's arm fault is not suppressed: {:?}",
+            ok_match.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
         // `True`/`False` (the cross-language habit) read as unbound NAMES (the lexer only classifies
         // lowercase `true`/`false` as `Leaf::Bool`), so the one-shot fix is the lowercase literal — which
@@ -31574,7 +31717,7 @@ mod stage1 {
         // (it is `at`) and `get` is too far to be a confident typo, so the diagnostic LISTS the closest
         // real operations. Before, an agent got only "record has no field `get`" and had to read the
         // prelude to discover the real names; now the fix route is in the message itself. A prelude module
-        // IS a record of operations, so this rides the same `no_field_reject` a user-record field takes.
+        // rides the same `no_field_reject` a user-record field takes, but names the MODULE category.
         let d = expect_error("(. List get)");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
@@ -31583,9 +31726,53 @@ mod stage1 {
             d.message
         );
         assert!(
+            d.message.contains("the `List` module has no member `get`"),
+            "names the MODULE category, not 'record has no field': {}",
+            d.message
+        );
+        assert!(
             !d.message.contains("did you mean"),
             "`get` is too far from any op for a confident single: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn an_absent_member_names_the_operand_category_not_always_record() {
+        // The `no_field_reject` message names the operand's REAL category instead of always "record has no
+        // field": an EFFECT's op set → "operation", a prelude MODULE → "member", a user SUM type → "variant".
+        // A user RECORD keeps "record has no field". Same did-you-mean fix on all.
+        let err = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject")
+        };
+        // EFFECT: `(. E emt)` — names the effect + "operation".
+        let eff = err(
+            "(module m (effect E (op emit (-> Int64 Unit)) (op log (-> Int64 Unit))) \
+             (def (main) (host (E) (E.emt 5))) (export main))",
+        );
+        assert!(
+            eff.message.contains("effect `E` has no operation `emt`")
+                && eff.message.contains("did you mean `emit`?"),
+            "an effect op typo names the effect + operation: {}",
+            eff.message
+        );
+        // USER SUM TYPE: `(Color.Gren)` — names the type + "variant".
+        let sum = err(
+            "(module m (type Color (Red) (Green) (Blue)) (def (main) (Color.Gren 5)) (export main))",
+        );
+        assert!(
+            sum.message
+                .contains("the type `Color` has no variant `Gren`")
+                && sum.message.contains("did you mean `Green`?"),
+            "a user-sum variant typo names the type + variant: {}",
+            sum.message
+        );
+        // USER RECORD keeps "record has no field" (the default — a record IS a record to the author).
+        let rec = err("(module m (def (g (: r (Record (foo Int64)))) (. r fooo)) (export g))");
+        assert!(
+            rec.message.contains("record has no field `fooo`"),
+            "a user record keeps 'record has no field': {}",
+            rec.message
         );
     }
 
@@ -32188,10 +32375,15 @@ mod stage1 {
 
     #[test]
     fn an_absent_builtin_field_rejects_like_a_closed_record() {
-        // `(. Int64 bogus)` — a field the module does NOT carry rejects (CDZ0201), the same closed
-        // projection a user record takes. Realized/unrealized/absent are one uniform projection.
+        // `(. Int64 bogus)` — a member the module does NOT carry rejects (CDZ0201), the same closed
+        // projection a user record takes. Realized/unrealized/absent are one uniform projection. The
+        // message names the MODULE category — "the `Int64` module has no member `bogus`" — not the generic
+        // "record has no field" (a prelude module is not a record to the author).
         let msg = expect_decline("(. Int64 bogus)");
-        assert!(msg.contains("no field"), "got: {msg}");
+        assert!(
+            msg.contains("the `Int64` module has no member `bogus`"),
+            "got: {msg}"
+        );
     }
 
     // ── arithmetic intrinsics: application of a built-in operation, generic over the integer type ──
@@ -32719,6 +32911,30 @@ mod stage1 {
                 "a type constructor is NOT called a value: {m}"
             );
         }
+        // A USER GENERIC sum used bare — `(: b Box)` for `(type Box (W a))` — is likewise rejected with the
+        // constructor message (naming the sum's own parameter, `(Box a)`), NOT silently accepted. (A bare
+        // generic used to reduce to a `Ty::Sum` with a fresh var and slip through, then produce a confusing
+        // "a Box is not a Box" mismatch at each use.) A 2-param generic echoes both parameters.
+        let box_msg = msg("(module m (type Box (W a)) (def (f (: b Box)) b) (export f))");
+        assert!(
+            box_msg.contains("`Box` is a type constructor") && box_msg.contains("`(Box a)`"),
+            "a bare user generic names its parameter: {box_msg}"
+        );
+        let pair_msg = msg("(module m (type Pair (P a b)) (def (f (: x Pair)) x) (export f))");
+        assert!(
+            pair_msg.contains("`Pair` is a type constructor") && pair_msg.contains("`(Pair a b)`"),
+            "a bare 2-param generic echoes both parameters: {pair_msg}"
+        );
+        // NO REGRESSION: a MONOMORPHIC user sum stands alone (0 type params) — `(: c C)` is CLEAN, not a
+        // "needs an argument" reject.
+        let mono =
+            "(module m (type C (R) (G)) (def (f (: c C)) (match c ((R) 1) ((G) 2))) (export f))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(mono)))
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a monomorphic sum used bare is accepted"
+        );
         // NO REGRESSION: a genuine value misused as a type still gets "is a value, not a type".
         let val = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
         assert!(
@@ -35080,18 +35296,19 @@ mod stage1 {
     #[test]
     fn a_far_handler_op_access_typo_reports_the_absent_field_exactly_once() {
         // A FAR-typo op ACCESS in a handle body — `((. E zzzzz))` where `zzzzz` matches no op — surfaces
-        // the member "record has no field" CDZ0201 via TWO unanchored desugar/reduction paths (the handle's
+        // the member absent-op CDZ0201 via TWO unanchored desugar/reduction paths (the handle's
         // op-resolution AND the perform). Once the member two-tier (M82) began appending a closest-matches
         // suffix, the two copies' MESSAGES differed (one listed matches, one bare) so the full-message
         // dedup key let both through as a DOUBLE report. `dedup_faults` now keys an unanchored no-field
-        // fault by its INVARIANT CORE (+ collapses an unanchored copy against an anchored one by core), so
-        // the miss reports exactly ONCE — keeping the located, closest-matches copy.
+        // fault by its INVARIANT CORE (`has no <word> \`k\``, category-aware — here "effect `E` has no
+        // operation `zzzzz`") + collapses an unanchored copy against an anchored one by core, so the miss
+        // reports exactly ONCE — keeping the located, closest-matches copy.
         let src = "(do (effect E (op ask (-> Unit Int64)) (op tell (-> Int64 Unit))) \
                    (def (main) (handle E unit ((ask () s (resume 1 s)) (tell (x) s (resume unit s))) \
                      ((. E zzzzz)))) (export main))";
         let field_errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
             .into_iter()
-            .filter(|d| d.message.contains("record has no field `zzzzz`"))
+            .filter(|d| d.message.contains("has no operation `zzzzz`"))
             .collect();
         assert_eq!(
             field_errs.len(),

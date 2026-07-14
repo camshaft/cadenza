@@ -161,6 +161,35 @@ fn a_package_json_diagnostic_names_its_file() {
 }
 
 #[test]
+fn a_comment_on_an_import_is_seen_through_by_the_link_scan() {
+    // A `//`/`///` comment on an `(import …)` reifies (in the ML reader) to `(comment "…" (import …))`.
+    // The link scan reads imports off the RAW arena before `Db::load`'s comment-strip, so an un-peeled
+    // wrapper would leave the import unrecognized → spliced as an unmodeled top-level form → "`import`
+    // … not modeled" + the imported names unbound. `link_inputs` now peels comments first, so a
+    // documented import resolves exactly as a bare one. (ML surface — `.cdz` — is where the reader
+    // produces the wrapper.)
+    let dir = pkg_dir("comment-import");
+    write(
+        &dir,
+        "lib.cdz",
+        "type Ty =\n  | Var(Int64)\n  | Con(String)\n\
+         def kind(t: Ty) -> Int64 = match t with\n  | Ty.Var(n) => n\n  | Ty.Con(_) => 0\n\
+         export { Ty.*, kind }\n",
+    );
+    let app = write(
+        &dir,
+        "app.cdz",
+        "/// bring in the type + its reader\nimport { Ty, kind } from \"lib\"\n\
+         def main() -> Int64 = kind(Ty.Var(7))\nexport { main }\n",
+    );
+    let (ok, stdout, stderr) = run(&["check", &app]);
+    assert!(
+        ok && stdout.trim().is_empty(),
+        "a documented import must resolve like a bare one: {stdout}{stderr}"
+    );
+}
+
+#[test]
 fn a_file_with_no_imports_checks_as_a_standalone_file() {
     // The single-file path is unchanged: a self-contained program with a type error fails, located in
     // itself, with no package machinery engaged.
