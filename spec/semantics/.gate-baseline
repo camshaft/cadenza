@@ -238,6 +238,7 @@ pass	a bare conditional keyword is rejected, not a crash
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
+pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -1310,6 +1311,8 @@ pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
+pass	a suffixed Rational literal annotated as Int64 is a type mismatch
 pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error

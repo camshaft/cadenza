@@ -240,6 +240,42 @@
   (input  0.5R)
   (output (: 1/2 Rational)))
 
+; --- A suffixed literal carries its OWN type: annotating it narrower is a MISMATCH, not an overflow ---
+; A suffix gives a literal a concrete type (`N`→BigInt, `R`→Rational) — so annotating `100N` as `Int64`
+; is a genuine type MISMATCH (BigInt ≠ Int64), a single CDZ0203, NOT a bare literal being grounded that
+; overflows a width. This distinguishes two paths that share a surface: a SUFFIXED literal already has a
+; type (mismatch → CDZ0203), whereas a BARE literal types as the `Int64` default and, if it exceeds the
+; width, overflows its grounding (→ CDZ0302 "does not fit"). The suffixed case reports ONE fault (the
+; mismatch), not the mismatch PLUS a redundant "does not fit Int64" (the width check must not see through
+; the suffix's desugar to range-check the inner integer — a BigInt is the wrong TYPE, not an out-of-range
+; Int64). The bare-overflow case below reports the OTHER, single fault.
+
+(case "a suffixed BigInt literal annotated as Int64 is a type mismatch"
+  (doc    "`(: 100N Int64)` annotates a BigInt literal (`100N` carries type BigInt via the suffix) as
+           `Int64` — a genuine type mismatch (BigInt ≠ Int64), reported as a single CDZ0203. NOT a bare
+           `100` grounding that overflows Int64 (it fits), and NOT double-reported with a redundant CDZ0302
+           'does not fit Int64': a suffixed literal has its own type, so the annotation is a mismatch, not a
+           width overflow. Pins the single-fault mismatch for the BigInt suffix.")
+  (input  (: 100N Int64))
+  (error  CDZ0203))
+
+(case "a suffixed Rational literal annotated as Int64 is a type mismatch"
+  (doc    "`(: 1R Int64)` annotates a Rational literal (`1R` = 1/1, type Rational) as `Int64` — Rational ≠
+           Int64, a single CDZ0203. The Rational twin of the BigInt suffix case: an explicitly-suffixed
+           literal's type does not silently coerce to the annotation's narrower type.")
+  (input  (: 1R Int64))
+  (error  CDZ0203))
+
+(case "a bare literal that overflows the annotated width does not fit it"
+  (doc    "The contrasting BARE case: `(: 100000000000000000000 Int64)` — an UNSUFFIXED literal (10^20)
+           annotated `Int64`. A bare literal types as the Int64 default and is grounded by the annotation,
+           so a value past the width is an OVERFLOW of that grounding — CDZ0302 'does not fit the annotated
+           type Int64', with the BigInt-widen fix. This is the DIFFERENT path from the suffixed cases above
+           (which are type mismatches, CDZ0203): a bare literal has no type of its own to clash, only a
+           range to exceed. Pins that the width fit-check still fires for a bare literal.")
+  (input  (: 100000000000000000000 Int64))
+  (error  CDZ0302))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
