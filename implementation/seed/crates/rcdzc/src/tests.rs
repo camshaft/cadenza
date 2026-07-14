@@ -32209,6 +32209,39 @@ mod stage1 {
     }
 
     #[test]
+    fn a_repeated_squaring_bigint_chain_diagnoses_in_bounded_time() {
+        // REGRESSION (perf): `collect_reached_poisons` — the reached-poison walk (`compile::diagnostics` /
+        // `cdz check`, the hot editor path) that descends a nullary def's lowered core to find a provable
+        // trap — followed `core_of` (which resolves a `Ref` to its target's body) with NO visited-set. A
+        // def used in BOTH operand positions of a binary op is a SHARED core DAG, and the naive recursion
+        // walked it as a TREE. Fixed-width `Int` never triggered it (a constant `(* a a)` folds to a
+        // `Core::ConstInt` leaf — no binary node to re-descend), but `BigInt` arithmetic DELIBERATELY does
+        // not constant-fold (exact unbounded math is a runtime op), so a `BigInt` repeated-squaring chain
+        // `a_i = (* a_{i-1} a_{i-1})` — the TEXTBOOK large-power idiom — left a `Core::BigIntBinOp` at every
+        // level, and each level reached `a_{i-1}` from both sides → O(2^depth) node visits. A depth-30
+        // chain (~30 tiny defs) took SECONDS and grew ×2 per level, an effective HANG of "diagnostics as
+        // you type" on a small realistic program. The fix records each fully-walked node in
+        // `Db::reached_visited` and skips it on re-reach (a poison's origin is its own node, so its
+        // contribution is path-independent and `dedup_faults` collapses the duplicates a shared DAG would
+        // otherwise yield). This depth would not TERMINATE pre-fix; that `diagnostics` returns is the gate.
+        // (The BACKEND'S emit genuinely inlines each nullary def per use → O(2^depth) INSTRUCTIONS, a
+        // distinct downstream cost; this test pins the diagnostics/check path the fix addresses.)
+        let mut defs = String::from("(def (a0) (BigInt.of 3))");
+        for i in 1..=30 {
+            defs.push_str(&format!(" (def (a{i}) (* a{prev} a{prev}))", prev = i - 1));
+        }
+        let src = format!("(module m {defs} (def (main) (= a30 (BigInt.of 0))) (export main))");
+        // The well-typed program has no faults: an empty diagnostics list, returned in bounded time.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-typed repeated-squaring BigInt chain has no error diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,

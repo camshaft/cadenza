@@ -606,6 +606,11 @@ fn unbacktick(msg: &str) -> Option<&str> {
 
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // Fresh reached-poison walk state for this call: the visited-set (which lets the walk skip a shared
+    // core DAG node instead of re-descending it as a tree) accumulates across the per-body walks BELOW
+    // that all feed this one `faults` vec, and is stale from any prior `collect_faults` call — clear it.
+    db.reached_visited.clear();
+    db.reached_clipped = false;
     // NON-FINAL `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts a tail-binding `,@` before
     // a fixed element (`metaprogramming.md`: a `,@<name>` MUST appear only as the final element). Detected
     // at load by `quote::reify_quotes` (which leaves the offending quasiquote un-reified); reported here as
@@ -1819,10 +1824,32 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         );
         r.set_origin_if_absent(id);
         out.push(r);
+        // This subtree was clipped at the depth backstop — mark it so the ancestor does NOT record itself
+        // (or `id`) as fully walked; a shallower path must still be free to walk it unclipped.
+        db.reached_clipped = true;
+        return;
+    }
+    // VISITED-SET: the walk follows `core_of`, which resolves a `Ref` to its target's body, so a value
+    // used in two operand positions is reached from both — a repeated-squaring `BigInt` chain (`(* a a)`
+    // over NON-folding operands) is a shared DAG the naive recursion walks as a TREE, O(2^depth). A node's
+    // reached-poison contribution is a pure function of the node (its poison's origin is its own id), and
+    // `dedup_faults` collapses duplicates, so skipping an already-walked node changes no reported fault.
+    if db.reached_visited.contains(&id) {
         return;
     }
     db.descent_depth += 1;
+    // Track whether THIS subtree clips: save the ancestor's flag, clear it for our own recursion, then
+    // OR it back so a clip still propagates upward. Only an UNCLIPPED (complete) subtree is memoized —
+    // a partial one must be re-walkable from a shallower entry (the `collect_limited`/`collect_cache`
+    // discipline).
+    let outer_clipped = db.reached_clipped;
+    db.reached_clipped = false;
     collect_reached_poisons_at(db, id, out);
+    let this_clipped = db.reached_clipped;
+    if !this_clipped {
+        db.reached_visited.insert(id);
+    }
+    db.reached_clipped = outer_clipped || this_clipped;
     db.descent_depth -= 1;
 }
 

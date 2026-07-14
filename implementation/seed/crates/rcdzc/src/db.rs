@@ -642,6 +642,26 @@ pub struct Db {
     /// memo wrapper reads-and-clears this around each subtree: if it was set, the result is not cached.
     pub(crate) collect_limited: bool,
 
+    /// Nodes whose `collect_reached_poisons` subtree has ALREADY been walked to completion (unclipped) in
+    /// the CURRENT `collect_faults` call — a visited-set that keeps the reached-poison walk from
+    /// re-descending a shared core DAG as a tree. The walk follows `core_of`, which resolves a `Ref` to
+    /// its target's body, so a value used in two operand positions (`(* a a)` — repeated squaring over
+    /// NON-folding `BigInt` operands, where each `(* a_i a_i)` reaches `a_{i-1}`'s shared operand nodes
+    /// from BOTH sides) makes the walk O(2^depth) without this. A poison's contribution is a pure function
+    /// of its node (its origin is its own id, path-independent) and `dedup_faults` collapses duplicates, so
+    /// skipping an already-walked node changes no reported fault. CLEARED at each `collect_faults` entry
+    /// (the walk's faults accumulate into that call's vec; a later call must re-walk from scratch). A node
+    /// is inserted only when its subtree walked UNCLIPPED — a depth-clipped subtree is partial, so a later
+    /// shallower path must be free to walk it fully (the same discipline [`collect_limited`] gives
+    /// [`collect_cache`]); [`reached_clipped`] carries that signal up.
+    pub(crate) reached_visited: crate::fxhash::FxHashSet<StructId>,
+
+    /// Set true while a `collect_reached_poisons` subtree hit the [`DESCENT_DEPTH_LIMIT`] backstop — the
+    /// signal that the subtree is PARTIAL, so its root must NOT be recorded in [`reached_visited`]. Reset
+    /// to `false` before each node's recursion and read after, so a node learns whether ANY descendant
+    /// clipped; the outer value is OR-ed back in so the clip propagates to ancestors.
+    pub(crate) reached_clipped: bool,
+
     /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
     /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
     /// type-constructor application like `(Int 64)` would append a FRESH module on every demand
@@ -1170,6 +1190,8 @@ impl Db {
             descent_depth: 0,
             walk_depth: 0,
             collect_limited: false,
+            reached_visited: crate::fxhash::FxHashSet::default(),
+            reached_clipped: false,
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
