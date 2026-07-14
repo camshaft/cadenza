@@ -16839,6 +16839,46 @@ mod match_engine {
     }
 
     #[test]
+    fn two_rest_markers_in_one_arm_are_linear() {
+        // REGRESSION: the `..` rest MARKER is a syntactic token, NOT a binder (the rest binder is the name
+        // AFTER `..`). `collect_pattern_binders` walked `..` as a bare-name atom and inserted it into the
+        // seen-set, so a WELL-FORMED arm with two rest patterns — a tuple of two rest-lists
+        // `(tuple (list a .. r1) (list b .. r2))`, or a ctor-wrapped rest-list inside an outer rest-list
+        // `(list (Mk (list a .. r1)) .. r2)` — falsely faulted CDZ0102 "binds `..` more than once" and even
+        // proposed a `..2` rename. Both `_` and `..` are non-binding tokens the linearity walker must skip.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+                   (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
+                 (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))"
+            ),
+            None,
+            "two rest markers across sibling sub-patterns are linear (no CDZ0102)"
+        );
+        // And the value is correct — the leading binders `a`,`b` read element 0 of each rest-list. 1+3=4.
+        if let Some(v) = run_heap_value(
+            "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+               (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
+             (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "4", "two-rest-list tuple binds each leading head");
+        }
+        // The linearity check still fires for a GENUINE repeat that spans a nested rest sub-pattern (the
+        // rest BINDER `r` is reused, not the `..` marker): `(tuple (list a .. r) (list b .. r))` → CDZ0102.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+                   (match p ((tuple (list a .. r) (list b .. r)) a) (_ 0))) \
+                 (def (main) (f (tuple (list 1) (list 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a reused rest BINDER across sibling rest-lists is still non-linear"
+        );
+    }
+
+    #[test]
     fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
         // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
         // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to

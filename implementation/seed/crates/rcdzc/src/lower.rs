@@ -3798,7 +3798,11 @@ fn collect_pattern_binders(
             return Ok(()); // a literal is not a binder
         }
         if let Some(name) = db.ast.as_name(pat).map(|s| s.to_string()) {
-            if name == "_" {
+            // `_` binds nothing; `..` is the list/map REST MARKER, a syntactic token — NOT a binder (the
+            // rest BINDER is the name AFTER `..`). Without skipping `..`, two rest patterns in ONE arm — a
+            // tuple of two rest-lists `(tuple (list a .. r1) (list b .. r2))` — falsely faulted CDZ0102
+            // "binds `..` more than once" (the marker counted as a repeated binder). Both are non-binding.
+            if name == "_" || name == ".." {
                 return Ok(());
             }
             // A bare name that resolves to a variant constructor is a ctor, not a binder.
