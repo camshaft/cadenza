@@ -1122,6 +1122,24 @@
                 (+ (Acc.add2 1 2) (Acc.add2 10 20)))) (export main)))
   (output (: 234 Int64)))
 
+(case "a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer"
+  (doc    "The data dependency runs THROUGH the argument position rather than through a let: the inner
+           perform's result is the very argument the outer perform consumes — `(Acc.step (Acc.step 1))`.
+           Because an argument is evaluated before its call, the INNER perform runs first and advances the
+           state the OUTER one then reads, so the two are still sequenced left-of-the-arrow / inner-first.
+           `Acc.step : Int64 -> Int64`, arm `(step (a) s (resume (+ a s) (+ s 1)))`, seeded 100: inner
+           `(Acc.step 1)` = `1 + 100` = 101 (state → 101), outer `(Acc.step 101)` = `101 + 101` = 202 (state
+           → 102), so the result is 202. Pins that state threads through nested-perform ARGUMENT evaluation
+           in inner-to-outer order (had the outer read the seed 100 instead of the inner's advanced 101 it
+           would be 201) — the argument-position companion of the two-lets and multi-param cases above, with
+           the added twist that one perform's OUTPUT is the other's INPUT.")
+  (input  (do
+            (effect Acc (op step (-> Int64 Int64)))
+            (def (main)
+              (handle Acc 100 ((step (a) s (resume (+ a s) (+ s 1))))
+                (Acc.step (Acc.step 1)))) (export main)))
+  (output (: 202 Int64)))
+
 (case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
   (input  (do
             (effect Log (op w (-> Int64 Unit)))

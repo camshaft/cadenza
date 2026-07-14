@@ -876,6 +876,7 @@ pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (emp
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
+pass	a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer
 pass	a performed operation composes as a RECORD field value that is then projected
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
