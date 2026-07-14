@@ -33862,6 +33862,24 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn hover_on_a_def_in_a_wide_module_finds_the_right_def_via_the_ident_index() {
+        // `def_identified_by` (which def does a hovered header node identify?) reads a header→index INDEX
+        // (`Db::def_index_by_ident`), not a linear `defs.iter().enumerate()` scan — the O(N²) `cdz query
+        // --where`'s per-match `TypeAt` hit (each query scanned all defs). This locks in that the index
+        // resolves a hovered def name to the CORRECT def at width: in a 60-def module, hovering `d30`'s
+        // name must show `d30`'s own signature (a wrong index would show a neighbour's or none).
+        let n = 60;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} (: p Int64)) (+ p {i}))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m {defs} (def (main) (d0 1)) (export main))");
+        // Hover a def NAME deep in the list — must resolve to that def's own signature.
+        assert_eq!(hover_at(&src, "(d30 "), "d30 : (-> Int64 Int64)");
+        assert_eq!(hover_at(&src, "(d59 "), "d59 : (-> Int64 Int64)");
+    }
+
+    #[test]
     fn hover_on_a_reference_shows_the_value_type_not_the_signature() {
         // A USE of a name is a value — it hovers as the value's type. (Only the DEFINITION shows the
         // `name : sig` form; a reference to a nullary def shows the value it denotes.)

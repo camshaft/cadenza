@@ -430,6 +430,15 @@ pub struct Db {
     /// pushes are rare, so the rebuild is amortized). `None` until first built.
     def_by_sig: Option<(usize, crate::fxhash::FxHashMap<StructId, usize>)>,
 
+    /// `def-IDENTIFYING node → its index in [`defs`]` — the O(1) reverse for `sidecar::def_identified_by`
+    /// ("which def does this node HEADER identify?"). A def is identified by three nodes: its `(def …)`
+    /// FORM, its signature list `(NAME param…)`, and its NAME atom. That check was a linear
+    /// `defs.iter().enumerate()` scan per query; `hover_text`/`TypeAt` runs it per queried node, and
+    /// `cdz query --where` issues a `TypeAt` per structural match → O(matches × defs) = O(N²) (6400 matches
+    /// over 6400 defs: `run_query`/`def_identified_by` 81% self). Lazily built + length-guarded like
+    /// [`def_by_sig`]. Each def contributes ≤3 entries; FIRST-wins on the off-chance two share a node.
+    def_by_ident: Option<(usize, crate::fxhash::FxHashMap<StructId, usize>)>,
+
     /// For each def NAME, the index in [`defs`] of the FIRST def with that name. Built once at load.
     /// `resolve_name` consults it for EVERY non-local, non-parameter name reference (before the prelude
     /// fallback) — so a program with N defs, each body referencing an operator or a sibling, made N
@@ -1131,6 +1140,7 @@ impl Db {
             scope_skip,
             def_by_body,
             def_by_sig: None,
+            def_by_ident: None,
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
@@ -1694,6 +1704,36 @@ impl Db {
             self.def_by_sig = Some((self.defs.len(), map));
         }
         self.def_by_sig.as_ref().unwrap().1.get(&sig).copied()
+    }
+
+    /// The index in [`defs`] of the def that node `id` IDENTIFIES — its `(def …)` form, its signature list,
+    /// or its NAME atom — or `None` if `id` is not a def header node. The O(1) reverse backing
+    /// `sidecar::def_identified_by` (was a linear `defs.iter().enumerate()` scan per query → O(N²) under
+    /// `cdz query --where`'s per-match `TypeAt`). Lazily builds + caches the (≤3-per-def) header→index map,
+    /// length-guarded to rebuild after a synth-def push (like [`def_index_by_sig`]).
+    pub(crate) fn def_index_by_ident(&mut self, id: StructId) -> Option<usize> {
+        let stale = match &self.def_by_ident {
+            Some((built_len, _)) => *built_len != self.defs.len(),
+            None => true,
+        };
+        if stale {
+            let mut map = crate::fxhash::FxHashMap::default();
+            for (i, d) in self.defs.iter().enumerate() {
+                // The three header nodes: the signature list, its NAME atom (first child), and the
+                // enclosing `(def …)` form (the signature's parent).
+                map.entry(d.sig_occ).or_insert(i);
+                if let Struct::List(kids) = self.ast.get(d.sig_occ)
+                    && let Some(&name_occ) = kids.first()
+                {
+                    map.entry(name_occ).or_insert(i);
+                }
+                if let Some(form) = self.parent_of(d.sig_occ) {
+                    map.entry(form).or_insert(i);
+                }
+            }
+            self.def_by_ident = Some((self.defs.len(), map));
+        }
+        self.def_by_ident.as_ref().unwrap().1.get(&id).copied()
     }
 
     /// Register a recursive DO-LOCAL function found in a β-REDUCED (copied) body as an INTERNAL callable
