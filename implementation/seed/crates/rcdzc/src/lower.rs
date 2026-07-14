@@ -6560,7 +6560,22 @@ fn build_lit_test(
         ));
     }
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
-    let els = build_tree(db, scrutinee, else_rows, path_types)?;
+    // BOOL is a FINITE 2-value type: testing `Bool(b)` at `lit_path` means the ELSE branch is exactly the
+    // world where that sub-value is `!b`. So in `else_rows`, refine every row's lit-test at `lit_path`
+    // AGAINST the known `!b`: a row testing `Bool(!b)` there has its test SATISFIED (drop it — the arm now
+    // matches unconditionally), and a row testing `Bool(b)` there is DEAD (the value can't be `b`) and is
+    // dropped. This makes `(match t ((tuple true b) …) ((tuple false b) …))` EXHAUSTIVE — the `false` arm
+    // becomes an unconditional leaf in the `true`-test's else — where before a bool sub-pattern (a lit-test,
+    // not a discriminant) never counted toward coverage and the innermost fall-through was a spurious
+    // CDZ0210 (the top-level scalar-bool matcher already treats `true`+`false` as exhaustive; this brings the
+    // NESTED/decision-tree path to parity). Only Bool gets this — an Int/Str lit-test is over an infinite
+    // type (its else is genuinely open, needs a `_`).
+    let els = if let crate::core::Probe::Bool(b) = probe {
+        let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
+        build_tree(db, scrutinee, &refined, path_types)?
+    } else {
+        build_tree(db, scrutinee, else_rows, path_types)?
+    };
     Ok(crate::core::SumCont::LitTest {
         // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
         path: lit_path.to_vec(),
@@ -6568,6 +6583,45 @@ fn build_lit_test(
         then_: Box::new(then_),
         els: Box::new(els),
     })
+}
+
+/// Refine `else_rows` for the ELSE branch of a `Bool(tested)` test at `lit_path`: in that branch the
+/// sub-value at `lit_path` is known to be `!tested`. For each row, look at its lit-test (if any) at
+/// `lit_path`: a `Bool(!tested)` test there is now SATISFIED — drop it (the row matches this path
+/// unconditionally); a `Bool(tested)` test there is UNSATISFIABLE — the row is dead, drop it entirely; any
+/// other row (no lit-test at `lit_path`, or a non-bool test) passes through unchanged. This is the finite-
+/// type refinement that makes a `true`+`false` cover exhaustive without a `_`.
+fn refine_bool_else_rows(
+    db: &Db,
+    else_rows: &[MatchRow],
+    lit_path: &[crate::core::PathStep],
+    tested: bool,
+) -> Vec<MatchRow> {
+    let _ = db;
+    let mut out = Vec::with_capacity(else_rows.len());
+    'rows: for row in else_rows {
+        let mut kept: Vec<(std::rc::Rc<[crate::core::PathStep]>, crate::core::Probe)> =
+            Vec::with_capacity(row.lit_tests.len());
+        for (p, probe) in &row.lit_tests {
+            if p.as_ref() == lit_path
+                && let crate::core::Probe::Bool(rb) = probe
+            {
+                if *rb == tested {
+                    continue 'rows; // tests `Bool(tested)` at this path — impossible in the `!tested` else
+                }
+                // tests `Bool(!tested)` — satisfied in this else; drop the test.
+                continue;
+            }
+            kept.push((p.clone(), probe.clone()));
+        }
+        out.push(MatchRow {
+            constraints: row.constraints.clone(),
+            lit_tests: kept,
+            body: row.body,
+            guard: row.guard,
+        });
+    }
+    out
 }
 
 /// The solved TYPE of the sub-value at `path` from `scrutinee`, computed by walking the scrutinee's own

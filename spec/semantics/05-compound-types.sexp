@@ -3121,6 +3121,22 @@
             (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22)))) (export main)))
   (output (: 42 Int64)))
 
+(case "a tuple of bools is exhaustive when every combination is covered"
+  (doc    "EXHAUSTIVENESS over a product of FINITE types: `(match t ((tuple true b) …) ((tuple false b) …))`
+           over `(Tuple Bool Bool)` is exhaustive WITHOUT a `_` — the first column covers both `Bool`
+           values (the second is a binder). A `Bool` sub-pattern in a tuple element is a value TEST, and a
+           test does not by itself count toward coverage; but `Bool` is a finite 2-value type, so testing
+           one value refines the else to the other — `true`+`false` together exhaust it (parity with the
+           top-level `(match b (true …) (false …))` matcher). Here `(false, true)` selects the `false` arm →
+           its `b`=true is unused, returns 2.")
+  (input  (do
+            (def (f (: t (Tuple Bool Bool)))
+              (match t
+                ((tuple true b) 1)
+                ((tuple false b) 2)))
+            (def (main) (f (tuple false true))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
            NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds
