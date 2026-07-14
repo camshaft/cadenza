@@ -7875,15 +7875,17 @@ fn const_rational_of(
     }
 }
 
-/// Lower a rational `+`/`-`/`*`/`/` — fold a constant pair to a normalized `Core::ConstRational` via
-/// exact `IntValue` bignum arithmetic, else decline (a runtime rational op is a later B4 slice). A poison
-/// propagates. The formulas keep the result normalized (`normalized_rational` re-reduces): `a/b + c/d =
-/// (ad+cb)/(bd)`, `a/b - c/d = (ad-cb)/(bd)`, `a/b * c/d = (ac)/(bd)`, `a/b ÷ c/d = (ad)/(bc)` (division
-/// by `0/1` → a zero denominator → trap, exactly `Rational.of`'s zero-denom trap).
+/// Lower a rational `+`/`-`/`*`/`/` — fold a CONSTANT pair to a normalized `Core::ConstRational` via
+/// exact `IntValue` bignum arithmetic, or (R3b) emit the runtime `Core::RationalBinOp` when an operand is
+/// RUNTIME-valued (the runtime `rational-*` op computes + normalizes on the limb library). A poison
+/// propagates. The constant formulas keep the result normalized (`normalized_rational` re-reduces): `a/b +
+/// c/d = (ad+cb)/(bd)`, `a/b - c/d = (ad-cb)/(bd)`, `a/b * c/d = (ac)/(bd)`, `a/b ÷ c/d = (ad)/(bc)`
+/// (division by `0/1` → a zero denominator → trap, exactly `Rational.of`'s zero-denom trap).
 ///
-/// `Rational` is a declared-EXACT numeric type, and this arithmetic loses NO precision: it works over
-/// `IntValue` bignum numerators/denominators (no fixed width to overflow, no rounding), so an exact
-/// rational operation's result is the exact number.
+/// `Rational` is a declared-EXACT numeric type, and this arithmetic loses NO precision on EITHER path: the
+/// constant fold works over `IntValue` bignum numerators/denominators and the runtime op over the runtime
+/// BigInt limb library — no fixed width to overflow, no rounding — so an exact rational operation's result
+/// is the exact number whether it folds or runs.
 //= spec/capabilities/numeric-model.md#exact-arithmetic-is-exact
 //# An operation on values of a numeric type declared exact MUST NOT lose precision.
 fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
