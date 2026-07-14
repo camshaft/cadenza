@@ -2424,6 +2424,22 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         0,
         "bigint-cmp leak: the two owned `BigInt.of` operands must be dropped after the borrowing compare"
     );
+
+    // (d) an INLINE-MATERIALIZED constant operand — `(* big (BigInt.of 2))`: the constant `(BigInt.of 2)`
+    // is boxed at the use site (`bigint-of-i64`), a FRESH OWNED temporary the `*` must drop; `big` is the
+    // borrowed `let`-binding the `let` reclaims. Net 0.
+    let src4 = "(module m \
+                  (def (main (: a Int64)) \
+                     (let ((big (BigInt.of a))) (Int64.of (* big (BigInt.of 2))))) (export main))";
+    let program4 = compile_component(&crate::codec::encode(&parse(src4))).expect("compile");
+    let mut rt4 = ComposedRuntime::new(&program4, &runtime_bytes);
+    assert_eq!(rt4.call("main", &[Val::S64(21)]), Val::S64(42));
+    assert_eq!(
+        rt4.live_objects(),
+        0,
+        "bigint const-operand leak: the inline-materialized `(BigInt.of 2)` temporary must be dropped after \
+         the borrowing mul, and `big` left to the `let`"
+    );
 }
 
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves

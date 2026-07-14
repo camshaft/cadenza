@@ -209,6 +209,7 @@ pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant BigInt crosses the host boundary as its value form
+pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
