@@ -35671,6 +35671,7 @@ mod closure_host_resource {
             ret_vt: ValType::I64,
             ret_is_bytes: false,
             ret_template: None,
+            ret_descriptor: None,
         }];
 
         let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
@@ -35985,6 +35986,7 @@ mod closure_host_resource {
                     ret_vt: ValType::I64,
                     ret_is_bytes: false,
                     ret_template: None,
+                    ret_descriptor: None,
                 }],
             },
             RtSigGroup {
@@ -36000,6 +36002,7 @@ mod closure_host_resource {
                     ret_vt: ValType::I32,
                     ret_is_bytes: false,
                     ret_template: None,
+                    ret_descriptor: None,
                 }],
             },
         ];

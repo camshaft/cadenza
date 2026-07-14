@@ -2000,3 +2000,59 @@
               (export lst) (export pr) (export byt) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) result on the ROUND-TRIP path — a consumer takes a produced
+; closure back, applies it, and RETURNS a List/Map/Set, value-encoded against its shape descriptor. This
+; closes the collection-result surface across EVERY closure shape. A collection consumer coexists with a
+; scalar consumer of the same closure.
+
+(case "round-trip: a consumer applies the handed-back closure and returns a List"
+  (doc    "`mk : () -> (-> Int64 Int64)` (adds 1); `app : (own<t>, Int64) -> (List Int64)` returns `(list x (g
+           x))`. Host produces via `mk`, hands to `app(handle, 5)` → the closure yields 6, so `value-encode`
+           renders `(: (list 5 6) (List Int64))`. Pins the variable-length collection result on the round-trip
+           path.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "round-trip: a consumer returns a Set built from the closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list x (g x) x))`. `app(handle,
+           3)` → `{3, 6}` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list x (g x) x)))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: ((. Set of) (list 3 6)) (Set Int64))))
+
+(case "round-trip: a consumer returns a Map from the closure result"
+  (doc    "`mk` adds 100; `app : (own<t>, Int64) -> (Map Int64 Int64)` = `(map (0 x) (1 (g x)))`. `app(handle,
+           5)` → `(: (map (0 5) (1 105)) (Map Int64 Int64))` in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 x) (1 (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (map (0 5) (1 105)) (Map Int64 Int64))))
+
+(case "round-trip: a scalar consumer + a List consumer of the same closure — the list"
+  (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aslist` returns `(list x (g x))`.
+           `aslist(handle, 8)` → `(: (list 8 9) (List Int64))`. Pins a scalar consumer and a collection
+           (value-encode) consumer of the same resource coexisting.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export asnum) (export aslist)))
+  (call   aslist (: 8 Int64))
+  (output (: (list 8 9) (List Int64))))
+
+(case "round-trip: a scalar consumer + a List consumer of the same closure — the scalar"
+  (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
+           a value-encoded document). Confirms the scalar consumer is unaffected by the sibling collection
+           consumer's value-encode.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export asnum) (export aslist)))
+  (call   asnum (: 8 Int64))
+  (output (: 9 Int64)))

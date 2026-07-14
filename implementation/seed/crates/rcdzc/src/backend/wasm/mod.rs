@@ -2891,6 +2891,7 @@ fn emit_roundtrip_resource(
         result_byte: u8,
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
+        ret_descriptor: Option<Vec<u8>>,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
     for p in &producers {
@@ -2963,16 +2964,31 @@ fn emit_roundtrip_resource(
         } else {
             crate::lower::runtime_value_form_template(c.result.strip_nominal())
         };
-        let consumer_result_byte = if ret_is_bytes || ret_template.is_some() {
-            0 // unused by the list-returning paths; the consumer returns list<u8>
-        } else {
-            closure_boundary_byte(&c.result).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a consumer result of type {} has no scalar host-boundary representation",
-                    c.result.render_name()
-                ))
-            })?
-        };
+        // A VARIABLE-LENGTH collection consumer result crosses as `list<u8>` too, rendered via
+        // `value-encode(rep, desc)` against its own shape descriptor. `None` for byte-rope/scalar/template.
+        let ret_descriptor =
+            if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&c.result).is_some()
+            {
+                None
+            } else if matches!(
+                c.result.strip_nominal(),
+                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+            ) {
+                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
+            } else {
+                None
+            };
+        let consumer_result_byte =
+            if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
+                0 // unused by the list-returning paths; the consumer returns list<u8>
+            } else {
+                closure_boundary_byte(&c.result).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a consumer result of type {} has no scalar host-boundary representation",
+                        c.result.render_name()
+                    ))
+                })?
+            };
         consume_specs.push(ConsumeSpec {
             def: c.def,
             name: c.name.clone(),
@@ -2982,6 +2998,7 @@ fn emit_roundtrip_resource(
             result_byte: consumer_result_byte,
             ret_is_bytes,
             ret_template,
+            ret_descriptor,
         });
     }
     // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
@@ -3031,6 +3048,7 @@ fn emit_roundtrip_resource(
     }
     let any_bytes = consume_specs.iter().any(|c| c.ret_is_bytes);
     let any_compound = consume_specs.iter().any(|c| c.ret_template.is_some());
+    let any_collection = consume_specs.iter().any(|c| c.ret_descriptor.is_some());
     let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -3044,6 +3062,19 @@ fn emit_roundtrip_resource(
             // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
             // `get-bool` (int + nested `arr-get` already covered).
             used.insert("get-bool");
+        }
+        if any_collection {
+            // A collection consumer renders via `value-encode(rep, desc)` (build the descriptor Bytes + copy
+            // the doc out).
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -3089,6 +3120,7 @@ fn emit_roundtrip_resource(
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
                 ret_template: c.ret_template.clone(),
+                ret_descriptor: c.ret_descriptor.clone(),
             })
         })
         .collect::<Result<_, Reject>>()?;
@@ -3129,8 +3161,8 @@ fn emit_roundtrip_resource(
             name: c.name.clone(),
             params: c.abi_params.clone(),
             result_byte: c.result_byte,
-            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
-            ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
+            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound OR collection.
+            ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some() || c.ret_descriptor.is_some(),
         })
         .collect();
     let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
@@ -3458,6 +3490,9 @@ fn emit_distinct_sig_roundtrip_resource(
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
                 ret_template: c.ret_template.clone(),
+                // A COLLECTION result on the DISTINCT-SIG round-trip is a later widening; that path's
+                // consumer classification never builds a descriptor.
+                ret_descriptor: None,
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
