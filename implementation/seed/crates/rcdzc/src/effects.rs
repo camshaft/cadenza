@@ -1475,6 +1475,16 @@ pub fn reduce_handle(
     if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
         return None;
     }
+    // GUARD-CONDITION PERFORM (not yet routed). A perform inside a match-arm GUARD condition — `(match k
+    // ((guard p (E.op)) b) …)` — is a position the distribution/fold walks do NOT descend (they route the
+    // scrutinee + arm bodies, not the guard conds), so it would be left unrouted and surface at lowering as
+    // the misleading "performed with no enclosing handler here" (a handler DOES enclose it). Routing it
+    // soundly is a genuine extension (a guard runs before its arm, advancing handler state per arm-test —
+    // the per-branch-sees-the-seed distribution below does not model that). Until then DECLINE cleanly (an
+    // honest "not yet reducible" todo, the finding's sanctioned fallback), never the factually-wrong error.
+    if body_has_performing_match_guard(db, body, &ctx) {
+        return None;
+    }
     // RESUMPTIVE (tail-resume) NON-TAIL CONDITIONAL HOIST. A `perform` inside an `if`/`match` BRANCH
     // advances the handler state LOCALLY, but the `if` thread arm returns the post-CONDITION state as its
     // out-state — so the state advance is LOST to any CONTINUATION after the conditional (`(do (if c
@@ -1725,6 +1735,36 @@ fn body_contains_nested_handle(db: &mut Db, node: StructId) -> bool {
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| body_contains_nested_handle(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the handle body has a MATCH whose arm PATTERN performs a discharged op — i.e. a `(guard
+/// <pattern> <cond>)` whose GUARD CONDITION performs (a plain pattern is a binder/literal that never
+/// performs, so a perform in the PATTERN position is always a guard cond). The effect-routing/distribution
+/// walks (`distribute_handler_over_conditional`, the fold) descend a match's SCRUTINEE and ARM BODIES but
+/// NOT the arm guard conditions, so a perform in a guard is left unrouted and reaches lowering as a bare
+/// perform → the misleading "performed with no enclosing handler here" (a handler DOES enclose it). Routing
+/// a guard perform through the handler is a genuine extension (the guard runs before the arm, advancing
+/// handler state per arm-test — a stateful sequencing the current per-branch-sees-the-seed distribution
+/// does not model), so until it is wired, DECLINE cleanly here (`reduce_handle` → `None` →
+/// `HANDLER_NOT_REDUCIBLE_DECLINE`, an honest "not yet reducible" todo) rather than letting the unrouted
+/// perform surface the factually-wrong "no enclosing handler" error. Recurses under `let`/`if`/`do`/nested
+/// `match` (a guard in any nested match under the handle body is equally unrouted). A NESTED `handle`'s own
+/// body is NOT descended (its guards are its own handler's concern — reduced when that inner handle folds).
+fn body_has_performing_match_guard(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return false; // an inner handle's guards belong to that handle's own reduction
+    }
+    if let Resolved::Match { arms, .. } = resolved_of(db, node)
+        && arms.iter().any(|&(pat, _)| subtree_performs(db, pat, ctx))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_performing_match_guard(db, c, ctx)),
         Struct::Atom(_) => false,
     }
 }

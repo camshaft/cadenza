@@ -31806,6 +31806,70 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_in_a_match_guard_declines_honestly_not_no_enclosing_handler() {
+        // A perform inside a match-arm GUARD condition, under a `handle` that discharges it, is a position
+        // the effect-routing/distribution walks do NOT descend (they route the scrutinee + arm bodies, not
+        // the guard conds). It used to reach lowering as a bare perform → the FACTUALLY-WRONG
+        // `NO_HOME_STANDALONE_DECLINE` ("performed with no enclosing handler here") — even though the handle
+        // ENCLOSES it (the same guard-perform runs host-delegated → 100; scrutinee/arm-body/if-cond performs
+        // under the same handle all work). `reduce_handle` now DECLINES cleanly (an honest "not yet
+        // reducible" todo) when a guard cond performs a discharged op, rather than misleading. (Routing a
+        // guard perform through the handler — the ideal →100 fix — is a later increment: a guard runs before
+        // its arm, advancing handler state per arm-test, which the per-branch-sees-the-seed distribution
+        // does not model. The finding sanctions the honest decline as the minimum bar.)
+        let msg = |src: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let guard_src = "(do (effect Ask (op get (-> Int64))) \
+                         (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                           (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))) (export main))";
+        let ms = msg(guard_src);
+        // The misleading "no enclosing handler" message is GONE.
+        assert!(
+            !ms.iter()
+                .any(|m| *m == crate::diag::NO_HOME_STANDALONE_DECLINE),
+            "a guard perform UNDER a handle must NOT report 'no enclosing handler' — the handle encloses it: {ms:?}"
+        );
+        // It is the honest "not yet reducible" decline instead.
+        assert!(
+            ms.iter()
+                .any(|m| *m == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "expected the honest not-yet-reducible decline for a guard-condition perform: {ms:?}"
+        );
+        // NO REGRESSION: a NON-performing guard under the same handle still COMPILES (my detection fires
+        // ONLY on a guard cond that performs a discharged op — a `(guard n (> n 3))` performs nothing).
+        let pure_guard = "(do (effect Ask (op get (-> Int64))) \
+                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                            (match 9 ((guard n (> n 3)) 100) (n 200)))) (export main))";
+        assert!(
+            msg(pure_guard).is_empty(),
+            "a non-performing guard under a handle must still compile clean: {:?}",
+            msg(pure_guard)
+        );
+        // NO REGRESSION: a perform in the ARM BODY (not the guard) under the same handle still folds.
+        let arm_body = "(do (effect Ask (op get (-> Int64))) \
+                        (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                          (match 9 (n (Ask.get))))) (export main))";
+        assert!(
+            msg(arm_body).is_empty(),
+            "an arm-body perform under a handle must still fold: {:?}",
+            msg(arm_body)
+        );
+    }
+
+    #[test]
     fn a_mistyped_resume_reports_one_error_with_a_coercion_fix_when_applicable() {
         // A resume value whose type mismatches the op result (CDZ0201) ALSO makes the handler unfoldable,
         // so `lower` emits the "not yet reducible" decline alongside — a CONSEQUENCE. `dedup_faults` drops
