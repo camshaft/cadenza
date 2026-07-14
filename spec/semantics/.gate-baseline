@@ -404,6 +404,8 @@ pass	a constant list update at an index that wraps below the length is also reje
 pass	a constant list update at an out-of-bounds index is rejected at compile time
 pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant tuple is returned as a program result
+pass	a constant-index String.at result compares equal to a literal by content
+pass	a constant-index String.at result compares unequal to a different literal
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
 pass	a constructor list element dispatches a runtime list by its discriminant
@@ -835,6 +837,9 @@ pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
+pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
+pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
+pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
 pass	a nested constructor pattern dispatches a RUNTIME two-sum value
