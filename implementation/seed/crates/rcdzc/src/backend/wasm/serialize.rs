@@ -4112,13 +4112,7 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // scalar args when `tuples` is empty). See [`emit_closure_call_args`].
         {
             let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
-            emit_closure_call_args(
-                tuples,
-                tuple_local,
-                arg_vts.len() as u32,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(tuples, tuple_local, arg_vts.len() as u32, &imp, &mut inner);
         }
         // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
         inner.push(op::LOCAL_GET);
