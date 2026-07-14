@@ -4413,6 +4413,24 @@
   (call   main (: 500 Int64))
   (output (: 500 Int64)))
 
+(case "two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity"
+  (doc    "`evn` and `od` are mutually recursive over a recursive `Nat`: each MATCHES the sum and, on the
+           `S p` variant, calls the OTHER on the unwrapped payload `p` — the sum-dispatch companion of the
+           integer `even`/`odd` pair. The scrutinee is itself a recursive build `(mk k)`. `(evn (mk 4))`
+           alternates evn→od→…→`Z`→1 (4 is even). Pins that a mutually-recursive function GROUP dispatching
+           on a recursive sum's variants (each recursing to its partner on the payload) resolves, folds, and
+           — on the gas backend — threads `env` across the mutual chain, on every backend.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk  (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (evn (: x Nat))   (match x ((Nat.Z) 1) ((Nat.S p) (od  p))))
+            (def (od  (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (evn p))))
+            (def (main (: k Int64)) (evn (mk k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 4 Int64))
+  (output (: 1 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
