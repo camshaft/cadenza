@@ -424,6 +424,7 @@ pass	a module may nest three deep
 pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
+pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure round-trips through a consumer
@@ -570,6 +571,8 @@ pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a record-returning closure alongside a parameterized plain export — the closure
+pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive NEWTYPE traversal recurses on its projected recursive field
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
@@ -808,6 +811,8 @@ pass	a tuple payload returned through a helper from a built-in Option must not t
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a tuple-pattern parameter binds the halves of its pair argument
+pass	a tuple-returning closure alongside a plain export — the closure
+pass	a tuple-returning closure alongside a plain export — the plain
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
@@ -920,6 +925,7 @@ pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
+pass	an export and a like-named metadata key do not collide
 pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
@@ -1082,6 +1088,8 @@ pass	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closure alongside a plain export — the plain
 pass	distinct-sig byte-rope closures — the Bool→Bytes one
 pass	distinct-sig byte-rope closures — the Int64→Bytes one
+pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
+pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
@@ -1089,6 +1097,9 @@ pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of anothe
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
 pass	distinct-signature capturing closures alongside a parameterized plain export
 pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
 pass	distinct-signature capturing producers
@@ -1223,6 +1234,7 @@ pass	nullary constructor patterns are uniform with unary
 pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
+pass	one type parameter used at several depths in one multi-payload variant
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
@@ -1479,7 +1491,6 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-pass	a module's delegated capability is reachable as metadata, not as an export
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
@@ -1519,7 +1530,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an explicit annotation overrides the default-integer pragma
-pass	an export and a like-named metadata key do not collide
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an unusual-width value that overflows its computed range traps
