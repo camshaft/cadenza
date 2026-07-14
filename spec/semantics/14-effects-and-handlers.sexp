@@ -1029,6 +1029,23 @@
               (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
   (output (: 13 Int64)))
 
+(case "a mutually-recursive group performs through a shared non-recursive helper"
+  (doc    "Composes the two cross-function triggers: a mutually-recursive group (`ev`/`od`) where the
+           effect is performed inside a NON-recursive helper `h` that `od` calls, rather than syntactically
+           in `od`'s own body. The helper INLINES (the non-recursive inline trigger) and the mutual pair
+           SPECIALIZES (the recursive trigger), and they compose — `od`'s `(h)` is inlined to `(Ctr.tick)`
+           within the specialized `od#ctx`. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)`
+           = `7 + (6 + 0)` = 13. Pins that specialization detecting the effect through a mutual partner and
+           inlining a performing helper cooperate in one recursive group.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (h) (Ctr.tick))
+            (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1))))
+            (def (od (: n Int64)) (+ (h) (ev (- n 1))))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads
