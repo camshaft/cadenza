@@ -1280,6 +1280,7 @@ pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
+pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail-recursive accumulator loop runs to a large runtime N in constant stack
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive countdown loop runs to a very large runtime N
