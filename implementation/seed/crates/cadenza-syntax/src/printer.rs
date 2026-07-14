@@ -2701,12 +2701,13 @@ mod tests {
             let a = sexpr::read(src).unwrap();
             print_display(&a, 80)
         };
-        // A rational value is a `Name("1/4")` leaf — the canonical printer backtick-quotes it (bare
-        // `1/4` re-lexes as division), display prints it bare.
+        // A rational value is a `Name("1/4")` leaf. The canonical printer keeps it re-readable — a
+        // resugar to the ML constructor `Rational.of(n, d)` (the round-trip surface can't spell a bare
+        // `1/3`, which re-lexes as division); display prints just the bare number.
         assert_eq!(disp("(: 1/3 Rational)"), "1/3");
         assert_eq!(
             print(&sexpr::read("(: 1/3 Rational)").unwrap(), 80),
-            "`1/3` : Rational"
+            "Rational.of(1, 3)"
         );
         // An integral rational drops its `/1` denominator.
         assert_eq!(disp("(: 8/1 Rational)"), "8");
