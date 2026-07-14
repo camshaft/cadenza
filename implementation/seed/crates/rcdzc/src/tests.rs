@@ -13537,6 +13537,85 @@ mod match_engine {
     }
 
     #[test]
+    fn a_function_type_mismatch_names_the_differing_result_or_arity() {
+        // The FUNCTION analogue of the record/tuple/collection/sum per-member hint: two `Ty::Fn` types are
+        // CURRIED, so naming two full arrow renders (`(-> Int64 (-> Int64 Int64))` vs `(-> Int64 Int64)`)
+        // makes the reader unwind the curry to see what differs. `fn_signature_delta_hint` names the
+        // specific difference — a RESULT-type mismatch or an ARITY mismatch. (A same-arity PARAMETER
+        // difference surfaces at the inner position on its own, so it is deliberately NOT named here.)
+        // RESULT differs — a callback of the wrong return type.
+        let result = reject_full(
+            "(module m (def (k (: f (-> Int64 Bool))) (f 1)) (def (bad (: x Int64)) x) \
+               (def (g) (k bad)) (export g))",
+        )
+        .expect("a (-> Int64 Int64) where (-> Int64 Bool) is wanted rejects");
+        assert_eq!(
+            result.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            result.message
+        );
+        assert!(
+            result
+                .message
+                .contains("its result should be Bool, but this one returns Int64"),
+            "names the differing result type: {}",
+            result.message
+        );
+        // ARITY differs — a 2-arg function where a 1-arg is wanted.
+        let arity = reject_full(
+            "(module m (def (k (: f (-> Int64 Int64))) (f 1)) (def (bad (: x Int64) (: y Int64)) x) \
+               (def (g) (k bad)) (export g))",
+        )
+        .expect("a 2-arg fn where a 1-arg is wanted rejects");
+        assert!(
+            arity
+                .message
+                .contains("expected a function taking 1 argument, but this one takes 2"),
+            "names the arity mismatch: {}",
+            arity.message
+        );
+        // A same-arity PARAMETER difference is NOT double-reported with a fn-signature tail — it resolves at
+        // the inner parameter position (`Int64` vs `Bool`), the ordinary arg-type message.
+        let param = reject_full(
+            "(module m (def (k (: f (-> Int64 Int64))) (f 1)) (def (bad (: x Bool)) 0) \
+               (def (g) (k bad)) (export g))",
+        )
+        .expect("a (-> Bool Int64) where (-> Int64 Int64) is wanted rejects");
+        assert!(
+            !param.message.contains("its result should be")
+                && !param.message.contains("expected a function taking"),
+            "a parameter difference resolves at the inner position, no fn-signature tail: {}",
+            param.message
+        );
+        // It also fires at a VALUE ANNOTATION site (the same `structural_delta_hint` chain), and at the
+        // peer-join `if` (via `peer_type_delta_hint`).
+        let annot = reject_full(
+            "(module m (def (bad (: x Int64)) x) (def (g) (: bad (-> Int64 Bool))) (export g))",
+        )
+        .expect("annotating a fn with the wrong result rejects");
+        assert!(
+            annot
+                .message
+                .contains("its result should be Bool, but this one returns Int64"),
+            "the value-annotation site names the result axis: {}",
+            annot.message
+        );
+        // NO false positive: two IDENTICAL function types produce no fault.
+        assert!(
+            reject_full(
+                "(module m (def (k (: f (-> Int64 Int64))) (f 1)) (def (good (: x Int64)) x) \
+                   (def (g) (k good)) (export g))"
+            )
+            .is_none(),
+            "a matching function argument type-checks clean"
+        );
+        // No mechanical fix — the repair (change the return expression / add-drop a parameter) is the
+        // author's.
+        assert!(result.fix.is_none(), "no mechanical fix: {:?}", result.fix);
+    }
+
+    #[test]
     fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
         // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
         // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for

@@ -4046,6 +4046,53 @@ fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     })
 }
 
+/// An actionable message TAIL when `expected` and `actual` are BOTH FUNCTION types (`Ty::Fn`) that differ
+/// — the function analogue of the record/tuple/sum per-member hints. A `Ty::Fn` is CURRIED (`p0 → p1 →
+/// result`), so naming two full arrow renders (`(-> Int64 (-> Int64 Int64))` vs `(-> Int64 Int64)`) makes
+/// the reader unwind the curry to see what actually differs. Peel both arrow chains and name the SPECIFIC
+/// difference, in the order a caller most cares about:
+///  • DIFFERENT ARITY — the two take a different number of arguments ("expected a function taking 2
+///    arguments, but this one takes 1", rustc's arrow-arity message); OR
+///  • same-arity RESULT-type difference — the parameter types agree but the RESULT differs (`(-> Int64
+///    Bool)` vs `(-> Int64 Int64)`), named "its result should be Bool, but this one returns Int64".
+/// A same-arity PARAMETER-type difference is deliberately NOT named here: the generic arg-unify already
+/// descends into the first differing parameter position and reports it directly (`(-> Bool …)` vs `(-> Int64
+/// …)` surfaces as an ordinary "Int64 vs Bool" at the parameter), so a param-axis hint here would duplicate
+/// it. `None` unless both are functions AND they differ in arity or result. `agrees_with` (the relation
+/// `unify` uses) gates the result check. Tail only — the repair (add/drop a parameter, or change the return
+/// expression) is the author's, so no mechanical fix, like the sibling per-member hints.
+fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if !matches!(expected, Ty::Fn(..)) || !matches!(actual, Ty::Fn(..)) {
+        return None;
+    }
+    // Peel the curried arrows: collect the parameter count and the ultimate result of each.
+    let peel = |mut t: &Ty| {
+        let mut arity = 0usize;
+        while let Ty::Fn(_, r) = t {
+            arity += 1;
+            t = r;
+        }
+        (arity, t.clone())
+    };
+    let ((want_arity, want_result), (got_arity, got_result)) = (peel(expected), peel(actual));
+    if want_arity != got_arity {
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        return Some(format!(
+            " — expected a function taking {} argument{}, but this one takes {}",
+            want_arity,
+            plural(want_arity),
+            got_arity,
+        ));
+    }
+    (!want_result.agrees_with(&got_result)).then(|| {
+        format!(
+            " — its result should be {}, but this one returns {}",
+            want_result.render_name(),
+            got_result.render_name()
+        )
+    })
+}
+
 /// The combined per-member structural-delta TAIL for two SAME-KIND compound types that differ inside — a
 /// record field-set / per-field type, a tuple arity / per-position type, or a collection element/key/value
 /// type. This bundles the three per-member hints (`record_field_diff_hint`, `tuple_arity_mismatch_hint`,
@@ -4069,6 +4116,7 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| tuple_arity_mismatch_hint(first, other))
         .or_else(|| collection_element_mismatch_hint(first, other))
         .or_else(|| sum_payload_mismatch_hint(first, other))
+        .or_else(|| fn_signature_delta_hint(first, other))
 }
 
 /// The message TAIL for a PEER-JOIN type clash — two `if` branches, two `match` arm bodies, two `list`
@@ -8530,6 +8578,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // Two FUNCTION types that differ in ARITY or RESULT — `(-> Int64 Bool)` where
+                            // `(-> Int64 Int64)` is expected (a callback of the wrong return type), or a
+                            // 2-arg fn where a 1-arg is wanted. `fn_not_applied_hint` (fn_tail) only covers
+                            // an UNAPPLIED function; two genuinely-different signatures fall through it, and
+                            // the curried arrow render (`(-> Int64 (-> Int64 Int64))`) is hard to diff by eye.
+                            // Name the differing part (result / arity), the function twin of the collection/
+                            // sum axis hints. Last in the chain (a same-arity PARAMETER difference surfaces at
+                            // the inner position on its own, so this only adds the result/arity axis).
+                            let fn_sig_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                                && collection_tail.is_none()
+                                && sum_tail.is_none()
+                            {
+                                fn_signature_delta_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
@@ -8538,6 +8605,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(fn_tail)
                                 .or(collection_tail.clone())
                                 .or(sum_tail.clone())
+                                .or(fn_sig_tail)
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
