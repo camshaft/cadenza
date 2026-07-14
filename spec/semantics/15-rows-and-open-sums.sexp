@@ -245,6 +245,30 @@
   (call   main (: 99 Int64)) (output (: 99 Int64))
   (call   main (: -7 Int64)) (output (: -7 Int64)))
 
+(case "concatenating an empty tuple on the left is the identity"
+  (doc    "The empty tuple `(tuple)` — which IS the unit value (core-semantics.md #The Empty Tuple Is The
+           Unit Value) — is the identity of `Tuple.cat`: `(Tuple.cat (tuple) (tuple 1 2))` prepends no
+           elements, so the result is `(tuple 1 2)`. Pins the empty-operand identity the existing cat cases
+           (which join two non-empty tuples) do not exercise — the tuple companion of the empty-string /
+           empty-bytes concatenation-identity cases.")
+  (input  (Tuple.cat (tuple) (tuple 1 2)))
+  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+
+(case "concatenating an empty tuple on the right is the identity"
+  (doc    "The mirror: `(Tuple.cat (tuple 1 2) (tuple))` appends no elements, so the result is `(tuple 1
+           2)`. Pins that the empty tuple is the identity on the right as well as the left, so a cat with an
+           empty operand on either side is a no-op on value.")
+  (input  (Tuple.cat (tuple 1 2) (tuple)))
+  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+
+(case "concatenating two empty tuples is the empty tuple"
+  (doc    "The degenerate boundary: `(Tuple.cat (tuple) (tuple))` joins nothing to nothing, yielding the
+           empty tuple `(tuple)` — the unit value. Pins that cat handles the zero+zero case, not
+           underflowing or producing a novel form, the tuple companion of the empty+empty string/bytes/set
+           cases.")
+  (input  (Tuple.cat (tuple) (tuple)))
+  (output (: (tuple) (Tuple))))
+
 (case "splitting a tuple at a position yields a prefix and a suffix"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix:
            `(Tuple.split-at (tuple 1 2 3) 1)` splits at position 1 into a pair — the first element as a
@@ -262,6 +286,16 @@
            novel zero-arity tuple form.")
   (input  (Tuple.split-at (tuple 1 2) 0))
   (output (: (tuple unit (tuple 1 2)) (Tuple Unit (Tuple Int64 Int64)))))
+
+(case "splitting a tuple at its full arity yields an empty suffix"
+  (doc    "The symmetric boundary of the split-at-zero case: a split at position `k` = the tuple's ARITY
+           puts every element before it, so the prefix is the whole tuple and the SUFFIX is the empty tuple
+           — the unit value (core-semantics.md #The Empty Tuple Is The Unit Value). `(Tuple.split-at (tuple
+           1 2) 2)` yields `(tuple (tuple 1 2) unit)`, the suffix typed `Unit`. Pins that `k` = arity is in
+           range (the split point may sit just past the last element) and the empty suffix is unit — the
+           k=arity end of the k=0/k=arity boundary the split-at-zero case pins at the other end.")
+  (input  (Tuple.split-at (tuple 1 2) 2))
+  (output (: (tuple (tuple 1 2) unit) (Tuple (Tuple Int64 Int64) Unit))))
 
 (case "splitting a tuple beyond its arity is rejected"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix (2nd

@@ -1699,12 +1699,15 @@ pass	concatenating an empty byte sequence on the left is the identity
 pass	concatenating an empty byte sequence on the right is the identity
 pass	concatenating an empty string on the left is the identity
 pass	concatenating an empty string on the right is the identity
+pass	concatenating an empty tuple on the left is the identity
+pass	concatenating an empty tuple on the right is the identity
 pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
 pass	concatenating lists with a runtime element appends in order and totals the length
 pass	concatenating tuples preserves each element's type
 pass	concatenating tuples with a runtime element reads elements from both operands
 pass	concatenating two byte sequences appends their bytes in order
+pass	concatenating two empty tuples is the empty tuple
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the right is identity
@@ -2096,6 +2099,7 @@ pass	splice flattens where unquote nests
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing an integer literal directly is a type error
 pass	splitting a tuple at a position yields a prefix and a suffix
+pass	splitting a tuple at its full arity yields an empty suffix
 pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
