@@ -1079,17 +1079,20 @@ the component type. The new work:
   `nested_tuple`; the multi/mixed envelopes + their inner components gained the same `tuple_shape` param (the
   `tuple_shift` / running type counters absorb `nested_tuple_type_count` extra types). e2e: mk-a→113, mk-b→87.
 - **✅ NESTED compound ARG on the MIXED path** (`374078bf`, scalar + list results). A nested-tuple-arg closure
-  exported ALONGSIDE a plain export. PURE ROUTING in `emit_mixed_closure_resource` — the mixed envelopes
-  already threaded `tuple_shape` (multi-export tick); it now passes it instead of `None`. e2e: closure→113,
-  plain→2, nested × List. Only DISTINCT-SIG nested remains (its per-group detector uses the non-recursive
-  classifier).
+  exported ALONGSIDE a plain export. PURE ROUTING in `emit_mixed_closure_resource`.
+- **✅✅ NESTED compound ARG on the DISTINCT-SIG path — the nested-arg matrix is CLOSED** (`f1e2077f`). Closures
+  of DIFFERENT signatures each taking a sole nested tuple/record arg cross as G distinct resource types, each
+  per-group `call-g<n>` rebuilding its nested cell + minting its inner `tuple<…>` types by index.
+  `emit_distinct_sig_resource` gained a per-group `group_nested` fallback + `GroupInfo.nested_shape`;
+  `SigGroupAbi.tuple_shape`; the 4 per-group mint sites mint via `mint_tuple_type_nested`; `n_tuple` sums
+  `nested_tuple_type_count`. e2e: two DIFFERENT nested sigs → 113, 110 (Bool leaf at depth), × List.
+  **A nested fixed-shape compound ARG now crosses on ALL FOUR export shapes (single/multi/mixed/distinct-sig)
+  for every result shape.**
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
   envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the DISTINCT-SIG path** —
-  single-export (all results) + multi-export + mixed DONE; distinct-sig needs its per-group detector switched
-  to `nested_fixed_shape_tuple_arg` + `SigGroup`/`SigGroupAbi` to carry the `TupleFieldShape`. (3) a **SUM
+  generalization is a large multi-tick vertical. (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
