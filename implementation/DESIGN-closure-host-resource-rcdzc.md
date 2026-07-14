@@ -672,12 +672,20 @@ the component type. The new work:
   non-bytes/scalar/fixed-template List/Map/Set shared result routes to the value-encode core reusing
   `assemble_multi_closure_bytes_resource`. `cdz-run` already try-decodes. +4 corpus (two list closures both
   driven; three Set-returning closures sharing one `call`, two driven).
-- **REMAINING (all optional, none blocking):** a variable-length collection result on the mixed/distinct-sig/
-  round-trip paths (single-export + multi-export List/Map/Set are done); a compound closure ARG (host→guest
-  decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
+- **✅ VARIABLE-LENGTH collection closure RESULT on the MIXED path COMPLETE `@c0e96474`.** A
+  collection-returning closure exported ALONGSIDE a plain non-closure export now crosses: the closure's shared
+  `call` value-encodes the returned collection handle (against the ONE shared descriptor), and each plain
+  export rides as a top-level func. NO new serializer/envelope — `emit_mixed_closure_resource` consults
+  `lower::sum_shape_descriptor` for a List/Map/Set shared result; `Some(desc)` routes to
+  `multi_closure_value_encode_resource_core_module` (which already threads plain exports) reusing
+  `assemble_multi_closure_bytes_resource` (the same `list<u8>` envelope with plain slots). `cdz-run` already
+  try-decodes. +4 corpus (List closure + plain `two`; Map closure + parameterized plain `inc`).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the distinct-sig/
+  round-trip paths (single/multi/mixed List/Map/Set are done); a compound closure ARG (host→guest decode —
+  harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
   `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
   fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
-  collection result is DONE on single-export + multi-export.**
+  collection result is DONE on single-export + multi-export + mixed.**
 
 ## Risks / open questions
 
