@@ -74,9 +74,11 @@ pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare conditional keyword is rejected, not a crash
+pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
+pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
