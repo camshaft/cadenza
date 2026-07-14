@@ -70,12 +70,16 @@ export default function RecordsTuples() {
       <P>
         When you just need to carry a couple of values together without naming a record type, a tuple
         is the tool. Access elements by position with <C>.</C> and an index. Here <C>swap</C> flips a
-        pair, and we read back its new first element:
+        pair — and since a tuple is an ordinary value, it can hand the whole flipped pair straight back:
       </P>
       <Runnable
         source={`(def (swap p) (tuple (. p 1) (. p 0)))
-(def (main) (. (swap (tuple 3 7)) 0))`}
+(def (main) (swap (tuple 3 7)))`}
       />
+      <P>
+        The result is <C>(tuple 7 3)</C> — both elements in their new positions, returned as one value
+        you could pass along or reach into further.
+      </P>
 
       <Why tenet="Records are named, tuples are positional">
         Why have both? A tuple is a fixed <em>positional</em> product — reach in by index — and reads
