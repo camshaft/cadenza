@@ -398,19 +398,23 @@ impl<'a> Printer<'a> {
                 let sigil = if head == "unquote" { "," } else { ",@" };
                 return self.unquote(sigil, args[0], parent_prec);
             }
-            // ---- annotation `(@ name form)` -> `@name form` ----
+            // ---- annotation `(@ name form)` -> `@name` on its OWN line, above the form ----
             // The general-purpose annotation sigil (inline-never/inline-always today, and whatever the
-            // language grows). `args = [name, form]`; the name prints bare and the form follows on the
-            // same line — the idiomatic ML form the parser re-reads (a nested `(@ …)` recurses here, so
-            // stacked `@a @b def …` round-trips). The name is a plain leaf, emitted via `emit_name`.
+            // language grows). `args = [name, form]`. The annotation prints on the line ABOVE its target
+            // (the Rust `#[attr]\nfn …` convention — an attribute reads as a modifier of the item below,
+            // not part of its first line), via a `hardbreak` inside a consistent box, exactly like a
+            // `// comment` above a node (`print_comment`). A nested `(@ …)` recurses here, so stacked
+            // `@a @b def …` prints one annotation per line. The name is a plain leaf, via `emit_name`.
             if head == "@"
                 && args.len() == 2
                 && let Some(name) = self.a.as_name(args[0])
             {
+                self.doc.cbox(0);
                 self.doc.word("@");
                 self.doc.word(emit_name(name));
-                self.doc.word(" ");
+                self.doc.hardbreak();
                 self.expr(args[1], parent_prec);
+                self.doc.end();
                 return;
             }
             // ---- keyword forms ----
@@ -1213,6 +1217,18 @@ impl<'a> Printer<'a> {
             && self.is_string(a[0])
         {
             return self.form_starts_with_keyword(a[1]);
+        }
+        // An annotation `(@ name inner)` prints as `@name inner`; its LEADING surface token is the `@`
+        // sigil, which — like a keyword — is a self-delimiting form boundary the next juxtaposed form
+        // cannot fuse onto (an `@` can only begin a fresh annotation). So an annotation counts as
+        // keyword-starting: without this, a top-level `@test def …` FOLLOWED by another form was treated as
+        // "next form is open" and got a spurious trailing `;` (`@test def a() = unit;`), which then failed
+        // to re-parse (`a do block must end in a value form`). Recurse to the annotated inner too, so the
+        // stacked/nested cases agree, matching the `comment`-wrapper recursion above.
+        if let Some(a) = self.a.as_form(id, "@")
+            && a.len() == 2
+        {
+            return true;
         }
         let head = match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => items[0],
@@ -2585,16 +2601,19 @@ mod tests {
     #[test]
     fn annotation_sigil_round_trips() {
         // `@name form` is the general-purpose annotation sigil, canonically `(@ name form)` — the same
-        // sigil↔head pattern as `.` member-access and `,@` unquote-splicing. It prints back to the `@`
-        // surface and re-reads to the same head form. `inline-never`/`inline-always` are the two names
-        // the compiler consumes today; the surface is name-agnostic.
+        // sigil↔head pattern as `.` member-access and `,@` unquote-splicing. The annotation prints on its
+        // OWN line, ABOVE the form it modifies (the Rust `#[attr]\nfn …` convention), and re-reads to the
+        // same head form. `inline-never`/`inline-always` are the two names the compiler consumes today; the
+        // surface is name-agnostic.
         assert_eq!(
             assert_roundtrip("@inline-never def big(x) = x * 7", 80),
-            "@inline-never def big(x) = x * 7"
+            "@inline-never\ndef big(x) = x * 7"
         );
-        // ML surface desugars to the `@`-headed canonical form; the s-expr surface reads it directly.
+        // ML surface desugars to the `@`-headed canonical form; the s-expr surface reads it directly. The
+        // parser reads `@name` and the form below it across the line break (the form parses in prefix
+        // position), so the on-its-own-line print round-trips.
         assert_eq!(
-            sexpr::print(&parser::read_ml("@inline-never def big(x) = x * 7").arenas),
+            sexpr::print(&parser::read_ml("@inline-never\ndef big(x) = x * 7").arenas),
             "(@ inline-never (def (big x) (* x 7)))"
         );
         assert_eq!(
@@ -2602,17 +2621,21 @@ mod tests {
                 &sexpr::read("(@ inline-always (def (f x) (+ x 1)))").unwrap(),
                 80
             ),
-            "@inline-always def f(x) = x + 1"
+            "@inline-always\ndef f(x) = x + 1"
         );
         // A name-agnostic annotation (not an inline-policy name) round-trips just the same.
         assert_eq!(
             assert_roundtrip("@deprecated def old(x) = x", 80),
-            "@deprecated def old(x) = x"
+            "@deprecated\ndef old(x) = x"
         );
-        // Stacked annotations nest, since the annotated form parses in prefix position.
+        // Stacked annotations each get their own line, since the annotated form parses in prefix position.
         assert_eq!(
-            sexpr::print(&parser::read_ml("@a @b def f(x) = x").arenas),
+            sexpr::print(&parser::read_ml("@a\n@b\ndef f(x) = x").arenas),
             "(@ a (@ b (def (f x) x)))"
+        );
+        assert_eq!(
+            assert_roundtrip("@a @b def f(x) = x", 80),
+            "@a\n@b\ndef f(x) = x"
         );
     }
 
@@ -2625,6 +2648,26 @@ mod tests {
         );
         assert_eq!(assert_roundtrip("def main() = 42", 80), "def main() = 42");
         assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
+    }
+
+    #[test]
+    fn an_annotated_def_juxtaposes_without_a_spurious_semicolon() {
+        // A top-level `@name def …` FOLLOWED by another form must NOT get a trailing `;`: an annotation is
+        // a self-delimiting form boundary (an `@` only ever begins a fresh annotation), so the next form
+        // juxtaposes, exactly as after a bare `def`. Before, the root-form printer treated the following
+        // `@`-form as "open" and appended a `;` (`@test def a() = unit;`), which then FAILED to re-parse
+        // ("a do block must end in a value form"). `assert_roundtrip` re-parses the printed text, so it
+        // would panic on that breakage — this pins the fix. Two annotated defs in a row is the exact case.
+        let printed = assert_roundtrip("@test def a() = unit\n@test def b() = unit", 80);
+        assert!(
+            !printed.contains(';'),
+            "an annotated def must not gain a trailing `;`: {printed:?}"
+        );
+        // The inline-policy annotation (the original `@` user) juxtaposes the same way.
+        assert!(
+            !assert_roundtrip("@inline-never def h() = 1\ndef m() = h()", 80).contains("1;"),
+            "an @inline-never def must not gain a trailing `;`"
+        );
     }
 
     #[test]

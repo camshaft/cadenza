@@ -102,6 +102,14 @@ pub enum Request {
     /// enum so the emit path is literally today's, reached through the request list instead of the
     /// fixed `targets` slice.
     Emit(crate::backend::Target),
+    /// Materialize a UNIT-TEST wasm component — the artifact a `cdz test` build produces. It is the same
+    /// wasm target as `Emit(Wasm)` EXCEPT the boundary is laid out from the program's `@test` NULLARY
+    /// definitions (`layout::compute_tests`) instead of its `(export …)` clauses: every test crosses as a
+    /// nullary entry the runner invokes (a failing test traps; a passing one returns unit). Kept a
+    /// distinct request (not a `Target`) because it changes the EXPORT SOURCE — a layout concern — not the
+    /// backend; the ordinary `(export …)` compile is untouched, so a normal build never carries a test's
+    /// report-effect import.
+    EmitTests,
     /// Read a fact column.
     Query(Query),
 }
@@ -248,6 +256,10 @@ mod tag {
     /// enablement mode; like `EMIT_WASM_DEBUG` it needs the `spans` input. A run can request both (a
     /// lean component + its detached DWARF) or either alone.
     pub const EMIT_DWARF: u8 = 0x04;
+    /// Emit a UNIT-TEST wasm component (`Request::EmitTests`) — the same wasm target as `EMIT_WASM` but
+    /// with the boundary laid out from the program's `@test` NULLARY defs (`layout::compute_tests`)
+    /// instead of its `(export …)` clauses. What a `cdz test` build requests.
+    pub const EMIT_TESTS: u8 = 0x05;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
@@ -284,6 +296,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::EMIT_WASM => Some(Request::Emit(crate::backend::Target::Wasm)),
         tag::EMIT_WASM_DEBUG => Some(Request::Emit(crate::backend::Target::WasmDebug)),
         tag::EMIT_DWARF => Some(Request::Emit(crate::backend::Target::Dwarf)),
+        tag::EMIT_TESTS => Some(Request::EmitTests),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -333,6 +346,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Emit(crate::backend::Target::Wasm) => out.push(tag::EMIT_WASM),
         Request::Emit(crate::backend::Target::WasmDebug) => out.push(tag::EMIT_WASM_DEBUG),
         Request::Emit(crate::backend::Target::Dwarf) => out.push(tag::EMIT_DWARF),
+        Request::EmitTests => out.push(tag::EMIT_TESTS),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {

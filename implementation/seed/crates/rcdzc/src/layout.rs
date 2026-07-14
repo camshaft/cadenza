@@ -294,6 +294,67 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         });
     }
 
+    finish_layout(db, exports)
+}
+
+/// Compute the boundary layout for a `cdz test` build: the exported entries are every `@test` NULLARY
+/// definition (`db.test_defs`), IN PLACE OF the program's `(export …)` clauses. Each becomes an
+/// `ExportPlan` with NO parameters and its solved result type (a test's body typically diverges — it
+/// traps on failure — so `result` is a `Never`/`Unit`, which the backend's diverging-export path crosses
+/// as a no-result entry). The reachable set + lifted closures are closed exactly as [`compute`] does
+/// (shared `finish_layout`). A `@test` on a def WITH PARAMETERS is rejected (a test takes no arguments —
+/// it is invoked nullary at the boundary). A build with NO `@test` def declines ("no `@test`: nothing to
+/// run") — the test-artifact analogue of `compute`'s "no export" decline.
+///
+/// This is the ONE place the export SOURCE differs from `compute`; everything downstream (reachability,
+/// selection, serialization, the diverging-export→unit-entry crossing) is source-agnostic, so a test
+/// export rides the identical machinery. The normal `(export …)` path is untouched — a test build is a
+/// distinct sidecar request (`Request::EmitTests`), never the default.
+pub fn compute_tests(db: &mut Db) -> Result<Layout, Reject> {
+    let test_defs = db.test_defs();
+    if test_defs.is_empty() {
+        return Err(Reject::decline(
+            "no `@test` definition: nothing to run (mark a nullary def with `@test`)",
+        ));
+    }
+    let mut exports: Vec<ExportPlan> = Vec::new();
+    for def in test_defs {
+        let name = db.defs[def].name.clone();
+        // A test must be NULLARY — it is invoked with no arguments at the boundary. A `@test` on a def
+        // with parameters is a misuse: reject with an actionable message rather than emit an entry the
+        // runner could never call.
+        if !db.defs[def].params.is_empty() {
+            return Err(Reject::decline(format!(
+                "`@test` definition `{name}` takes parameters — a test must be NULLARY (it is run with \
+                 no arguments); remove its parameters"
+            )));
+        }
+        let body = match db.defs[def].body {
+            Some(b) => b,
+            None => {
+                return Err(Reject::decline(format!(
+                    "`@test` definition `{name}` has no body"
+                )));
+            }
+        };
+        let result = type_of(db, body);
+        trace!(target: "rcdzc::layout", %name, def, result = %result.render_name(), "test export plan");
+        exports.push(ExportPlan {
+            name,
+            def,
+            body,
+            params: Vec::new(),
+            result,
+        });
+    }
+    finish_layout(db, exports)
+}
+
+/// Close the reachable set + lifted closures over a resolved list of `exports`, and build the [`Layout`]
+/// — the shared tail of [`compute`] (the program's `(export …)` clauses) and [`compute_tests`] (the
+/// `@test` defs). Everything here is agnostic to WHERE the exports came from: reachability follows
+/// `Core::Call` edges, lifted closures follow `Core::Closure` edges, both seeded from the export bodies.
+fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject> {
     // Emission order: exported definitions first (declaration order, deduplicated), then every
     // definition REACHABLE from them through a runtime `Core::Call` — a recursive callee, or a callee
     // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
@@ -560,7 +621,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::Not { operand }
         | Core::ListLen { operand }
         | Core::BytesLen { operand } => collect_closure_codes(db, operand, out),
-        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
             for a in args {
                 collect_closure_codes(db, a, out);
             }
@@ -877,7 +938,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         // A host call OR a cross-component call dispatches to a component IMPORT (not a `db.defs`
         // function), so no static callee to add; its arguments may still reach callees.
-        crate::core::Core::HostCall { args, .. } | crate::core::Core::ExternCall { args, .. } => {
+        crate::core::Core::HostCall { args, .. } => {
             for arg in args {
                 collect_call_callees(db, arg, out);
             }

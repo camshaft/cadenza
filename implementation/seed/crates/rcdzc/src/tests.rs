@@ -17381,6 +17381,34 @@ mod match_engine {
             "a monomorphic sum keeps the M108 message, not the arity one: {}",
             mono.message
         );
+        // A NESTED wrong-arity ctor — inside a `List`, a `Tuple` element, or a record field — is caught
+        // too (the check recurses into type-argument positions), not only at the top-level annotation.
+        for src in [
+            "(module m (type Box (W a) (E)) (def (g (: xs (List (Box Int64 Bool)))) xs) (def (main) 0) (export main))",
+            "(module m (type Box (W a) (E)) (def (g (: t (Tuple Int64 (Box Int64 Bool)))) t) (def (main) 0) (export main))",
+            "(module m (type Box (W a) (E)) (def (g (: r (Record (b (Box Int64 Bool))))) r) (def (main) 0) (export main))",
+            // A nested PRELUDE ctor at the wrong arity is caught by the same recursion.
+            "(module m (def (g (: xs (List (Map Int64)))) xs) (def (main) 0) (export main))",
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("nested wrong-arity rejects: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("takes")
+                    && d.message.contains("type argument")
+                    && d.message.contains("supplied"),
+                "the nested ctor's arity is named: {}",
+                d.message
+            );
+        }
+        // NO false positive: a deeply-nested but WELL-FORMED type is clean (the recursion only flags a
+        // genuine arity mismatch, not every nested ctor).
+        assert!(
+            reject_full(
+                "(module m (def (g (: xs (List (Map Int64 (Set Int64))))) xs) (def (main) 0) (export main))"
+            )
+            .is_none_or(|d| !d.message.contains("takes")),
+            "a valid deeply-nested type raises no arity fault"
+        );
     }
 
     #[test]
@@ -20693,6 +20721,28 @@ mod match_engine {
                 "{label}: a diverging export must emit a function that TRAPS"
             );
         }
+    }
+
+    #[test]
+    fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
+        // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
+        // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect
+        // FOR ITS EFFECT, then `(trap …)`. Before, `(host (log) (do (log.emit "m") (trap …)))` selected
+        // the body's result type to the trap's `Never` (a fresh var, no machine rep) and DECLINED "function
+        // return type has no machine representation" — the whole `do` block's value is the trap, but the
+        // Seq wrapper hid it from the bare `Core::Trap`-exact guard. Now `body_diverges` recurses through
+        // `Seq { tail }` (and `Let { body }`), so the body is recognized as diverging → emitted UNIT
+        // (0-result), the host observes the effect THEN the trap. The dual sites — the core function
+        // signature (`select_function`) and the component boundary (`wasm::mod`) — share `body_diverges`.
+        let src = "(module m (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do ((. log emit) \"boom\") (trap \"failed\")))) \
+                   (export main))";
+        // The KEY assertion: it EMITS (no "no machine representation" decline). A component is produced.
+        let bytes = component(src);
+        assert!(
+            !bytes.is_empty(),
+            "an effect-then-trap body must emit, not decline as unrepresentable"
+        );
     }
 
     #[test]
@@ -50336,114 +50386,11 @@ mod cross_component_oracle {
     // table is populated but nothing consumes it yet (resolve→ExternCall + emit are later bricks).
     // ------------------------------------------------------------------------------------------------
 
-    #[test]
-    fn x4b1_an_extern_form_scans_into_the_db_extern_table() {
-        use crate::db::Db;
-        use crate::testkit::parse;
-        // A consumer that BINDS a peer's `add`/`neg` via `(extern …)` and calls them. (Nothing consumes
-        // the binding yet — this brick only proves the scan populates the table.)
-        let src = "(do \
-            (extern \"cadenza:math/api\" \
-                (add (-> Int64 Int64 Int64)) \
-                (neg (-> Int64 Int64))) \
-            (def (main (: x Int64)) (add x (neg x))) \
-            (export main))";
-        let db = Db::load(parse(src));
-        assert_eq!(db.extern_decls.len(), 1, "one extern declaration");
-        let d = &db.extern_decls[0];
-        assert_eq!(d.interface, "cadenza:math/api");
-        let ops: Vec<&str> = d.ops.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(ops, ["add", "neg"], "both peer ops bound, in order");
-        assert!(
-            d.ops.iter().all(|o| o.ty.is_some()),
-            "each bound op carries its declared monomorphic signature"
-        );
-    }
-
-    #[test]
-    fn x4b1_no_extern_form_leaves_the_table_empty() {
-        use crate::db::Db;
-        use crate::testkit::parse;
-        let db = Db::load(parse("(do (def (main) 42) (export main))"));
-        assert!(
-            db.extern_decls.is_empty(),
-            "a program binding no peer has an empty extern table (byte-neutral common case)"
-        );
-    }
-
     // ------------------------------------------------------------------------------------------------
     // X4b-2 — an extern op resolves to `Resolved::Extern` and, APPLIED, lowers to `Core::ExternCall`.
     // The declared signature types the application (no CDZ error); the call is NOT inlined (no body).
     // (The backend emit that turns `Core::ExternCall` into an imported `call` is X4b-3.)
     // ------------------------------------------------------------------------------------------------
-
-    #[test]
-    fn x4b2_an_applied_extern_op_lowers_to_a_core_extern_call() {
-        use crate::core::Core;
-        use crate::db::Db;
-        use crate::lower::core_of;
-        use crate::resolve::resolved_of;
-        use crate::resolved::Resolved;
-        use crate::testkit::parse;
-        let src = "(do \
-            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
-            (def (main (: x Int64)) (neg x)) \
-            (export main))";
-        let mut db = Db::load(parse(src));
-        let d = db.def_by_name("main").expect("main");
-        let body = db.defs[d].body.expect("body");
-        // The applied extern `(neg x)` lowers to a Core::ExternCall naming the peer interface + op.
-        match core_of(&mut db, body) {
-            Core::ExternCall {
-                interface,
-                op,
-                result,
-                ..
-            } => {
-                assert_eq!(interface, "cadenza:math/api");
-                assert_eq!(op, "neg");
-                assert_eq!(
-                    result,
-                    crate::ty::Ty::int64(),
-                    "result = the sig's Int64 result"
-                );
-            }
-            other => panic!("expected Core::ExternCall, got {other:?}"),
-        }
-        // The head `neg` itself resolves to a Resolved::Extern (not an inlined sibling def).
-        // (Locate the head occurrence: `main`'s body is the application `(neg x)`; its head is child 0.)
-        let head = match db.ast.get(body) {
-            crate::ast::Struct::List(items) => items[0],
-            _ => panic!("main body is an application"),
-        };
-        assert!(
-            matches!(resolved_of(&mut db, head), Resolved::Extern { .. }),
-            "the extern op name resolves to Resolved::Extern"
-        );
-    }
-
-    #[test]
-    fn x4b2_an_extern_application_type_checks_against_the_declared_signature() {
-        use crate::db::Db;
-        use crate::testkit::parse;
-        // A well-typed use has NO fault; a mis-typed arg (Bool where Int64 declared) is CDZ0203 —
-        // the extern application is checked exactly like an ordinary call to a def of that signature.
-        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (neg x)) (export main))";
-        let mut db = Db::load(parse(ok));
-        assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok() || {
-                // The backend declines Core::ExternCall in X4b-2 (emit is X4b-3), so a full compile
-                // won't SUCCEED yet — but it must not fail with a TYPE error. Assert the decline is
-                // the emit decline, not a type reject.
-                let e = crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
-                    .expect_err("declines pending X4b-3 emit");
-                e.code.is_none() // a decline (no CDZ code), not a coded type rejection
-            },
-            "a well-typed extern application declines cleanly (emit pending), never a type reject"
-        );
-        let _ = &mut db;
-    }
 
     /// A MALFORMED `(extern …)` — its first element (the peer interface) missing or a bare NAME instead of
     /// a STRING literal — is CDZ0201, not silently dropped. `scan_extern_decl` returns `None` for such a
@@ -50484,310 +50431,29 @@ mod cross_component_oracle {
             "a well-formed (bind …) must not be flagged: {:?}",
             d3.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-    }
-
-    /// consequent unbound-name faults for the extern's own op names are DEDUPED — one primary "no".
-    #[test]
-    fn a_malformed_extern_interface_is_cdz0201_not_a_silent_drop() {
-        use crate::testkit::parse;
-        // (a) a non-string interface (`foo` a bare name) — CDZ0201, and the `neg` it binds is NOT reported
-        // unbound (the malformed-extern reject explains the real defect).
-        let bad = "(do (extern foo (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
+        // (d) a DUPLICATE `(bind E …)` — the same effect bound twice in source — is CDZ0201 (a route is a
+        // set, one peer per effect), the `bind` analogue of the duplicate-`(host (A A) …)` reject.
+        let dup = "(do (effect E (op e (-> Int64 Int64))) (bind E \"cadenza:a/x\") (bind E \"cadenza:b/y\") \
+                   (def (main) (handle E 0 ((e (n) s (resume n s))) (E.e 1))) (export main))";
+        let d4 = crate::diagnostics(&mut crate::db::Db::load(parse(dup)));
         assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("names a peer INTERFACE as a string")),
-            "a non-string extern interface is CDZ0201: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.message.contains("unbound name `neg`")),
-            "the consequent unbound-`neg` is deduped: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        // (b) a bare `(extern)` with no interface at all — likewise CDZ0201.
-        assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (extern) (def (main) 1) (export main))"
-            )))
-            .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("names a peer INTERFACE")),
-            "a bare (extern) with no interface is CDZ0201"
-        );
-        // (c) NO REGRESSION: a well-formed extern (string interface) is clean, and a GENUINELY unbound name
-        // unrelated to any extern is still reported.
-        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.message.contains("names a peer INTERFACE")),
-            "a well-formed extern is not flagged"
-        );
-        assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (def (main) (frobnicate 5)) (export main))"
-            )))
-            .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0101")
-                && d.message.contains("unbound name `frobnicate`")),
-            "a genuine unbound name (no extern) is still CDZ0101"
+            d4.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("bound to a peer more than once")),
+            "a duplicate (bind E …) is CDZ0201: {:?}",
+            d4.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
-
-    /// A well-formed-INTERFACE extern with a MALFORMED OP CLAUSE — a bare-name op (`neg` instead of
-    /// `(neg (-> …))`), a non-name op head (`(5 (-> …))`), or a missing/non-arrow op type (`(neg)` /
-    /// `(neg Int64)`) — is CDZ0201 at the declaration, not silently dropped. `scan_extern_decl` drops such
-    /// a clause (or records `ty: None`), so the op it would bind goes unbound (the misleading "unbound name
-    /// `neg`"). The op-clause companion of the interface check; the unbound-name consequent for the
-    /// dropped op is deduped (for the shapes that leave it genuinely unbound — a bare name / no type).
-    #[test]
-    fn a_malformed_extern_op_clause_is_cdz0201() {
-        use crate::testkit::parse;
-        // A bare-name op clause + a non-name op head → the "operation is `(<name> (-> …))`" reject, and the
-        // op (when it has a name) is NOT reported unbound.
-        for (src, unbound) in [
-            (
-                "(do (extern \"cadenza:math/api\" neg) (def (main) (neg 5)) (export main))",
-                Some("neg"),
-            ),
-            (
-                "(do (extern \"cadenza:math/api\" (5 (-> Int64 Int64))) (def (main) 1) (export main))",
-                None,
-            ),
-        ] {
-            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            assert!(
-                diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                    && d.message
-                        .contains("operation is `(<name> (-> Arg… Result))`")),
-                "a malformed extern op clause is CDZ0201: {:?}",
-                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-            );
-            if let Some(name) = unbound {
-                assert!(
-                    !diags
-                        .iter()
-                        .any(|d| d.message.contains(&format!("unbound name `{name}`"))),
-                    "the dropped op `{name}` is not reported unbound: {:?}",
-                    diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-                );
-            }
-        }
-        // A missing/no-type op clause `(neg)` → the "operation's type must be an arrow" reject, and `neg`
-        // is not reported unbound.
-        let no_ty = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(do (extern \"cadenza:math/api\" (neg)) (def (main) (neg 5)) (export main))",
-        )));
-        assert!(
-            no_ty.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("operation's type must be an arrow")),
-            "a no-type extern op clause names the arrow requirement: {:?}",
-            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        assert!(
-            !no_ty
-                .iter()
-                .any(|d| d.message.contains("unbound name `neg`")),
-            "the no-type op `neg` is not reported unbound: {:?}",
-            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
     // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via
     // run_with_peers (X4a) — RUNS end-to-end. The first source→run cross-component call.
     // ------------------------------------------------------------------------------------------------
 
-    /// A provider core exporting `neg : (i64) -> i64` = `0 - x`.
-    fn provider_core_neg() -> Vec<u8> {
-        use wasm_encoder::*;
-        let mut m = Module::new();
-        let mut types = TypeSection::new();
-        types.ty().function(vec![ValType::I64], vec![ValType::I64]);
-        m.section(&types);
-        let mut funcs = FunctionSection::new();
-        funcs.function(0);
-        m.section(&funcs);
-        let mut exports = ExportSection::new();
-        exports.export("neg", ExportKind::Func, 0);
-        m.section(&exports);
-        let mut code = CodeSection::new();
-        let mut f = Function::new(vec![]);
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::End);
-        code.function(&f);
-        m.section(&code);
-        m.finish()
-    }
-
-    /// A provider component exporting the interface `cadenza:math/api` with `neg : func(p0: s64) -> s64`
-    /// (param name `p0` to match the consumer's `assemble_extern`-emitted import declaration).
-    fn provider_math_component() -> Vec<u8> {
-        use wasm_encoder::*;
-        // inner component publishing `neg` as a top-level func under param name p0
-        let mut inner = ComponentBuilder::default();
-        let core_idx = inner.core_module_raw(&provider_core_neg());
-        let no_args: [(&str, ModuleArg); 0] = [];
-        let inst = inner.core_instantiate(core_idx, no_args);
-        let neg_core = inner.core_alias_export(inst, "neg", ExportKind::Func);
-        let (neg_ty, mut ft) = inner.type_function();
-        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
-            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
-        let neg_comp = inner.lift_func(neg_core, neg_ty, []);
-        inner.export(
-            "neg",
-            ComponentExportKind::Func,
-            neg_comp,
-            Some(ComponentTypeRef::Func(neg_ty)),
-        );
-        // outer: instantiate the inner + export the resulting instance as the interface `cadenza:math/api`
-        let mut c = ComponentBuilder::default();
-        let ic = c.component(inner);
-        let no_args2: [(&str, ComponentExportKind, u32); 0] = [];
-        let iinst = c.instantiate(ic, no_args2);
-        c.export(
-            "cadenza:math/api",
-            ComponentExportKind::Instance,
-            iinst,
-            None,
-        );
-        c.finish()
-    }
-
-    #[test]
-    fn x4b3_a_source_consumer_binds_a_peer_and_runs_end_to_end() {
-        use crate::testkit::parse;
-        // The CONSUMER is compiled FROM SOURCE: it binds the peer op `neg` via `(extern …)` and calls it.
-        let src = "(do \
-            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
-            (def (main (: x Int64)) (neg x)) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect("the source consumer compiles to a component (X4b-3 emit)");
-        // It must be a valid component that IMPORTS cadenza:math/api (not self-contained).
-        {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&consumer)
-                .expect("compiled consumer validates");
-        }
-        let peers = vec![cdz_run::Peer {
-            bytes: provider_math_component(),
-            interface: "cadenza:math/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("run the source consumer composed with the peer")
-        {
-            // main(5) = neg(5) = 0 - 5 = -5. A SOURCE program called a PEER component's export across
-            // the live boundary — the first end-to-end cross-component call.
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "-5", "neg(5) across the component boundary from source")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("source cross-component run trapped: {t}"),
-        }
-    }
-
     // ------------------------------------------------------------------------------------------------
     // X4b-provider — BOTH sides from source: a PROVIDER `.cdz` compiled with a `component-name` request
     // publishes its exports as the interface `cadenza:math/api`; a CONSUMER `.cdz` binds it via
     // `(extern …)`. Composed via run_with_peers → the whole thing runs from two Cadenza sources.
     // ------------------------------------------------------------------------------------------------
-
-    /// Compile a source program to a component, naming the interface it publishes its exports under (the
-    /// `component-name` request artifact, X4b). Returns the emitted component bytes.
-    fn compile_provider(src: &str, iface: &str) -> Vec<u8> {
-        use crate::Target;
-        use crate::abi::Artifact;
-        use crate::compile::compile;
-        use crate::testkit::parse;
-        let out = crate::host::run_with_compiler_stack(|| {
-            compile(
-                &[
-                    Artifact::new(
-                        Artifact::KIND_AST,
-                        "main",
-                        crate::codec::encode(&parse(src)),
-                    ),
-                    Artifact::new(
-                        crate::link::KIND_COMPONENT_NAME,
-                        "component-name",
-                        iface.as_bytes().to_vec(),
-                    ),
-                ],
-                &[Target::Wasm],
-            )
-        });
-        out.artifact(Target::Wasm.artifact_kind())
-            .unwrap_or_else(|| {
-                panic!(
-                    "provider compiles; diagnostics: {:?}",
-                    out.diagnostics
-                        .iter()
-                        .map(|d| &d.message)
-                        .collect::<Vec<_>>()
-                )
-            })
-            .to_vec()
-    }
-
-    #[test]
-    fn x4b_provider_two_source_components_link_and_run() {
-        use crate::testkit::parse;
-        // PROVIDER source: exports `neg` (0 - x), published as the interface cadenza:math/api.
-        let provider = compile_provider(
-            "(do (def (neg (: x Int64)) (- 0 x)) (export neg))",
-            "cadenza:math/api",
-        );
-        // CONSUMER source: binds cadenza:math/api's `neg` via (extern …) and calls it.
-        let consumer_src = "(do \
-            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
-            (def (main (: x Int64)) (neg x)) \
-            (export main))";
-        let consumer =
-            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
-                .expect("consumer compiles");
-        // Both are valid standalone components (provider EXPORTS the interface, consumer IMPORTS it).
-        for (bytes, who) in [(&provider, "provider"), (&consumer, "consumer")] {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(bytes)
-                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
-        }
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:math/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("two source components compose + run")
-        {
-            // main(5) = neg(5) = -5 — BOTH sides compiled from Cadenza source, linked as components.
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "-5",
-                    "two source Cadenza components link + run across the boundary"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("two-source cross-component run trapped: {t}"),
-        }
-    }
 
     // ------------------------------------------------------------------------------------------------
     // X5a — consumer + peer share ONE runtime instance via `run_with_peers`. The peer builds a heap
@@ -50981,299 +50647,17 @@ mod cross_component_oracle {
     // element 0 — reading the peer's value through the shared heap, NO serialization.
     // ------------------------------------------------------------------------------------------------
 
-    /// A hand-built PROVIDER that exports `pair : func(x: s64) -> u32` (the value HANDLE of a runtime
-    /// `(tuple x x)` built on the shared heap) under interface `cadenza:pairs/api`, importing the runtime.
-    /// (The PROVIDER-side compound-result emit from SOURCE is X5c; this proves the CONSUMER-side compound
-    /// crossing now with a hand-built peer, the oracle-first move.)
-    fn pairs_peer_component(import_name: &str) -> Vec<u8> {
-        use wasm_encoder::*;
-        // Core: import heap ops; `pair(x:i64)->i32` builds `[x, x]` and returns the array handle.
-        let core = {
-            let mut m = Module::new();
-            let mut types = TypeSection::new();
-            let mut imports = ImportSection::new();
-            let base = heap_import_prologue(&mut types, &mut imports);
-            let pair_ty = base;
-            types.ty().function(vec![ValType::I64], vec![ValType::I32]);
-            m.section(&types);
-            m.section(&imports);
-            let mut funcs = FunctionSection::new();
-            funcs.function(pair_ty);
-            m.section(&funcs);
-            let mut exports = ExportSection::new();
-            exports.export("pair", ExportKind::Func, base);
-            m.section(&exports);
-            let mut code = CodeSection::new();
-            let mut f = Function::new(vec![(1, ValType::I32)]); // local 1 = array handle
-            // a = arr-alloc(2)
-            f.instruction(&Instruction::I32Const(2));
-            f.instruction(&Instruction::Call(H_ARR_ALLOC));
-            f.instruction(&Instruction::LocalSet(1));
-            // a = arr-set(a, 0, box-int(x))
-            f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::I32Const(0));
-            f.instruction(&Instruction::LocalGet(0));
-            f.instruction(&Instruction::Call(H_BOX_INT));
-            f.instruction(&Instruction::Call(H_ARR_SET));
-            f.instruction(&Instruction::LocalSet(1));
-            // a = arr-set(a, 1, box-int(x))
-            f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::I32Const(1));
-            f.instruction(&Instruction::LocalGet(0));
-            f.instruction(&Instruction::Call(H_BOX_INT));
-            f.instruction(&Instruction::Call(H_ARR_SET));
-            f.instruction(&Instruction::LocalSet(1));
-            f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::End);
-            code.function(&f);
-            m.section(&code);
-            m.finish()
-        };
-        let mut c = ComponentBuilder::default();
-        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
-        let heap_inst = c.core_instantiate_exports(
-            lowered
-                .iter()
-                .map(|(n, f)| (*n, ExportKind::Func, *f))
-                .collect::<Vec<_>>(),
-        );
-        let core_idx = c.core_module_raw(&core);
-        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
-        let pair_core = c.core_alias_export(prog_inst, "pair", ExportKind::Func);
-        // `pair : func(p0: s64) -> u32` — the result u32 is the value HANDLE (the extern boundary form of
-        // a compound crossing over the shared runtime). Param name p0 matches the consumer's import decl.
-        let (pair_ty, mut pf) = c.type_function();
-        pf.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
-            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
-        let pair_comp = c.lift_func(pair_core, pair_ty, []);
-        let inner = pairs_interface_wrapper();
-        let ic = c.component(inner);
-        let iinst = c.instantiate(ic, [("pair", ComponentExportKind::Func, pair_comp)]);
-        c.export(
-            "cadenza:pairs/api",
-            ComponentExportKind::Instance,
-            iinst,
-            None,
-        );
-        c.finish()
-    }
-
-    /// Inner import-and-re-export wrapper publishing `pair : func(s64) -> u32` as an interface member.
-    fn pairs_interface_wrapper() -> ComponentBuilder {
-        let mut c = ComponentBuilder::default();
-        let (ft, mut f) = c.type_function();
-        f.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
-            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
-        let imported = c.import("pair", ComponentTypeRef::Func(ft));
-        let (et, mut ef) = c.type_function();
-        ef.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
-            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
-        c.export(
-            "pair",
-            ComponentExportKind::Func,
-            imported,
-            Some(ComponentTypeRef::Func(et)),
-        );
-        c
-    }
-
-    #[test]
-    fn x5b_a_compound_value_crosses_between_source_components_as_a_shared_handle() {
-        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
-        use crate::testkit::parse;
-        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
-        // PROVIDER (hand-built): `pair(x)` builds the runtime tuple `(x, x)` and returns its handle.
-        let provider = pairs_peer_component(&import_name);
-        // CONSUMER (from SOURCE): binds `pair : (-> Int64 (Tuple Int64 Int64))`, calls it, projects
-        // element 0. The tuple RESULT crosses as its opaque u32 handle over the shared runtime (X5b
-        // consumer-side widening). main(7) = tuple.0 (pair 7) = 7.
-        let consumer_src = "(do \
-            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
-            (def (main (: x Int64)) (. (pair x) 0)) \
-            (export main))";
-        let consumer =
-            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
-                .expect("consumer with a compound extern result compiles");
-        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(b)
-                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
-        }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[X5b] runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:pairs/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["7".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a compound value crosses between two source components")
-        {
-            // The tuple (7,7) the peer built on the shared heap crossed to the consumer as a handle; the
-            // consumer projected element 0 → 7. A runtime COMPOUND crossed between Cadenza components with
-            // NO serialization, over the shared runtime instance.
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "7",
-                    "compound value crosses as a shared handle; consumer reads element 0"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("compound cross-component run trapped: {t}"),
-        }
-    }
-
     // ------------------------------------------------------------------------------------------------
     // X5c — BOTH sides from source: a source PROVIDER returns a runtime compound (crosses as its `u32`
     // handle through the provider interface), a source CONSUMER receives + reads it. The full compound
     // interop story from two Cadenza sources.
     // ------------------------------------------------------------------------------------------------
 
-    #[test]
-    fn x5c_a_source_provider_returns_a_compound_read_by_a_source_consumer() {
-        use crate::testkit::parse;
-        // PROVIDER (from SOURCE): `pair(x) = (tuple x x)` — a RUNTIME tuple, published under
-        // cadenza:pairs/api. Its result crosses as a u32 handle (X5c provider path). Imports the runtime.
-        let provider = compile_provider(
-            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
-            "cadenza:pairs/api",
-        );
-        // CONSUMER (from SOURCE): binds `pair`, calls it, projects element 0. main(9) = 9.
-        let consumer_src = "(do \
-            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
-            (def (main (: x Int64)) (. (pair x) 0)) \
-            (export main))";
-        let consumer =
-            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
-                .expect("consumer compiles");
-        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(b)
-                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
-        }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[X5c] runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:pairs/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["9".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("two source components exchange a compound value")
-        {
-            // The provider built (9,9) on the shared heap and returned the handle; the consumer projected
-            // element 0 → 9. A runtime COMPOUND crossed between two SOURCE Cadenza components.
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "9",
-                    "source provider's compound crosses to a source consumer"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("two-source compound run trapped: {t}"),
-        }
-    }
-
     // ------------------------------------------------------------------------------------------------
     // X5d — VALUE-MATRIX widening coverage: String / List / Sum / nested compounds all cross the same
     // shared-handle way between two source components (extern_abi_val_type maps every runtime-owned type
     // to the u32 handle). Each is a small coverage brick, no new machinery.
     // ------------------------------------------------------------------------------------------------
-
-    /// Compile a provider `provider_src` (published under `iface`) + a consumer `consumer_src`, compose via
-    /// run_with_peers with the shared runtime, and assert `main(arg)` renders to `expect`. Skips if the
-    /// runtime wasm is not in the store.
-    fn run_two_source_peers(
-        provider_src: &str,
-        iface: &str,
-        consumer_src: &str,
-        arg: &str,
-        expect: &str,
-    ) {
-        use crate::testkit::parse;
-        let provider = compile_provider(provider_src, iface);
-        let consumer =
-            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
-                .unwrap_or_else(|d| panic!("consumer compiles: {}", d.message));
-        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(b)
-                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
-        }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[X5d] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: iface.to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![arg.to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("two source peers run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{iface}: {consumer_src}"),
-            cdz_run::Outcome::Trap(t) => panic!("{iface} run trapped: {t}"),
-        }
-    }
-
-    #[test]
-    fn x5d_a_list_value_crosses_between_source_components() {
-        // Provider builds a runtime `(List Int64)` of length 2; consumer reads its length → 2.
-        run_two_source_peers(
-            "(do (def (mk (: x Int64)) (List.push (List.push (list) x) x)) (export mk))",
-            "cadenza:lists/api",
-            "(do (extern \"cadenza:lists/api\" (mk (-> Int64 (List Int64)))) \
-               (def (main (: x Int64)) (List.len (mk x))) (export main))",
-            "5",
-            "2",
-        );
-    }
-
-    #[test]
-    fn x5d_a_string_value_crosses_between_source_components() {
-        // Provider returns a runtime String — a param-selected `if` defeats constant folding, so the
-        // String is built at run time and crosses as a handle. x>0 → "abc" (byte-len 3); consumer reads it.
-        run_two_source_peers(
-            "(do (def (mk (: x Int64)) (if (> x 0) (String.concat \"ab\" \"c\") \"\")) (export mk))",
-            "cadenza:strs/api",
-            "(do (extern \"cadenza:strs/api\" (mk (-> Int64 String))) \
-               (def (main (: x Int64)) (String.byte-len (mk x))) (export main))",
-            "3",
-            "3",
-        );
-    }
-
-    #[test]
-    fn x5d_a_record_value_crosses_and_a_field_is_read() {
-        // Provider returns a runtime record `{a: x, b: x+1}`; consumer reads field `b`.
-        run_two_source_peers(
-            "(do (def (mk (: x Int64)) (record (a x) (b (+ x 1)))) (export mk))",
-            "cadenza:recs/api",
-            "(do (extern \"cadenza:recs/api\" (mk (-> Int64 (Record (a Int64) (b Int64))))) \
-               (def (main (: x Int64)) (. (mk x) b)) (export main))",
-            "10",
-            "11",
-        );
-    }
 
     // ------------------------------------------------------------------------------------------------
     // U2 — the EFFECTS-UNIFICATION: an EFFECT bound to a peer contract routes to the boundary. A source
@@ -51526,6 +50910,139 @@ mod cross_component_oracle {
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("rebound run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U5 — a COMPOUND value crosses over the EFFECTS surface, from source. A peer-bound effect whose op
+    // returns a `(Tuple Int64 Int64)` — the consumer performs it and projects a field. The compound
+    // crosses as its `u32` handle over the shared runtime (collect_host_imports uses extern_abi_val_type
+    // for a peer-bound effect); the consumer + peer share one runtime instance.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A peer exporting `pair : func(p0: s64) -> u32` under `cadenza:pairs/api`, importing the value-heap
+    /// runtime; `pair(x)` builds the runtime tuple `(x, x)` and returns its handle.
+    fn tuple_peer_component(import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let core = {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            let mut imports = ImportSection::new();
+            let base = heap_import_prologue(&mut types, &mut imports);
+            types.ty().function(vec![ValType::I64], vec![ValType::I32]); // pair: (i64)->i32
+            m.section(&types);
+            m.section(&imports);
+            let mut funcs = FunctionSection::new();
+            funcs.function(base);
+            m.section(&funcs);
+            let mut exports = ExportSection::new();
+            exports.export("pair", ExportKind::Func, base);
+            m.section(&exports);
+            let mut code = CodeSection::new();
+            let mut f = Function::new(vec![(1, ValType::I32)]); // local 1 = array handle
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::Call(H_ARR_ALLOC));
+            f.instruction(&Instruction::LocalSet(1));
+            for slot in 0..2 {
+                f.instruction(&Instruction::LocalGet(1));
+                f.instruction(&Instruction::I32Const(slot));
+                f.instruction(&Instruction::LocalGet(0));
+                f.instruction(&Instruction::Call(H_BOX_INT));
+                f.instruction(&Instruction::Call(H_ARR_SET));
+                f.instruction(&Instruction::LocalSet(1));
+            }
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::End);
+            code.function(&f);
+            m.section(&code);
+            m.finish()
+        };
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let core_idx = c.core_module_raw(&core);
+        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let pair_core = c.core_alias_export(prog_inst, "pair", ExportKind::Func);
+        let (pair_ty, mut pf) = c.type_function();
+        pf.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let pair_comp = c.lift_func(pair_core, pair_ty, []);
+        // inner import-and-re-export wrapper → the interface instance.
+        let mut inner = ComponentBuilder::default();
+        let (ift, mut iff) = inner.type_function();
+        iff.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let imp = inner.import("pair", ComponentTypeRef::Func(ift));
+        let (et, mut ef) = inner.type_function();
+        ef.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        inner.export(
+            "pair",
+            ComponentExportKind::Func,
+            imp,
+            Some(ComponentTypeRef::Func(et)),
+        );
+        let ic = c.component(inner);
+        let iinst = c.instantiate(ic, [("pair", ComponentExportKind::Func, pair_comp)]);
+        c.export(
+            "cadenza:pairs/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    #[test]
+    fn u5_a_compound_value_crosses_over_the_effects_surface() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // CONSUMER (source): an effect P returning a Tuple, bound to the peer, delegated + projected.
+        // main(9) performs `P.pair 9` → the tuple (9,9) crosses as a handle; `. … 0` reads element 0 → 9.
+        let src = "(do \
+            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:pairs/api\") \
+            (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U5] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: tuple_peer_component(&import_name),
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a compound crosses over the effects surface")
+        {
+            // P.pair(9) returned the tuple (9,9) as a handle over the shared runtime; the consumer read
+            // element 0 → 9. A COMPOUND value crossed via a peer-bound EFFECT, from source.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "9",
+                    "a compound crosses over the effects surface as a shared handle"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("compound-over-effects run trapped: {t}"),
         }
     }
 }

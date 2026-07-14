@@ -466,7 +466,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // A call CONSUMES its arguments; a host call OR a cross-component call likewise consumes its
         // arguments across the boundary.
-        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
         // A sequencing block: the binding escapes if it escapes any statement or the tail.
@@ -1312,14 +1312,6 @@ pub fn collect_used_ops(
                 }
             }
         }
-        // A CROSS-COMPONENT call: its arguments are evaluated before crossing the boundary, so recurse
-        // to collect any runtime op an argument's construction needs (the call itself is a peer import,
-        // not a runtime op). X2 declines the emit; this keeps the used-op walk complete for later.
-        Core::ExternCall { args, .. } => {
-            for arg in args {
-                collect_used_ops(db, arg, out);
-            }
-        }
         Core::Seq { stmts, tail } => {
             for s in stmts {
                 collect_used_ops(db, s, out);
@@ -1587,6 +1579,32 @@ fn collect_cont_ops(
     }
 }
 
+/// Whether the body at `id` PROVABLY diverges — its core reduces to an unconditional `Core::Trap`,
+/// possibly THROUGH a sequencing/binding wrapper whose value is that trap. A diverging body's
+/// `unreachable` is stack-polymorphic (validates in any result position), so its function is emitted
+/// with a UNIT (0-result) signature rather than declining "return type has no machine representation".
+///
+/// Peers through the two value-position wrappers whose value is their TAIL: `Core::Seq { tail }` (an
+/// effect-statement run then a value — the `(do (log.emit …) (trap …))` shape a test-failure path takes)
+/// and `Core::Let { body }` (a binding then a body). A bare `Core::Trap` is the base case. Every other
+/// core shape is NOT provably diverging (returns `false`) — so a genuine value-returning body keeps its
+/// solved type and a real "no machine representation" decline still fires for it. Conservative: it proves
+/// divergence only through these value-forwarding wrappers, never guesses.
+///
+/// `pub(crate)` because the component-boundary layer (`wasm::mod`) makes the same "diverging export → a
+/// unit (no-result) boundary entry" decision and must recognize the same shapes (a bare trap AND a
+/// trap-through-`Seq`/`Let`), so both the core-signature site here and the boundary site there share this.
+pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Trap => true,
+        // A sequence's value is its tail; the statements run for effect. Diverges iff the tail does.
+        Core::Seq { tail, .. } => body_diverges(db, tail),
+        // A `let`'s value is its body; the bindings are evaluated first. Diverges iff the body does.
+        Core::Let { body, .. } => body_diverges(db, body),
+        _ => false,
+    }
+}
+
 /// Select a function body with `params` — each a `(name-occurrence, solved-type)`, in signature order.
 /// The parameters occupy wasm local slots `0..n` in order; a `Core::Param` reference to a parameter
 /// emits `local.get <slot>`. The return type is the body's solved type. A parameter whose type has no
@@ -1644,13 +1662,12 @@ pub fn select_function_of(
     // representation, but it never RETURNS a value — its `unreachable` is stack-polymorphic and validates
     // in any result position. So a diverging function is emitted with a UNIT (0-result) signature rather
     // than declining "return type has no machine representation": `(def (main) (trap …))`, a zero-arm
-    // match on a `Never` scrutinee (`(match (never-returns))` → `Core::Trap`), or a call to such a
-    // function. Only rewrite when `ret` has NO valtype AND the body reduces to `Core::Trap` — a genuine
-    // value-returning body keeps its type (a real "no machine rep" decline still fires for those).
-    if valtype_of(&ret).is_none()
-        && !matches!(ret, Ty::Unit)
-        && matches!(core_of(db, body), Core::Trap)
-    {
+    // match on a `Never` scrutinee (`(match (never-returns))` → `Core::Trap`), or a body that runs some
+    // effect statements and THEN traps (`(host (log) (do (log.emit "m") (trap …)))` — a `Core::Seq` whose
+    // tail is the trap, the shape a unit-test failure path takes). Only rewrite when `ret` has NO valtype
+    // AND the body PROVABLY diverges (`body_diverges`) — a genuine value-returning body keeps its type (a
+    // real "no machine rep" decline still fires for those).
+    if valtype_of(&ret).is_none() && !matches!(ret, Ty::Unit) && body_diverges(db, body) {
         ret = Ty::Unit;
     }
     let mut code = Emit::new();
@@ -5875,31 +5892,9 @@ fn emit(
             out.push(Lir::CallHostImport(index));
             Ok(())
         }
-        // A CROSS-COMPONENT call (X4b) — push each scalar argument, then `call` the peer op by its
-        // position in the program's extern-import set (`layout.extern_order`). Structurally the host-call
-        // emit, but resolves against the extern set (bound under module `"peer"`). X4b-3 scope: scalar
-        // args (a `Unit` arg carries no boundary slot; a compound/`value` arg is X5 and declined upstream
-        // by the undelegable-op check).
-        Core::ExternCall {
-            interface,
-            op,
-            args,
-            ..
-        } => {
-            let index = layout.extern_index(&interface, &op).ok_or_else(|| {
-                Reject::decline(
-                    "a cross-component call's operation is not in the extern-import set",
-                )
-            })?;
-            for &arg in &args {
-                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
-                    continue;
-                }
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            }
-            out.push(Lir::CallExternImport(index));
-            Ok(())
-        }
+        // (The `Core::ExternCall` emit arm was REMOVED in U4 — a peer op is now a peer-bound effect's
+        // escaping `Core::HostCall`, which the `Core::HostCall` arm above emits as a `CallExternImport`
+        // when the effect is peer-bound.)
         // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
         // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
         // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced

@@ -669,23 +669,9 @@ pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be appl
 /// leaves them untouched.
 pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 
-/// The coded CDZ0201 a MALFORMED `(extern …)` gets — its first element (the peer interface) is missing or
-/// not a string literal, so `scan_extern_decl` drops it and the ops it would bind go unbound. Shared as a
-/// const so `dedup_faults` recognizes it (`starts_with`) and drops the CONSEQUENT "unbound name" fault for
-/// each op name the dropped extern was meant to bind — one primary "no" naming the real defect.
-pub const MALFORMED_EXTERN_MESSAGE: &str = "an `(extern …)` names a peer INTERFACE as a string — write `(extern \
-     \"cadenza:pkg/iface\" (<op> (-> …))…)` (the interface identifier is a string literal, not a bare name)";
-
-/// The stable PREFIX shared by EVERY malformed-`(extern …)` reject — the interface one
-/// ([`MALFORMED_EXTERN_MESSAGE`]) AND the op-clause ones (a bare-name/non-name op head, a missing/
-/// non-arrow op type). `dedup_faults` matches this to detect that SOME extern is malformed (so its
-/// unbound op names should be collected + their consequent "unbound name" faults dropped) without pinning
-/// which defect. Every such message begins ``an `(extern …)` ``.
-pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)`";
-
 /// A `(bind …)` directive whose shape is not `(bind <Effect> "cadenza:pkg/iface")` — a missing/non-string
 /// interface, or the wrong arity. Reported at the form so a malformed peer-binding directive is named, not
-/// silently dropped (the `bind` analogue of [`MALFORMED_EXTERN_MESSAGE`]).
+/// silently dropped (the peer-binding analogue of the malformed-export reject).
 pub const MALFORMED_BIND_MESSAGE: &str = "a `(bind …)` binds an EFFECT to a peer interface string — write \
      `(bind Effect \"cadenza:pkg/iface\")` (the effect is a declared effect's name, the interface a string literal)";
 
@@ -693,7 +679,6 @@ pub const MALFORMED_BIND_MESSAGE: &str = "a `(bind …)` binds an EFFECT to a pe
 /// (a def, a type, an unbound name) to a peer is named rather than silently ignored.
 pub const BIND_NOT_AN_EFFECT_MESSAGE: &str = "a `(bind …)` names a declared EFFECT — this name is not an \
      effect, so there is nothing to route to a peer";
-
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

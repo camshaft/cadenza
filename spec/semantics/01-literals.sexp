@@ -339,3 +339,58 @@
            enforces the closed set; a later generation rejects the program.")
   (input  "\q")
   (error  CDZ0001))
+
+; --- Boundary values crossing the PARAMETER boundary --------------------------------------------------
+; The literal cases above read boundary values as CONSTANTS (Int64.min/max, UInt64.max, -0.0, 1e19) — each
+; folds at compile time. A value that arrives as a runtime PARAMETER instead crosses the component
+; boundary and is decoded from its boundary representation (contracts/component-abi.md; deterministic-value-
+; form.md). The extreme values are where a naive ABI slips: `Int64.min` has only the sign bit set,
+; `UInt64.max` fills all 64 bits (a signed-i64 read would see -1), `-0.0` differs from `0.0` only in the
+; sign bit, and a large whole float exceeds the Int64 range. These pin that an identity export returns each
+; boundary value UNCHANGED across the boundary — the runtime-parameter companion of the constant cases.
+
+(case "Int64.min crosses the parameter boundary and back unchanged"
+  (doc    "`(def (main (: x Int64)) x)` called with Int64.min returns it unchanged: -9223372036854775808 —
+           the only-the-sign-bit value — decodes from and re-encodes to its boundary form exactly. The
+           runtime companion of the constant `the minimum Int64 literal` case; a sign-mishandling boundary
+           decode would corrupt it.")
+  (input  (do (def (main (: x Int64)) x) (export main)))
+  (call   main (: -9223372036854775808 Int64)) (output (: -9223372036854775808 Int64)))
+
+(case "Int64.min crossing the boundary is still negative"
+  (doc    "The value-check companion: `(< x 0)` with `x` = Int64.min arriving as a parameter is true — the
+           boundary decode preserves its negativity, not an unsigned reinterpretation. Pins that the sign of
+           the extreme minimum survives the crossing.")
+  (input  (do (def (main (: x Int64)) (< x 0)) (export main)))
+  (call   main (: -9223372036854775808 Int64)) (output (: true Bool)))
+
+(case "UInt64.max crosses the parameter boundary and back unchanged"
+  (doc    "`(def (main (: x UInt64)) x)` called with UInt64.max returns 18446744073709551615 = 2^64-1 —
+           all 64 bits set — unchanged. A boundary that read the cell as a SIGNED i64 would see -1 and
+           render it wrong; this pins the full unsigned width round-trips. The runtime companion of the
+           constant `UInt64.max` case.")
+  (input  (do (def (main (: x UInt64)) x) (export main)))
+  (call   main (: 18446744073709551615 UInt64)) (output (: 18446744073709551615 UInt64)))
+
+(case "UInt64.max crossing the boundary compares as a large unsigned, not -1"
+  (doc    "The value-check companion: `(> x 0)` with `x` = UInt64.max arriving as a parameter is true —
+           the all-bits-set value is a large POSITIVE unsigned, not the -1 a signed read would make it (for
+           which `> 0` is false). Pins that the boundary decode keeps UInt64 unsigned.")
+  (input  (do (def (main (: x UInt64)) (> x 0)) (export main)))
+  (call   main (: 18446744073709551615 UInt64)) (output (: true Bool)))
+
+(case "negative zero crosses the parameter boundary preserving its sign"
+  (doc    "`(def (main (: x Float64)) x)` called with -0.0 returns -0.0, NOT 0.0 — the canonical value form
+           distinguishes them by the sign bit (deterministic-value-form.md; the constant `negative zero is
+           distinct` case). A boundary decode that normalized -0.0 to 0.0 would render `0.0` here. Pins that
+           negative zero survives the parameter crossing as a distinct value.")
+  (input  (do (def (main (: x Float64)) x) (export main)))
+  (call   main (: -0.0 Float64)) (output (: -0.0 Float64)))
+
+(case "a large whole float crosses the boundary preserving its full value"
+  (doc    "`(def (main (: x Float64)) x)` called with 1e19 — a whole-valued Float64 just past the Int64
+           range (2^63 ≈ 9.22e18) — returns its full value 10000000000000000000.0, not an Int64-saturated
+           approximation. The runtime companion of the constant `a large whole-valued float renders its full
+           value` case: the boundary carries the exact binary64, not a value routed through an integer cast.")
+  (input  (do (def (main (: x Float64)) x) (export main)))
+  (call   main (: 1e19 Float64)) (output (: 10000000000000000000.0 Float64)))

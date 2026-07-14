@@ -127,12 +127,6 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
-        // A CROSS-COMPONENT extern op (X4b): its type is its DECLARED monomorphic signature (the `(-> …)`
-        // contract), evaluated as a type. An application of it type-checks against this exactly like a
-        // call to a def of the same signature (cross-component-interop.md §The Exchanged Signature Is
-        // Monomorphic). `typeval_of` yields the `Ty::Fn`; an unresolvable declaration types `Any` (a
-        // malformed extern sig declines downstream, never a spurious mismatch here).
-        Resolved::Extern { ty, .. } => crate::eval::typeval_of(db, ty).unwrap_or(Ty::Any),
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
         // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
@@ -840,6 +834,36 @@ fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String
 /// identity via `meta_apply_of` (GENERIC — the prim carries the arity, no hard-coded name match on the
 /// source spelling).
 fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
+    // Check THIS node's head first; if it is well-formed, RECURSE into its argument positions so a NESTED
+    // wrong-arity ctor is caught too — `(List (Box Int64 Bool))`, `(Tuple Int64 (Map Int64))`, a record
+    // field's `(Box Int64 Bool)`. The type-argument positions are the list's children after the head (each
+    // itself a type expression); a record field pair `(name T)` carries the type in its second child. The
+    // FIRST wrong-arity ctor found (outer before inner, left-to-right) is reported — one fault per
+    // annotation, naming the deepest-relevant misapplication.
+    let this = type_ctor_arity_message_here(db, ty_expr);
+    if this.is_some() {
+        return this;
+    }
+    let children = match db.ast.get(ty_expr) {
+        crate::ast::Struct::List(cs) => cs.to_vec(),
+        _ => return None,
+    };
+    // Recurse into every child EXCEPT a leading head name (which is the ctor itself, not a type argument —
+    // recursing into it would re-examine the same head). A record field pair `(name T)` is a 2-child list
+    // whose type is the second child; a bare type application `(Ctor arg…)` has its args after the head.
+    // Scanning all non-first children covers both (a field's `name` is an atom → no ctor there).
+    for &child in children.iter().skip(1) {
+        if let Some(msg) = type_ctor_arity_message(db, child) {
+            return Some(msg);
+        }
+    }
+    None
+}
+
+/// The wrong-arity message for the type CONSTRUCTOR at THIS node only (not recursing into arguments) —
+/// the per-node core of [`type_ctor_arity_message`]. `None` if this node is not a `(Ctor arg…)` list, or
+/// the ctor is applied at its correct arity, or it is not a type constructor at all.
+fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String> {
     let children = match db.ast.get(ty_expr) {
         crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
         _ => return None,
@@ -8017,9 +8041,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // the type is used below, because a generic sum REDUCES to a `Ty::Sum` (silently dropping the
             // extra arg) so `typeval_of` succeeds and the "not a type" branch never fires — the arity fault
             // would be lost. `type_ctor_arity_message` returns `None` for a correct arity / a non-ctor.
-            if !runtime_width
-                && let Some(msg) = type_ctor_arity_message(db, ty_expr)
-            {
+            if !runtime_width && let Some(msg) = type_ctor_arity_message(db, ty_expr) {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: type constructor applied at the wrong arity (CDZ0203)");
                 out.push(Reject::coded(Code::TypeMismatch, msg));
                 collect(db, expr, out);
@@ -8405,7 +8427,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // use), so here it is a genuine non-type — the generic "requires a type" message.
                     out.push(Reject::coded(
                         Code::TypeMismatch,
-                        non_type_annotation_message(db, ty_expr, "the type position of an annotation"),
+                        non_type_annotation_message(
+                            db,
+                            ty_expr,
+                            "the type position of an annotation",
+                        ),
                     ));
                 }
             }
@@ -8758,11 +8784,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
-        | Resolved::TypeVal(_)
-        // A cross-component extern reference carries no fault of its own — its declared signature is the
-        // contract (well-formed by construction) and a mismatched APPLICATION is caught by the ordinary
-        // apply check, exactly like a call to a def.
-        | Resolved::Extern { .. } => {}
+        | Resolved::TypeVal(_) => {}
         // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a
         // top-level def's is (`(fn (x x) …)` shadowed the first `x` and silently bound nothing). The body
         // is checked at the application site (β-reduction), so only the param-linearity is added here.

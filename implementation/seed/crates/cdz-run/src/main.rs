@@ -175,11 +175,24 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 
     let (outcome, observed) = cdz_run::run_capturing(&component_bytes, &opts)?;
-    // Emit the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order — the corpus gate
-    // reads them to verify a case's `(host-calls …)` sequence. On stderr (not stdout) so the value on
-    // stdout stays clean; absent for a program that makes no host call.
-    for op in &observed {
+    // Emit the OBSERVED host calls to stderr, in call order. On stderr (not stdout) so the value on stdout
+    // stays clean; absent for a program that makes no host call. Each observed entry is `<op>` OR
+    // `<op>\t<message>` (the latter when the call carried STRING arguments — a `report.fail("…")` /
+    // `log.emit("…")`). Split on the FIRST tab so the op stays clean:
+    //   - `host-call\t<op>` — ALWAYS emitted (the corpus gate reads these to verify `(host-calls …)`; the
+    //     `<op>` field is unpolluted so an argument-carrying call still matches its recorded op).
+    //   - `host-arg\t<op>\t<message>` — ALSO emitted when a message rode along, so a consumer that wants
+    //     the argument (`cdz test`, whose failure path emits the assertion text) can read it. The gate
+    //     ignores an unknown `host-arg` prefix, so this is additive and backward-compatible.
+    for entry in &observed {
+        let (op, msg) = match entry.split_once('\t') {
+            Some((op, msg)) => (op, Some(msg)),
+            None => (entry.as_str(), None),
+        };
         eprintln!("host-call\t{op}");
+        if let Some(msg) = msg {
+            eprintln!("host-arg\t{op}\t{msg}");
+        }
     }
     match outcome {
         cdz_run::Outcome::Value(text) => {
