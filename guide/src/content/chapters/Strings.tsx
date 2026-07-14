@@ -62,6 +62,25 @@ export default function Strings() {
         handling isn't a library bolted on, it's part of how Cadenza describes itself.
       </Note>
 
+      <H2>Slicing out a substring</H2>
+      <P>
+        To take a run of characters rather than a single one, <C>String.slice</C> selects a half-open
+        range <C>[start, end)</C> — from <C>start</C> up to <em>but not including</em> <C>end</C>. Like{" "}
+        <C>at</C>, the range might fall outside the string, so it returns an <C>Option</C>. The first five
+        characters of <C>"hello world"</C> are <C>"hello"</C>, which is 5 characters long:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (String.scalar-len
+    (Option.expect (String.slice "hello world" 0 5) "in range")))`}
+      />
+      <P>
+        The bounds count <em>characters</em>, the same as <C>at</C> — so slicing <C>"café"</C> from{" "}
+        <C>0</C> to <C>3</C> gives the three characters <C>"caf"</C>, never splitting the two-byte{" "}
+        <C>é</C> down the middle. A range where <C>start</C> equals <C>end</C> is a valid, empty slice
+        (<C>Some ""</C>); one that runs off the end is <C>None</C>, not a trap.
+      </P>
+
       <H2>Your turn</H2>
       <P>
         The word <C>"naïve"</C> has an accented <C>ï</C> that takes two bytes in UTF-8 — so its two
