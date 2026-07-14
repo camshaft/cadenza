@@ -605,6 +605,12 @@ pub enum Ty {
     //# Two maps MUST be equal exactly when they associate the same keys with equal values, independent of insertion order.
     //= spec/capabilities/collections-and-text.md#keys-are-compared-by-value-not-representation
     //# Whether a map contains a key, and which entry a lookup or removal names, MUST be decided by the key's value under *core-semantics.md §Equality Is Structural* — two keys that are equal as values name the same entry regardless of how each was constructed or stored.
+    // The CHAMP hash and the internal node placement it uses are NEVER exposed: the observable surface is
+    // only the value-based ops (contains/lookup/insert/remove — membership + association), `size`, value
+    // equality, and the canonical SORTED-KEY iteration (the deterministic order). No op reveals a key's
+    // hash or its position in the trie, so a program can neither observe nor depend on the placement.
+    //= spec/capabilities/collections-and-text.md#keys-are-compared-by-value-not-representation
+    //# A map therefore MUST NOT expose or depend on any hashing, ordering, or internal placement of its keys as observable behavior; only membership, association, size, equality, and the deterministic iteration order below are observable.
     //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
     //# A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
     Map(Box<Ty>, Box<Ty>),
