@@ -45996,6 +45996,254 @@ mod closure_host_resource {
         );
     }
 
+    /// SUM-ARG oracle core: a closure `(fn (o) (match o ((Some x) x) (None 0)))` whose ONE argument is an
+    /// `(Option Int64)`. The HYPOTHESIS: the canonical ABI flattens a component `option<s64>` param into TWO
+    /// scalar core params — `(disc: i32, payload: i64)` — with NO memory/realloc/runtime decode (a fixed-shape
+    /// scalar payload). So the guest `call` receives `(i32 self, i32 disc, i64 payload)` and branches on `disc`
+    /// (`disc == 1` → Some → return the payload; else None → return 0), matching how a guest would rebuild the
+    /// sum cell + dispatch a real match. If this validates + runs, an `(Option scalar)` direct-call ARG is an
+    /// implementation gap (decode the flattened disc/payload + `sum-new`), NOT an ABI wall needing `value-decode`.
+    /// Standalone (no heap): the lifted body is inlined into `call` since the match is a bare i32 branch on disc.
+    fn closure_option_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = make ()->i32;
+        // 2 = call (i32 self, i32 disc, i64 payload)->i64 (self + the FLATTENED option disc + payload).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![], vec![ValType::I32]); // 1 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I64],
+            vec![ValType::I64],
+        ); // 2 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make
+        funcs.function(2); // call
+        m.section(&funcs);
+        let f_make = 2u32;
+        let f_call = 3u32;
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut code = CodeSection::new();
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, disc, payload) = if disc==1 { payload } else { 0 }  — the `(match o ((Some x) x) (None 0))`
+        // over the flattened option. (Some = disc 1, None = disc 0 in the built-in Option decl order.)
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // disc
+        call.instruction(&Instruction::I32Const(1)); // Some's discriminant
+        call.instruction(&Instruction::I32Eq);
+        call.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        call.instruction(&Instruction::LocalGet(2)); // payload
+        call.instruction(&Instruction::Else);
+        call.instruction(&Instruction::I64Const(0));
+        call.instruction(&Instruction::End);
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the OPTION-ARG closure: like `inner_reexport_component_tuple_arg` but
+    /// `call`'s argument is an `option<s64>` DEFINED TYPE. Proves the component-level type of a fixed-payload
+    /// `(Option scalar)` argument is expressible and re-exportable across the resource boundary.
+    fn inner_reexport_component_option_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // the option<s64> argument defined type (import side).
+        let (opt_imp, od_o) = c.type_defined();
+        od_o.option(ComponentValType::Primitive(PrimitiveValType::S64));
+        // call : (self: own<0>, o: option<s64>) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("o", ComponentValType::Type(opt_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        // RE-EXPORT the resource type + funcs.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (opt_exp, od_o2) = c.type_defined();
+        od_o2.option(ComponentValType::Primitive(PrimitiveValType::S64));
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("o", ComponentValType::Type(opt_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the OPTION-ARG closure: `call` is lifted against `(self: own<t>, o:
+    /// option<s64>) -> s64`, NO Memory/Realloc canon options — the HYPOTHESIS is that wasmtime FLATTENS the
+    /// fixed-payload option into `(i32 disc, i64 payload)` core params on lift, so the guest `call` receives
+    /// `(i32 self, i32 disc, i64 payload)`. If the lift required indirect passing, this would fail to
+    /// instantiate — the test IS the refutation attempt.
+    fn oracle_closure_option_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, o: option<s64>) -> s64  — NO canon options (flatten hypothesis).
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (opt_t, odef_o) = c.type_defined();
+        odef_o.option(ComponentValType::Primitive(PrimitiveValType::S64));
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("o", ComponentValType::Type(opt_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_option_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT: does an `(Option Int64)` closure ARGUMENT cross the direct-call boundary by
+    /// NATIVE option flattening (`option<s64>` → `(disc: i32, payload: i64)`), with no runtime decode? Build
+    /// the oracle, `make()` the handle, then `call(handle, Some(42))` → 42 and `call(handle, None)` → 0. If
+    /// this validates + runs, the `(Option scalar)` direct-call ARG decline is an implementation gap (decode
+    /// the flattened disc/payload + rebuild the sum via `sum-new`), NOT an ABI wall requiring `value-decode`.
+    #[test]
+    fn an_option_scalar_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_option_arg_component(&closure_option_arg_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("option-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
+
+        // call(handle, Some(42)) → 42. The option crosses as a Val::Option; wasmtime flattens it to (disc,
+        // payload) core params for the guest `call`. (`own<t>` is single-use — this call CONSUMES the handle.)
+        let some_arg = Val::Option(Some(Box::new(Val::S64(42))));
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), some_arg], &mut out)
+            .expect("call(handle, Some(42))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(42), "match Some(42) → 42");
+
+        // A FRESH handle for the None case (`own<t>` consumed the first): make() again, then call(h2, None) → 0.
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2)
+            .expect("make call 2");
+        make.post_return(&mut store).expect("make post_return 2");
+        let none_arg = Val::Option(None);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), none_arg], &mut out2)
+            .expect("call(handle, None)");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out2[0], Val::S64(0), "match None → 0");
+    }
+
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE
     /// argument is a NESTED fixed-shape tuple `(Tuple Int64 (Tuple Int64 Int64))`. The HYPOTHESIS: the canonical
     /// ABI flattens a nested `tuple<s64, tuple<s64,s64>>` RECURSIVELY into THREE leaf core params `(i64, i64,
