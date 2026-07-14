@@ -2177,8 +2177,8 @@ mod tests {
         let a = parse_ok("def a = 1 def b = 2");
         let top = a.as_form(a.root, "do").unwrap();
         assert_eq!(top.len(), 2);
-        assert_eq!(a.as_form(top[0], "def").is_some(), true);
-        assert_eq!(a.as_form(top[1], "def").is_some(), true);
+        assert!(a.as_form(top[0], "def").is_some());
+        assert!(a.as_form(top[1], "def").is_some());
     }
 
     #[test]

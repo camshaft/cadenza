@@ -1426,7 +1426,9 @@ fn emit_sum_cont(
             };
             let then_ = emit_sum_cont(db, scrutinee, then_, env, ctx)?;
             let els = emit_sum_cont(db, scrutinee, els, env, ctx)?;
-            Ok(format!("if ({subject}) == {lit} {{ {then_} }} else {{ {els} }}"))
+            Ok(format!(
+                "if ({subject}) == {lit} {{ {then_} }} else {{ {els} }}"
+            ))
         }
     }
 }
