@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 122 tests total across 14 modules):
+top. Current `src/` modules (each with same-file `@test`s — 130 tests total across 15 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -106,6 +106,12 @@ top. Current `src/` modules (each with same-file `@test`s — 122 tests total ac
   (fold that over a tree). Stresses a `Map String Int64` keyed by a matched sum-payload String. 10
   `@test`s pass; the DEEP `paren-count` case is withheld (it hits the two-live-string-payloads
   miscompile — see the log).
+- `src/fresh.cdz` — a fresh-id generator on an EFFECT + handler (the port's first use of the effect
+  system): `Fresh.next` yields a distinct `Int64` per call, a state-threading handler
+  (`resume(s, s + 1)`) supplies 0, 1, 2, …. The HM/compiler "gensym". `id-sum` is a SINGLE self-recursive
+  effectful loop (that shape specializes + runs; a mutually-recursive effectful group with the perform
+  in a separate branch does NOT yet — see the log). 8 `@test`s (closed-form sums, a custom start, a
+  draw-count via a constant-handback handler).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -182,6 +188,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — effect specialization leaks an internal name): a mutually-recursive effectful
+  group where the perform is in a DIFFERENT branch from the mutual call.**
+  `repros/miscompile-mutually-recursive-effectful-functions.sexp`. `cdz check` CLEAN; `cdz compile`
+  fails with `unbound name ev#eff3$s0` (an effect-specialization mangled name leaking as unbound). The
+  seed HANDLES mutual-recursive effect specialization when the perform and the mutual call sit in the
+  SAME strict expression (`(+ (Ctr.tick) (od …))` — its own passing test), but when the perform is in
+  the base-case branch and the mutual `(od …)` call is in the other branch, the `#ctx$s0` specialization
+  is left dangling. NOT a blanket "mutual recursion fails" (a blanket decline would regress the working
+  same-branch shape) — the fix must tie the memo knot for the separate-branch case. A SINGLE
+  self-recursive effectful fn is fine (see `src/fresh.cdz`), so the port threads fresh ids with
+  self-recursion for now.
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): two live `String` sum-payloads across a
   recursion drop a per-node result.** `repros/miscompile-two-live-string-payloads-across-recursion.sexp`.
