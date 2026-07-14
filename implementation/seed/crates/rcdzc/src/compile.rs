@@ -690,6 +690,55 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )),
         );
     }
+    // DUPLICATE TYPE DECLARATION. A module's TYPE names are a fixed set exactly as its definition/export
+    // names are: `(type T …) (type T …)` declares `T` twice, and the name resolves to the FIRST — so a
+    // reference to a variant only the SECOND declares (`T.B` above) fails with a confusing "record has no
+    // field `B`", the shadowed second declaration silently unreachable. That is the SAME closed-name-set
+    // ill-formedness a duplicate def / export / variant / operation is rejected for (CDZ0201) — the sixth.
+    // Reject each `(type …)` after the first with a given name, anchored at its declaration occurrence,
+    // with a DELETE fix removing the redundant declaration (the first already binds the name — the same
+    // repair the duplicate export/variant/op gets). A type whose reference the author actually meant to
+    // point at the second declaration would RENAME it, but deleting the redundant same-named declaration
+    // resolves the ambiguity in one shot; which the author meant is the heuristic. `ty.occ` is the whole
+    // `(type …)` form (its nominal identity), so the fix removes the entire redundant declaration.
+    // Only USER declarations participate: the built-in sums (`Option`/`Result`/…) are appended to
+    // `type_decls` as ordinary entries but their `occ` is a SYNTHESIZED node (built after the user-node
+    // snapshot), so `is_user_node` is false for them. This is exactly what lets a user `(type Option …)`
+    // legitimately SHADOW the prelude sum (first-wins in `type_decl_by_name`) WITHOUT reading as a
+    // duplicate: the prelude `Option` is filtered out, leaving the single user declaration.
+    // The duplicate check is PER-MODULE (per-file), not global: a type-name set is fixed within ONE
+    // module, but two SEPARATE modules of a linked package may each legitimately declare a type of the
+    // same name (`(type L …)` in a lib AND in the importing entry — each module has its own type
+    // namespace, and structural identity makes the two `L`s the same type). So key the seen-set on
+    // `(file, name)`, using the same per-file identity the resolver scopes name visibility by (`file_of`;
+    // `None` for a single-file program collapses to one bucket — the flat case is unchanged). Without the
+    // file key, a global scan flagged a cross-module same-named type as a spurious duplicate (regressing
+    // the cross-module recursive-sum case — modules-and-namespaces.md #Imports Are Explicit: a sibling
+    // file's type is invisible unless imported, so re-declaring its name is not a redeclaration).
+    let mut seen_types: std::collections::HashSet<(Option<usize>, &str)> =
+        std::collections::HashSet::new();
+    let dup_types: Vec<(String, StructId)> = db
+        .type_decls
+        .iter()
+        .filter(|t| db.is_user_node(t.occ))
+        .filter(|t| !t.name.is_empty() && !seen_types.insert((db.file_of(t.occ), t.name.as_str())))
+        .map(|t| (t.name.clone(), t.occ))
+        .collect();
+    for (name, occ) in dup_types {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "type `{name}` is declared more than once (a module has a fixed set of type names)"
+                ),
+            )
+            .at(occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                occ,
+                format!("remove the duplicate declaration of type `{name}`"),
+            )),
+        );
+    }
     // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
     // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
     // Operations: each name is bound to ONE operation type), so naming an operation twice is the SAME
@@ -1778,14 +1827,27 @@ fn walk_for_dead_traps(
     let discarded = |db: &mut Db, child: StructId, out: &mut Vec<Diagnostic>, seen: &mut _| {
         if is_dropped_const_trap(db, child) {
             // Attribute the warning to a USER node — a synthesized/prelude origin has no span. Prefer
-            // the trap's own anchor; fall back to the discarding child occurrence.
+            // the dropped computation's own anchor; fall back to the discarding child occurrence.
             let at = dropped_trap_anchor(db, child).filter(|&n| db.is_user_node(n));
-            out.push(Diagnostic::warning(
-                Code::DeadTrap,
-                "this computation always traps but its value is never used, so it was eliminated \
-                 (an unused element, binding, or argument) — likely a bug",
-                at,
-            ));
+            // A dropped computation that has NO VALUE was elided by the fold: either it always TRAPS
+            // (`ConstTrap`) or it does not REDUCE to a value — a non-normalizing / explosively-growing
+            // term the reduction-work budget stopped (`RecursionBound`). The SAME term whose value is
+            // USED is a hard error (CDZ0304 / CDZ0999); dropped, it is dead code, so warn (the likely
+            // bug) rather than reject — the DCE consistency the dead-trap warning already applies, now
+            // extended to a dead non-normalizing binding (an unused `let` init / discarded argument
+            // whose term diverges). One message covers both "no value" reasons.
+            let msg = match core_of(db, child) {
+                Core::Poison(r) if r.code == Some(Code::RecursionBound) => {
+                    "this computation does not reduce to a value (a non-terminating or \
+                     explosively-growing reduction) but its value is never used, so it was \
+                     eliminated (an unused element, binding, or argument) — likely a bug"
+                }
+                _ => {
+                    "this computation always traps but its value is never used, so it was eliminated \
+                     (an unused element, binding, or argument) — likely a bug"
+                }
+            };
+            out.push(Diagnostic::warning(Code::DeadTrap, msg, at));
         } else {
             walk_for_dead_traps(db, child, out, seen);
         }
@@ -1876,7 +1938,10 @@ fn walk_for_dead_traps(
 /// discarded-value test: a child in a value-dropping position that folds to a `ConstTrap` had its trap
 /// eliminated (a reached one would have faulted the build in `collect_faults`).
 fn is_dropped_const_trap(db: &mut Db, id: StructId) -> bool {
-    matches!(core_of(db, id), Core::Poison(r) if r.code == Some(Code::ConstTrap))
+    matches!(
+        core_of(db, id),
+        Core::Poison(r) if matches!(r.code, Some(Code::ConstTrap) | Some(Code::RecursionBound))
+    )
 }
 
 /// The node a dropped `ConstTrap` at `id` should be attributed to — the trap's own recorded anchor if
@@ -2181,6 +2246,11 @@ fn link_inputs(
     entry_name: Option<&str>,
 ) -> Result<(crate::ast::Arenas, Option<crate::link::Linkage>), Reject> {
     match ast_arts {
+        // No `ast` artifact in the input list — the source tree the tool requires to derive a component
+        // is absent, so this is a diagnostic (`compile` turns the `Reject` into an error `Diagnostic`),
+        // never an empty or arbitrary component.
+        //= spec/contracts/build-tool-interface.md#the-tool-s-inputs-are-a-kinded-artifact-list
+        //# An input artifact list that omits the source tree the tool requires to derive a component MUST be reported as a diagnostic rather than producing an empty or arbitrary output.
         [] => Err(Reject::decline("no `ast` input artifact")),
         // The overwhelmingly common case: exactly one file, no package framing. Decode it as-is — flat
         // namespace, no linkage — so a one-file program compiles through the identical path it always

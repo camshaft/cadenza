@@ -2222,6 +2222,24 @@
 ; resolved as unbound); `t` IS bound by the pattern. These pin the positional destructure computing a
 ; real value, plus the arity check (an over-arity pattern names a nonexistent element → CDZ0201).
 
+(case "a constant multi-payload variant match binds both payloads and folds to a scalar"
+  (doc    "The simplest multi-payload destructure — NON-recursive, CONSTANT scrutinee, folding to a scalar:
+           `(match (V.P 3 4) ((V.P a b) (+ a b)) ((V.Z) 0))` binds `a`/`b` positionally from the constant
+           two-payload variant (boxed as one tuple, `a` at `[Payload, Elem(0)]`, `b` at `[Payload,
+           Elem(1)]`) and sums them → 7. Pins the constant-scrutinee multi-payload fold that BOTH backends
+           must agree on: the wasm backend reads the constant payload tuple via `sum-payload`/`arr-get`, and
+           the Rust backend folds each binder directly to its constant payload NODE (a constant `SumNew`'s
+           payloads indexed) rather than re-matching — the two-compiler agreement over a multi-payload
+           match, distinct from the recursive/runtime cases below.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type V (P Int64 Int64) (Z))
+            (def (f v) (match v ((V.P a b) (+ a b)) ((V.Z) 0)))
+            (def (main) (f (V.P 3 4)))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a multi-payload variant destructures its payloads positionally"
   (doc    "`(type IntList Nil (Cons Int64 IntList))` with `(def (len l) (match l ((IntList.Nil) 0)
            ((IntList.Cons h t) (+ 1 (len t)))))` — the canonical linked-list length. The `Cons` arm binds
@@ -3394,6 +3412,23 @@
   (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Nn)) (export main)))
   (output (: (Nn unit) Opt)))
 
+(case "a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit"
+  (doc    "The contrast with the nullary variant above: a NULLARY variant `(Nn)` has the UNIT payload and
+           renders `(Nn unit)`, but a variant with an EXPLICIT empty-tuple payload `(A (Tuple))` carries a
+           `(tuple)` VALUE (type `(Tuple)`, distinct from `Unit`) and renders `(: (A (tuple)) V)` — the
+           empty tuple, NOT `unit`. `unit` and `(tuple)` are distinct types (comparing them is CDZ0203), so
+           their value forms differ: a nullary variant's reconstructed payload is `unit`, an
+           empty-tuple-payload variant's is `(tuple)`. Pins that the escape renders the payload's OWN value
+           form (a zero-element tuple) rather than collapsing an empty tuple to unit.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type V (A (Tuple)) (B))
+            (def (mk (: b Int64)) (if (> b 0) (V.A (tuple)) (V.B)))
+            (def (main) (mk 5))
+            (export main)))
+  (call   main)
+  (output (: (A (tuple)) V)))
+
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
            SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the
@@ -4507,3 +4542,17 @@
   (input  (do (def (main (: x Int64)) (+ (. (tuple x (/ 100 x)) 0) (. (tuple x (/ 100 x)) 1))) (export main)))
   (call   main (: 0 Int64))
   (trap   "division by zero"))
+
+(case "an unused let-init that does not reduce to a value is eliminated, so it does not diverge"
+  (doc    "The elision covers a computation with NO VALUE, not only a trapping one: a non-normalizing
+           self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal form — each β-step
+           grows the term) bound to an UNUSED let-binder is dead code, so it is eliminated and the program
+           yields its body — `main` returns 0. Exactly as an un-observed trapping element is elided (above),
+           an un-observed non-normalizing binding is too — a compiler DCE's dead code rather than reducing
+           it. The SAME term USED (`(let ((y <it>)) y)`) is a hard error (CDZ0999, the reduction bound),
+           just as an observed trap is CDZ0304; dropped, both are dead code. A CDZ0305 warning flags the
+           dead non-normalizing binding as a likely bug (it rides alongside the artifact, not graded here).")
+  (input  (do
+            (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0))
+            (export main)))
+  (output (: 0 Int64)))

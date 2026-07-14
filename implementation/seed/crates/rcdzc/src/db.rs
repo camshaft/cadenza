@@ -733,6 +733,13 @@ pub struct Db {
     /// program with no runtime closure — byte-identical to before. `DESIGN-runtime-closures-rcdzc.md` §3.
     pub(crate) lifted: Vec<crate::lower::LiftedLambda>,
 
+    /// `body occurrence → its slot in [`lifted`]` — the O(1) dedup index for [`Db::lift_lambda`]. Lifting
+    /// deduplicates by the lambda's `body` (one slot per distinct lambda), and the lookup was a LINEAR scan
+    /// of `lifted` per lift → O(N²) for a program that lifts N distinct closures (a list/tuple of N escaping
+    /// lambdas: ~N²/2 scan iterations — 18M at N=6400). This map makes each dedup O(1); kept in lockstep
+    /// with `lifted` (an entry is inserted exactly when a new lambda is pushed).
+    pub(crate) lifted_by_body: crate::fxhash::FxHashMap<StructId, usize>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -859,6 +866,14 @@ impl Db {
         // `(. E op)` projections resolve like hand-written member access. A handle already in internal
         // shape (4 children) is left untouched, so a hand-authored internal program still compiles.
         crate::effects::desugar_handles(&mut ast);
+        // Reify every well-formed `(quote FORM)` into the `Ast` constructor application that BUILDS its
+        // value (`(quote 42)` -> `(Ast.Int 42)`, `(quote (+ 1 2))` -> `(Ast.List (list …))`), so a quote
+        // result and a hand-written `Ast.*` value are the SAME sum value (`metaprogramming.md` §Quote
+        // Produces An AST Value). Purely structural — a quote is inert, its body never evaluated. Runs
+        // BEFORE the parent index so the emitted `(. Ast …)`/`(list …)` nodes resolve like source. A
+        // quote whose body mentions a leaf the `Ast` sum can't carry yet, or a wrong-arity `(quote …)`,
+        // is left untouched for `resolve::resolve_quote` (a Todo decline / a CDZ0201, never a rewrite).
+        crate::quote::reify_quotes(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
@@ -1020,6 +1035,7 @@ impl Db {
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
+            lifted_by_body: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
@@ -1240,11 +1256,16 @@ impl Db {
     ///
     /// [`lifted`]: Db::lifted
     pub fn lift_lambda(&mut self, lam: crate::lower::LiftedLambda) -> usize {
-        if let Some(pos) = self.lifted.iter().position(|l| l.body == lam.body) {
+        // Dedup by the lambda's `body` occurrence via the O(1) index (was a linear scan of `lifted` →
+        // O(N²) for N distinct lifted closures). The index and `lifted` stay in lockstep: a body already
+        // present returns its slot; a new one is pushed and indexed at its position.
+        if let Some(&pos) = self.lifted_by_body.get(&lam.body) {
             return pos;
         }
+        let pos = self.lifted.len();
+        self.lifted_by_body.insert(lam.body, pos);
         self.lifted.push(lam);
-        self.lifted.len() - 1
+        pos
     }
 
     /// Whether the lexical-scope SKIP index covers `id` — true for a load-time node (its entry is
@@ -1492,6 +1513,14 @@ impl Db {
     /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.
     pub(crate) fn is_linked_package(&self) -> bool {
         self.file_scope.is_some()
+    }
+
+    /// The index of the FILE whose demux range contains node `id`, or `None` for a single-file program or
+    /// a node in no file (prelude / β-copied / synthesized). Used to scope a per-MODULE well-formedness
+    /// check (a duplicate declaration is per-file: two modules may each declare a type named `L`) — the
+    /// same file identity the resolver uses for per-file name visibility.
+    pub(crate) fn file_of(&self, id: StructId) -> Option<usize> {
+        self.file_scope.as_ref()?.file_of(id)
     }
 
     /// How many top-level defs across the WHOLE package share the value name `name` — the ambiguity

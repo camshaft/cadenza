@@ -68,6 +68,26 @@ export default function Modules() {
         — and you'd get 41 instead; the names make the pipeline unambiguous either way.
       </P>
 
+      <H2>Modules nest</H2>
+      <P>
+        A module can hold another module, so one file can carry a whole tree of scopes — much like a
+        module tree in Rust. You reach through the layers with the same dotted access, one name per
+        level. Here a <C>Geometry</C> module contains a <C>Square</C> module with an <C>area</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (do
+    (module Geometry
+      (module Square
+        (def (area s) (* s s))))
+    (Geometry.Square.area 5)))`}
+      />
+      <P>
+        <C>Geometry.Square.area 5</C> reads left to right — into <C>Geometry</C>, then <C>Square</C>,
+        then <C>area</C> — and gives <C>25</C>. It's the same field access as a record inside a record;
+        nesting modules is nothing new, because a module was a record all along.
+      </P>
+
       <Why tenet="A module is a record of its exports">
         Cadenza doesn't bolt on a separate "module system" with its own rules — a module is just a{" "}
         <em>value</em>, a record whose fields are its definitions, bound to a name. That's why you reach
@@ -105,19 +125,31 @@ export default function Modules() {
 
       <Exercise
         id="modules:2"
-        prompt={<>Pipe <C>4</C> through <C>Scale.g</C> first, then <C>Inc.f</C>, so the answer is <C>41</C>.</>}
+        prompt={
+          <>
+            <C>f</C> lives inside <C>Double</C>, which lives inside <C>Mathy</C>. Write the qualified path
+            to call it on <C>8</C> — doubling gives <C>16</C>.
+          </>
+        }
         starter={`(def (main)
   (do
-    (module Inc (def (f x) (+ x 1)))
-    (module Scale (def (g x) (* x 10)))
-    (Inc.f (Scale.g ?))))`}
+    (module Mathy
+      (module Double
+        (def (f x) (* x 2))))
+    (?.f 8)))`}
         solution={`(def (main)
   (do
-    (module Inc (def (f x) (+ x 1)))
-    (module Scale (def (g x) (* x 10)))
-    (Inc.f (Scale.g 4))))`}
-        expected="41"
-        hint={<><C>Scale.g 4</C> is 40, then <C>Inc.f 40</C> adds 1.</>}
+    (module Mathy
+      (module Double
+        (def (f x) (* x 2))))
+    (Mathy.Double.f 8)))`}
+        expected="16"
+        hint={
+          <>
+            Name each level from the outside in, separated by dots: <C>Mathy.Double.f</C>. Then{" "}
+            <C>8 × 2 = 16</C>.
+          </>
+        }
       />
     </article>
   );

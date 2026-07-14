@@ -143,7 +143,7 @@ export const CHAPTERS: Chapter[] = [
     title: "The numeric model",
     blurb: "Checked integers and no silent promotion.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Numbers.tsx")),
   },
   {

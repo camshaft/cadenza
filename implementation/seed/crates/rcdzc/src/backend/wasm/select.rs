@@ -1395,7 +1395,20 @@ pub fn select_function_of(
             });
         }
     }
-    let ret = type_of(db, body);
+    let mut ret = type_of(db, body);
+    // A body that provably DIVERGES has a `Never` result type (a fresh var / `Any`) with no machine
+    // representation, but it never RETURNS a value — its `unreachable` is stack-polymorphic and validates
+    // in any result position. So a diverging function is emitted with a UNIT (0-result) signature rather
+    // than declining "return type has no machine representation": `(def (main) (trap …))`, a zero-arm
+    // match on a `Never` scrutinee (`(match (never-returns))` → `Core::Trap`), or a call to such a
+    // function. Only rewrite when `ret` has NO valtype AND the body reduces to `Core::Trap` — a genuine
+    // value-returning body keeps its type (a real "no machine rep" decline still fires for those).
+    if valtype_of(&ret).is_none()
+        && !matches!(ret, Ty::Unit)
+        && matches!(core_of(db, body), Core::Trap)
+    {
+        ret = Ty::Unit;
+    }
     let mut code = Emit::new();
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each

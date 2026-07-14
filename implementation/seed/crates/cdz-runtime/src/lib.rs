@@ -1103,7 +1103,11 @@ struct TypeNode {
 fn decode_type_node(d: &[u8], pos: &mut usize) -> Option<TypeNode> {
     let head = desc_name(d, pos)?;
     let n = desc_leb(d, pos)?;
-    let mut children = Vec::with_capacity(n as usize);
+    // `reserve_cap`: clamp an untrusted child count to remaining bytes so a malformed TypeNode can't
+    // `with_capacity`-abort (each child is ≥1 byte). NOTE this is recursive — a malformed deeply-nested
+    // TypeNode is bounded only by `desc_name`/`desc_leb` running out of bytes (`?`), which they do since
+    // every level consumes ≥2 bytes (a name-len + a child-count); the total descriptor length caps depth.
+    let mut children = Vec::with_capacity(reserve_cap(n, d, *pos));
     for _ in 0..n {
         children.push(decode_type_node(d, pos)?);
     }
@@ -1141,6 +1145,17 @@ fn desc_name(d: &[u8], pos: &mut usize) -> Option<String> {
     core::str::from_utf8(bytes).ok().map(String::from)
 }
 
+/// A pre-reservation capacity for a count `n` decoded from UNTRUSTED descriptor bytes, CLAMPED to the
+/// bytes remaining after `pos`. Every element decoded from a count consumes ≥1 byte, so a legitimate `n`
+/// never exceeds `d.len() - pos`; clamping turns a bogus huge LEB (e.g. from a random/malformed
+/// descriptor) into a small reservation the `?`-guarded loop then fails out of, instead of
+/// `Vec::with_capacity(n)` trying to reserve gigabytes and ABORTING the guest (the value-encode escape's
+/// "never a trap" totality contract). Costs nothing on well-formed input (the clamp never binds there).
+#[inline]
+fn reserve_cap(n: u64, d: &[u8], pos: usize) -> usize {
+    (n as usize).min(d.len().saturating_sub(pos))
+}
+
 fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
     let tag = *d.get(*pos)?;
     *pos += 1;
@@ -1153,7 +1168,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         5 => Shape::Unit,
         6 => {
             let n = desc_leb(d, pos)?;
-            let mut elems = Vec::with_capacity(n as usize);
+            let mut elems = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
@@ -1162,7 +1177,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         7 => Shape::List(desc_leb(d, pos)? as u32),
         8 => {
             let n = desc_leb(d, pos)?;
-            let mut fields = Vec::with_capacity(n as usize);
+            let mut fields = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 let name = desc_name(d, pos)?;
                 fields.push((name, desc_leb(d, pos)? as u32));
@@ -1171,7 +1186,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         }
         9 => {
             let n = desc_leb(d, pos)?;
-            let mut variants = Vec::with_capacity(n as usize);
+            let mut variants = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 let head = desc_name(d, pos)?;
                 variants.push((head, desc_leb(d, pos)? as u32));
@@ -1199,7 +1214,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
             // knows to splice the elements FLAT under the variant head rather than wrap them in `tuple`.
             let n = desc_leb(d, pos)?;
-            let mut elems = Vec::with_capacity(n as usize);
+            let mut elems = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
@@ -1212,7 +1227,9 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
 fn decode_descriptor(d: &[u8]) -> Option<Descriptor> {
     let mut pos = 0usize;
     let n = desc_leb(d, &mut pos)?;
-    let mut table = Vec::with_capacity(n as usize);
+    // `reserve_cap`: a bogus huge table count from a malformed descriptor must not `with_capacity`-abort;
+    // each shape is ≥1 byte so a real `n` ≤ remaining bytes, and the `?`-loop fails out of an overlong one.
+    let mut table = Vec::with_capacity(reserve_cap(n, d, pos));
     for _ in 0..n {
         table.push(decode_shape(d, &mut pos)?);
     }
@@ -1712,6 +1729,13 @@ fn encode_value(
                             let l = b.name_leaf("unit");
                             out.push(b.atom(l));
                         } else {
+                            // TOTALITY: the descriptor declares `elems.len()` fields; verify the actual node
+                            // has at least that arity BEFORE any `op_arr_get` (which TRAPS on OOB / an
+                            // immediate). A well-formed descriptor always matches, but a malformed one must
+                            // DECLINE (`None`) per this op's contract, not trap the guest.
+                            if (op_arr_len(h) as usize) < elems.len() {
+                                return None;
+                            }
                             let head = b.name_leaf("tuple");
                             let head_s = b.atom(head);
                             work.push(EncodeWork::List {
@@ -1751,6 +1775,11 @@ fn encode_value(
                         }
                     }
                     Shape::Record(fields) => {
+                        // TOTALITY (as `Tuple`): a record is an arr of field values; verify the node's
+                        // arity covers the descriptor's field count before any trapping `op_arr_get`.
+                        if (op_arr_len(h) as usize) < fields.len() {
+                            return None;
+                        }
                         let head = b.name_leaf("record");
                         let head_s = b.atom(head);
                         work.push(EncodeWork::List {
@@ -1779,6 +1808,11 @@ fn encode_value(
                         // like the `Tuple` walk) rather than visiting the single tuple shape.
                         if let Some(Shape::Spread(elems)) = desc.table.get(payload_shape as usize) {
                             let elems = elems.clone();
+                            // TOTALITY (as `Tuple`): the payload arr must have ≥ the Spread's element count
+                            // before any trapping `op_arr_get` — a malformed descriptor DECLINES, not traps.
+                            if (op_arr_len(payload_h) as usize) < elems.len() {
+                                return None;
+                            }
                             work.push(EncodeWork::List {
                                 head_s,
                                 nkids: elems.len(),
@@ -6586,6 +6620,56 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every string value dropped");
     }
 
+    /// value-encode of a BOXED i64 at the extremes, byte-exact against the codec's KIND_INT sign+magnitude
+    /// form. `int_round_trip` only checks `op_get_int` (round-trip) and a test-side `render` reimpl — NOT
+    /// `int_leaf`'s real codec bytes through `op_value_encode_form`. The riskiest value is `i64::MIN`,
+    /// whose `-v` overflows: `int_leaf` uses `v.unsigned_abs()` (= 2^63, magnitude `80 00…00`) so the
+    /// magnitude is right and the sign flag negative. A big-endian / leading-zero-strip / sign bug in
+    /// `int_leaf` slips past the small-value `intlist` differential; this pins the boundary. Descriptor:
+    /// table [0]=Int (tag 0), root=0. Doc = header(8)·leaf_count(1)·[KIND·LEB(mlen)·mag]·struct(1)·
+    /// [TAG_ATOM·0]·root(0). KIND 0 = pos, 3 = neg.
+    #[test]
+    fn value_encode_boxed_int_extremes_byte_exact() {
+        reset();
+        let before = live_nodes();
+        let desc: &[u8] = &[0x01, 0x00, 0x00]; // table_len=1, [0]=Int(tag 0), root=0
+        let hdr = [0x63u8, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01]; // cdzast\0\1
+        // Assemble the expected single-int document from (kind, big-endian magnitude bytes).
+        let doc_of = |kind: u8, mag: &[u8]| -> Vec<u8> {
+            let mut d = hdr.to_vec();
+            d.push(0x01); // leaf_count = 1
+            d.push(kind);
+            d.push(mag.len() as u8); // LEB len (all these lengths are < 128 → one byte)
+            d.extend_from_slice(mag);
+            d.push(0x01); // struct_count = 1
+            d.push(0x00); // TAG_ATOM
+            d.push(0x00); // leaf id 0
+            d.push(0x00); // root = 0
+            d
+        };
+        // (value, expected kind, expected big-endian magnitude with leading zeros stripped)
+        let cases: &[(i64, u8, &[u8])] = &[
+            (0, 0, &[]),                                              // zero → empty magnitude, POSITIVE
+            (1, 0, &[0x01]),
+            (-1, 3, &[0x01]),                                        // negative one
+            (255, 0, &[0xff]),
+            (256, 0, &[0x01, 0x00]),                                 // two-byte magnitude, no stray leading zero
+            (i64::MAX, 0, &[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            (i64::MIN, 3, &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // unsigned_abs = 2^63
+        ];
+        for &(v, kind, mag) in cases {
+            let h = op_box_int(v);
+            let got = op_value_encode_form(h, desc).expect("encode a boxed int");
+            assert_eq!(
+                got,
+                doc_of(kind, mag),
+                "value-encode of {v} must be the codec's KIND_INT sign+magnitude form"
+            );
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak: every boxed int dropped");
+    }
+
     /// A String nested inside a recursive sum encodes (the real use — a value form like an AST node with
     /// an identifier, or a `List Str`). Descriptor: a Cons/Nil list whose element is a Str. Drives the
     /// iterative walk through Sum → Tuple → Str and back via Ref, and checks byte-identity vs the oracle.
@@ -6955,6 +7039,108 @@ mod tests {
             op_drop(h);
         }
         assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// Decode a single-Float value-encode document back to the decimal string it denotes:
+    /// `[-]<significand>e<exponent>`, where the significand is the big-endian base-256 magnitude read as a
+    /// base-10 integer. Robust to a magnitude of ANY length (repeated ÷10 on a base-256 limb vector — no
+    /// u128 width assumption), so it works for a fuzzed value's full shortest decimal. Doc layout:
+    /// header(8)·leaf_count(1)·[KIND_FLOAT · neg(1) · exp(8 BE) · siglen(1) · mag] · struct… — the float
+    /// leaf is first, at offset 9: [9]=KIND, [10]=neg, [11..19]=exp, [19]=siglen, [20..]=mag.
+    fn float_doc_to_decimal(doc: &[u8]) -> String {
+        let neg = doc[10] == 1;
+        let mut eb = [0u8; 8];
+        eb.copy_from_slice(&doc[11..19]);
+        let exp = i64::from_be_bytes(eb);
+        let siglen = doc[19] as usize;
+        let mag = &doc[20..20 + siglen]; // big-endian base-256
+        // base-256 (big-endian) → decimal string via repeated division by 10.
+        let mut limbs: Vec<u32> = mag.iter().map(|&b| b as u32).collect(); // most-significant first
+        let mut digits_rev: Vec<u8> = Vec::new();
+        while limbs.iter().any(|&l| l != 0) {
+            let mut rem = 0u32;
+            for l in limbs.iter_mut() {
+                let cur = rem * 256 + *l;
+                *l = cur / 10;
+                rem = cur % 10;
+            }
+            digits_rev.push(b'0' + rem as u8);
+            // trim leading (most-significant) zero limbs so the loop terminates promptly
+            while limbs.first() == Some(&0) && limbs.len() > 1 {
+                limbs.remove(0);
+            }
+        }
+        let sig: String = if digits_rev.is_empty() {
+            "0".into()
+        } else {
+            digits_rev.iter().rev().map(|&b| b as char).collect()
+        };
+        format!("{}{}e{}", if neg { "-" } else { "" }, sig, exp)
+    }
+
+    /// FUZZ: the `float_leaf` conversion (f64 → codec KIND_FLOAT decimal via `{:e}` + base-10→base-256
+    /// Horner) over RANDOM f64 bit patterns — far stronger than the ~12 hand-picked values in
+    /// `value_encode_float_decimal_round_trips_to_the_same_f64`. Every FINITE f64 encoded via the real
+    /// `op_value_encode_form` must, when its KIND_FLOAT decimal is parsed back, reconstruct the EXACT bits
+    /// — a digit-count, exponent-fold, or Horner-carry bug in `float_leaf_from_sci` would surface on some
+    /// bit pattern the fixed list misses. A non-finite float declines (`None`) — asserted too. No leak.
+    #[test]
+    fn prop_float_leaf_round_trips_bit_exact_under_random_f64() {
+        bolero::check!().with_type::<u64>().for_each(|&bits| {
+            reset();
+            let v = f64::from_bits(bits);
+            let desc: &[u8] = &[0x01, 0x02, 0x00]; // [0]=Float(tag 2), root=0
+            let h = op_box_float(v);
+            let doc = op_value_encode_form(h, desc);
+            if v.is_finite() {
+                let doc = doc.expect("a finite float must encode");
+                let decimal = float_doc_to_decimal(&doc);
+                let reconstructed: f64 = decimal.parse().expect("the KIND_FLOAT decimal must parse");
+                assert_eq!(
+                    reconstructed.to_bits(),
+                    v.to_bits(),
+                    "f64 {v} (bits {bits:#018x}) must round-trip through its decimal {decimal}"
+                );
+            } else {
+                // nan/inf have no exact-decimal form → the walker declines (they cross by dedicated forms).
+                // (`op_box_float` canonicalizes NaN, but the encode of a non-finite still declines.)
+                assert!(doc.is_none(), "a non-finite float must DECLINE the value-encode, not emit garbage");
+            }
+            op_drop(h);
+            assert_eq!(live_nodes(), 0, "no leak for bits {bits:#018x}");
+        });
+    }
+
+    /// FUZZ the Float32 encode (`float32_leaf`) over RANDOM f32 bit patterns — the companion to the f64
+    /// fuzz. `float32_leaf` shares `float_leaf_from_sci` but feeds it the f32's OWN shortest decimal
+    /// (`{f32:e}`, NOT a promoted f64 whose decimal differs), so the digit strings it converts are a
+    /// distinct population. Every finite f32, encoded via the real `op_value_encode_form`, must round-trip
+    /// bit-exactly through its KIND_FLOAT decimal parsed back AS AN f32; a non-finite f32 declines. No leak.
+    #[test]
+    fn prop_float32_leaf_round_trips_bit_exact_under_random_f32() {
+        bolero::check!().with_type::<u32>().for_each(|&bits| {
+            reset();
+            let v = f32::from_bits(bits);
+            let desc: &[u8] = &[0x01, 0x0e, 0x00]; // [0]=Float32(tag 14), root=0
+            let h = op_box_float32(v);
+            let doc = op_value_encode_form(h, desc);
+            if v.is_finite() {
+                let doc = doc.expect("a finite f32 must encode");
+                let decimal = float_doc_to_decimal(&doc);
+                // Parse the decimal back AS AN f32 — the value form is the f32's own shortest decimal, so
+                // it must reconstruct the exact f32 bits (a promoted-f64 decimal would NOT).
+                let reconstructed: f32 = decimal.parse().expect("the KIND_FLOAT decimal must parse as f32");
+                assert_eq!(
+                    reconstructed.to_bits(),
+                    v.to_bits(),
+                    "f32 {v} (bits {bits:#010x}) must round-trip through its decimal {decimal}"
+                );
+            } else {
+                assert!(doc.is_none(), "a non-finite f32 must DECLINE the value-encode");
+            }
+            op_drop(h);
+            assert_eq!(live_nodes(), 0, "no leak for f32 bits {bits:#010x}");
+        });
     }
 
     /// `op_box_float` normalizes every NaN — of ANY bit pattern — to the ONE canonical quiet NaN
@@ -14857,6 +15043,63 @@ mod tests {
         bolero::check!()
             .with_type::<Vec<BytesOp>>()
             .for_each(|ops| run_bytes_op_sequence(ops));
+    }
+
+    // ── value-encode TOTALITY under an ARBITRARY (possibly malformed) descriptor ────────────────
+    // `op_value_encode_form` is the value-heap ESCAPE — the runtime's most complex descriptor-driven
+    // walk, run at the host boundary. Its contract (docstring): "A malformed descriptor / unrenderable
+    // shape yields the empty Bytes … never a trap." The compiler only bakes well-formed descriptors
+    // today, but a future descriptor-gen bug must DECLINE, not crash/hang the guest with no diagnostic.
+    // Fuzz RANDOM descriptor bytes against representative values and assert the op always RETURNS (Some
+    // or None — never a panic/trap/hang) and leaks nothing. This caught the arity-mismatch trap the
+    // Tuple/Record/Spread arms now guard (a descriptor claiming N fields for a node with fewer used to
+    // `op_arr_get`-trap instead of declining) — the same class as `decode_descriptor`'s `with_capacity`
+    // on an untrusted length, which this also exercises.
+    fn assert_encode_is_total(desc: &[u8]) {
+        let before = live_nodes();
+        // A menagerie of representative values: a scalar leaf, a 2-tuple, a nested sum, a small vec, a
+        // string, a bytes leaf, a 1-entry map. A mismatched descriptor against ANY must decline, not trap.
+        let values: Vec<Handle> = alloc::vec![
+            op_box_int(42),
+            {
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, op_box_int(1));
+                op_arr_set(t, 1, op_box_int(2));
+                t
+            },
+            op_sum_new(0, op_box_int(7)),
+            {
+                let mut v = op_vec_empty();
+                for i in 0..3 {
+                    v = op_vec_push(v, op_box_int(i));
+                }
+                v
+            },
+            op_str_new(String::from("hi")),
+            bytes_leaf(&[1, 2, 3]),
+            op_map_insert(op_map_empty(), op_box_int(1), op_box_int(10)),
+        ];
+        for &h in &values {
+            // The property: NO panic. The result (Some doc / None decline) is not checked for content —
+            // only that the op RETURNS. `black_box` so the walk isn't optimized away.
+            let out = op_value_encode_form(h, desc);
+            core::hint::black_box(&out);
+        }
+        for h in values {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "value-encode leaks nothing regardless of the descriptor (declines cleanly, borrows the value)"
+        );
+    }
+
+    #[test]
+    fn prop_value_encode_is_total_under_arbitrary_descriptor() {
+        bolero::check!()
+            .with_type::<Vec<u8>>()
+            .for_each(|desc| assert_encode_is_total(desc));
     }
 
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────

@@ -246,7 +246,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // (a variant whose payload is a tuple, destructured by a nested `(tuple …)` pattern): the next
             // type is the tuple's i-th element. A nested `(Some (Some y))` on `Option (Option Int64)`
             // walks two Payload steps; `(Exp.Add (tuple a b))` walks `[Payload, Elem(0/1)]`.
-            let mut cur = type_of(db, scrutinee);
+            //
+            // A scrutinee that is a TUPLE CONSTRUCTOR — `(match (tuple (fold a) (fold b)) ((tuple fa fb)
+            // …))`, where `fa`/`fb` read its elements — types via the CONSTRUCTOR's element occurrences,
+            // NOT the aggregate `type_of((tuple …))`. Aggregate typing reads a RECURSIVE-call element
+            // (`(fold a)`, during `fold`'s own solve) as `Any` → `(Tuple Any Any)` → the binder `fa` reads
+            // `Any` and the value-heap emit declines; typing each element occurrence on its own reaches the
+            // recursive callee's cached `def_scheme` (`fold : E → E`), so `fa : E`. `tuple_constructor_ty`
+            // builds `(Tuple <elem-tys>)` from the constructor when the scrutinee is one, else `None`.
+            let mut cur =
+                tuple_constructor_ty(db, scrutinee).unwrap_or_else(|| type_of(db, scrutinee));
             let mut heads = heads.iter();
             for step in steps.iter() {
                 cur = match step {
@@ -1902,6 +1911,24 @@ fn tuple_or_unit(elems: &[Ty]) -> Ty {
     }
 }
 
+/// The tuple type built from `id`'s element occurrences when `id` is a TUPLE CONSTRUCTOR (the
+/// symbol-headed `Resolved::Tuple` or the `tuple` NAME-alias application) — `(Tuple <type_of(e0)>
+/// <type_of(e1)> …)`. Typing each element on its OWN resolves a RECURSIVE-call element via its cached
+/// `def_scheme`, where the aggregate `type_of((tuple …))` reads it as `Any` during the enclosing def's
+/// own solve. `None` for a non-tuple `id`, so the caller falls back to the ordinary `type_of`.
+fn tuple_constructor_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    let elems: Vec<StructId> = match resolved_of(db, id) {
+        Resolved::Tuple { elems } => elems.to_vec(),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleNew) =>
+        {
+            args.to_vec()
+        }
+        _ => return None,
+    };
+    Some(Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()))
+}
+
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
     // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
@@ -2908,10 +2935,11 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
 /// analogue of `non_exhaustive_sum_reject`'s missing-match-arm fix — `spec/capabilities/diagnostics.md`
 /// §A Diagnostic Carries A Route To A Fix, realizing `capabilities-and-effects.md` §A Handler Discharges
 /// Its Effect's "SHOULD identify the omitted operations"). Names the omitted operations and appends a
-/// TEMPLATE arm per omission to the handler's arms LIST — each `(op (_p0 …) s (resume unit s))` in the
-/// canonical bare-op surface, with the op's arm arity of `_`-prefixed parameter binders (so it does not
-/// itself warn unused), the state binder `s`, and a stateless `(resume unit s)` body the author fills
-/// in. Heuristic: the arms are shaped right but their bodies are the author's to write. `handle_id` is
+/// TEMPLATE arm per omission to the handler's arms LIST — each `(op (_p0 …) s (resume (trap …) s))` in
+/// the canonical bare-op surface, with the op's arm arity of `_`-prefixed parameter binders (so it does
+/// not itself warn unused), the state binder `s`, and a `(resume (trap "TODO: op") s)` body the author
+/// fills in (the trap resume value type-checks whatever the op's result type is). Heuristic: the arms are
+/// shaped right but their bodies are the author's to write. `handle_id` is
 /// the `(handle seed (arms…) body)` form (internal shape after desugar); the fix anchors on its arms
 /// LIST (child index 2), whose source span the in-place desugar preserved. Falls back to the plain
 /// reject (no fix) if that arms node is absent.
@@ -2920,14 +2948,26 @@ fn non_exhaustive_handler_reject(
     handle_id: StructId,
     missing: &[crate::effects::MissingOp],
 ) -> Reject {
-    // One template arm per missing op: `(op (_p0 …) s (resume unit s))`. A nullary op → empty params;
-    // an N-ary op → N `_`-prefixed binders (so an unfilled placeholder does not itself warn unused). The
-    // state binder is `s` and the body a `(resume unit s)` placeholder the author fills in.
+    // One template arm per missing op: `(op (_p0 …) s (resume (trap "TODO: op") s))`. A nullary op → empty
+    // params; an N-ary op → N `_`-prefixed binders (so an unfilled placeholder does not itself warn
+    // unused). The state binder is `s`; the RESUME VALUE is `(trap "TODO: op")` — a DIVERGING placeholder
+    // the author replaces. `trap : ∀a. String → a`, so it type-checks as the resume value whatever the
+    // operation's declared RESULT type is; a bare `unit` resume value cascaded to a CDZ0201 "a handler
+    // resumes with a value of type Unit but the operation's result type is <T>" the moment the op returned
+    // non-Unit (`(op get (-> Unit Int64))`), trading one fault for another — a fix must resolve in ONE
+    // shot (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix, the same lesson as
+    // the match add-arm fix's trap body). The `resume … s` scaffold is kept so the author sees the
+    // canonical tail-resumptive shape to fill, and `s` stays used (no unused-binder warning).
     let arms: Vec<String> = missing
         .iter()
         .map(|m| {
             let binders: Vec<String> = (0..m.arity).map(|i| format!("_p{i}")).collect();
-            format!("({} ({}) s (resume unit s))", m.name, binders.join(" "))
+            format!(
+                "({} ({}) s (resume (trap \"TODO: {}\") s))",
+                m.name,
+                binders.join(" "),
+                m.name
+            )
         })
         .collect();
     // The message NAMES the omitted operations AND spells the arm(s) to add inline — the guidance is
@@ -5159,22 +5199,38 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // The record's own field NAMES — the closed set a dropped/projected label must
                         // name, so a near-miss is a "did you mean?" (the same closed-set suggestion a
                         // member access `(. r k)` gets — a mistyped `Record.without r (alfa)` for a field
-                        // `alpha` should point at it, not just say "no field `alfa`").
+                        // `alpha` should point at it, not just say "no field `alfa`"). The label LIST's
+                        // child nodes align positionally with `labels` (both read from `args[1]`), so a
+                        // near-miss carries a REPLACE fix on the SPECIFIC label occurrence — the same
+                        // fix `no_field_reject` attaches for a member access, not just the message hint.
                         let field_names: Vec<&str> =
                             fields.keys().map(|k| k.name.as_str()).collect();
-                        for label in &labels {
+                        let label_nodes: Vec<StructId> = match db.ast.get(args[1]) {
+                            crate::ast::Struct::List(items) => items.clone(),
+                            _ => Vec::new(),
+                        };
+                        for (i, label) in labels.iter().enumerate() {
                             if !fields.contains_key(label) {
-                                let msg = match crate::diag::suggest::nearest(
+                                let near = crate::diag::suggest::nearest(
                                     &label.name,
                                     field_names.iter().copied(),
-                                ) {
+                                );
+                                let msg = match &near {
                                     Some(near) => format!(
                                         "record has no field `{}` — did you mean `{near}`?",
                                         label.name
                                     ),
                                     None => format!("record has no field `{}`", label.name),
                                 };
-                                out.push(Reject::coded(Code::AbsentField, msg).at(args[1]));
+                                let mut reject = Reject::coded(Code::AbsentField, msg).at(args[1]);
+                                // Attach the replace fix on THIS label's occurrence when a near field
+                                // exists AND its node is known — `label_nodes[i]` is the i-th label of
+                                // `args[1]` (positionally aligned with `labels`).
+                                if let (Some(near), Some(&node)) = (near, label_nodes.get(i)) {
+                                    reject = reject
+                                        .with_fix(crate::diag::Fix::replace_heuristic(node, near));
+                                }
+                                out.push(reject);
                             }
                         }
                     }
@@ -5252,18 +5308,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // advice (fix the typo vs. genuinely a new field).
                             let near = nearest_record_field(db, &fields, &label.name);
                             let did = near
+                                .as_ref()
                                 .map(|n| format!(" (did you mean `{n}`?)"))
                                 .unwrap_or_default();
-                            out.push(
-                                Reject::coded(
-                                    Code::AbsentField,
-                                    format!(
-                                        "record has no field `{}` to update{did} (use `Record.extend` to add)",
-                                        label.name
-                                    ),
-                                )
-                                .at(args[1]),
-                            );
+                            let mut reject = Reject::coded(
+                                Code::AbsentField,
+                                format!(
+                                    "record has no field `{}` to update{did} (use `Record.extend` to add)",
+                                    label.name
+                                ),
+                            )
+                            .at(args[1]);
+                            // The near-miss carries a REPLACE fix on the label occurrence — the `(z v)`
+                            // pair's FIRST child is the field name `z` (`args[1]` is the pair list), so a
+                            // mistyped `(alpa 2)` rewrites just `alpa`→`alpha`, the same fix `without`/
+                            // `project` labels get (M63). No near → message only.
+                            if let (Some(near), crate::ast::Struct::List(items)) =
+                                (&near, db.ast.get(args[1]))
+                                && let Some(&label_node) = items.first()
+                            {
+                                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                    label_node,
+                                    near.clone(),
+                                ));
+                            }
+                            out.push(reject);
                         }
                     }
                     (_, None) => out.push(Reject::coded(
@@ -5288,15 +5357,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // `without`/`project`/`with` — a mistyped popped field should point at the real one).
                         let near = nearest_record_field(db, &fields, &label.name);
                         let did = near
+                            .as_ref()
                             .map(|n| format!(" (did you mean `{n}`?)"))
                             .unwrap_or_default();
-                        out.push(
-                            Reject::coded(
-                                Code::AbsentField,
-                                format!("record has no field `{}` to pop{did}", label.name),
-                            )
-                            .at(args[1]),
-                        );
+                        let mut reject = Reject::coded(
+                            Code::AbsentField,
+                            format!("record has no field `{}` to pop{did}", label.name),
+                        )
+                        .at(args[1]);
+                        // `Record.pop`'s field operand is a BARE name (`args[1]` itself), so the near-miss
+                        // replace fix rewrites `args[1]` directly — the same closed-set fix `without`/
+                        // `project`/`with` labels get (M63). No near → message only.
+                        if let Some(near) = &near {
+                            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                args[1],
+                                near.clone(),
+                            ));
+                        }
+                        out.push(reject);
                     }
                     (_, None) => out.push(Reject::coded(
                         Code::Malformed,

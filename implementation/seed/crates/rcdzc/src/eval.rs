@@ -2008,9 +2008,17 @@ pub fn reduce_ctor(
             db.cache_build(key, built);
             Ok(built)
         }
-        _ => Err("not a type constructor".to_string()),
+        _ => Err(NOT_A_CTOR_PRIM.to_string()),
     }
 }
+
+/// The internal sentinel `reduce_ctor` returns for a prim it does not build — a non-constructor
+/// OPERATION prim (`list-at`, `map-insert`, …) reaches it ONLY via `lower`'s constructor catch-all when
+/// its full-arity arm did not match, i.e. the operation was applied to the WRONG number of arguments.
+/// `lower` recognizes this exact string and rewrites it into an honest wrong-arity/partial-application
+/// decline (naming the operation), so the internal wording never surfaces to a user (the "decline
+/// HONESTLY, not with an internal message" discipline — `self-hosting-and-bootstrap.md`).
+pub const NOT_A_CTOR_PRIM: &str = "not a type constructor";
 
 /// Reduce a GENERIC SUM type-constructor application `(Option Int64)` to its `Ty::Sum { decl, name,
 /// args }` DIRECTLY. `head` is the applied sum record (`Option`), carrying the owning declaration on

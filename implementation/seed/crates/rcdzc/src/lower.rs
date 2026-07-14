@@ -609,6 +609,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => {
                     core_of(db, keep)
                 }
+                // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined
+                // with the DUAL connective of itself-with-anything absorbs to itself (the short-circuit
+                // analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`→x fold, c118). One operand is an inner
+                // `and`/`or` of the DUAL connective CONTAINING `x`; the other is `x`. Result is `x`. DISCARDS
+                // the inner op's OTHER operand `y`, so gated on `is_trap_free(y)` — `y` is only conditionally
+                // evaluated in the short-circuit original, so trap-freedom suffices to drop it. `x` is pure
+                // (`core_equiv`) so returning it evaluates once with no trap. Both orders via
+                // `bool_absorption_operand`.
+                _ if let Some((x, y)) = bool_absorption_operand(db, lhs, rhs, is_and)
+                    && is_trap_free(db, y) =>
+                {
+                    core_of(db, x)
+                }
                 // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
                 // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
                 // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
@@ -640,6 +653,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // keep (`lhs` or `rhs`).
                 _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
                     core_of(db, keep)
+                }
+                // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` → `(= v c)` — two INCLUSIVE
+                // opposite bounds pinning `v` to a single point ARE equality (`v>=c && v<=c ⟺ v==c`), so
+                // three ops (`ge`+`le`+`and`) become one `eq`. Only under `and`; reuses the existing (proven
+                // in-type) constant node, so no synthesis / no range guard. DISCARDS the second comparison,
+                // so gated on `is_trap_free` for both (like the sibling disjoint/covering fold); the kept
+                // `(= v c)` still evaluates `v`. Distinct from disjoint/covering (which folds `L>U` empty /
+                // `L<=U+1` covering — the coincident `L==U` point is exactly what THIS fold handles).
+                _ if is_and
+                    && let Some((v, c)) = coincident_point_eq(db, lhs, rhs)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::Compare {
+                        op: Prim::Eq,
+                        lhs: v,
+                        rhs: c,
+                    }
                 }
                 // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
                 // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
@@ -1561,6 +1592,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: constructor prim");
                     match crate::eval::reduce_ctor(db, prim, id, &args) {
                         Ok(built) => core_of(db, built),
+                        // A NON-constructor OPERATION prim (`list-at`, `map-insert`, …) reaches `reduce_ctor`
+                        // ONLY here, when its full-arity arm above did not match — the operation was applied
+                        // to the WRONG NUMBER of arguments. `reduce_ctor` cannot build it, returning the
+                        // internal `NOT_A_CTOR_PRIM` sentinel; surfacing that verbatim leaked
+                        // `error: not a type constructor` for a plain `(. List at l)` (a partial application,
+                        // missing the index). Rewrite it into an HONEST decline naming the operation and its
+                        // shape: a partial application of a built-in operation is a genuine not-yet-built
+                        // construct (it needs a runtime closure), NOT a type-constructor error. An
+                        // OVER-application ALSO lands here, but `infer` already reports it as the coded
+                        // CDZ0203 "applied N arguments to a function of arity M"; this decline is the weaker
+                        // sibling (a Todo), so the coded reject remains the primary "no".
+                        Err(msg) if msg == crate::eval::NOT_A_CTOR_PRIM => {
+                            let named = op_member_name(db, head)
+                                .map(|n| format!("`{n}`"))
+                                .unwrap_or_else(|| "a built-in operation".to_string());
+                            trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: operation applied at the wrong arity → honest decline");
+                            // Arity-neutral wording: this fires on BOTH an under-application (`(List.at l)`,
+                            // missing the index — the common case, which would need a runtime closure) and an
+                            // over-application (`(Map.size m x)` — already the coded CDZ0203, this is its
+                            // weaker Todo sibling). Both are "applied at the wrong arity".
+                            Core::Poison(Reject::decline(format!(
+                                "{named} is applied at the wrong arity — a built-in operation must be \
+                                 applied to exactly its arguments (a partial application, which would need \
+                                 a runtime closure, is not yet built)"
+                            )))
+                        }
                         Err(msg) => {
                             trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");
                             Core::Poison(Reject::decline(msg))
@@ -3237,13 +3294,29 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
+/// `Resolved::Tuple { elems }` or the `tuple` NAME-alias application (`Prim::TupleNew`). `None` for a
+/// non-tuple. Used by `type_at_path` to type a tuple-scrutinee's element from the constructor directly,
+/// bypassing the aggregate `type_of` that reads a recursive-call element as `Any`.
+fn tuple_constructor_elems(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
+    match resolved_of(db, id) {
+        Resolved::Tuple { elems } => Some(elems.to_vec()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(Prim::TupleNew) =>
+        {
+            Some(args.to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// The CDZ0210 non-exhaustive-sum-match rejection, enriched with the MISSING variants and a structural
 /// "add the missing arms" fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
 /// Fix — the match analogue of rustc's `error[E0004]: … patterns not covered` + its "add arms"
 /// suggestion). `decl` is the scrutinee sum's declaration occurrence; `tested` the discriminants the
 /// arms already cover; `scrutinee` the match's scrutinee node (its parent IS the `(match …)` form the
 /// insert targets). The fix is Heuristic — the arm SHAPES cover the gap (applying makes the match
-/// exhaustive), but their BODIES are `unit` placeholders the author fills.
+/// exhaustive), but their BODIES are `(trap "TODO: …")` placeholders the author fills.
 fn non_exhaustive_sum_reject(
     db: &Db,
     decl: StructId,
@@ -3272,18 +3345,28 @@ fn non_exhaustive_sum_reject(
         if missing.len() == 1 { "" } else { "s" },
         join_and(&names),
     );
-    // One arm per missing variant. A nullary variant → `(Name unit)`; a payload variant → bind each
+    // One arm per missing variant. A nullary variant → `(Name <body>)`; a payload variant → bind each
     // payload with a fresh `_`-prefixed name so the arm is well-formed AND does not itself warn unused:
-    // `((Some _p0) unit)`. The body is `unit` (a placeholder the author replaces).
+    // `((Some _p0) <body>)`. The body is `(trap "TODO: <variant>")` — a DIVERGING placeholder the author
+    // replaces. `trap : ∀a. String → a`, so it type-checks in ANY arm whatever the sibling arms' result
+    // type is; a bare `unit` body cascaded to a CDZ0203 "match arms differ: T vs Unit" the moment the
+    // other arms were not Unit-typed (trading one fault for another — a fix must resolve in ONE shot,
+    // `spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). The message names the
+    // variant so the author sees which case is stubbed.
     let arms: Vec<String> = missing
         .iter()
         .map(|v| {
             if v.payloads.is_empty() {
-                format!("({} unit)", v.name)
+                format!("({} (trap \"TODO: {}\"))", v.name, v.name)
             } else {
                 let binders: Vec<String> =
                     (0..v.payloads.len()).map(|i| format!("_p{i}")).collect();
-                format!("(({} {}) unit)", v.name, binders.join(" "))
+                format!(
+                    "(({} {}) (trap \"TODO: {}\"))",
+                    v.name,
+                    binders.join(" "),
+                    v.name
+                )
             }
         })
         .collect();
@@ -3309,11 +3392,14 @@ fn join_and(items: &[String]) -> String {
 /// The CDZ0210 non-exhaustive-SCALAR-match rejection, enriched with an "add the covering arm" fix (the
 /// scalar analogue of `non_exhaustive_sum_reject` — `spec/capabilities/diagnostics.md` §A Diagnostic
 /// Carries A Route To A Fix). A BOOL scrutinee missing a literal (`bool_true`/`bool_false` = whether
-/// each is covered by an unguarded arm) is a FINITE gap: name + insert exactly the missing `(true unit)`
-/// / `(false unit)` arm, like a missing sum variant. Any OTHER scalar (an open Int/String, or a Bool
-/// with neither literal) is closed only by a wildcard: insert `(_ unit)`. The arm bodies are `unit`
-/// placeholders → Heuristic. Anchored at the `(match …)` form (parent of the scrutinee); falls back to
-/// the plain reject (no fix) if that parent is absent.
+/// each is covered by an unguarded arm) is a FINITE gap: name + insert exactly the missing
+/// `(true (trap …))` / `(false (trap …))` arm, like a missing sum variant. Any OTHER scalar (an open
+/// Int/String, or a Bool with neither literal) is closed only by a wildcard: insert `(_ (trap …))`. The
+/// arm bodies are `(trap "TODO: …")` — a DIVERGING placeholder (`trap : ∀a. String → a`) that type-checks
+/// in ANY arm whatever the sibling arms return; a bare `unit` body cascaded to a CDZ0203 "match arms
+/// differ: T vs Unit" the moment the other arms were not Unit-typed. Heuristic (the author fills the
+/// body). Anchored at the `(match …)` form (parent of the scrutinee); falls back to the plain reject (no
+/// fix) if that parent is absent.
 fn non_exhaustive_scalar_reject(
     db: &Db,
     scrutinee: StructId,
@@ -3327,14 +3413,14 @@ fn non_exhaustive_scalar_reject(
         let missing = if bool_true { "false" } else { "true" };
         (
             format!("non-exhaustive match: `{missing}` is not covered"),
-            vec![format!("({missing} unit)")],
+            vec![format!("({missing} (trap \"TODO: {missing}\"))")],
         )
     } else {
         // An open scalar (or a Bool with neither literal) — only a wildcard closes it.
         (
             "non-exhaustive match: add a wildcard `_` arm to cover the remaining values"
                 .to_string(),
-            vec!["(_ unit)".to_string()],
+            vec!["(_ (trap \"TODO\"))".to_string()],
         )
     };
     match db.parent_of(scrutinee) {
@@ -3668,7 +3754,23 @@ fn type_at_path(
     scrutinee: StructId,
     path: &[crate::core::PathStep],
 ) -> Option<crate::ty::Ty> {
-    let mut cur = crate::infer::type_of(db, scrutinee);
+    // A LEADING `Elem(i)` over a scrutinee that is a TUPLE CONSTRUCTOR — `(match (tuple (fold a) (fold b))
+    // …)` — types element `i` DIRECTLY from the constructor rather than from the tuple's aggregate
+    // `type_of`. `type_of((tuple (fold a) (fold b)))` types each element in AGGREGATE, where a RECURSIVE
+    // call `(fold a)` (during `fold`'s own lowering) reads `Any` (the recursion guard), giving `(Tuple Any
+    // Any)` → a non-sum decline at the switch. Typing the element occurrence on its OWN reaches
+    // `apply_type`'s recursive-callee `def_scheme` fallback (`fold : E → E`), so `Elem(0)` resolves to `E`.
+    // Only the leading `Elem` steps are peeled structurally; the rest fall through to the type-walk below.
+    let mut cur = if let Some(&crate::core::PathStep::Elem(i)) = path.first()
+        && let Some(elems) = tuple_constructor_elems(db, scrutinee)
+        && let Some(&elem_occ) = elems.get(i)
+    {
+        // Descend the remaining path from this element occurrence (recurse, so a NESTED tuple constructor
+        // element resolves too), then RETURN — the leading `Elem(i)` is consumed.
+        return type_at_path(db, elem_occ, &path[1..]);
+    } else {
+        crate::infer::type_of(db, scrutinee)
+    };
     for step in path {
         cur = match step {
             crate::core::PathStep::Elem(i) => match &cur {
@@ -4768,8 +4870,9 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
             };
             payload_tys.push(pty);
         }
-        // The variant HEAD — QUALIFIED `(. IntList Cons)` for a user sum, a BARE `Some` name for a
-        // built-in prelude sum — so the runtime walker writes the same head the constant bake does.
+        // The variant HEAD — BARE (`Some`, `Cons`) normally, QUALIFIED `(. Ast List)` when the sum has a
+        // variant name a prelude entry shadows (see `variant_head_ast`) — so the runtime walker writes the
+        // same head the constant bake does.
         out.push(variant_form_template(
             db,
             *decl,
@@ -5245,10 +5348,11 @@ fn sum_variant_payload_types(
 
 /// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
 /// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
-/// variant HEAD is built by [`variant_head_ast`] (qualified `(. Type Variant)` for a user sum, a bare
-/// name for a built-in), so the runtime template writes the identical head the constant bake does.
+/// variant HEAD is built by [`variant_head_ast`] (bare normally, qualified `(. Type Variant)` when the
+/// sum has a prelude-shadowed variant), so the runtime template writes the identical head the constant
+/// bake does.
 fn variant_form_template(
-    db: &Db,
+    db: &mut Db,
     decl: StructId,
     disc: u32,
     payloads: &[crate::ty::Ty],
@@ -5506,14 +5610,53 @@ fn leb_len(mut n: u64) -> usize {
 /// if the disc is out of range (a compiler bug). Shared by the constant-escape bake and the
 /// runtime-escape template so both write the identical head.
 fn variant_head_ast(
-    db: &Db,
+    db: &mut Db,
     b: &mut crate::ast::Builder,
     decl: StructId,
     disc: u32,
 ) -> Option<StructId> {
     let t = db.type_decl_by_occ(decl)?;
+    let tname = t.name.clone();
     let vname = t.variants.get(disc as usize)?.name.clone();
+    // A variant head normally renders BARE (`Some`, `Cons`, `Neg`) — the value reads back because the
+    // bare name resolves to that variant. But when a variant name is SHADOWED by a prelude entry that is
+    // NOT a variant ctor (`Ast.Int`/`Ast.List` — `Int` is the integer type ctor, `List` the list
+    // module), a bare head would read back as that other binding, not the variant, so the value form
+    // would not round-trip. Such a sum renders EVERY head QUALIFIED `(. Type Variant)` (a consistent
+    // per-sum spelling, so mixed variants don't split): the member access resolves unambiguously to the
+    // variant. This is the render-side twin of the load-time `variant_ctor_index` prelude-collision skip
+    // (`db.rs`) — the same rule (don't let a colliding variant name masquerade as its prelude binding),
+    // applied to the escaping VALUE FORM. `Some`/`None` are in the prelude too, but bound to their OWN
+    // variant ctors, so they round-trip bare and are NOT qualified.
+    if sum_needs_qualified_heads(db, decl) {
+        let dot = b.name(".");
+        let ty_name = b.name(tname);
+        let var_name = b.name(vname);
+        return Some(b.list(vec![dot, ty_name, var_name]));
+    }
     Some(b.name(vname))
+}
+
+/// Whether the sum declared at `decl` must render its variant heads QUALIFIED (see [`variant_head_ast`]):
+/// true iff ANY variant name is bound in the prelude to something that is NOT a variant ctor (a type
+/// ctor, a module, a value). A per-sum property (not per-variant) so every head of the sum spells the
+/// same way. A variant whose prelude binding IS a variant ctor (`Some`/`None`/`Ok`/`Err`) round-trips
+/// bare, so it does not force qualification; a variant name absent from the prelude (`Cons`, `Neg`)
+/// likewise resolves bare to its own ctor.
+fn sum_needs_qualified_heads(db: &mut Db, decl: StructId) -> bool {
+    let Some(t) = db.type_decl_by_occ(decl) else {
+        return false;
+    };
+    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    names
+        .iter()
+        .any(|name| match db.prelude.get(name).copied() {
+            // Bound in the prelude to a non-variant-ctor (no `(meta variant)`) → bare would resolve to
+            // that OTHER binding, so the whole sum must qualify.
+            Some(occ) => crate::eval::variant_disc_of(db, occ).is_none(),
+            // Not a prelude name → bare resolves to this sum's own variant ctor; no qualification needed.
+            None => false,
+        })
 }
 
 /// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a
@@ -7087,6 +7230,46 @@ fn bool_nested_idempotent(
     check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
 }
 
+/// The SHORT-CIRCUIT BOOLEAN ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` (either
+/// outer order, `a` on either side of the inner op). A boolean combined with the DUAL connective of
+/// itself-with-anything absorbs to itself — the boolean analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`
+/// →x fold (c118, `absorption_operand`). The outer connective is `is_and`; one operand must be an inner
+/// `Core::And` of the DUAL connective (`or` under `and`, `and` under `or`) that CONTAINS `x` (either side);
+/// the OTHER outer operand is `x` (`core_equiv`). Returns `(x, y)` — the whole expression absorbs to `x`,
+/// discarding the inner op's OTHER operand `y`. `x` is pure (`core_equiv` matches only pure cores) so
+/// returning it evaluates it once with no trap; `y` may be arbitrary, so the caller gates `is_trap_free(y)`
+/// (in the short-circuit original `y` is only conditionally evaluated, so trap-freedom is SUFFICIENT to
+/// drop it soundly). Both outer orders and both inner-operand positions are tried.
+fn bool_absorption_operand(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<(StructId, StructId)> {
+    // `inner` must be a `Core::And` of the DUAL connective; `outer_x` must be `core_equiv` to one operand.
+    let check = |db: &mut Db, inner: StructId, outer_x: StructId| -> Option<(StructId, StructId)> {
+        let Core::And {
+            lhs: ip,
+            rhs: iq,
+            is_and: inner_is_and,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_is_and == is_and {
+            return None; // must be the DUAL connective (`or` under `and`, `and` under `or`)
+        }
+        if core_equiv(db, ip, outer_x) {
+            Some((outer_x, iq)) // x matched ip → y is iq
+        } else if core_equiv(db, iq, outer_x) {
+            Some((outer_x, ip)) // x matched iq → y is ip
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
 /// Whether `lhs`/`rhs` are two comparisons on the SAME operand pair whose operators are exact COMPLEMENTS
 /// over the total order — `< `/`>=` or `<=`/`>` — so together they partition every value: their `or` is
 /// always TRUE (exhaustive) and their `and` always FALSE (disjoint). `(or (< a b) (>= a b))` → true,
@@ -7258,6 +7441,63 @@ fn disjoint_or_covering(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool)
         // Union `v <= upper || v >= lower` covers all iff the pieces touch/overlap: `lower <= upper + 1`.
         (lower <= upper + 1).then_some(true)
     }
+}
+
+/// COINCIDENT-POINT COLLAPSE for `and`: `(and (>= v c) (<= v c))` (either operand order, `v` on either
+/// side of each comparison) → `(= v c)`. Two INCLUSIVE opposite-direction bounds pinning `v` to a single
+/// point ARE equality — `v >= c && v <= c ⟺ v == c` in any total order (sound for signed AND unsigned
+/// integers alike; it is a pure order-theoretic fact, no sign assumption). Returns `(v, c_node)` to build
+/// `Core::Compare { op: Eq, lhs: v, rhs: c_node }` — three ops (`ge` + `le` + `and`) collapse to one `eq`.
+/// Restricted to the two INCLUSIVE ops (`>=`/`<=`) against the SAME i64 constant VALUE on both sides, and
+/// REUSES an existing constant node (proven representable in `v`'s type — it typechecked against `v`), so
+/// no constant is synthesized and no type-range guard is needed. The strictly-inclusive requirement also
+/// keeps this distinct from the exclusive width-2 point `(and (> v (c-1)) (< v (c+1)))`, which would need a
+/// synthesized `c` + a representability guard — deliberately left un-folded (conservative, no regression).
+/// `None` unless the shape matches. DISCARDS the second comparison, so the caller gates on `is_trap_free`
+/// for both operands (matches the sibling disjoint/covering fold); the kept `(= v c)` evaluates `v` once.
+fn coincident_point_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+    // From a `Core::Compare` on a runtime `v` against an i64 constant, return `(v, c_node, c_value, eff)`
+    // where `eff` is the operator NORMALIZED to `v` on the left (`(op c v)` mirrors `<`↔`>`, `<=`↔`>=`).
+    let bound_of = |db: &mut Db, id: StructId| -> Option<(StructId, StructId, i64, Prim)> {
+        let Core::Compare { op, lhs: a, rhs: b } = core_of(db, id) else {
+            return None;
+        };
+        let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+            Core::ConstInt(v) => v.to_i64(),
+            _ => None,
+        };
+        // `(op v c)` (v on the left) or `(op c v)` (v on the right, which mirrors the operator).
+        match (as_int(db, b), as_int(db, a)) {
+            (Some(c), _) => Some((a, b, c, op)),
+            (_, Some(c)) => Some((
+                b,
+                a,
+                c,
+                match op {
+                    Prim::Lt => Prim::Gt,
+                    Prim::Gt => Prim::Lt,
+                    Prim::Le => Prim::Ge,
+                    Prim::Ge => Prim::Le,
+                    other => other,
+                },
+            )),
+            _ => None,
+        }
+    };
+    let (lv, lc_node, lc, leff) = bound_of(db, lhs)?;
+    let (rv, _rc_node, rc, reff) = bound_of(db, rhs)?;
+    // Same runtime operand, same constant VALUE, and the two effective ops are exactly `>=` and `<=`
+    // (opposite INCLUSIVE bounds). Either assignment (`>= , <=` or `<= , >=`).
+    if lc != rc || !core_equiv(db, lv, rv) {
+        return None;
+    }
+    let inclusive_opposite = matches!((leff, reff), (Prim::Ge, Prim::Le) | (Prim::Le, Prim::Ge));
+    if !inclusive_opposite {
+        return None;
+    }
+    trace!(target: "rcdzc::fold", "coincident-point collapse (and (>= v c) (<= v c)) → (= v c)");
+    // Reuse `lv` as the operand and lhs's constant node as `c` — both proven trap-free by the caller's gate.
+    Some((lv, lc_node))
 }
 
 /// For two comparisons where one is an EQUALITY `(= x c)` and the other an ORDERING comparison `(cmp x k)`
@@ -8336,6 +8576,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", "(= (if c 1 0) 0/1) folds to c / !c");
                 return folded;
             }
+            // BOOL-CONST EQUALITY: `(= c true)` → `c`, `(= c false)` → `!c` (either order) — a bool compared
+            // to a bool literal is itself / its negation, dropping the `i32.const K ; i32.eq`.
+            if matches!(op, Prim::Eq)
+                && let Some(folded) = fold_bool_const_eq(db, args[0], args[1])
+            {
+                trace!(target: "rcdzc::fold", "(= c true/false) folds to c / !c");
+                return folded;
+            }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
                 // SELF-COMPARISON: the two operands are the SAME value (`core_equiv`), so the ordering is
                 // fixed regardless of what that value is — `x < x`/`x > x` → false, `x <= x`/`x >= x`/`x =
@@ -8449,6 +8697,41 @@ fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
         Some(core_of(db, cond)) // (= (if c 1 0) 1) → c ;  (= (if c 0 1) 0) → c
     } else {
         Some(Core::Not { operand: cond }) // (= (if c 1 0) 0) → !c ; (= (if c 0 1) 1) → !c
+    }
+}
+
+/// Fold a BOOLEAN EQUALITY against a boolean LITERAL: `(= c true)` → `c`, `(= c false)` → `(not c)` (and
+/// the mirrored operand order). A boolean compared to a constant boolean IS that boolean (compared to
+/// `true`) or its negation (compared to `false`) — dropping the redundant `i32.const K ; i32.eq` the
+/// runtime `Core::Compare` would emit. Returns the runtime operand's core (`== true`) or `Core::Not` of it
+/// (`== false`); `None` unless exactly one operand is a constant `Bool` and the OTHER a runtime `Bool`
+/// (a `ConstBool`/`ConstBool` pair already folded in the caller's earlier arm; a NON-`Bool` operand is not
+/// this fold). The runtime operand is REUSED (its evaluation/traps preserved — no synthesis, no dropped
+/// trap; the discarded operand is a constant, trivially trap-free). Only `Eq` — a `Bool` has no order, so
+/// `<`/`>` never reach here (the caller routes them past `is_scalar` then declines for a non-total order).
+fn fold_bool_const_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
+    // One side a constant bool `k`, the other a RUNTIME bool `v` (not itself a constant — a const/const
+    // pair folded earlier). `v` must be Bool-typed so the result is the operand as-is / negated.
+    let as_const_bool = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstBool(b) => Some(b),
+        _ => None,
+    };
+    let (v, k) = if let Some(k) = as_const_bool(db, rhs) {
+        (lhs, k)
+    } else if let Some(k) = as_const_bool(db, lhs) {
+        (rhs, k)
+    } else {
+        return None;
+    };
+    // The runtime operand must be a Bool (its machine value is the 0/1 the fold returns directly). A
+    // constant `v` would already have folded via the caller's `ConstBool`/`ConstBool` arm.
+    if !matches!(crate::infer::type_of(db, v), crate::ty::Ty::Bool) {
+        return None;
+    }
+    if k {
+        Some(core_of(db, v)) // (= c true) → c
+    } else {
+        Some(Core::Not { operand: v }) // (= c false) → !c
     }
 }
 
@@ -11746,6 +12029,19 @@ fn node_ty_is_enum_disc(db: &mut Db, id: StructId) -> bool {
         crate::ty::Ty::Sum { decl, .. } => db.is_enum_disc(*decl),
         _ => false,
     }
+}
+
+/// The user-facing `Operand.key` spelling of an operation head that is a `(. Operand key)` member access
+/// (`(. List at)` → `List.at`), for a wrong-arity diagnostic. Reads the two segment names off the raw
+/// `.` form — the surface the author wrote — rather than the internal intrinsic name (`list-at`). `None`
+/// when the head is not a two-segment member access (e.g. a bare alias), so the caller falls back to a
+/// generic phrasing.
+fn op_member_name(db: &Db, head: StructId) -> Option<String> {
+    let tail = db.ast.as_form(head, ".")?;
+    let [operand, key] = tail else { return None };
+    let operand = db.ast.as_name(*operand)?;
+    let key = db.ast.as_name(*key)?;
+    Some(format!("{operand}.{key}"))
 }
 
 /// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational

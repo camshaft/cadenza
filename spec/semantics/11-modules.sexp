@@ -591,3 +591,23 @@
             (def (main) (sm (mk)))
             (export main)))
   (output (: 11 Int64)))
+
+(case "a GENERIC user sum crosses a module boundary at a concrete instantiation"
+  (doc    "The generic companion of the recursive-sum crossing above: `lib` declares a GENERIC `(type Box
+           (W a) (E))` and exports `mk` building `(Box.W 42)` at `a = Int64`; the entry declares its own
+           structurally-identical `Box` and matches the imported value, binding the payload at Int64 → 42.
+           Pins that a generic user sum composes across the module boundary at a concrete instantiation —
+           the crossing value carries its variant + payload exactly as a monomorphic one does, and the two
+           modules each declaring `Box` is NOT a duplicate (each module has its own type namespace; the
+           duplicate-declaration check is per-module). Both `Box` declarations are user types of the same
+           structural shape, so the imported `(Box.W 42)` matches the entry's `(Box.W n)` arm.")
+  (module "lib"
+    (do (type Box (W a) (E))
+        (def (mk) (Box.W 42))
+        (export mk)))
+  (input  (do
+            (import "lib" (mk))
+            (type Box (W a) (E))
+            (def (main) (match (mk) ((Box.W n) n) ((Box.E) 0)))
+            (export main)))
+  (output (: 42 Int64)))

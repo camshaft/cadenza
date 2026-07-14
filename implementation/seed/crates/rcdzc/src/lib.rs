@@ -46,6 +46,9 @@ pub mod effects;
 // `(module …)` synthesis — a nested module declaration realized as an ordinary record (fields = exported
 // defs), the module analogue of `sums`/`effects`. So `(. m field)` is member access, nothing privileged.
 pub mod modules;
+// `(quote …)` reification — a quote rewritten to the `Ast` constructor application that BUILDS its value
+// (`(quote 42)` -> `(Ast.Int 42)`), so a quote result and a hand-built `Ast.*` value are one thing.
+pub mod quote;
 
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —
