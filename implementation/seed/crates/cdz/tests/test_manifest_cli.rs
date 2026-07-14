@@ -91,6 +91,9 @@ fn dir(tag: &str) -> std::path::PathBuf {
 
 fn write(dir: &std::path::Path, name: &str, body: &str) -> String {
     let p = dir.join(name);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).expect("mkdir parent");
+    }
     std::fs::write(&p, body).expect("write");
     p.to_string_lossy().into_owned()
 }
@@ -150,6 +153,95 @@ fn a_directory_with_a_manifest_runs_the_declared_tests() {
     assert!(
         !stdout.contains("should_not_run"),
         "a module not in `tests` must not run: {stdout}"
+    );
+}
+
+#[test]
+fn a_manifest_glob_expands_to_matching_files() {
+    // `tests = ["src/*.cdz"]` picks up every source file under src/ — a new module drops in with no
+    // manifest edit. A single-segment `src/*.cdz` matches src/ only (not a nested dir), and never the
+    // manifest itself.
+    let d = dir("glob");
+    write(&d, "src/a.cdz", &module_src(true));
+    write(
+        &d,
+        "src/b.cdz",
+        "@test def b_ok() = if 1 == 1 then unit else trap(\"b\")\n",
+    );
+    write(
+        &d,
+        "src/nested/deep.cdz",
+        "@test def deep() = trap(\"nested must not match src/*.cdz\")\n",
+    );
+    write(&d, "Project.cdz", "def tests = [\"src/*.cdz\"]\n");
+    let (ok, stdout, stderr) = run(&["test", d.to_str().unwrap()]);
+    assert!(ok, "glob suite passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS one_is_one") && stdout.contains("PASS b_ok"),
+        "src/*.cdz picks up src/a.cdz + src/b.cdz: {stdout}"
+    );
+    assert!(
+        !stdout.contains("deep"),
+        "a single-segment glob must not match src/nested/deep.cdz: {stdout}"
+    );
+    assert!(stdout.contains("TOTAL: 3 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
+fn a_double_star_glob_matches_recursively() {
+    // `**/*.cdz` matches at any depth.
+    let d = dir("doublestar");
+    write(&d, "src/a.cdz", &module_src(true));
+    write(
+        &d,
+        "src/nested/deep.cdz",
+        "@test def deep_ok() = if 2 > 1 then unit else trap(\"d\")\n",
+    );
+    write(&d, "Project.cdz", "def tests = [\"**/*.cdz\"]\n");
+    let (ok, stdout, _) = run(&["test", d.to_str().unwrap()]);
+    assert!(ok, "{stdout}");
+    assert!(
+        stdout.contains("PASS one_is_one") && stdout.contains("PASS deep_ok"),
+        "**/*.cdz reaches a nested file: {stdout}"
+    );
+}
+
+#[test]
+fn an_exclude_removes_a_globbed_file() {
+    // A glob sweeps two files; `exclude` drops one (a demo/fixture) — literal AND glob exclude both work.
+    let d = dir("exclude");
+    write(&d, "src/keep.cdz", &module_src(true));
+    write(
+        &d,
+        "src/skip.cdz",
+        "@test def should_skip() = trap(\"must be excluded\")\n",
+    );
+    write(
+        &d,
+        "Project.cdz",
+        "def tests = [\"src/*.cdz\"]\ndef exclude = [\"src/skip.cdz\"]\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", d.to_str().unwrap()]);
+    assert!(
+        ok,
+        "excluded file's failing test never runs: {stdout}{stderr}"
+    );
+    assert!(stdout.contains("PASS one_is_one"), "{stdout}");
+    assert!(
+        !stdout.contains("should_skip"),
+        "the excluded file must not run: {stdout}"
+    );
+
+    // The same exclude expressed as a GLOB.
+    write(
+        &d,
+        "Project.cdz",
+        "def tests = [\"src/*.cdz\"]\ndef exclude = [\"**/skip.cdz\"]\n",
+    );
+    let (ok2, stdout2, _) = run(&["test", d.to_str().unwrap()]);
+    assert!(
+        ok2 && !stdout2.contains("should_skip"),
+        "glob exclude: {stdout2}"
     );
 }
 

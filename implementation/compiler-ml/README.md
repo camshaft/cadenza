@@ -22,38 +22,48 @@ deliverable.
 ## Project manifest + tests
 
 `Project.cdz` is the project manifest, **written in Cadenza itself** — well-known top-level `def`s the
-`cdz` binary reads (a def is the manifest; no new syntax, no per-command flags):
+`cdz` binary reads (a def is the manifest; no new syntax, no per-command flags). A file-list entry may
+be a literal name OR a **glob** (`*.cdz`, `src/*.cdz`, `**/x.cdz`):
 
 ```
 def name    = "compiler-ml"
-def modules = ["ast.cdz"]        // library modules, in dependency order
-def tests   = ["ast.cdz"]        // modules whose @test defs form the suite
+def modules = ["src/*.cdz"]      // library modules — a wildcard, so a new pass just drops into src/
+def tests   = ["src/*.cdz"]      // modules whose @test defs form the suite
+def exclude = []                 // files removed from the globs above (a demo/fixture to skip)
 ```
 
 Tests use the built-in **`@test`** workflow (`TESTING.md`): mark a nullary def `@test`; it PASSES by
-returning `unit`, FAILS by trapping (`trap("…")` carries the message). Run them:
+returning `unit`, FAILS by trapping (`trap("…")`, or the `assert`/`assert_eq`/`assert_ne` helpers,
+carries the message). Run them:
 
 ```
 cdz test                   # NO arg: search up from the cwd for the nearest Project.cdz (like cargo), run it
 cdz test .                 # reads Project.cdz here, runs every @test in the declared `tests` modules
 cdz test Project.cdz       # same, naming the manifest directly
-cdz test ast.cdz           # one file's @test defs
+cdz test src/ast.cdz       # one file's @test defs
 cdz test --filter head     # only tests whose name contains "head"
 ```
 
-`cdz test` with no argument walks UP from the current directory to the nearest `Project.cdz` and runs
-its suite. `cdz test <dir>` reads `Project.cdz` if present (runs `tests`), else walks every source file
-under the dir and aggregates. A `@test` never burdens a normal `cdz compile` (the test defs are unexported → dead
-→ dropped). Tests live SAME-FILE with the code they test (a cross-file test cannot yet construct a type
-whose variant shadows a prelude name — see `repros/import-prelude-collision`), so each module tests
-itself. `ast.cdz` carries 10 `@test`s for `node-count`/`head-name`.
+`cdz test` with no argument walks UP from the current directory to the nearest `Project.cdz`. A
+`tests`/`modules` glob expands against the manifest dir (path-sorted, deduped, `Project.cdz` never
+matched); a matched file that also matches an `exclude` pattern is dropped. `cdz test <dir>` with no
+manifest walks every source file under the dir. A `@test` never burdens a normal `cdz compile` (the
+test defs are unexported → dead → dropped). Tests live SAME-FILE with the code they test (a cross-file
+test cannot yet construct a type whose variant shadows a prelude name — see
+`repros/import-prelude-collision`), so each module tests itself.
 
 ## Structure (mirrors the rcdzc stages)
 
-- `ast.cdz` — the AST datatype + pure traversals (the `ast.rs` analogue). One recursive sum; a node
-  contains its children (no arena — the language has real recursive values). The leaf value variants
-  are `Int`/`Str`/`Bool` alongside the `Name` identifier and the `List` form — the subset the pipeline
-  observes so far; the richer wire leaves (Float, Char, Bytes, Sym, markers) join as passes read them.
+Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
+top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
+
+- `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
+  analogue). One recursive sum; a node contains its children (no arena — the language has real
+  recursive values). The leaf value variants are `Int`/`Str`/`Bool` alongside the `Name` identifier and
+  the `List` form — the subset the pipeline observes so far; the richer wire leaves (Float, Char, Bytes,
+  Sym, markers) join as passes read them.
+- `src/print.cdz` — renders an `Ast` to an s-expr string (the inverse of decode; hand-written itoa).
+- `src/ast-eq.cdz` — structural `Ast` equality (for dedup / constant-fold / quote comparison).
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.

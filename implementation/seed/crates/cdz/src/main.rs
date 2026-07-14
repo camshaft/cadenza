@@ -373,6 +373,8 @@ fn run_test(args: &TestArgs) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             // A manifest is present: run its declared `tests`, resolved relative to the manifest's dir.
+            // A `tests` entry may be a literal file OR a GLOB (`*.cdz`, `tests/*.cdz`, `**/x.cdz`),
+            // expanded against the dir (path-sorted, deduped) — so a project can say `tests = ["*.cdz"]`.
             Ok(Some((mpath, m))) => {
                 if m.tests.is_empty() {
                     eprintln!(
@@ -381,10 +383,15 @@ fn run_test(args: &TestArgs) -> ExitCode {
                     );
                     return ExitCode::SUCCESS;
                 }
-                m.tests
-                    .iter()
-                    .map(|t| dir.join(t).to_string_lossy().into_owned())
-                    .collect()
+                let expanded = expand_manifest_globs(dir, &m.tests, &m.exclude);
+                if expanded.is_empty() {
+                    eprintln!(
+                        "{PROG}: {}: the manifest's `tests` matched no files",
+                        mpath.display()
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                expanded
             }
             // No manifest in the directory: fall back to walking every source file (path-sorted).
             Ok(None) if is_manifest_arg => {
@@ -2237,17 +2244,21 @@ fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
 /// strings), read straight from the arena — no compile, no new grammar (a def "is a really good way to
 /// do this"). Every field is optional; a missing def leaves it `None`/empty.
 ///
-/// Recognized defs (all relative to the manifest's own directory):
-/// - `def name = "…"`           — the project name (display only).
-/// - `def entry = "main.cdz"`    — the entry module `cdz build`/`run` compiles as the component root.
-/// - `def modules = ["a.cdz", …]`— the library modules the package links (the entry's importables).
-/// - `def tests = ["a.cdz", …]`  — the modules whose `@test` defs `cdz test` runs.
+/// Recognized defs (all relative to the manifest's own directory). A file list (`modules`/`tests`/
+/// `exclude`) entry may be a literal name OR a GLOB (`*.cdz`, `sub/*.cdz`, `**/x.cdz`).
+/// - `def name = "…"`            — the project name (display only).
+/// - `def entry = "main.cdz"`     — the entry module `cdz build`/`run` compiles as the component root.
+/// - `def modules = ["a.cdz", …]` — the library modules the package links (the entry's importables).
+/// - `def tests = ["*.cdz", …]`   — the modules whose `@test` defs `cdz test` runs.
+/// - `def exclude = ["x.cdz", …]` — files REMOVED from `modules`/`tests` after glob expansion (skip a
+///   demo/fixture a wildcard would otherwise sweep up).
 #[derive(Default, Debug)]
 struct Manifest {
     name: Option<String>,
     entry: Option<String>,
     modules: Vec<String>,
     tests: Vec<String>,
+    exclude: Vec<String>,
 }
 
 /// The file name of a project manifest (looked up in a directory).
@@ -2272,6 +2283,119 @@ fn manifest_strings(
             .collect();
     }
     Vec::new()
+}
+
+/// Whether `pat` is a GLOB (contains a wildcard metacharacter) rather than a literal file name. A
+/// literal entry in a manifest list is used verbatim; a glob is expanded against the manifest dir.
+fn is_glob(pat: &str) -> bool {
+    pat.contains('*') || pat.contains('?')
+}
+
+/// Match a single PATH SEGMENT (no `/`) against a glob segment supporting `*` (any run, incl. empty)
+/// and `?` (exactly one char). A backtracking matcher over char slices — segments are short (file
+/// names), so the worst-case backtracking is irrelevant. `**` is handled by the caller (it spans
+/// segments), never reaching here.
+fn glob_segment_matches(pat: &[char], name: &[char]) -> bool {
+    match pat.split_first() {
+        None => name.is_empty(),
+        Some((&'*', rest)) => {
+            // `*` matches zero or more chars: try consuming 0, 1, … of `name`.
+            (0..=name.len()).any(|i| glob_segment_matches(rest, &name[i..]))
+        }
+        Some((&'?', rest)) => !name.is_empty() && glob_segment_matches(rest, &name[1..]),
+        Some((&c, rest)) => {
+            matches!(name.split_first(), Some((&n, nrest)) if n == c && glob_segment_matches(rest, nrest))
+        }
+    }
+}
+
+/// Whether the RELATIVE path `rel` (forward-slash segments, relative to the manifest dir) matches the
+/// glob `pat`. `**` matches any number of path segments (incl. zero — so `**/x.cdz` matches `x.cdz` and
+/// `a/b/x.cdz`); every other segment matches by [`glob_segment_matches`]. A trailing `**` matches
+/// everything below. Segment counts must line up otherwise.
+fn glob_path_matches(pat: &str, rel: &str) -> bool {
+    fn go(pat: &[&str], seg: &[&str]) -> bool {
+        match pat.split_first() {
+            None => seg.is_empty(),
+            Some((&"**", prest)) => {
+                // `**` consumes zero or more path segments.
+                (0..=seg.len()).any(|i| go(prest, &seg[i..]))
+            }
+            Some((&p, prest)) => match seg.split_first() {
+                Some((&s, srest)) => {
+                    glob_segment_matches(
+                        &p.chars().collect::<Vec<_>>(),
+                        &s.chars().collect::<Vec<_>>(),
+                    ) && go(prest, srest)
+                }
+                None => false,
+            },
+        }
+    }
+    let ps: Vec<&str> = pat.split('/').filter(|s| !s.is_empty()).collect();
+    let ss: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    go(&ps, &ss)
+}
+
+/// Expand a manifest file-list against `dir`: a LITERAL entry (no wildcard) is kept as-is (resolved to
+/// `dir/entry`); a GLOB entry (`*.cdz`, `sub/*.cdz`, `**/x.cdz`) is expanded to every SOURCE file under
+/// `dir` whose relative path matches, path-SORTED. The manifest itself (`Project.cdz`) is never matched
+/// by a glob (it is the manifest, not a member). Any file whose relative path matches an `exclude`
+/// pattern (literal or glob) is then REMOVED — so `tests = ["*.cdz"]` + `exclude = ["demo.cdz"]` skips
+/// the demo. Results are de-duplicated in first-appearance order. Returns paths (`dir/rel`) ready to
+/// hand to the per-file runner/compiler.
+fn expand_manifest_globs(
+    dir: &std::path::Path,
+    patterns: &[String],
+    exclude: &[String],
+) -> Vec<String> {
+    // Collect the directory's source files ONCE (relative forward-slash paths), only if a glob is present.
+    let has_glob = patterns.iter().any(|p| is_glob(p));
+    let mut rels: Vec<String> = Vec::new();
+    if has_glob {
+        let mut abs = Vec::new();
+        let _ = collect_source_dir(dir, &mut abs); // best-effort; a bad dir yields no matches
+        for a in abs {
+            if let Ok(r) = std::path::Path::new(&a).strip_prefix(dir) {
+                let rel = r.to_string_lossy().replace('\\', "/");
+                if rel != MANIFEST_NAME {
+                    rels.push(rel);
+                }
+            }
+        }
+        rels.sort();
+    }
+    // A file's relative path is excluded if it matches any `exclude` pattern (literal == or glob match).
+    let is_excluded = |rel: &str| -> bool {
+        exclude.iter().any(|e| {
+            if is_glob(e) {
+                glob_path_matches(e, rel)
+            } else {
+                e == rel
+            }
+        })
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push = |rel: String, out: &mut Vec<String>| {
+        if is_excluded(&rel) {
+            return;
+        }
+        let full = dir.join(&rel).to_string_lossy().into_owned();
+        if seen.insert(full.clone()) {
+            out.push(full);
+        }
+    };
+    for pat in patterns {
+        if is_glob(pat) {
+            for rel in rels.iter().filter(|r| glob_path_matches(pat, r)) {
+                push(rel.clone(), &mut out);
+            }
+        } else {
+            push(pat.clone(), &mut out);
+        }
+    }
+    out
 }
 
 /// Peel a leading `(comment TEXT FORM)` / `(doc TEXT FORM)` wrapper to the FORM it decorates — the
@@ -2328,6 +2452,7 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
             "entry" => m.entry = manifest_strings(arenas, value_id).into_iter().next(),
             "modules" => m.modules = manifest_strings(arenas, value_id),
             "tests" => m.tests = manifest_strings(arenas, value_id),
+            "exclude" => m.exclude = manifest_strings(arenas, value_id),
             _ => {} // an unrecognized def — ignore (forward-compatible)
         }
     }
