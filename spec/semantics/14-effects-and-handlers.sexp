@@ -121,6 +121,22 @@
   (host-calls (call ask.ask) (call ask.ask))
   (output (: 7 Int64)))
 
+(case "a handler arm interposes on another intra-program effect and forwards"
+  (doc    "The purely INTRA-PROGRAM analogue of the host-forwarding interpose above (no `host` boundary):
+           `A`'s arm performs an OUTER effect `Count.tick` (a record-and-continue observation), then resumes.
+           The re-performed `Count.tick` resolves against the routers enclosing `A`'s handler — the outer
+           `Count` handler — the under-frame discipline, exactly as with host forwarding but discharged
+           in-program. `A` is seeded 5 and its arm resumes `s` (=5) unchanged; `Count` seeded 0 threads its
+           counter. `(A.a)` evaluates to 5 (the outer `Count.tick` is observed as a side effect, not part of
+           the value). Witnesses #A Handler May Interpose On An Effect with BOTH effects intra-program.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect Count (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Count 0 ((tick (u) c (resume c (+ c 1))))
+                (handle A 5 ((a (u) s (do (Count.tick) (resume s s)))) (A.a)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "an abortive handler abandons a host call in the path it discards"
   (doc    "Witnesses that an abortive perform's abandonment extends to a DELEGATED host call in the
            discarded continuation (capabilities-and-effects.md #A Handler Arm May Abandon The Computation It
@@ -350,6 +366,20 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
   (output (: 11 Int64)))
+
+(case "a handler arm consumes its resume value through an effect-free helper call"
+  (doc    "The arm's work AFTER resuming may be a call to a NON-RECURSIVE, effect-free USER function, not
+           only a primitive: `(dbl (resume 10 s))` where `dbl x = x*2`. The perform's continuation is the
+           handle body `C = (+ 1 [])`, so `(resume 10 s)` yields `C[10]` = 11, and the arm evaluates to
+           `(dbl 11)` = 22. The helper is applied to the continuation RESULT in the arm body (distinct from
+           an effect-free call INSIDE the continuation `C`); it runs once per resume, effect-free, so no
+           reified continuation is needed.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (dbl (: n Int64)) (* n 2))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (dbl (resume 10 s)))) (+ 1 (Amb.flip)))) (export main)))
+  (output (: 22 Int64)))
 
 (case "a handler arm that resumes NON-tail folds through a PURE one-hole continuation"
   (doc    "The general one-shot arm generalizes past the identity-continuation sliver: when the performed
