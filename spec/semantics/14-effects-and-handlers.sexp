@@ -1099,6 +1099,27 @@
                 (+ (Acc.step 1) (Acc.step 2)))) (export main)))
   (output (: 201 Int64)))
 
+(case "a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field"
+  (doc    "The handler state is a RECORD with a scalar field AND a HEAP field (a list) — the AST-node
+           accumulator shape (a record of results one of whose fields is a heap value). Each `push` arm READS
+           both fields and REBUILDS the record: it increments the scalar `n` and conses the value onto the
+           list `xs`, threading the new record; the `count` arm reads back the scalar `n`. `Acc.push : Int64
+           -> Int64`, `Acc.count : Unit -> Int64`, seeded `{n: 0, xs: []}`: `(Acc.push 10)` → `{n: 1, xs:
+           [10]}`, `(Acc.push 20)` → `{n: 2, xs: [20, 10]}`, `(Acc.count)` reads `n` = 2. Pins that a handler
+           state slot carries a RECORD with a nested HEAP field through the fold — the arm projects its
+           fields (scalar and heap) and reconstructs the record, so the value-heap field is correctly
+           threaded read-modify-write across performs (the compound-with-heap-field companion of the
+           scalar-pair tuple-state and the Set-state cases). Both backends agree (the readout is the scalar
+           field).")
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (main)
+              (handle Acc (record (n 0) (xs (list)))
+                ((push (v) st (resume v (record (n (+ (. st n) 1)) (xs ((. List push) (. st xs) v)))))
+                 (count (u) st (resume (. st n) st)))
+                (let ((a (Acc.push 10))) (let ((b (Acc.push 20))) (Acc.count))))) (export main)))
+  (output (: 2 Int64)))
+
 (case "an arm chooses its resume value by an if on the handler state"
   (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
            different value per branch — a CONDITIONAL resume. `(get (u) s (if (> s 5) (resume 100 s) (resume
