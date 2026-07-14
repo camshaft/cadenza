@@ -32253,6 +32253,22 @@ mod stage1 {
             dm.message,
             dm.fix
         );
+        // The LET-BINDER twin: a record literal with a misspelled field bound to a `(: r (Record …))`
+        // binder gets the SAME rename on the primary binding-mismatch reject (previously it declined the
+        // fix the argument + value-annotation sites gave).
+        let binder = "(module m (def (main) \
+                       (let (((: r (Record (foo Int64))) (record (fooo 1)))) 0)) (export main))";
+        let db_ =
+            compile_component(&crate::codec::encode(&parse(binder))).expect_err("must reject");
+        assert_eq!(db_.code.as_deref(), Some("CDZ0203"), "got: {}", db_.message);
+        assert!(
+            db_.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the let-binder carries the field rename: {} fix={:?}",
+            db_.message,
+            db_.fix
+        );
     }
 
     #[test]

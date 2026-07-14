@@ -8074,6 +8074,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // <unit>)` with the unit from the annotation, the let-binder twin of the value/
                             // argument `Qty.of` wrap.
                             r = r.with_fix(fix);
+                        } else if let Some(fix) =
+                            record_field_typo_fix(db, &annot_ty, &value_ty, value)
+                        {
+                            // A MISSPELLED FIELD in a record literal bound to a `(: r (Record …))` binder —
+                            // `(let (((: r (Record (foo Int64))) (record (fooo 1)))) …)` — gets the same
+                            // `fooo`→`foo` key rename the argument + value-annotation sites give (a confident
+                            // single extra↔missing pairing over a directly-written literal). The let-binder
+                            // twin of the record-field-typo rename.
+                            r = r.with_fix(fix);
                         }
                     }
                     out.push(r);
