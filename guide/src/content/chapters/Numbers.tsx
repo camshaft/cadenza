@@ -33,6 +33,18 @@ export default function Numbers() {
       </P>
       <Runnable source={`(/ 5 0)`} expect="error" />
 
+      <H2>Division truncates; remainder picks up the rest</H2>
+      <P>
+        When it <em>can</em> divide, integer division keeps the whole part and throws away the fraction —
+        it truncates toward zero. So <C>17 / 5</C> is <C>3</C>, not <C>3.4</C>:
+      </P>
+      <Runnable source={`(/ 17 5)`} />
+      <P>
+        The piece that division discards is exactly what <C>%</C>, the remainder, keeps: <C>17 % 5</C> is{" "}
+        <C>2</C>, because <C>17 = 5 × 3 + 2</C>. The two together recover the original.
+      </P>
+      <Runnable source={`(% 17 5)`} />
+
       <H2>Types don't mix by accident</H2>
       <P>
         Numeric and boolean values don't silently coerce into one another either. Ask the compiler to
@@ -67,6 +79,24 @@ export default function Numbers() {
         solution={`(/ 17 5)`}
         expected="3"
         hint={<>17 ÷ 5 is 3 remainder 2; integer division keeps the whole part, <C>3</C>. The divisor is <C>5</C>.</>}
+      />
+
+      <Exercise
+        id="numbers:2"
+        prompt={
+          <>
+            Use the remainder operator <C>%</C> to find what's left when <C>17</C> is divided by <C>5</C>.
+            Division gave <C>3</C>; the remainder is <C>2</C>.
+          </>
+        }
+        starter={`(? 17 5)`}
+        solution={`(% 17 5)`}
+        expected="2"
+        hint={
+          <>
+            The remainder operator is <C>%</C>. Since <C>17 = 5 × 3 + 2</C>, <C>(% 17 5)</C> is <C>2</C>.
+          </>
+        }
       />
     </article>
   );
