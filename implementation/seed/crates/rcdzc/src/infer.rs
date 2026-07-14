@@ -815,6 +815,52 @@ fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
     ))
 }
 
+/// A NON-LINEAR parameter list — a name bound more than once (`(fn (x x) …)`, `(f x x)`) — is CDZ0102: a
+/// parameter list must be LINEAR, like a pattern (a duplicate binder shadows the first, so a body use
+/// reads only one and the other silently binds nothing). Each repeated binder is a separate reject
+/// anchored at the repeated occurrence, carrying a rename-to-fresh fix (`x` → `x2`, dodging every other
+/// param name). Shared by a top-level DEF's parameter list (`compile::collect_faults`) and an anonymous
+/// LAMBDA's (`collect_node`'s `Lambda` arm) so `(fn (x x) …)` is rejected exactly as `(def (f x x) …)` is
+/// — the same linearity rule, wherever a parameter list is written.
+pub fn param_list_linearity_faults(db: &mut Db, params: &[StructId], out: &mut Vec<Reject>) {
+    // All param names — the set the rename fix must avoid so a fresh name collides with neither an earlier
+    // NOR a later parameter (renaming `x` in `(f x x)` to `x2` must dodge a real `x2`).
+    let all_names: std::collections::HashSet<String> = params
+        .iter()
+        .filter_map(|&p| {
+            db.ast
+                .as_name(crate::eval::param_name_occ(db, p))
+                .map(str::to_string)
+        })
+        .collect();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for &p in params {
+        let name_occ = crate::eval::param_name_occ(db, p);
+        let Some(name) = db.ast.as_name(name_occ).map(|s| s.to_string()) else {
+            continue; // a param with no extractable name (a malformed binder) — not a dup check
+        };
+        if !seen.insert(name.clone()) {
+            // RENAME the repeated occurrence to a fresh non-colliding name (`x` → `x2`), making the
+            // parameter list linear (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+            // Fix). Heuristic: the rename clears the hard error, but the fresh binder is then unused (a
+            // CDZ0306 warning) until the author wires it up — renaming vs. dropping the duplicate (which
+            // changes arity) is the author's call. Anchored at the repeated binder.
+            let fresh = crate::diag::suggest::fresh_suffixed_name(&name, &all_names);
+            out.push(
+                Reject::coded(
+                    Code::NonLinearBinder,
+                    format!(
+                        "parameter `{name}` is bound more than once (a parameter list must be linear, \
+                         like a pattern)"
+                    ),
+                )
+                .at(name_occ)
+                .with_fix(Fix::replace_heuristic(name_occ, fresh)),
+            );
+        }
+    }
+}
+
 /// Faults in a DEF PARAMETER's annotation `(: name T)` — the signature-side companion of the value
 /// annotation checked in `collect_node`. A parameter's TYPE OPERAND `T` must denote a TYPE; a non-type
 /// (an unbound name, a value, a malformed type application `(Int64 Int64)`) is REJECTED, not
@@ -8435,8 +8481,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // A cross-component extern reference carries no fault of its own — its declared signature is the
         // contract (well-formed by construction) and a mismatched APPLICATION is caught by the ordinary
         // apply check, exactly like a call to a def.
-        | Resolved::Extern { .. }
-        | Resolved::Lambda { .. } => {}
+        | Resolved::Extern { .. } => {}
+        // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a
+        // top-level def's is (`(fn (x x) …)` shadowed the first `x` and silently bound nothing). The body
+        // is checked at the application site (β-reduction), so only the param-linearity is added here.
+        Resolved::Lambda { params, .. } => {
+            param_list_linearity_faults(db, &params, out);
+        }
     }
 }
 

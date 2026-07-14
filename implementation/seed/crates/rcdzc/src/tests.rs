@@ -31250,6 +31250,47 @@ mod stage1 {
             ),
             None
         );
+        // An anonymous LAMBDA's parameter list is checked identically — `(fn (x x) …)` is the same
+        // linearity violation as `(def (f x x) …)`, so it rejects CDZ0102 (it previously compiled clean;
+        // the second `x` silently shadowed the first). Bare + annotated.
+        assert_eq!(
+            code("(module m (def (main) ((fn (x x) (+ x x)) 1 2)) (export main))").as_deref(),
+            Some("CDZ0102"),
+            "a lambda's duplicate parameter is non-linear too"
+        );
+        assert_eq!(
+            code("(module m (def (main) ((fn ((: x Int64) (: x Int64)) x) 1 2)) (export main))")
+                .as_deref(),
+            Some("CDZ0102"),
+            "an annotated lambda duplicate parameter is non-linear"
+        );
+        // NO over-rejection: a lambda with distinct params compiles.
+        assert_eq!(
+            code("(module m (def (main) ((fn (x y) (+ x y)) 1 2)) (export main))"),
+            None
+        );
+        // The lambda dup carries the same rename-to-fresh fix as the def case.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((fn (x x) (+ x x)) 1 2)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let lam = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0102"))
+            .expect("a lambda dup param rejects CDZ0102");
+        assert_eq!(
+            lam.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x2"),
+            "the lambda dup param carries the rename fix: {}",
+            lam.message
+        );
     }
 
     #[test]
