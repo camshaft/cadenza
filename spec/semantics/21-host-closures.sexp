@@ -2849,6 +2849,31 @@
   (call   mk (: 1 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 114 Int64)))
 
+; The tuple-among-scalars arg shape extends to the MULTI-EXPORT scalar-result path: N same-sig closures each
+; taking `(-> Int64 (Tuple Int64 Int64) Int64)` share one `call` that interleaves the prefix scalar with the
+; rebuilt tuple. (An among-scalars tuple with a LIST result, or on the mixed/distinct-sig paths, still declines
+; — those cores don't yet interleave prefix/suffix.)
+
+(case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across
+           two exports. The shared `call` pushes `n`, rebuilds the tuple, dispatches. Driving `mk-a`: `make-a()`
+           → handle, `call(handle, 100, (10, 3))` → `n + p.0 + p.1` = 113. The tuple-among-scalars interleaving
+           on the multi-export shared `call`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "MULTI-EXPORT: driving the second among-scalars closure (subtract)"
+  (doc    "The SAME multi-export component, driving `mk-b` (subtract): `call(handle, 100, (10, 3))` → `n -
+           (p.0 + p.1)` = 87. Confirms both same-sig among-scalars closures share the one interleaving `call`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 87 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

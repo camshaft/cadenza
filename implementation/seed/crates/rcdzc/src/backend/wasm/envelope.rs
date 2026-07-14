@@ -2446,6 +2446,8 @@ pub fn assemble_mixed_closure_resource_borrow(
         plain,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -2469,6 +2471,10 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
     plain: &[PlainExportAbi],
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    // Scalar boundary bytes BEFORE / AFTER the tuple arg (closure arg order) when the tuple sits AMONG scalar
+    // args; both empty for a sole tuple. Only the SCALAR-result shared `call` interleaves them this increment.
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -2612,9 +2618,11 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = (3 + 2 * nmk) as u32;
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 call_own_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
         } else {
@@ -2662,6 +2670,8 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
             result_byte,
             call_borrow,
             tuple_arg_bytes,
+            tuple_prefix_bytes,
+            tuple_suffix_bytes,
         ),
     ));
     out.extend_from_slice(&section(
@@ -4555,6 +4565,8 @@ fn resource_inner_component_multi_closure_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -4570,6 +4582,8 @@ fn resource_inner_component_multi_closure_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -4589,9 +4603,11 @@ fn resource_inner_component_multi_closure_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = block_base + 1; // handle at block_base, tuple next
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 handle_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
             (items, tup_ty + 1, 3)
@@ -6287,15 +6303,58 @@ fn closure_call_list_tuple_arg_functype(
     tuple_type_idx: u32,
     list_type_idx: u32,
 ) -> Vec<u8> {
+    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
+    closure_call_list_tuple_arg_functype_interleaved(
+        self_handle_type_idx,
+        &[],
+        tuple_type_idx,
+        &[],
+        list_type_idx,
+    )
+}
+
+/// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args AND returning a
+/// `list<u8>` (byte-rope / compound / collection result): `(self: <handle<t>>, <prefix scalars…>, p:
+/// tuple<…>, <suffix scalars…>) -> list<u8>`. Combines the interleaved-arg shape of
+/// [`closure_call_tuple_arg_functype_interleaved`] with the `list<u8>` result. Its lift carries Memory/Realloc.
+fn closure_call_list_tuple_arg_functype_interleaved(
+    self_handle_type_idx: u32,
+    prefix_bytes: &[u8],
+    tuple_type_idx: u32,
+    suffix_bytes: &[u8],
+    list_type_idx: u32,
+) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
     param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
     param_items.extend_from_slice(b"self");
     param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
-    param_items.extend_from_slice(&uleb_bytes("p".len() as u64));
-    param_items.extend_from_slice(b"p");
-    param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
-    item.extend_from_slice(&wasm_vec(2, &param_items));
+    let mut pn = 0usize;
+    for &vt in prefix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
+        pn += 1;
+    }
+    for &vt in suffix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    item.extend_from_slice(&wasm_vec(
+        1 + prefix_bytes.len() + 1 + suffix_bytes.len(),
+        &param_items,
+    ));
     // One result — the `list<u8>` defined type, referenced by index.
     item.push(0x00);
     uleb128(list_type_idx as u64, &mut item);

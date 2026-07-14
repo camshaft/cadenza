@@ -2290,17 +2290,20 @@ fn emit_multi_closure_resource(
     }
     // DIRECT-CALL COMPOUND ARG (multi-export): a single fixed-shape scalar tuple/record arg shared by all
     // exports crosses as a native component `tuple<…>` the canonical ABI flattens; the shared `call` rebuilds
-    // the cell from the flat fields (`TupleArgRebuild`). Detected here so the scalar `arg_bytes` decline
-    // below doesn't reject it. SCOPE: EXACTLY one such compound arg, a scalar result (a byte-rope/compound/
-    // collection result alongside a tuple arg is a further widening — declines cleanly below).
+    // the cell from the flat fields (`TupleArgRebuild`). The tuple may be the SOLE arg OR sit among scalar args
+    // (prefix/suffix). Detected here so the scalar `arg_bytes` decline below doesn't reject it. 5-tuple =
+    // (tuple field bytes, full flattened core vts, prefix scalar bytes, suffix scalar bytes, rebuild).
     let tuple_arg: Option<(
         Vec<u8>,
         Vec<crate::backend::wasm::lir::ValType>,
+        Vec<u8>,
+        Vec<u8>,
         serialize::TupleArgRebuild,
     )> = if arg_tys.len() == 1 {
         fixed_shape_scalar_tuple_arg(&arg_tys[0])
+            .map(|(fb, fv, rb)| (fb, fv, Vec::new(), Vec::new(), rb))
     } else {
-        None
+        single_compound_among_scalars(arg_tys.as_slice())
     };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
@@ -2352,10 +2355,10 @@ fn emit_multi_closure_resource(
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
     // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
-        field_vts.clone()
+        all_vts.clone()
     } else {
         arg_tys
             .iter()
@@ -2491,8 +2494,31 @@ fn emit_multi_closure_resource(
         .collect();
     // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild the arg cell from
     // the flattened fields, the shared list<u8> envelope emits the `tuple<…>` type. `None` on the scalar path.
-    let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
-    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
+    let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
+    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple. The multi
+    // LIST-result cores do not yet interleave prefix/suffix, so an among-scalars tuple with a list result
+    // declines below; only the SCALAR-result multi tail consumes these.
+    let tpre = tuple_arg
+        .as_ref()
+        .map(|(_, _, pre, _, _)| pre.as_slice())
+        .unwrap_or(&[]);
+    let tsuf = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, suf, _)| suf.as_slice())
+        .unwrap_or(&[]);
+    let among_scalars = !tpre.is_empty() || !tsuf.is_empty();
+    // A multi-export AMONG-SCALARS tuple with a list<u8>-crossing result declines: the multi LIST-result cores
+    // push `for a in 0..arity` and don't yet interleave prefix/suffix scalars around the rebuilt tuple (a
+    // follow-on). A SOLE tuple with a list result works (the shared list cores rebuild it); a scalar result
+    // with an among-scalars tuple works (the scalar tail interleaves).
+    if among_scalars && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a multi-export closure with a fixed-shape compound arg ALONGSIDE other args AND a byte-rope/\
+             compound/collection result is not yet emitted (the list-result cores do not yet interleave \
+             prefix/suffix scalars — a later widening; a scalar result works)",
+        ));
+    }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -2590,7 +2616,7 @@ fn emit_multi_closure_resource(
     // a fixed-shape scalar tuple/record. The shared `call` receives the FLATTENED fields (`arg_vts`) and
     // rebuilds the cell (`TupleArgRebuild`); the envelope's shared `call` functype takes a `tuple<…>` type.
     // `own<t>` (single-use) this cut — the rebuilt-arg cell drop is unconditional, so still leak-free.
-    if let Some((field_bytes, _field_vts, rebuild)) = &tuple_arg {
+    if let Some((field_bytes, _all_vts, tpre2, tsuf2, rebuild)) = &tuple_arg {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -2616,6 +2642,8 @@ fn emit_multi_closure_resource(
             &[], // no plain exports
             false,
             Some(field_bytes),
+            tpre2, // prefix scalar bytes (empty for a sole-tuple arg)
+            tsuf2, // suffix scalar bytes
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
@@ -3095,6 +3123,8 @@ fn emit_mixed_closure_resource(
             &abi_plain,
             false,
             Some(field_bytes),
+            &[], // mixed path detects only a SOLE tuple this increment — no prefix/suffix scalars
+            &[],
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across
