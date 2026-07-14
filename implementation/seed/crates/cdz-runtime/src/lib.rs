@@ -16890,6 +16890,85 @@ mod tests {
         assert_eq!(live_nodes(), before);
     }
 
+    /// A STRING-KEY collision node — the string sibling of `map_forces_collision_node` (which uses INT
+    /// keys). The compiler-in-Cadenza port's maps are STRING-keyed, and a string key takes the arity-0
+    /// HEAP-BYTE-LEAF champ path: the collision node's linear scan compares keys by `champ_eq` = RAW-BYTE
+    /// content (not the int-immediate compare the int-collision test exercises). Two identifier-like
+    /// strings that happen to share a full 32-bit FNV hash must still be kept DISTINCT and each resolve to
+    /// its OWN value BY CONTENT — and removing one collision entry must leave the other intact (the
+    /// collision-node drain path). Uses a hardcoded pair found by a birthday search over `k{n}` strings;
+    /// a PRECONDITION guard asserts they still collide, so if the frozen FNV hash ever changes this test
+    /// fails LOUDLY (re-find a colliding pair) rather than silently degrading to a non-collision case.
+    #[test]
+    fn map_string_key_collision_node_distinguishes_by_content() {
+        reset();
+        let before = live_nodes();
+        // Found via a champ_hash birthday search over "k{n}": both hash to 2462319294 (searched ~261k).
+        let (a, b) = ("k32728", "k261234");
+        // PRECONDITION: they genuinely collide (full 32-bit champ_hash equal). If this fails, the hash
+        // changed — find a new colliding pair; the test below is only meaningful on a real collision node.
+        let (ka, kb) = (op_str_new(String::from(a)), op_str_new(String::from(b)));
+        assert_eq!(
+            champ_hash(ka),
+            champ_hash(kb),
+            "PRECONDITION: {a:?} and {b:?} must share a full 32-bit champ_hash (else re-find a pair)"
+        );
+        assert!(
+            !champ_eq(ka, kb),
+            "…but they are DISTINCT strings (differ by content)"
+        );
+        op_drop(ka);
+        op_drop(kb);
+
+        // Insert both colliding string keys → a collision node at the hash floor.
+        let mut m = op_map_empty();
+        m = op_map_insert(m, op_str_new(String::from(a)), op_box_int(111));
+        m = op_map_insert(m, op_str_new(String::from(b)), op_box_int(222));
+        assert_eq!(
+            op_map_size(m),
+            2,
+            "both colliding string keys are kept (not merged by the shared hash)"
+        );
+        // Each resolves to its OWN value BY CONTENT (the collision-node raw-byte champ_eq scan).
+        let look = |m: Handle, k: &str| -> i64 {
+            let kh = op_str_new(String::from(k));
+            let v = op_map_lookup(m, kh);
+            op_drop(kh);
+            if v == Handle::NULL { -1 } else { op_get_int(v) }
+        };
+        assert_eq!(
+            look(m, a),
+            111,
+            "collision key {a:?} resolves to its own value"
+        );
+        assert_eq!(
+            look(m, b),
+            222,
+            "collision key {b:?} resolves to its own value"
+        );
+        // A THIRD, non-present string (also just a probe) must MISS even if it shares the hash prefix.
+        assert_eq!(look(m, "k0"), -1, "an absent key misses");
+
+        // Remove ONE collision entry: the collision node drains to the other entry, which stays intact.
+        // `op_map_remove` BORROWS the key (it hashes + compares it, doesn't consume), so drop the probe.
+        let rk = op_str_new(String::from(a));
+        m = op_map_remove(m, rk);
+        op_drop(rk);
+        assert_eq!(op_map_size(m), 1, "one collision entry removed");
+        assert_eq!(look(m, a), -1, "the removed collision key is gone");
+        assert_eq!(
+            look(m, b),
+            222,
+            "the surviving collision key still resolves to its own value"
+        );
+        op_drop(m);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the string-collision-node ops"
+        );
+    }
+
     #[test]
     fn map_persistence_and_structural_sharing() {
         reset();
