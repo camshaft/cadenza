@@ -90,6 +90,17 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   `cdz test` reads a commented `Project.cdz`), but `cdz check` on the same file still errors, so it is a
   real top-level-scan gap. Keep a top-level comment OFF an `effect`/`@test def` for now.
 
+- **OPEN (seed `rcdzc` — MISCOMPILE, ROOT-CAUSED): a `br_table`-lowered match (≥4 arms) in OPERAND
+  position drops a RECURSIVE-CALL sibling operand.** `repros/miscompile-brtable-match-operand-drops-
+  sibling.sexp` (`cdz check` clean; wasm valid but wrong value). In `(String.concat (go …) (d …))` where
+  `d` is a ≥4-arm `match`, the emitted `go` pushes the recursive result, then the match lowers to nested
+  blocks + a `br_table` whose every arm ends `br N` targeting the FUNCTION-RESULT label — escaping PAST
+  the `bytes-concat`, so the recursive operand is discarded (`go(4)` → `"b"`, want `"bb"`). ≥4 arms =
+  the `br_table` threshold (2–3 arms = if/probe chain, correct); verified on integer `+` too, and only
+  when the sibling is a RECURSIVE call (a param / non-recursive-match sibling is fine). This blocked a
+  hand-written `itoa` (digit via a 10-arm match, recursive `String.concat`) — worked around with an
+  if-chain digit function. A match in a non-tail (operand) position mis-targets its arm branches.
+
 - **OPEN (seed `rcdzc` — MISSING op): `List.map` does not exist.** A `List` value has only
   `at`/`len`/`push`/`concat`/`update`/`slice` (`prelude.rs` `list_module`); `(List.map xs f)` →
   CDZ0201 "record has no field `map`". The corpus MENTIONS `(List.map xs f)` but only in a `|>` doc

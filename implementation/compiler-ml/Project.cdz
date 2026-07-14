@@ -9,9 +9,9 @@ def name = "compiler-ml"
 
 // The library modules of the port, in dependency order (the entry's importables). As the pipeline
 // grows (decode / resolve / infer / lower / emit) they join this list.
-def modules = ["ast.cdz"]
+def modules = ["ast.cdz", "print.cdz"]
 
 // The modules whose `@test` definitions form the project's test suite. Same-file with their code
 // for now (a cross-file test cannot yet construct a type whose variant shadows a prelude name —
 // see repros/import-prelude-collision), so a module tests itself.
-def tests = ["ast.cdz"]
+def tests = ["ast.cdz", "print.cdz"]
