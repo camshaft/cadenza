@@ -145,6 +145,33 @@ export default function MapsSets() {
         identity.
       </Note>
 
+      <H2>Removing and reporting in one step: <C>Map.take</C></H2>
+      <P>
+        <C>Map.remove</C> discards whatever was under the key. When you want to <em>see</em> it on the way
+        out, <C>Map.take</C> does both at once: it returns a tuple of the value that was there — as an{" "}
+        <C>Option</C>, since the key might be absent — and the new map with the key gone. Reach the dropped
+        value with <C>.0</C> and <C>match</C> it; here taking key <C>1</C> from a two-entry map reports the{" "}
+        <C>10</C> it held:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (. (Map.take (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1) 0)
+    ((Some v) v)
+    ((None _) (- 0 1))))`}
+      />
+      <P>
+        The other half of the tuple, <C>.1</C>, is the smaller map — one entry now, so <C>Map.size</C> of it
+        is <C>1</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (Map.size (. (Map.take (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1) 1)))`}
+      />
+      <P>
+        Take a key that isn't there and <C>.0</C> is <C>(None unit)</C> while <C>.1</C> equals the original —
+        removal stays total, and you learn it held nothing in the same step.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="maps-sets:1"
