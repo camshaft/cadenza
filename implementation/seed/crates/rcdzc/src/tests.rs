@@ -40005,6 +40005,85 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_list_pattern_resolves_element_binders_in_bounded_time() {
+        // REGRESSION (perf): `resolve::find_leading_binder_in_list_pattern` answered "does this `(list p…
+        // .. rest)` pattern bind `name`, and where?" by re-scanning the LEADING element positions from 0 on
+        // EVERY reference — positive to the binder's position, NEGATIVE (a prelude/outer name the pattern
+        // does not bind, e.g. `g`/`+`/`Int64`) over the WHOLE pattern. So a wide `(match xs ((list a0 … aN
+        // .. r) body) …)` destructure whose body references each binder was O(leading) per reference × O(N)
+        // references = O(N²) (measured: N=1600 ~140ms, ~4×/dbl, `find_leading_binder_in_list_pattern` ~37%
+        // self + its per-element path `Vec` alloc ~45% of malloc). FIX: `Db::simple_list_binders` indexes a
+        // SIMPLE pattern's binders (every leading element a bare name) ONCE by name, so each lookup is an
+        // O(1) map read — the total leading elements enumerated is O(N), not O(N²).
+        //
+        // The NOISE-FREE signal is `LIST_PATTERN_BINDER_ELEMS_SCANNED` — the leading elements the index
+        // build (+ any linear fallback) enumerates, a pure function of the program. A width-N pattern
+        // referenced N times should enumerate O(N) elements (one index build), not O(N²) (a re-scan per
+        // reference). Correctness (the binders read the right elements) is pinned by the run-value tests.
+        fn wide_list_pattern_src(n: usize) -> String {
+            let binders: String = (0..n)
+                .map(|i| format!("a{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // `g` consumes every binder (so each is referenced once from the arm body, driving one
+            // resolution against the wide list pattern), and every `g` param is used → no unused warnings.
+            let refs: String = (0..n)
+                .map(|i| format!("a{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let g_body = {
+                fn tree(items: &[String]) -> String {
+                    if items.len() == 1 {
+                        return items[0].clone();
+                    }
+                    let m = items.len() / 2;
+                    format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+                }
+                let ps: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+                tree(&ps)
+            };
+            let params: String = (0..n)
+                .map(|i| format!("p{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (g {params}) {g_body}) \
+                   (def (f (: xs (List Int64))) (match xs ((list {binders} .. r) (g {refs})) (_ 0))) \
+                   (def (main) (f (list))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid wide list destructure).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_list_pattern_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide list-pattern destructure compiles with no error diagnostics: {diags:?}"
+        );
+        fn elems_scanned(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× pattern; linear (index-build) growth ⇒ ~2×, the O(N²) re-scan was ~4×.
+        // Require < 3× (between the regimes, with margin for constant terms). `> 0` proves the counter
+        // ran (the index build enumerates the leading elements once); a revert to the per-reference scan
+        // pushes the ratio toward 4×, failing the test.
+        let n200 = elems_scanned(&wide_list_pattern_src(200));
+        let n400 = elems_scanned(&wide_list_pattern_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            n200 > 0 && ratio < 3.0,
+            "a wide list-pattern destructure must resolve its element binders in O(N) enumerated leading \
+             elements, not O(N²) (the per-reference `find_leading_binder_in_list_pattern` scan needs the \
+             per-pattern `Db::simple_list_binders` index): width 200→400 grew scanned elements {ratio:.1}× \
+             (n200={n200}, n400={n400}); linear is ~2×, the re-scan was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
