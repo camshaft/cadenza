@@ -12916,6 +12916,172 @@ mod tests {
         );
     }
 
+    /// The SAME record-with-heap-fields shape as `deeply_nested_render`, but through the REAL value-encode
+    /// ESCAPE (`op_value_encode_form` — the iterative work-stack walk + `Descriptor` decode that crosses the
+    /// host boundary), not the simpler `render` helper. This is the compiler-in-Cadenza port's AST-NODE
+    /// shape: a Record whose FIELDS are themselves heap compounds (a List, a Sum, Bytes, a String) — the
+    /// exact thing it serializes. Every OTHER record-encode test (`value_encode_wide_record`) uses all-SCALAR
+    /// fields, so the escape's `Shape::Record`-over-HEAP-FIELDS assembly (push each field's subtree onto the
+    /// work stack, pop them in field order into the record assembler) was unexercised by the real escape.
+    /// Checks: (1) DIFFERENTIAL — the iterative production walk byte-matches the recursive oracle (two
+    /// independent implementations); (2) INDEPENDENT ANCHOR — the field NAME leaves appear in field order
+    /// and the String field content "hi" is present (a wrong field interleaving on the work stack would
+    /// reorder them); (3) no leak.
+    #[test]
+    fn value_encode_record_with_heap_valued_fields_matches_recursive_reference() {
+        reset();
+        let before = live_nodes();
+        fn leb(o: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                o.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn nm(o: &mut Vec<u8>, s: &str) {
+            leb(o, s.len() as u64);
+            o.extend_from_slice(s.as_bytes());
+        }
+        // Descriptor table: [0]=Int, [1]=List(→0), [2]=Sum[None→3, Some→0], [3]=Unit, [4]=Bytes, [5]=Str,
+        // [6]=Record{xs→1, tag→2, raw→4, name→5}. root=6.
+        let mut d = Vec::new();
+        leb(&mut d, 7);
+        d.push(0); // [0] Int
+        d.push(7);
+        leb(&mut d, 0); // [1] List(→0)
+        d.push(9);
+        leb(&mut d, 2);
+        nm(&mut d, "None");
+        leb(&mut d, 3);
+        nm(&mut d, "Some");
+        leb(&mut d, 0); // [2] Sum
+        d.push(5); // [3] Unit
+        d.push(4); // [4] Bytes
+        d.push(3); // [5] Str
+        d.push(8);
+        leb(&mut d, 4);
+        nm(&mut d, "xs");
+        leb(&mut d, 1);
+        nm(&mut d, "tag");
+        leb(&mut d, 2);
+        nm(&mut d, "raw");
+        leb(&mut d, 4);
+        nm(&mut d, "name");
+        leb(&mut d, 5); // [6] Record
+        leb(&mut d, 6); // root
+        // The value: (record (xs (list 1 2)) (tag (Some 9)) (raw b"\x07") (name "hi")). `xs` is a REAL
+        // RRB vec (Shape::List reads via vec-get), the others heap sum/bytes/str leaves.
+        let xs = {
+            let mut v = op_vec_empty();
+            v = op_vec_push(v, op_box_int(1));
+            v = op_vec_push(v, op_box_int(2));
+            v
+        };
+        let tag = op_sum_new(1, op_box_int(9));
+        let raw = {
+            let b = op_bytes_alloc(1);
+            op_bytes_set(b, 0, 7);
+            b
+        };
+        let name = op_str_new("hi".to_string());
+        let rec = op_arr_alloc(4);
+        op_arr_set(rec, 0, xs);
+        op_arr_set(rec, 1, tag);
+        op_arr_set(rec, 2, raw);
+        op_arr_set(rec, 3, name);
+
+        let doc =
+            op_value_encode_form(rec, &d).expect("record-with-heap-fields encodes via the escape");
+
+        // (1) DIFFERENTIAL: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(&d).expect("descriptor decodes");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0)
+            .expect("recursive oracle encodes");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Record-with-heap-fields encode must agree"
+        );
+
+        // (2) INDEPENDENT ANCHOR: parse the leaf pool (each leaf = KIND byte + payload). Collect the NAME
+        // leaves (KIND_NAME=10 — the `record`/`list` heads, field keys, Sum variant head) in emission order
+        // AND the STR values (KIND_STR=7 — a String VALUE, a DISTINCT kind from a NAME). Field keys must
+        // appear in FIELD order (a wrong field interleaving on the work stack would reorder them), and the
+        // String field content "hi" must appear as a STR leaf. Uses the codec's actual KIND constants.
+        let mut names: Vec<String> = Vec::new();
+        let mut strs: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                doc::KIND_INT_POS_DEC | 3 => {
+                    // KIND_INT (pos=0 / neg=3): LEB len + big-endian magnitude
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                doc::KIND_NAME => {
+                    let len = doc[i] as usize;
+                    i += 1;
+                    names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
+                    i += len;
+                }
+                doc::KIND_STR => {
+                    let len = doc[i] as usize;
+                    i += 1;
+                    strs.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
+                    i += len;
+                }
+                doc::KIND_BYTES => {
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                k => panic!("unexpected leaf kind {k} in the record document"),
+            }
+        }
+        // Field keys appear in FIELD ORDER (xs < tag < raw < name).
+        let field_key_positions: Vec<usize> = ["xs", "tag", "raw", "name"]
+            .iter()
+            .map(|k| {
+                names
+                    .iter()
+                    .position(|n| n == k)
+                    .unwrap_or_else(|| panic!("field key {k} missing from names {names:?}"))
+            })
+            .collect();
+        assert!(
+            field_key_positions.windows(2).all(|w| w[0] < w[1]),
+            "record field keys appear in FIELD order (xs<tag<raw<name) in {names:?}"
+        );
+        // The record/list heads + the Sum variant head are all present (structural heads).
+        assert!(
+            names.iter().any(|n| n == "record")
+                && names.iter().any(|n| n == "list")
+                && names.iter().any(|n| n == "Some"),
+            "the record head, the list head, and the Sum variant head are all present in {names:?}"
+        );
+        // The String field VALUE "hi" is emitted as a KIND_STR leaf (distinct from the NAME leaves).
+        assert!(
+            strs.iter().any(|s| s == "hi"),
+            "the String field value \"hi\" is emitted as a STR leaf in {strs:?}"
+        );
+
+        op_drop(rec);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the record-with-heap-fields encode"
+        );
+    }
+
     // ── Birth refcount: every node is born with refcount 1 ────────────────────────────────────
 
     #[test]

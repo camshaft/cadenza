@@ -898,6 +898,25 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main)))
   (output (: 21 Int64)))
 
+(case "an effect result drives the bound of a PURE recursive helper called in the handle body"
+  (doc    "The effect-free callee the fold treats as opaque may itself be RECURSIVE, as long as its
+           recursion reaches NO effect — the companion of the non-recursive effect-free-call cases above.
+           The perform is discharged ONCE in the handle body and its result becomes the ARGUMENT to a pure
+           recursive helper whose whole recursion is effect-free: `(sum-to (Cfg.limit))` where `sum-to n =
+           (if (= n 0) 0 (+ n (sum-to (- n 1))))`. `Cfg.limit` resumes 4, so `(sum-to 4)` = `4 + 3 + 2 + 1`
+           = 10. Pins that the fold discharges the single perform to its resume value and then runs the pure
+           recursion as an ordinary effect-free computation on that value — the effect does not enter the
+           helper's recursion at all (the helper is a separate, self-contained pure function the perform
+           merely feeds). Distinct from the effect-context-SPECIALIZED recursive walks (where the recursion
+           ITSELF performs): here the recursion is effect-free and only its INPUT comes from an effect.")
+  (input  (do
+            (effect Cfg (op limit (-> Unit Int64)))
+            (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+            (def (main)
+              (handle Cfg 0 ((limit (u) s (resume 4 s)))
+                (sum-to (Cfg.limit)))) (export main)))
+  (output (: 10 Int64)))
+
 (case "a let-bound lambda whose body performs is applied in the handle body"
   (doc    "A LAMBDA VALUE is pure at CONSTRUCTION — its body's effects fire only when it is APPLIED. So a
            `let` binding a performing lambda is a pure binding, and the discharged op surfaces at the
@@ -1079,6 +1098,27 @@
               (handle Acc (tuple 0 100) ((step (v) p (resume (+ (. p 0) (. p 1)) (tuple (+ (. p 0) v) (. p 1)))))
                 (+ (Acc.step 1) (Acc.step 2)))) (export main)))
   (output (: 201 Int64)))
+
+(case "a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field"
+  (doc    "The handler state is a RECORD with a scalar field AND a HEAP field (a list) — the AST-node
+           accumulator shape (a record of results one of whose fields is a heap value). Each `push` arm READS
+           both fields and REBUILDS the record: it increments the scalar `n` and conses the value onto the
+           list `xs`, threading the new record; the `count` arm reads back the scalar `n`. `Acc.push : Int64
+           -> Int64`, `Acc.count : Unit -> Int64`, seeded `{n: 0, xs: []}`: `(Acc.push 10)` → `{n: 1, xs:
+           [10]}`, `(Acc.push 20)` → `{n: 2, xs: [20, 10]}`, `(Acc.count)` reads `n` = 2. Pins that a handler
+           state slot carries a RECORD with a nested HEAP field through the fold — the arm projects its
+           fields (scalar and heap) and reconstructs the record, so the value-heap field is correctly
+           threaded read-modify-write across performs (the compound-with-heap-field companion of the
+           scalar-pair tuple-state and the Set-state cases). Both backends agree (the readout is the scalar
+           field).")
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (main)
+              (handle Acc (record (n 0) (xs (list)))
+                ((push (v) st (resume v (record (n (+ (. st n) 1)) (xs ((. List push) (. st xs) v)))))
+                 (count (u) st (resume (. st n) st)))
+                (let ((a (Acc.push 10))) (let ((b (Acc.push 20))) (Acc.count))))) (export main)))
+  (output (: 2 Int64)))
 
 (case "an arm chooses its resume value by an if on the handler state"
   (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a

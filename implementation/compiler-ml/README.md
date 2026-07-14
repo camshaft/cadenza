@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 241 tests total across 26 modules):
+top. Current `src/` modules (each with same-file `@test`s — 252 tests total across 27 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -173,6 +173,14 @@ top. Current `src/` modules (each with same-file `@test`s — 241 tests total ac
   reversal LOGIC bug I first wrote was caught by the multi-token order tests, which is the framework
   doing its job. Lexes over char-codes not a `String` to sidestep the open runtime-`String.at` equality
   bug (a real text lexer would hit it — which is the point of that finding).
+- `src/parse.cdz` — a recursive-descent PRECEDENCE PARSER: a `List Tok` → an arithmetic `Expr` tree
+  (`expr = term (('+'|'-') term)*`, `term = factor (('*'|'/') factor)*`, `factor = NUMBER | '(' expr
+  ')'`). The port's heaviest MUTUAL-RECURSION stress: `parse-expr ↔ parse-term ↔ parse-factor` each
+  return a `(Expr, next-index)` cursor TUPLE, so a `(compound-Ast, Int64)` crosses every mutual-call edge
+  (the tuple-through-recursion shape, fixed iter 14, now at mutual scale). To PROVE the tree is shaped by
+  precedence (not just parsed), it EVALUATES the result: `1+2*3 == 7` (not 9), `(1+2)*3 == 9`,
+  `10-3-2 == 5` (left-assoc), plus a structural `depth` observation. 11 `@test`s. Confirmed WORKING — the
+  mutual tuple-cursor threading is correct; no new bug from the parser.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -283,6 +291,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   TYPE must use `Tuple(A, B)` — an inconsistency, and the error points at what looks like a type. Ideal:
   accept `(A, B)` in type position (the RHS of a `:` is unambiguously a type annotation) as `Tuple(A,
   B)`. Low-severity (a clean workaround exists); the confusing diagnostic is the real cost.
+
+- **OPEN (seed `rcdzc` — ML SURFACE INCONSISTENCY, iter 35): `Record(field: Type, …)` colon-fields parse
+  in a PARAM annotation but NOT in a TYPE DECL.** `repros/reject-ml-record-type-colon-fields-in-type-decl.cdz`.
+  `def f(r: Record(a: Int64)) = r.a` is accepted, but the SAME type in `type R = Record(a: Int64)` →
+  "expected `,`" at the `:`. The paren-field spelling `Record(a(Int64))` — what the ML printer EMITS
+  (`cdz convert … --to ml` renders `Record(x(Int64), y(Int64))`) — parses in BOTH positions, so it is the
+  portable form. The two type-position parsers should agree. Separate related gap: no `{ field: Type }`
+  brace sugar for an inline record type at all (parsed as a record VALUE). A named record type is a
+  newtype over `Record(…)`: `type R = R(Record(a(Int64)))`. Low-severity; parser-consistency + a confusing
+  diagnostic. (Companion of the tuple-type gap above — both are paren-comma-vs-annotation surface
+  mismatches in type position.)
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

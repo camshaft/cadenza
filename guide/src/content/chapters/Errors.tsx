@@ -175,29 +175,29 @@ export default function Errors() {
         id="errors:2"
         prompt={
           <>
-            A pattern can match a literal <em>inside</em> a constructor. Here <C>describe</C> is called with{" "}
-            <C>(Some 5)</C>; fill the payload pattern so the first arm fires only for that exact value and
-            returns <C>100</C>. (Get it wrong and it falls through to the binding arm, returning <C>5</C>.)
+            <C>take-from</C> subtracts <C>n</C> from a stock of <C>stock</C> — but only when there's enough;
+            asking for more than you have has no answer. Fill the hole so the "not enough" branch{" "}
+            <em>returns absence</em>. Here the stock is <C>3</C> and the request is <C>10</C>, so that
+            branch fires and the <C>None</C> arm hands back <C>-1</C>.
           </>
         }
-        starter={`(def (describe o)
-  (match o
-    ((Some ?) 100)
-    ((Some x) x)
-    ((None _) (- 0 1))))
-(def (main) (describe (Some 5)))`}
-        solution={`(def (describe o)
-  (match o
-    ((Some 5) 100)
-    ((Some x) x)
-    ((None _) (- 0 1))))
-(def (main) (describe (Some 5)))`}
-        expected="100"
+        starter={`(def (take-from stock n)
+  (if (< stock n) ? (Some (- stock n))))
+(def (main)
+  (match (take-from 3 10)
+    ((Some left) left)
+    ((None _) (- 0 1))))`}
+        solution={`(def (take-from stock n)
+  (if (< stock n) (None unit) (Some (- stock n))))
+(def (main)
+  (match (take-from 3 10)
+    ((Some left) left)
+    ((None _) (- 0 1))))`}
+        expected="-1"
         hint={
           <>
-            The first arm should match <C>(Some 5)</C> exactly, so the literal in the pattern is <C>5</C>.
-            A pattern that names a value (like <C>x</C>) binds anything; a literal (<C>5</C>) matches only
-            itself.
+            The <C>Some</C> branch already carries a value; the empty branch carries nothing, which you
+            write as <C>(None unit)</C> — the same <C>None</C> the <C>match</C> below is waiting for.
           </>
         }
       />

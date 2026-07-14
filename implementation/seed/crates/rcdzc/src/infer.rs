@@ -661,6 +661,18 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     if w == 0 {
         return None;
     }
+    // A value that ALREADY has a distinct numeric type — an EXPLICITLY-SUFFIXED literal `999N`
+    // (`Ty::BigInt`) / `1R` (`Ty::Rational`) — is NOT a bare literal being grounded by the annotation: it
+    // carries its own type, so `(: 999N Int64)` (or passing `999N` to an `Int64` parameter) is a genuine
+    // type MISMATCH (BigInt ≠ Int64), reported by the CDZ0203 unify. The width fit-check sees through the
+    // suffix's `(: 999 BigInt)` desugar to the inner `Resolved::Int` and would ALSO fire CDZ0302 ("literal
+    // does not fit Int64") — double-reporting the same slip with a misleading second framing (a BigInt is
+    // the wrong TYPE, not an out-of-range Int64 literal). Skip it; the mismatch path is the correct, sole
+    // diagnostic. A BARE literal (no suffix) still range-checks: it types as the `Int64` default, so it is
+    // a grounding, exactly as before.
+    if matches!(type_of(db, value), Ty::BigInt | Ty::Rational) {
+        return None;
+    }
     // The bound value's CONSTANT integer value, if it has one: a bare literal `200`, OR a value that
     // FOLDS to a constant (`(+ 100 100)` → 200) — the same computed constants the value annotation
     // `(: (+ 100 100) Int8)` range-checks. `core_of` performs the fold; a runtime value (a param, a call

@@ -1191,9 +1191,18 @@ the component type. The new work:
   Option's one-payload+nullary AND Result's two payloads); `ArgSlot::Result(ok,err)` + `result_defined_type`;
   the classifier dispatches by payload counts (`[0,1]`→Option, `[1,1]`→Result same-width); `cdz-run`
   `Type::Result` coercion. Corpus: Result Int64 (Ok+Err), Result Bool, + capturing (Ok+Err).
-  **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED `variant<…>` — an
-  export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened join); a
-  compound/nested payload; the multi/mixed/distinct-sig + list-result shapes (each a slot/core-fn widening).
+- **✅ SUM (Option/Result scalar) arg on the MULTI-EXPORT + MIXED shapes — scalar result (`spec@76b798eb`).**
+  N same-sig closures sharing one `call` taking the sum, and a sum-arg closure alongside a plain export. Pure
+  mod.rs wiring — all the machinery (`SumArgRebuild`, the `&[SumArgRebuild]` core param, the
+  `ArgSlot::OptionScalar`/`Result` mint through the shared `assemble_mixed_closure_resource_borrow_tuple`)
+  already existed: bind `fixed_shape_option_scalar_arg` in `emit_multi`/`emit_mixed` (arg_vts `[i32,payload]`,
+  register `sum-new`+box ops), emit via the shared core with `sums=&[rebuild]` + `Some(&[slot])`, + a
+  scalar-guard so a sum-arg list result declines (the multi list cores thread tuples, not sums). Corpus:
+  MULTI-EXPORT two Option-arg (drive each, Some+None), two Result-arg; MIXED Option-arg alongside plain (drive
+  both).
+  **REMAINING within SUM-arg:** the DISTINCT-SIG shape; a general USER sum / >2 variants (needs a NAMED
+  `variant<…>` — an export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened
+  join); a compound/nested payload; a LIST result over a sum arg (the list cores thread tuples, not sums).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
