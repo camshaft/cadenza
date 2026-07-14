@@ -295,6 +295,7 @@ pass	a constant list update at an index that wraps below the length is also reje
 pass	a constant list update at an out-of-bounds index is rejected at compile time
 pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant tuple is returned as a program result
+pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
 pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
@@ -372,6 +373,8 @@ pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundar
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
@@ -683,6 +686,7 @@ pass	a non-power-of-two float width is rejected
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a nullary Sign variant applied to a non-unit payload is a type error
+pass	a nullary constructor is a plain first-class value stored in a tuple
 pass	a nullary constructor is a single-arity function taking unit
 pass	a nullary do-local def followed by a use of it computes over its result
 pass	a nullary function called from another function's body
@@ -1160,6 +1164,7 @@ pass	an earlier literal arm is chosen over a later name-binding arm for a runtim
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect operation declared with no name is rejected
 pass	an effect operation reached with neither a handler nor a delegation is rejected
+pass	an effect operation returning a SUM is resumed with a sum value and matched
 pass	an effect performed in a callee is discharged by the caller's handler
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
