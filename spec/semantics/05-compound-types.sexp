@@ -2369,6 +2369,24 @@
             (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
   (output (: -5 Int64)))
 
+(case "a nullary variant list element dispatches by its discriminant"
+  (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
+           whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor
+           `(Op.Add n)` does. (A nullary variant IS the whole element, sitting in list-element position; it
+           dispatches via the same fresh-binder + discriminant-guard desugar, no payload to bind.) Here the
+           runtime list built by `mk 1` is `[C.Green]`, so it falls past the `C.Red` arm to the `C.Green` arm
+           → 2; `C.Blue` would fall to the catch-all.")
+  (input  (do
+            (type C Red Green Blue)
+            (def (mk (: n Int64)) (if (< n 1) (list C.Red) (if (< n 2) (list C.Green) (list C.Blue))))
+            (def (f (: xs (List C)))
+              (match xs
+                ((list C.Red .. r) 1)
+                ((list C.Green .. r) 2)
+                (_                   0)))
+            (def (main) (f (mk 1))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a nested list element composes over a runtime list of lists"
   (doc    "A list element MAY itself be a nested LIST pattern (`core-semantics.md §A List Is Deconstructed`:
            an element MAY itself be a nested element pattern, matched recursively). Over a runtime `List

@@ -21637,6 +21637,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nullary_variant_list_element_dispatches_by_discriminant() {
+        // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
+        // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary
+        // `(. C R)` IS the whole element, sitting in list-element position where resolve marks the
+        // occurrence INERT — so `variant_owner_decl` read no scheme and it fell to a spurious CDZ0201 "not a
+        // constructor". `refutable_ctor_element_head` now resolves the head via a FRESH clone (out of
+        // element context), so a nullary variant dispatches like any refutable ctor element.
+        //
+        // A runtime list built internally (nullary variant elements), dispatched by the head's tag: mk(0) →
+        // [C.R] → arm 1; mk(1) → [C.G] → arm 2; mk(2) → [C.B] → catch-all 0.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m (type C R G B) \
+                   (def (mk (: n Int64)) (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B)))) \
+                   (def (f (: xs (List C))) (match xs ((list C.R .. r) 1) ((list C.G .. r) 2) (_ 0))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping nullary-variant-list-element run");
+            return;
+        }
+        assert_eq!(run("0"), "1", "[C.R] matches the C.R arm");
+        assert_eq!(run("1"), "2", "[C.G] matches the C.G arm");
+        assert_eq!(run("2"), "0", "[C.B] matches no listed arm → catch-all");
+    }
+
+    #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
         // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
         // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant

@@ -896,6 +896,7 @@ pass	a nullary module export's non-unit argument does not swallow the argument's
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
+pass	a nullary variant list element dispatches by its discriminant
 pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
