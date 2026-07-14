@@ -595,6 +595,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name

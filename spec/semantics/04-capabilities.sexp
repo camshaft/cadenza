@@ -190,6 +190,29 @@
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
 
+(case "a host call's response is an ordinary value that feeds a LATER host call"
+  (doc    "Witnesses capabilities-and-effects.md #A Host Call Returns A Response: a host call is a plain
+           function call that returns its response to the program, so the response is an ordinary value the
+           program computes with — including as the input to a SUBSEQUENT host call. `io.read : Unit ->
+           Int64` and `io.scale : Int64 -> Int64` are both delegated; the body is `(io.scale (+ (io.read)
+           1))`. The ordered fixture answers `io.read` with 20; the program adds 1 → 21 and passes that as
+           `io.scale`'s argument, which the host answers with 42 — so the run yields 42 and makes the two
+           host calls IN ORDER (`io.read` then `io.scale`). Pins that a host response is a first-class
+           returned value threaded through a normal computation into a later host call's argument (a data
+           dependency ACROSS the host boundary), not a side effect the program cannot observe — the
+           chained-call companion of the two-independent-calls cases (each response feeds the next step
+           rather than combining two independent responses). (wasm: the rust target declines — it lacks the
+           host-envelope emission the component-model backend has, the host-boundary parity gap, not an
+           effects-fold limitation.)")
+  (input  (do
+            (effect io (op read (-> Unit Int64)) (op scale (-> Int64 Int64)))
+            (def (main)
+              (host (io)
+                (io.scale (+ (io.read) 1)))) (export main)))
+  (host-responses (respond io.read (: 20 Int64)) (respond io.scale (: 42 Int64)))
+  (host-calls (call io.read) (call io.scale))
+  (output (: 42 Int64)))
+
 ; --- A non-kebab effect / operation name crosses under a normalized component extern name --------------
 ; A host effect crosses the component boundary at two name-minting sites the value-export path does not
 ; touch: the effect NAME is the imported WIT interface's extern name, and each operation NAME is a func the
