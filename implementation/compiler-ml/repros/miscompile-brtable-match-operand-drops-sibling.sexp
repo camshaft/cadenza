@@ -1,3 +1,9 @@
+;; ✅ FIXED by the seed (`spec`@`b2bf850d` "a br_table match arm branches to the match's own join block,
+;; not one block past it", 2026-07-14) — reported by this loop, fixed within one iteration. `go(4)` now
+;; correctly returns "bb" (byte-len 2). KEPT as a regression witness: run `cdz compile` on this file and
+;; check `go(4)` == 2. (The port's src/print.cdz reverted its if-chain `digit` workaround to a clean
+;; 10-arm `match` once this landed.) Original report below.
+;;
 ;; MISCOMPILE (2026-07-14, ROOT-CAUSED): a MULTI-ARM `match` (≥4 arms → lowered to a `br_table`) used
 ;; as an OPERAND of a binary op (here `String.concat`) discards the OTHER operand. `cdz check` is CLEAN;
 ;; the wasm is valid but computes the wrong value.

@@ -103,16 +103,15 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   `cdz test` reads a commented `Project.cdz`), but `cdz check` on the same file still errors, so it is a
   real top-level-scan gap. Keep a top-level comment OFF an `effect`/`@test def` for now.
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, ROOT-CAUSED): a `br_table`-lowered match (≥4 arms) in OPERAND
-  position drops a RECURSIVE-CALL sibling operand.** `repros/miscompile-brtable-match-operand-drops-
-  sibling.sexp` (`cdz check` clean; wasm valid but wrong value). In `(String.concat (go …) (d …))` where
-  `d` is a ≥4-arm `match`, the emitted `go` pushes the recursive result, then the match lowers to nested
-  blocks + a `br_table` whose every arm ends `br N` targeting the FUNCTION-RESULT label — escaping PAST
-  the `bytes-concat`, so the recursive operand is discarded (`go(4)` → `"b"`, want `"bb"`). ≥4 arms =
-  the `br_table` threshold (2–3 arms = if/probe chain, correct); verified on integer `+` too, and only
-  when the sibling is a RECURSIVE call (a param / non-recursive-match sibling is fine). This blocked a
-  hand-written `itoa` (digit via a 10-arm match, recursive `String.concat`) — worked around with an
-  if-chain digit function. A match in a non-tail (operand) position mis-targets its arm branches.
+- **✅ FIXED (seed `rcdzc`@`b2bf850d`): a `br_table`-lowered match (≥4 arms) in OPERAND position dropped
+  a RECURSIVE-CALL sibling operand.** Reported by this loop, fixed by a sibling within one iteration
+  ("a br_table match arm branches to the match's own join block, not one block past it"). `go(4)` now
+  returns `"bb"` (was `"b"`); a 10-arm-match `itoa` renders `"12345"` correctly. `src/print.cdz` reverted
+  its if-chain `digit` workaround to a clean 10-arm `match`. Regression witness kept in
+  `repros/miscompile-brtable-match-operand-drops-sibling.sexp`. ORIGINAL: in `(String.concat (go …)
+  (d …))` with `d` a ≥4-arm match, the match's `br_table` arms each `br` to the function-result label,
+  escaping past the `bytes-concat` and discarding the recursive operand (≥4 arms = the br_table
+  threshold; verified on integer `+`; only bit a recursive sibling).
 
 - **OPEN (seed `rcdzc` — MISSING op): `List.map` does not exist.** A `List` value has only
   `at`/`len`/`push`/`concat`/`update`/`slice` (`prelude.rs` `list_module`); `(List.map xs f)` →
