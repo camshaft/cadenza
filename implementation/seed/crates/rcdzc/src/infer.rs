@@ -6265,6 +6265,12 @@ fn check_application(
                     .at(e);
                     if let Some(fix) = float_literal_retype_fix(db, first, &first_ty, &et)
                         .or_else(|| float_literal_retype_fix(db, e, &et, &first_ty))
+                        // A record-field TYPO in one element vs the other (`(list (record (foo 1)) (record
+                        // (fooo 2)))`) — rename the misspelled key, whichever element carries it. A peer join
+                        // has no fixed "expected", so try BOTH orderings: treat the FIRST as the target shape
+                        // (the outlier `e` has the typo), then the outlier as the target (the first has it).
+                        .or_else(|| record_field_typo_fix(db, &first_ty, &et, e))
+                        .or_else(|| record_field_typo_fix(db, &et, &first_ty, first))
                     {
                         reject = reject.with_fix(fix);
                     }
@@ -7655,6 +7661,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // literal (a computed integer branch yields no fix).
                 if let Some(fix) = float_literal_retype_fix(db, then_, &then_ty, &else_ty)
                     .or_else(|| float_literal_retype_fix(db, else_, &else_ty, &then_ty))
+                    // A record-field TYPO in one branch vs the other — rename the misspelled key on whichever
+                    // branch carries it (both orderings, the peer-join twin of the list-element record typo).
+                    .or_else(|| record_field_typo_fix(db, &then_ty, &else_ty, else_))
+                    .or_else(|| record_field_typo_fix(db, &else_ty, &then_ty, then_))
                 {
                     reject = reject.with_fix(fix);
                 }
@@ -8189,6 +8199,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // literal (a computed integer arm body yields no fix).
                         if let Some(fix) = float_literal_retype_fix(db, *first_body, &first_ty, &bt)
                             .or_else(|| float_literal_retype_fix(db, *body, &bt, &first_ty))
+                            // A record-field TYPO in one arm body vs another — rename the misspelled key on
+                            // whichever arm carries it (both orderings, the peer-join twin at the match site).
+                            .or_else(|| record_field_typo_fix(db, &first_ty, &bt, *body))
+                            .or_else(|| record_field_typo_fix(db, &bt, &first_ty, *first_body))
                         {
                             reject = reject.with_fix(fix);
                         }

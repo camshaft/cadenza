@@ -113,16 +113,16 @@ export default function Functions() {
         id="functions:2"
         prompt={
           <>
-            Finish <C>compose</C> so <C>(compose f g)</C> runs <C>g</C> first, then feeds its result to{" "}
-            <C>f</C>. With that order, <C>(compose inc dbl)</C> applied to <C>5</C> doubles first (to 10),
-            then increments — giving <C>11</C>.
+            <C>compose</C> is written for you — <C>(compose f g)</C> runs <C>g</C> first, then <C>f</C>.
+            Order the two functions so <C>5</C> is <em>doubled, then incremented</em>, giving <C>11</C>. Fill
+            in the first argument.
           </>
         }
         starter={`(def (compose f g)
-  (fn (x) (f ?)))
+  (fn (x) (f (g x))))
 (def (inc n) (+ n 1))
 (def (dbl n) (* n 2))
-(def (main) ((compose inc dbl) 5))`}
+(def (main) ((compose ? dbl) 5))`}
         solution={`(def (compose f g)
   (fn (x) (f (g x))))
 (def (inc n) (+ n 1))
@@ -131,9 +131,9 @@ export default function Functions() {
         expected="11"
         hint={
           <>
-            <C>f</C> needs the result of running <C>g</C> on the input — so the hole is <C>(g x)</C>, and{" "}
-            <C>g</C> (here <C>dbl</C>) goes first. (Write just <C>x</C> and you'd skip <C>g</C> entirely —{" "}
-            <C>inc 5</C> = <C>6</C>, not <C>11</C>.)
+            The <em>second</em> argument runs first, so <C>dbl</C> doubles <C>5</C> to <C>10</C>; the{" "}
+            <em>first</em> then runs on that, so it's <C>inc</C> — giving <C>11</C>. (Swap them to{" "}
+            <C>(compose dbl inc)</C> and you'd get <C>12</C> instead.)
           </>
         }
       />
