@@ -90,16 +90,18 @@ export default function Rationals() {
         id="rationals:2"
         prompt={
           <>
-            Confirm the exact sum: is <C>1/6 + 1/3</C> equal to <C>1/2</C>? Fill in the second fraction so
-            the equality holds and the answer is <C>1</C>.
+            Division is exact — "how many quarters are in a half?" Divide <C>1/2</C> by a quarter so the
+            result is <C>2/1</C>; fill in the divisor's denominator. When it's right the check gives{" "}
+            <C>1</C>.
           </>
         }
-        starter={`(if (= (+ (Rational.of 1 6) (Rational.of 1 ?)) (Rational.of 1 2)) 1 0)`}
-        solution={`(if (= (+ (Rational.of 1 6) (Rational.of 1 3)) (Rational.of 1 2)) 1 0)`}
+        starter={`(if (= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1)) 1 0)`}
+        solution={`(if (= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1)) 1 0)`}
         expected="1"
         hint={
           <>
-            <C>1/6 + 1/3</C> is <C>1/6 + 2/6 = 3/6 = 1/2</C>, so the missing denominator is <C>3</C>.
+            A quarter is <C>(Rational.of 1 4)</C>. Dividing by it multiplies by its reciprocal <C>4/1</C>,
+            so <C>1/2</C> becomes <C>4/2 = 2/1</C> — exactly two, no rounding.
           </>
         }
       />
