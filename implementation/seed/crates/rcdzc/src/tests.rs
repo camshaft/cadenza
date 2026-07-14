@@ -21610,6 +21610,78 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_malformed_variant_position_in_a_type_declaration_is_rejected() {
+        // A `(type …)` tail element is a VARIANT: a bare NAME (`Red`) or a `(Name payload…)` form.
+        // `scan_type_decl` SILENTLY DROPS anything else — a literal `(type T 5)`, a list headed by a
+        // non-name `(type T (5 Int64))`, `()` — so `(type T Red 5 Blue)` became the two-variant `{Red,
+        // Blue}` with `5` invisibly gone, and a match on `Red`/`Blue` then wrongly type-checked as
+        // EXHAUSTIVE (a silent correctness hazard). Now each malformed variant position is rejected CDZ0201.
+        for (src, what) in [
+            (
+                "(module m (type T 5) (def (main) 0) (export main))",
+                "a bare literal",
+            ),
+            (
+                "(module m (type T Red 5 Blue) (def (main) 0) (export main))",
+                "a literal amid good variants",
+            ),
+            (
+                "(module m (type T (5 Int64)) (def (main) 0) (export main))",
+                "a list headed by a literal",
+            ),
+            (
+                "(module m (type T ()) (def (main) 0) (export main))",
+                "an empty list",
+            ),
+            (
+                "(module m (type T (Red) \"str\") (def (main) 0) (export main))",
+                "a string literal variant",
+            ),
+        ] {
+            let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.message.contains("must be a name"))
+                .collect();
+            assert_eq!(d.len(), 1, "{what}: one malformed-variant reject: {d:?}");
+            assert_eq!(
+                d[0].code.as_deref(),
+                Some("CDZ0201"),
+                "{what}: {}",
+                d[0].message
+            );
+        }
+
+        // The silent-EXHAUSTIVENESS hazard is closed: `(type T Red 5 Blue)` with a match on Red/Blue no
+        // longer compiles as though exhaustive — the malformed `5` is a hard error at the declaration.
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(
+                "(module m (type T Red 5 Blue) \
+                 (def (main) (match (T.Red) ((T.Red) 10) ((T.Blue) 20))) (export main))",
+            )))
+            .iter()
+            .any(|d| d.message.contains("must be a name")),
+            "the dropped-variant exhaustiveness hazard is rejected at the declaration"
+        );
+
+        // NO false positive: every valid variant shape stays clean — nullary names, payloads, generics,
+        // record/tuple/list payloads, multi-payload.
+        for ok in [
+            "(module m (type Color Red Green Blue) (def (main) 0) (export main))",
+            "(module m (type C (Mk Int64)) (def (main) 0) (export main))",
+            "(module m (type Opt (Sm a) Nn) (def (main) 0) (export main))",
+            "(module m (type C (Mk (Record (x Int64)))) (def (main) 0) (export main))",
+            "(module m (type C (Mk Int64 Bool)) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("must be a name")),
+                "a valid type declaration produces no malformed-variant fault: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the

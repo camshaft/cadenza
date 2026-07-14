@@ -975,6 +975,46 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for p in &all_params {
         crate::infer::param_annotation_faults(db, *p, &mut faults);
     }
+    // Validate every VARIANT POSITION's SHAPE. A `(type …)` declaration's tail is its variants: a bare
+    // NAME is a nullary variant (`Red`), a `(Name payload…)` LIST is a variant with payloads. `scan_type_decl`
+    // SILENTLY DROPS any tail element that is neither — a literal `(type T 5)`, a list headed by a non-name
+    // `(type T (5 Int64))`, an empty `()` — so `(type T Red 5 Blue)` becomes the two-variant `{Red, Blue}`
+    // with the `5` invisibly gone, and a match on `Red`/`Blue` then wrongly type-checks as EXHAUSTIVE (a
+    // silent correctness hazard). Reject a malformed variant position at the declaration (CDZ0201): a
+    // variant is a name or a `(Name …)` form. Walked over the raw `(type …)` AST tail (the scanned
+    // `variants` already dropped the bad ones), for USER type declarations only.
+    let type_decl_occs: Vec<StructId> = db
+        .type_decls
+        .iter()
+        .filter(|d| db.is_user_node(d.occ))
+        .map(|d| d.occ)
+        .collect();
+    for occ in type_decl_occs {
+        let Some(tail) = db.ast.as_form(occ, "type").map(|t| t.to_vec()) else {
+            continue;
+        };
+        // tail[0] is the type NAME; tail[1..] are the variant positions.
+        for &v in tail.iter().skip(1) {
+            let well_formed = match db.ast.get(v) {
+                // A bare NAME is a nullary variant; a bare literal (`5`, `"x"`) is not.
+                crate::ast::Struct::Atom(_) => db.ast.as_name(v).is_some(),
+                // A `(Name payload…)` variant — the head must be a NAME; `()` / `(5 …)` is malformed.
+                crate::ast::Struct::List(children) => children
+                    .first()
+                    .is_some_and(|&h| db.ast.as_name(h).is_some()),
+            };
+            if !well_formed {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a variant must be a name (a nullary variant `Red`) or a `(Name payload…)` form \
+                         — this is neither, so it is not a variant of the type",
+                    )
+                    .at(v),
+                );
+            }
+        }
+    }
     // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
     // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
     // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a
