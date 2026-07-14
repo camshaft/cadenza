@@ -2027,6 +2027,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         | Core::LocalRef { .. }
         | Core::Param { .. }
         | Core::ConstInt(_)
+        | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstChar(_)

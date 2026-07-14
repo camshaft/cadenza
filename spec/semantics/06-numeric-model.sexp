@@ -177,12 +177,15 @@
   (output (: 5/1 Rational)))
 
 (case "constructing a rational with a zero denominator traps"
-  (doc    "`(Rational.of 1 0)` denotes no number — a zero denominator has no rational value — so it
-           traps (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the rational
-           analogue of integer division by zero. A defined runtime trap, distinct from producing an
-           unspecified value.")
+  (doc    "`(Rational.of 1 0)` denotes no number — a zero denominator has no rational value
+           (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the rational analogue of
+           integer division by zero. The denominator here is the CONSTANT `0`, so — exactly as `(/ 5 0)`
+           is rejected CDZ0304 rather than emitting a runtime trap — the compiler PROVES the zero
+           denominator via constant folding and rejects at compile time (CDZ0304). Static safety: catch a
+           provable error early. (A runtime-computed zero denominator is the defined runtime trap, a later
+           increment when a rational is constructed from runtime operands.)")
   (input  (Rational.of 1 0))
-  (trap   "rational with zero denominator"))
+  (error  CDZ0304))
 
 (case "a rational operation does not silently promote an integer operand"
   (doc    "`(+ (Rational.of 1 2) 1)` mixes a Rational and an Int64 — two distinct numeric types — so it

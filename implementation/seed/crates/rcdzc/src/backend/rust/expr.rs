@@ -831,6 +831,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BigIntToI64 { .. }
         | Core::BigIntBinOp { .. }
         | Core::BigIntCmp { .. }
+        // A constant `Rational` (a normalized `IntValue` pair) has no native Rust value rendering yet —
+        // the rust backend would need a rational runtime type. Declines cleanly (a Rational-valued program
+        // runs on the wasm path; the rust backend is a differential oracle for the scalar surface).
+        | Core::ConstRational(_, _)
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapLookup { .. }

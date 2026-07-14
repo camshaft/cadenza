@@ -222,6 +222,20 @@ pub enum Prim {
     /// `Rational` module also carries the `of`/`of-int`/`value` operation fields, but this is its type
     /// role). `ground_type` maps it. B4-0 adds the type-position prim (byte-neutral, no ops yet).
     RationalTy,
+    /// `Rational.of n d` — CONSTRUCT an exact rational from a numerator and denominator (`(Int a) → (Int
+    /// b) → Rational`). Normalizes immediately: gcd-reduce to lowest terms, sign onto the numerator,
+    /// denominator strictly positive. A ZERO denominator has no value → TRAPS ("rational with zero
+    /// denominator"). A CONSTANT pair FOLDS to a normalized `Core::ConstRational`; a runtime operand
+    /// declines until the runtime rational compound (a later B4 slice). B4-1.
+    RationalOf,
+    /// `Rational.of-int n` — the WHOLE rational `n/1` from a fixed-width integer (`(Int a) → Rational`).
+    /// The explicit integer→rational crossing (never an implicit promotion — a `Rational`/integer mix is
+    /// CDZ0301). A constant folds to `Core::ConstRational(n, 1)`. B4-1.
+    RationalOfInt,
+    /// `Rational.value r` — a no-op identity that just NAMES `r`'s type `Rational` (the rational IS its own
+    /// erased value; there is no narrower type to extract, unlike `Qty.value` erasing a unit). Present for
+    /// surface symmetry; folds to its operand unchanged. B4-1.
+    RationalValue,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -692,6 +706,9 @@ impl Prim {
             "String" => Some(Prim::StringTy),
             "BigInt" => Some(Prim::BigIntTy),
             "Rational" => Some(Prim::RationalTy),
+            "rational-of" => Some(Prim::RationalOf),
+            "rational-of-int" => Some(Prim::RationalOfInt),
+            "rational-value" => Some(Prim::RationalValue),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),

@@ -56,10 +56,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // arrive in later increments.
     names.insert("BigInt".to_string(), bigint_module(ast));
 
-    // `Rational` — the exact-rational type (a NULLARY type like `BigInt`). B4-0 binds it as a bare
-    // ground-type record (`(meta t) = (intrinsic "Rational")`, so `Rational` in type position reduces to
-    // `Ty::Rational`); the `of`/`of-int`/`value` operation fields + constant folding arrive in B4-1.
-    names.insert("Rational".to_string(), ground_type_record(ast, "Rational"));
+    // `Rational` — the exact-rational type (a NULLARY type like `BigInt`). The module record carries
+    // `(meta t) = (intrinsic "Rational")` (so `Rational` in type position reduces to `Ty::Rational`) PLUS
+    // the `of`/`of-int`/`value` construction/conversion fields (B4-1 — constant-folds a normalized pair; a
+    // runtime operand declines until the runtime rational compound). Arithmetic (`+`/`-`/`*`/`/`) +
+    // comparison over rationals are the ordinary operators, dispatched on a `Ty::Rational` operand.
+    names.insert("Rational".to_string(), rational_module(ast));
 
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
@@ -941,6 +943,87 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
     let of_key = push_atom(ast, Leaf::Name("of".to_string()));
     children.push(push_list(ast, vec![of_key, of_op]));
     push_list(ast, children)
+}
+
+/// The `Rational` module record — `(meta t) = (intrinsic "Rational")` (so bare `Rational` in type
+/// position IS `Ty::Rational`) PLUS the construction/conversion fields (B4-1):
+///   `of      : ∀a b. (Int a) → (Int b) → Rational`  (numerator, denominator → normalized rational)
+///   `of-int  : ∀a.   (Int a) → Rational`            (the whole rational `n/1`)
+///   `value   : Rational → Rational`                 (identity — names the rational, symmetry with Qty)
+/// A constant application folds in `lower` to a normalized `Core::ConstRational`; `of` traps on a zero
+/// denominator. Arithmetic + comparison over rationals ride the ordinary `+`/`-`/`*`/`/`/`<`/`=` operators
+/// (dispatched on a `Ty::Rational` operand in `lower`/`infer`), not module fields.
+fn rational_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let ty_val = intrinsic_node(ast, "Rational");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `of : ∀a b. (Int a) → (Int b) → Rational`.
+    let of_ty = rational_of_type(ast);
+    let of_op = list_op_record(ast, "rational-of", of_ty);
+    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    children.push(push_list(ast, vec![of_key, of_op]));
+    // `of-int : ∀a. (Int a) → Rational`.
+    let of_int_ty = rational_of_int_type(ast);
+    let of_int_op = list_op_record(ast, "rational-of-int", of_int_ty);
+    let of_int_key = push_atom(ast, Leaf::Name("of-int".to_string()));
+    children.push(push_list(ast, vec![of_int_key, of_int_op]));
+    // `value : Rational → Rational` (identity).
+    let value_ty = rational_value_type(ast);
+    let value_op = list_op_record(ast, "rational-value", value_ty);
+    let value_key = push_atom(ast, Leaf::Name("value".to_string()));
+    children.push(push_list(ast, vec![value_key, value_op]));
+    push_list(ast, children)
+}
+
+/// `(fn (a b) (-> (Int a) (-> (Int b) Rational)))` for `Rational.of` — generic over BOTH the numerator
+/// and denominator source widths, curried, with the fixed result `Rational`. A non-integer operand fails
+/// to unify with `(Int _)` (CDZ0301).
+fn rational_of_type(ast: &mut Arenas) -> StructId {
+    let int_a = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    let int_b = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let b = push_atom(ast, Leaf::Name("b".to_string()));
+        push_list(ast, vec![int, b])
+    };
+    let rational = intrinsic_node(ast, "Rational");
+    let inner = arrow_type(ast, int_b, rational);
+    let body = arrow_type(ast, int_a, inner);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let b_param = push_atom(ast, Leaf::Name("b".to_string()));
+    let params = push_list(ast, vec![a_param, b_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn (a) (-> (Int a) Rational))` for `Rational.of-int` — the whole rational `n/1` from a fixed-width
+/// integer, generic over the source width.
+fn rational_of_int_type(ast: &mut Arenas) -> StructId {
+    let int_a = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    let rational = intrinsic_node(ast, "Rational");
+    let body = arrow_type(ast, int_a, rational);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn () (-> Rational Rational))` for `Rational.value` — the identity that names a rational's type.
+fn rational_value_type(ast: &mut Arenas) -> StructId {
+    let rational = intrinsic_node(ast, "Rational");
+    let rational2 = intrinsic_node(ast, "Rational");
+    let body = arrow_type(ast, rational, rational2);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type-lambda `(fn (a) (-> (Int a) BigInt))` for `BigInt.of` — generic over the SOURCE integer

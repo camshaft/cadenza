@@ -401,7 +401,7 @@
            magnitude 2/3. THE `feet / seconds` case: dimensioned and exact together.")
   (input  (/ (Qty.of (Rational.of 1 3) (Unit.base #"feet"))
              (Qty.of (Rational.of 1 2) (Unit.base #"second"))))
-  (output (: (Qty.of (Rational.of 2 3) (Unit./ (Unit.base #"feet") (Unit.base #"second")))
+  (output (: (Qty.of 2/3 (Unit./ (Unit.base #"feet") (Unit.base #"second")))
              (Qty Rational (Unit./ (Unit.base #"feet") (Unit.base #"second"))))))
 
 (case "adding rational-magnitude quantities of incompatible dimension is still a compile-time error"

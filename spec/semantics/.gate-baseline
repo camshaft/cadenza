@@ -1,4 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	Ast.decode converts bytes to an AST sum type value
+pass	Ast.decode decodes bytes that arrive as a function argument
+pass	Ast.encode and Ast.decode round-trip
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
@@ -143,12 +146,15 @@ pass	a closure captures a function value and applies it through a recursive HOF
 pass	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
+pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures the binding in scope where it was created
 pass	a closure captures the result of a build-time host op called with an argument
+pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a build-time host effect preserves the order of two host calls
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure capturing two values is made and called by the host
+pass	a closure capturing values of DIFFERENT types (Float64 + Int64)
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure driving control flow off a captured boolean
@@ -255,6 +261,7 @@ pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
+pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
 pass	a distinct-signature round-trip alongside a plain export — the plain export runs
@@ -267,6 +274,7 @@ pass	a do-local function declaration is recursive
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
+pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a false variant guard shields its arm's trapping body
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
@@ -415,6 +423,7 @@ pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a magic header and a length-prefixed chunk parse together
+pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
@@ -427,6 +436,7 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
+pass	a map with a user-sum VALUE looks up and matches the stored variant
 pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
 pass	a map with values of two different types is a type error
@@ -461,6 +471,7 @@ pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
+pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
@@ -606,12 +617,14 @@ pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
+pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
 pass	a quoted integer equals the same node built by the Ast.Int constructor
@@ -619,6 +632,11 @@ pass	a quoted name equals the same node built by the Ast.Name constructor
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
+pass	a rational is normalized to lowest terms on construction
+pass	a rational operation does not silently promote an integer operand
+pass	a rational with numerator and denominator both negative normalizes to positive
+pass	a rational's sign is normalized onto the numerator
+pass	a rational-magnitude quantity erases to its exact rational value
 pass	a reader literal carries a qualified name with a dot
 pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
@@ -802,6 +820,7 @@ pass	a sequencing block yields the value of its last form
 pass	a set built at run time escapes to the host as its value form
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
+pass	a set of user-sum elements tests membership by variant
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a short-circuit connective threads a branch perform to the continuation
@@ -926,7 +945,9 @@ pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
+pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a well-formed annotation still checks and accepts a matching type (the control)
+pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple binding pattern is a shape error
@@ -1148,6 +1169,7 @@ pass	conjunction shields a trapping right operand when the left is false
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
+pass	constructing a rational with a zero denominator traps
 pass	constructing a sized bytes segment whose value length differs from the size is rejected
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
@@ -1162,6 +1184,8 @@ pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an overlong UTF-8 encoding yields none
+pass	decoding bytes that are not a canonical AST yields the error case, not a trap
+pass	decoding canonical bytes followed by a trailing byte yields the error case
 pass	decoding ill-formed UTF-8 bytes yields none, not a trap
 pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
@@ -1203,6 +1227,7 @@ pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another
 pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
 pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
 pass	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
+pass	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
@@ -1227,9 +1252,13 @@ pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
+pass	encoding and decoding a constructor-built AST round-trips to an equal value
+pass	encoding and decoding a constructor-built compound AST round-trips
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
 pass	every not-a-number value is equal to every not-a-number value
+pass	exact rational arithmetic is exact and normalized
+pass	exact rational division is total and exact for a nonzero divisor
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
@@ -1312,6 +1341,7 @@ pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
 pass	merging records that share a field name is rejected
 pass	merging two records with disjoint fields unions their fields
+pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
@@ -1432,6 +1462,7 @@ pass	round-trip: a consumer returns a Map from the closure result
 pass	round-trip: a consumer returns a Map whose VALUE is a list
 pass	round-trip: a consumer returns a Result (Err type pinned) from the closure result
 pass	round-trip: a consumer returns a Result reaching BOTH variants
+pass	round-trip: a consumer returns a Set built from REPEATED closure application
 pass	round-trip: a consumer returns a Set built from the closure result
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
 pass	round-trip: a consumer returns a list of tuples from repeated closure application
@@ -1439,9 +1470,11 @@ pass	round-trip: a consumer returns a record built from the closure result
 pass	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
 pass	round-trip: a consumer returns an Option built from the closure result
 pass	round-trip: a consumer returns an Option of a tuple
+pass	round-trip: a consumer returns an Option whose payload is a List
 pass	round-trip: a higher-order closure applied to TWO distinct inner closures
 pass	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 pass	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
+pass	round-trip: a producer's returned closure captured an inner closure built in-guest
 pass	round-trip: a scalar consumer + a List consumer of the same closure — the list
 pass	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
 pass	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
@@ -1604,6 +1637,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
@@ -1642,11 +1676,9 @@ pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping multiplication wraps rather than trapping
-todo	Ast.decode converts bytes to an AST sum type value
-todo	Ast.decode decodes bytes that arrive as a function argument
-todo	Ast.encode and Ast.decode round-trip
 todo	Type is a first-class value
 todo	a UInt32 addition that overflows the 32-bit width traps
+todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
@@ -1659,17 +1691,11 @@ todo	a list update at an index that wraps below the length still traps
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a negative-power SI prefix is an exact rational scale
+todo	a nested lambda capturing a closure-typed def PARAMETER is declined
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a plain record compared to a nominal record of the same shape is a type error
-todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
-todo	a quote-built and constructor-built AST of the same tree encode to identical bytes
-todo	a rational is normalized to lowest terms on construction
-todo	a rational operation does not silently promote an integer operand
-todo	a rational with numerator and denominator both negative normalizes to positive
-todo	a rational's sign is normalized onto the numerator
-todo	a rational-magnitude quantity erases to its exact rational value
+todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	a whole rational carries a denominator of one
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
@@ -1681,18 +1707,11 @@ todo	an open sum's payload decodes against a schema to a typed result
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing
-todo	constructing a rational with a zero denominator traps
 todo	constructing a runtime value that does not fit its segment traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
 todo	converting a unit to another unit of the same dimension is an exact rational scale
-todo	decoding bytes that are not a canonical AST yields the error case, not a trap
-todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	encoding and decoding a constructor-built AST round-trips to an equal value
-todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
-todo	exact rational arithmetic is exact and normalized
-todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	negating a runtime Int64 overflows at Int64.min
@@ -1700,7 +1719,6 @@ todo	negating a runtime narrow integer traps at the width's own min, not the Int
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
 todo	the default-integer pragma is definition-site scoped, not use-site
-todo	two rationals denoting the same number are equal regardless of how they were written
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	wrapping arithmetic uses the distinct wrapping type

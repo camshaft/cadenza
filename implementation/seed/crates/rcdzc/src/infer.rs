@@ -2419,6 +2419,23 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             {
                 return Ty::BigInt;
             }
+            // A `+`/`-`/`*`/`/` over RATIONAL operands is `Rational` — the exact arithmetic, NOT the
+            // fixed-width int scheme (whose `∀a. (Int a) → …` rejects a `Rational` operand). `lower` folds
+            // a constant pair (normalized over `IntValue` bignum) or (later) emits the runtime op. A
+            // `Rational`/integer mix is rejected in `check_application` (CDZ0301), so if one operand is
+            // `Rational` the well-typed case has both — return `Rational`. (`%` is NOT a rational op —
+            // exact division is total, there is no remainder; a `%` over rationals falls through and its
+            // scheme-unify rejects it. Comparison over Rational is `Bool`, via the generic path.)
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
+            {
+                return Ty::Rational;
+            }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
             if a_qty || b_qty {
@@ -3803,30 +3820,35 @@ fn check_application(
             }
             return;
         }
-        // A `+`/`-`/`*`/`/`/`%` ARITHMETIC op over two `Rational` operands: Rational arithmetic is not yet
-        // wired (B4-0 threads `Ty::Rational` through the type universe; the runtime op arrives in a later
-        // increment). The operator's `∀a. (Int a) → …` scheme does not accept a `Rational`, so the generic
-        // scheme-unify below defaults the first operand to the scheme's `Int64` var and then reports the
-        // SECOND (`Rational`) as a numeric MIX — fabricating a phantom `Int64` operand the author never
-        // wrote (`no implicit conversion between Int64 and Rational`). Give the HONEST message: name
-        // `Rational` once, as a not-yet-supported op — the operands are the SAME type, not a promotion mix.
-        // COMPARISON (`=`/`<`/… — also in `is_additive`) is EXCLUDED: it is `∀a. a→a→Bool`, accepts two
-        // Rationals today, and must keep compiling; only genuine arithmetic is unwired. A Rational/fixed MIX
-        // (`(+ r 1)`) is left to the generic path — there the `Int64` IS present, so CDZ0301 is honest.
-        let is_arith = matches!(
-            prim,
-            Some(
-                crate::resolved::Prim::Add
-                    | crate::resolved::Prim::Sub
-                    | crate::resolved::Prim::Mul
-                    | crate::resolved::Prim::Div
-                    | crate::resolved::Prim::Rem
-            )
-        );
-        if is_arith && matches!(a0, Ty::Rational) && matches!(b0, Ty::Rational) {
-            // An uncoded DECLINE — a not-yet-built construct (Rational arithmetic), the honest outcome
-            // distinct from a type/well-formedness rejection. Anchored at the op node.
-            out.push(Reject::decline("Rational arithmetic is not yet supported").at(app));
+        // A `+`/`-`/`*`/`/` over RATIONAL operands is exact rational arithmetic — well-typed, but the
+        // operator's `∀a. (Int a) → …` scheme does NOT accept a `Rational`, so the generic scheme-unify
+        // would spuriously reject it. Skip it (both operands are Rational in the well-typed case; `lower`
+        // folds a constant pair), descend for operand faults, return. A genuine `Rational`/other MIX still
+        // faults CDZ0301. NOT `%`: exact rational division is total (no remainder), so a `%` over rationals
+        // falls through to the scheme, which rejects it (there is no rational `%`). (This SUPERSEDES the
+        // earlier "Rational arithmetic is not yet supported" decline — B4-1 now folds it exactly.)
+        if (is_additive || is_multiplicative)
+            && (matches!(a0, Ty::Rational) || matches!(b0, Ty::Rational))
+        {
+            // For a COMPARISON (`is_additive` covers `<`/`>`/`=`/… too) the generic path already accepts
+            // two Rationals (the `∀a. a→a→Bool` scheme), so only the ARITHMETIC forms need this skip; but
+            // a comparison of a Rational against a NON-Rational must still fault. Report a mix (one
+            // Rational, one non-Rational-non-Any) as CDZ0301 for BOTH arithmetic and comparison.
+            let a_rat = matches!(a0, Ty::Rational);
+            let b_rat = matches!(b0, Ty::Rational);
+            let a_ok = a_rat || matches!(a0, Ty::Any);
+            let b_ok = b_rat || matches!(b0, Ty::Any);
+            if !(a_ok && b_ok) {
+                out.push(Reject::coded(
+                    Code::NumericMismatch,
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    ),
+                ));
+            }
             for &arg in args {
                 collect(db, arg, out);
             }
