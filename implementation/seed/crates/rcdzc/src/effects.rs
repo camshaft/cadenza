@@ -4077,7 +4077,13 @@ fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
 /// and declining it is sound). Combines the discharged-op detection (`is_perform`) with the foreign-op one
 /// (`effect_op_of` outside `ctx.arms`).
 fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-    fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+    // The inner walk takes NO `HandlerCtx`: an `effect_op_of` head is a perform regardless of which handler
+    // owns it, so this ANY-perform detector never consults `ctx` (unlike its sibling
+    // `body_reaches_foreign_perform`, which needs it to distinguish a FOREIGN op). Dropping the pass-through
+    // parameter clears clippy's only-used-in-recursion lint; `ctx` stays in the outer signature for a
+    // uniform call shape with the sibling detector.
+    let _ = ctx;
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
         if depth > 32 {
             return true; // too deep — assume it may perform (safe over-report)
         }
@@ -4095,22 +4101,22 @@ fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> boo
                 if crate::eval::is_recursive(db, callee) {
                     return true;
                 }
-                if walk(db, callee, ctx, depth + 1) {
+                if walk(db, callee, depth + 1) {
                     return true;
                 }
             }
-            return args.iter().any(|&a| walk(db, a, ctx, depth + 1));
+            return args.iter().any(|&a| walk(db, a, depth + 1));
         }
         // A bare `resume` reached in an argument is an effect too.
         if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
             return true;
         }
         match db.ast.get(node).clone() {
-            Struct::List(children) => children.iter().any(|&c| walk(db, c, ctx, depth + 1)),
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
             Struct::Atom(_) => false,
         }
     }
-    walk(db, node, ctx, 0)
+    walk(db, node, 0)
 }
 
 /// Whether the subtree at `node` transitively reaches a FOREIGN perform — an effect operation NOT
