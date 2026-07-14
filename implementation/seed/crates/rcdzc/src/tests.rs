@@ -8796,6 +8796,82 @@ mod runtime_ops {
             ),
             24
         );
+        // A conditional (`if`/`select`) operand is CSE'd too: `(+ (if (< a b) a b) (if (< a b) a b))` is
+        // `2 * min(a,b)` with the `min` select computed ONCE (`core_eq` now recurses through `Core::If`).
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (if (< a b) a b) (if (< a b) a b))",
+                &[Val::S64(3), Val::S64(5)]
+            ),
+            6
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (if (< a b) a b) (if (< a b) a b))",
+                &[Val::S64(5), Val::S64(3)]
+            ),
+            6
+        );
+        // The `min` select is emitted ONCE (Lir has a single `Select`, not two).
+        {
+            use crate::backend::wasm::lir::Lir;
+            use crate::backend::wasm::select::select_function;
+            let src = "(module m (def (f (: a Int64) (: b Int64)) (+ (if (< a b) a b) (if (< a b) a b))) (def (main) 0) (export main))";
+            let mut db = crate::db::Db::load(crate::testkit::parse(src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            let code = select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code.iter().filter(|i| matches!(i, Lir::Select)).count(),
+                1,
+                "the identical min-select is computed once, got: {code:?}"
+            );
+            // A DISTINCT inner condition (`<` vs `>`) is NOT shared — two selects.
+            let src2 = "(module m (def (f (: a Int64) (: b Int64)) (+ (if (< a b) a b) (if (> a b) a b))) (def (main) 0) (export main))";
+            let mut db2 = crate::db::Db::load(crate::testkit::parse(src2));
+            let layout2 = crate::layout::compute(&mut db2).expect("layout");
+            let d2 = db2.def_by_name("f").expect("f");
+            let ps2: Vec<_> = db2.defs[d2]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db2
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db2, b))
+                })
+                .collect();
+            let body2 = db2.defs[d2].body.expect("body");
+            let code2 = select_function(&mut db2, body2, &ps2, &layout2)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code2.iter().filter(|i| matches!(i, Lir::Select)).count(),
+                2,
+                "distinct conditions are not shared, got: {code2:?}"
+            );
+        }
     }
 
     // ── algebraic identities: an op with an identity constant elides the checked op ───────────────

@@ -7222,6 +7222,28 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 path: py,
             },
         ) => px == py && core_eq(db, sx, sy),
+        // A boolean negation: equal iff the negated operands are. `not` is `i32.eqz` — pure and total.
+        (Core::Not { operand: ox }, Core::Not { operand: oy }) => core_eq(db, ox, oy),
+        // A conditional `select`/`if`: equal iff the condition AND both branches are recursively equal —
+        // then the two `if`s compute the identical value, so the arith-CSE can compute the whole `if` ONCE
+        // and read it twice (`(+ (if (< a b) a b) (if (< a b) a b))` = min(a,b) computed once). `core_eq`
+        // returns true here ONLY when cond/then/else all match its PURE set (a leaf, arith, compare,
+        // convert, proj, payload, not, or a nested pure `if`), so a branch with a call/effect never
+        // qualifies — the shared `if` is pure and deterministic, safe to compute once. Both arms are
+        // evaluated in neither the original nor the shared form (an `if` runs one branch), so no trap is
+        // added or dropped by sharing.
+        (
+            Core::If {
+                cond: cx,
+                then_: tx,
+                else_: ex,
+            },
+            Core::If {
+                cond: cy,
+                then_: ty,
+                else_: ey,
+            },
+        ) => core_eq(db, cx, cy) && core_eq(db, tx, ty) && core_eq(db, ex, ey),
         _ => false,
     }
 }
