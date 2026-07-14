@@ -1144,6 +1144,8 @@ fn lookup_scope_walk(db: &Db, id: StructId, name: &str) -> Option<Resolved> {
 /// A `def`'s parameters bind in its body too — Case 4 below, exactly as a `fn` body sees its own
 /// parameters (a def-with-params is no longer nullary-only).
 fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Resolved> {
+    #[cfg(test)]
+    crate::db::BINDER_IN_CALLS.with(|c| c.set(c.get() + 1));
     // Read `form`'s head name ONCE and dispatch on it, rather than probing it with a cascade of
     // `as_form(form, "let"/"fn"/"def")` (each re-fetches the node, re-reads the head, and string-
     // compares). A lexical-scope walk ascends EVERY enclosing form — and in a deeply nested value

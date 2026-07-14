@@ -14967,6 +14967,27 @@ mod match_engine {
             reject_code("(module m (def (main) (Some)) (export main))").as_deref(),
             Some("CDZ0201")
         );
+        // The message NAMES the constructor and how to apply it (not the anonymous "a variant constructor
+        // with a payload …"). `Some`'s payload is a free variable (generic), so the "it carries X" clause
+        // is omitted (it would read `_`); a CONCRETE-payload ctor names its type.
+        let some_msg = reject_full("(module m (def (main) (Some)) (export main))")
+            .expect("reject")
+            .message;
+        assert!(
+            some_msg.contains("`Some` needs its payload argument")
+                && some_msg.contains("`(Some <value>)`")
+                && !some_msg.contains("carries"),
+            "names the ctor + apply form, omits the unresolved payload: {some_msg}"
+        );
+        let wrap_msg =
+            reject_full("(module m (type T (Wrap Int64)) (def (main) (T.Wrap)) (export main))")
+                .expect("reject")
+                .message;
+        assert!(
+            wrap_msg.contains("`Wrap` needs its payload argument")
+                && wrap_msg.contains("it carries an Int64"),
+            "a concrete-payload ctor names its payload type: {wrap_msg}"
+        );
         // A NULLARY variant applied to nothing `(None)` is NOT under-applied — it has no payload, so it
         // CONSTRUCTS its value (used here as a match scrutinee, which types + runs).
         assert_eq!(
@@ -17681,25 +17702,18 @@ mod match_engine {
             None,
             "a refutable multi-variant-ctor list element now compiles (dispatches by discriminant)"
         );
-        // What STILL declines: MORE THAN ONE refutable-ctor element in a single arm (the body-rematch
-        // nesting + payload-scope interleaving is a later increment; the common tree-walk matches one
-        // tagged head per arm). A codeless decline (nothing ill-formed — the refinement is unbuilt).
-        let decline = reject_full(
-            "(module m (type C (A Int64) (B Int64)) \
-               (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
-               (def (main) (f (list (C.A 1) (C.B 2)))) (export main))",
-        )
-        .expect("two ctor elements in one arm block compilation");
-        assert_eq!(
-            decline.code, None,
-            "two refutable-ctor elements in one arm declines (no code)"
-        );
+        // MORE THAN ONE refutable-ctor element in a single arm now COMPILES too: each ctor element gets a
+        // fresh binder, all their discriminant-tests are ANDed into the arm guard, and the body re-matches
+        // are NESTED (innermost holds the original body, so every ctor payload is in scope). `[A n, B m ..r]`
+        // extracts both payloads (`n + m`).
         assert!(
-            decline
-                .message
-                .contains("more than one refutable constructor element"),
-            "the decline names the multi-ctor-element limit: {}",
-            decline.message
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type C (A Int64) (B Int64)) \
+                   (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
+                   (def (main) (f (list (C.A 1) (C.B 2)))) (export main))"
+            )))
+            .is_ok(),
+            "two refutable-ctor elements in one arm now compile (gate verifies value = 3)"
         );
     }
 
@@ -22043,6 +22057,73 @@ mod match_engine {
             .unwrap(),
             "7",
             "a constant Some value folds the (Some n) match"
+        );
+    }
+
+    #[test]
+    fn a_tuple_of_bools_is_exhaustive_when_all_combinations_are_covered() {
+        // EXHAUSTIVENESS: a Bool sub-pattern in a tuple element is a LIT-TEST (not a discriminant), and a
+        // lit-test does not itself count toward coverage — so the decision-tree matcher once demanded a `_`
+        // even when `true`+`false` were BOTH covered (a spurious CDZ0210). Bool is a FINITE 2-value type,
+        // so testing one value refines the else to the other: `build_lit_test` refines the else_rows against
+        // the known complement (`refine_bool_else_rows`), matching the top-level scalar-bool matcher.
+        //
+        // First column fully covers Bool (second is a binder) → EXHAUSTIVE, no `_`.
+        assert!(
+            reject_code(
+                "(module m (def (f (: t (Tuple Bool Bool))) \
+                   (match t ((tuple true b) 1) ((tuple false b) 2))) \
+                 (def (main) (f (tuple true true))) (export main))"
+            )
+            .is_none(),
+            "a tuple whose first Bool column is fully covered is exhaustive without `_`"
+        );
+        // All 4 combinations, no `_` → EXHAUSTIVE, and dispatch is CORRECT per combination. The run needs
+        // the value-heap runtime store; when it is absent (CI's storeless `cargo test`), `run_heap_value`
+        // returns `None` — skip the per-combination dispatch checks rather than assert against an empty
+        // default (the exhaustiveness rejections below still run and are the core of this test).
+        let run = |a: &str, b: &str| -> Option<String> {
+            run_heap_value(
+                "(module m (def (f (: t (Tuple Bool Bool))) \
+                   (match t ((tuple true true) 1) ((tuple true false) 2) \
+                           ((tuple false true) 3) ((tuple false false) 4))) \
+                 (def (main (: x Bool) (: y Bool)) (f (tuple x y))) (export main))",
+                vec![a.to_string(), b.to_string()],
+            )
+        };
+        if let Some(v) = run("true", "true") {
+            assert_eq!(v, "1", "(true,true) → arm 1");
+            assert_eq!(
+                run("true", "false").as_deref(),
+                Some("2"),
+                "(true,false) → arm 2"
+            );
+            assert_eq!(
+                run("false", "true").as_deref(),
+                Some("3"),
+                "(false,true) → arm 3"
+            );
+            assert_eq!(
+                run("false", "false").as_deref(),
+                Some("4"),
+                "(false,false) → arm 4"
+            );
+        } else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping tuple-of-bools dispatch run"
+            );
+        }
+        // SOUNDNESS the other way: 3 of 4 combinations, no `_` → STILL non-exhaustive (the fix must not
+        // over-accept — it only closes coverage when the finite type is fully enumerated).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: t (Tuple Bool Bool))) \
+                   (match t ((tuple true true) 1) ((tuple true false) 2) ((tuple false true) 3))) \
+                 (def (main) (f (tuple true true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a tuple missing one Bool combination is still non-exhaustive"
         );
     }
 
@@ -26599,6 +26680,67 @@ mod match_engine {
             )
             .is_none_or(|d| d.code.as_deref() != Some("CDZ0501")),
             "the same-unit wrap resolves the dimension fault"
+        );
+    }
+
+    #[test]
+    fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
+        // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
+        // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
+        // wrap — the unit read from the EXPECTED quantity type (`Unit::render`). The same repair wherever a
+        // bare number meets a quantity.
+        // ARGUMENT position — the verified wrap fix.
+        let arg = reject_full(
+            "(module m (def (g (: q (Qty Int64 (Unit.base #\"meter\")))) q) \
+               (def (main) (g 5)) (export main))",
+        )
+        .expect("a bare number to a Qty param rejects");
+        assert_eq!(arg.code.as_deref(), Some("CDZ0203"), "got: {}", arg.message);
+        let afix = arg.fix.expect("the arg site carries the Qty.of wrap");
+        assert_eq!(afix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            afix.replacement,
+            format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE),
+            "wraps the bare arg in the required unit: {}",
+            arg.message
+        );
+        // LET-BINDER position — also the verified wrap fix.
+        let binder = reject_full(
+            "(module m (def (main) (let (((: x (Qty Int64 (Unit.base #\"meter\"))) 5)) x)) \
+               (export main))",
+        )
+        .expect("a bare number bound to a Qty binder rejects");
+        assert_eq!(
+            binder.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE).as_str()),
+            "the let-binder carries the same Qty.of wrap: {}",
+            binder.message
+        );
+        // DIRECT value annotation `(: 5 (Qty …))` — a message-only tail (its wrap payload's nested
+        // `(Unit.base …)` mis-splices the parse-based fix builder, so the mechanical fix is withheld there),
+        // but the message still points at the repair.
+        let direct = reject_full(
+            "(module m (def (main) (: 5 (Qty Int64 (Unit.base #\"meter\")))) (export main))",
+        )
+        .expect("a bare number annotated a Qty rejects");
+        assert!(
+            direct.message.contains("give the number the required unit")
+                && direct.message.contains("(Qty.of"),
+            "the direct-annotation message names the Qty.of repair: {}",
+            direct.message
+        );
+        // NO false coercion: a numeric MIX (Float64 into a Qty Int64) does NOT get the Qty wrap — it would
+        // still mismatch on the inner numeric type after wrapping.
+        let mix = reject_full(
+            "(module m (def (g (: q (Qty Int64 (Unit.base #\"meter\")))) q) \
+               (def (main) (g 5.0)) (export main))",
+        )
+        .expect("a Float into a Qty Int64 rejects");
+        assert!(
+            mix.fix.is_none() || !mix.message.contains("give the number the required unit"),
+            "a numeric-mix bare value gets no Qty.of wrap: {} / {:?}",
+            mix.message,
+            mix.fix
         );
     }
 
@@ -37085,6 +37227,22 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(abort_mutual))).is_err(),
             "an abortive handler over a non-tail mutual recursion must decline, not miscompile to 103"
         );
+        // SEPARATE-BRANCH mutual perform: the perform and the mutual call sit in DIFFERENT branches of a
+        // conditional (`ev` performs in its base case, calls `od` in its recursive branch), not the same
+        // strict expression. This leaked the internal `ev#eff…$s0` specialization name (a compile-time
+        // CDZ0101, `check`-clean) because the `if` threading shared ONE state-ref node across both branches
+        // and the arena is single-parent — the second-parented branch orphaned the first. Copying the
+        // state-refs per branch fixes it; the group now specializes and RUNS. `ev 2 -> od 1 -> ev 0` fires
+        // `Fresh.next` at the base, seed 42, arm resumes `s + 1` = 43 (gate verifies the value).
+        let sep_branch = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
+                   (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
+                   (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
+            "a mutual group with the perform in a different branch from the mutual call must specialize, \
+             not leak an internal ev#eff…$s0 name"
+        );
     }
 
     #[test]
@@ -39396,6 +39554,59 @@ mod stage1 {
              work, not O(2^depth) (was `Nominal.inner: Box<Ty>` deep-cloning the child into both `args` and \
              `inner` per level; `inner: Rc<Ty>` shares it): depth 20→40 grew `subst_template_vars` visits \
              {ratio:.1}× (v20={v20}, v40={v40}); linear is ~2×, the exponential doubled PER LEVEL"
+        );
+    }
+
+    #[test]
+    fn a_wide_runtime_map_match_resolves_synth_names_in_bounded_time() {
+        // REGRESSION (perf): the runtime-map-match desugar (`lower::desugar_runtime_map_match`) folds N
+        // key-directed arms into an O(N)-DEEP nested `(if <k-present> body <else>)` presence chain, each
+        // `<k-present>` a synthesized `(match (Map.lookup m k) ((Some _) true) ((None) false))`. Those synth
+        // nodes are NOT in the load-time scope-skip index, so resolving a prelude name (`Map`/`lookup`/
+        // `Some`/`None`) in an inner arm walked O(depth) enclosing forms to conclude "not lexically bound"
+        // → O(arms²) `binder_in` calls (N=200/400/800 = 105K/410K/1.6M, ~4×/dbl). FIX:
+        // `Db::extend_scope_skip_pass_through` gives the synth chain scope-skip entries (every node is a
+        // non-binding form, so it passes its parent's skip through), making each resolution hop O(1).
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N single-key map arms should resolve its synth names in O(N) `binder_in` calls, not
+        // O(N²). Correctness (the dispatch picks the right arm) is pinned by the run-value tests out of band.
+        fn wide_map_match_src(arms: usize) -> String {
+            let arm_forms: String = (0..arms)
+                .map(|i| format!("((map (\"k{i}\" v)) {i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (f (: m (Map String Int64))) (match m {arm_forms} (_ -1))) \
+                   (def (main) (f (map (\"k0\" 1)))) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid runtime-map match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_map_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide runtime-map match compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 200→400 is a 2× width; linear `binder_in` growth ⇒ ~2×, the O(N²) walk was ~4×. Guard the
+        // denominator and require < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_map_match_src(200));
+        let n400 = binder_in_calls(&wide_map_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a wide runtime-map match must resolve its synthesized presence-chain names in O(arms) \
+             `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if`/`match` chain needs \
+             scope-skip coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls \
+             {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
         );
     }
 
@@ -54045,6 +54256,35 @@ mod cross_component_oracle {
                     || d.message.contains("binds an EFFECT to a peer")),
             "an effect operation named `bind` must not be misread as a peer-binding directive: {:?}",
             d5.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (f) an UNKNOWN bind name — neither an effect nor a value def — was SILENTLY ACCEPTED (the
+        // directive operand is not resolved as a value reference, so no CDZ0101 surfaced and the bind
+        // quietly vanished). It is now CDZ0201, and a near effect name is suggested with a rename fix.
+        let ghost = "(do (bind Ghost \"cadenza:x/y\") (def (main) 0) (export main))";
+        let d6 = crate::diagnostics(&mut crate::db::Db::load(parse(ghost)));
+        assert!(
+            d6.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a declared EFFECT")),
+            "a (bind …) of an UNKNOWN name is CDZ0201, not a silent drop: {:?}",
+            d6.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A typo of a REAL effect names it + carries a rename fix.
+        let typo = "(do (effect Logger (op log (-> Int64 Unit))) (bind Loger \"cadenza:x/y\") \
+                    (def (main) 0) (export main))";
+        let d7 = crate::diagnostics(&mut crate::db::Db::load(parse(typo)));
+        let bind_err = d7
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("declared EFFECT"))
+            .expect("a bind typo is CDZ0201");
+        assert!(
+            bind_err.message.contains("did you mean `Logger`?"),
+            "a bind typo suggests the near effect: {}",
+            bind_err.message
+        );
+        assert_eq!(
+            bind_err.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Logger"),
+            "the bind typo carries a rename fix"
         );
     }
     // ------------------------------------------------------------------------------------------------

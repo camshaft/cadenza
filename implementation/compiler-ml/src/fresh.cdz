@@ -1,0 +1,74 @@
+/// fresh.cdz — a fresh-id generator built on an EFFECT + handler (the port's first use of the effect
+/// system). `Fresh.next` is an operation yielding a distinct `Int64` each time; a state-threading handler
+/// supplies the sequence 0, 1, 2, … (or from any start), handing back the current id and advancing the
+/// counter. This is the HM/compiler "gensym" — the canonical use of an effect to thread unique names /
+/// type-variable ids through a pass without plumbing a counter parameter by hand.
+///
+/// NOTE on the handler: `resume(s, s + 1)` — the FIRST resume argument is the value handed BACK to the
+/// perform site (the current id `s`), the SECOND is the NEW handler state (`s + 1`). (Getting these
+/// backwards — `resume(s + 1, s)` — leaves the state fixed at its seed and every `next` returns the same
+/// value; a subtle logic bug, not a compiler one.)
+///
+/// `id-sum n` draws `n` ids and sums them — with a 0-based counter that is `0 + 1 + … + (n-1)` =
+/// `n*(n-1)/2`, a closed form the tests check. `id-sum` is a SINGLE self-recursive effectful function;
+/// that shape specializes + runs correctly (a MUTUALLY-recursive effectful group with the perform in a
+/// different branch from the mutual call does not yet — see
+/// `repros/miscompile-mutually-recursive-effectful-functions.sexp`), so the port threads fresh ids with
+/// self-recursion.
+effect Fresh =
+  | next : -> Int64
+
+/// Draw `n` fresh ids and sum them (a self-recursive effectful loop).
+def id-sum(n: Int64) = if n == 0 then 0 else Fresh.next() + id-sum(n - 1)
+
+/// Run `id-sum n` under a 0-based fresh-id counter.
+def run-id-sum(n: Int64) =
+  handle Fresh(0) with
+    | next(s) => resume(s, s + 1)
+  in
+  id-sum(n)
+
+/// Run `id-sum n` under a counter starting at `start`.
+def run-from(n: Int64, start: Int64) =
+  handle Fresh(start) with
+    | next(s) => resume(s, s + 1)
+  in
+  id-sum(n)
+
+/// The count of ids drawn by `id-sum n` is `n` (each recursion draws one). Verified indirectly via the
+/// closed-form sums below; also directly here with a constant-handback handler that yields 1 per draw.
+def draw-count(n: Int64) =
+  handle Fresh(0) with
+    | next(s) => resume(1, s)
+  in
+  id-sum(n)
+
+@test
+def fresh-zero() = if run-id-sum(0) == 0 then unit else trap("no draws sum 0")
+
+@test
+def fresh-one() = if run-id-sum(1) == 0 then unit else trap("one draw: id 0")
+
+@test
+def fresh-three() = if run-id-sum(3) == 3 then unit else trap("0+1+2 = 3")
+
+@test
+def fresh-five() = if run-id-sum(5) == 10 then unit else trap("0+1+2+3+4 = 10")
+
+@test
+def fresh-ten() = if run-id-sum(10) == 45 then unit else trap("sum 0..9 = 45")
+
+@test
+def fresh-from-start() =
+  // start at 100: 100 + 101 + 102 = 303
+  if run-from(3, 100) == 303 then unit else trap("100+101+102 = 303")
+
+@test
+def fresh-draw-count() =
+  // each draw hands back 1, so the sum equals the number of draws = n
+  if draw-count(7) == 7 then unit else trap("7 draws")
+
+@test
+def fresh-draw-count-zero() = if draw-count(0) == 0 then unit else trap("0 draws")
+
+export { run-id-sum, run-from }

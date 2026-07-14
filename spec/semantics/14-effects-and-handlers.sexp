@@ -1297,6 +1297,24 @@
                 (if (< (C.t) 5) 10 20))) (export main)))
   (output (: 10 Int64)))
 
+(case "a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound"
+  (doc    "The match companion of the if→SELECT pin, against the backend's 2-arm match→SELECT conversion
+           (which lowers a small trap-free two-arm `match` to a branchless `select` evaluating both arm
+           values eagerly). The SCRUTINEE performs and the two arm bodies are pure scalar values — the shape
+           the conversion targets. `C` seeded 7, arm `(resume s (+ s 1))`: the scrutinee `(C.t)` reads 7
+           (state → 8), which does not match the `0` arm, so the `_` arm's `200` is the value. Sound because
+           the perform is discharged to a single sequenced read in the SCRUTINEE before the optimizer runs —
+           the arm bodies carry no effectful node, so converting the match to a branchless `select` (eager on
+           both scalar arms) cannot duplicate, reorder, or drop the perform. Pinned at 200 — the perform runs
+           exactly once, in the scrutinee, regardless of the match/select lowering. The control (seed 0 so
+           the scrutinee reads 0) selects the `0` arm → 100.")
+  (input  (do
+            (effect C (op t (-> Unit Int64)))
+            (def (main)
+              (handle C 7 ((t (u) s (resume s (+ s 1))))
+                (match (C.t) (0 100) (_ 200)))) (export main)))
+  (output (: 200 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
@@ -1928,6 +1946,26 @@
             (def (main)
               (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
   (output (: 13 Int64)))
+
+(case "a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds"
+  (doc    "The mutual-group shape where the perform and the mutual call sit in SEPARATE branches of a
+           conditional — distinct from the cases above where they share one strict expression `(+ (Ctr.tick)
+           (od …))`. `ev`'s base-case branch performs `(Fresh.next)` while its recursive branch calls the
+           partner `(od …)`: `(def (ev n) (if (= n 0) (Fresh.next) (od (- n 1))))`, `(def (od n) (if (= n 0)
+           0 (ev (- n 1))))`. Under the state-threading handler this recurses `ev 2 -> od 1 -> ev 0`, where
+           the base case fires `Fresh.next`: seeded 42, the arm resumes `s + 1` = 43. Pins that effect-context
+           specialization ties the `ev#ctx`/`od#ctx` memo knot even when each branch of a cycle def EMBEDS
+           the threaded state independently (the performing branch substitutes it into the resume value, the
+           mutual-call branch appends it as a trailing state argument) — each branch needs its own copy of
+           the state reference, not a shared one. Was a compile-time leak of the internal `ev#eff…$s0`
+           specialization name (a `cdz check`-clean / `compile`-fail gap); now folds to 43.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1))))
+            (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+            (def (main)
+              (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
+  (output (: 43 Int64)))
 
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive

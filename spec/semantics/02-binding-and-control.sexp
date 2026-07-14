@@ -165,6 +165,26 @@
   (call   main (: 0 Int64))
   (output (: -1 Int64)))
 
+(case "a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe"
+  (doc    "`(def (main (: x Int64)) (match x (0 10) (100 20) (_ 30)))` — a SPARSE three-arm scalar match
+           (the 0/100 values are too far apart for a jump table), so it compiles to a probe chain whose
+           TERMINAL pair `(100 20) / (_ 30)` is a two-arm select shape and emits a branchless `select`
+           (both arms are constants). Called with 100: the terminal select's condition `x == 100` holds →
+           20. Pins that the tail of an N-arm sparse chain dispatches branchlessly, not only a standalone
+           two-arm match.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (100 20) (_ 30))) (export main)))
+  (call   main (: 100 Int64))
+  (output (: 20 Int64)))
+
+(case "a sparse three-arm match's terminal pair dispatches branchlessly — the default"
+  (doc    "The default path of the sparse three-arm match `(match x (0 10) (100 20) (_ 30))`: called with
+           7, which matches neither 0 nor 100, so the wildcard 30 is selected (the terminal `select`'s
+           `x == 100` condition is false). Together with the middle-probe case this pins value parity of
+           the branchless terminal pair with the structured probe chain it replaces.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (100 20) (_ 30))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 30 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
