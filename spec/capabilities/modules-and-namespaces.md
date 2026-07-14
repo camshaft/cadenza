@@ -33,6 +33,14 @@ Whether a definition is visible outside its module MUST be determined by an expl
 
 A definition that is not made visible MUST NOT be importable by another module.
 
+### A Type's Handle And Its Constructors Are Independently Visible
+
+A sum type's handle — the name that denotes the type itself — and its constructors MUST be independently exportable, so that a module can publish a type for other modules to name and hold values of without publishing the way to construct or take those values apart.
+
+A module that makes a type's handle visible without making a constructor visible MUST render that constructor unreachable outside the module — a construction or a match through that constructor in another module MUST be a compile-time rejection carrying the machine-readable code for a withheld constructor — so that a value of such a type is built and deconstructed outside the module only through the functions the module exports, and an invariant the module's constructor establishes cannot be bypassed by another module fabricating a value directly.
+
+A module MUST be able to make every constructor of a type visible in one act that also makes the type's handle visible, so that publishing a type together with its whole constructor set does not require enumerating the constructors one by one and does not drift as the constructor set changes.
+
 ## A Module's Role Bounds Its Effect Row
 
 ### A Module's Role Fixes Its Mandatory Effect Profile

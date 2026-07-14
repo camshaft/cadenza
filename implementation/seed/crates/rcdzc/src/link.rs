@@ -152,19 +152,42 @@ pub struct Import {
     pub occ: StructId,
 }
 
-/// One file's link-time surface: the names it makes public (`(export …)`) and the names it pulls in
-/// (`(import …)`). Parallel to `LinkedProgram.files` (same spliced index). A file's importable surface
-/// IS its export list (`modules-and-namespaces.md` §Visibility Is Explicit — one mechanism, reused): a
-/// definition's cross-file visibility is the explicit `(export …)` rule (not its source position), and a
-/// name a file does not export is not importable by another (the sibling-import path rejects it).
+/// How much of a sum TYPE's constructor surface a file makes public. A type's HANDLE and its
+/// CONSTRUCTORS are independently exportable (opaque/abstract types — `modules-and-namespaces.md`
+/// §Visibility Is Explicit): exporting the handle alone yields an ABSTRACT type (its constructors,
+/// match capability, strip, and structural `=` are not importable); a program builds and takes apart an
+/// abstract type only through the module's exported functions ("smart constructors"). This records, for
+/// a type whose handle is exported, WHICH of its constructors are also exported:
+///  - `All` — the wildcard `(export (. T *))` / `T.*`: the handle + every constructor (CONCRETE).
+///  - `Named(set)` — one or more `(export (. T A))`: the handle + exactly the named constructors.
+///
+/// A type present in `exports` but ABSENT from `type_ctor_exports` is ABSTRACT (handle only).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CtorVis {
+    /// The wildcard `(. T *)` — every constructor of the type is exported (concrete).
+    All,
+    /// The specific constructor names exported via `(. T A)` clauses.
+    Named(Vec<String>),
+}
+
+/// One file's link-time surface: the names it makes public (`(export …)`), the constructor visibility of
+/// its exported types, and the names it pulls in (`(import …)`). Parallel to `LinkedProgram.files` (same
+/// spliced index). A file's importable surface IS its export list (`modules-and-namespaces.md`
+/// §Visibility Is Explicit — one mechanism, reused): a definition's cross-file visibility is the explicit
+/// `(export …)` rule (not its source position), and a name a file does not export is not importable by
+/// another (the sibling-import path rejects it).
 //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
 //# Whether a definition is visible outside its module MUST be determined by an explicit rule fixed by this specification, not by its position in the source.
 //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
 //# A definition that is not made visible MUST NOT be importable by another module.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct FileScope {
-    /// The public names this file exports (its `(export …)` clause names).
+    /// The public names this file exports (its `(export …)` clause names, including a type HANDLE named
+    /// bare `T` or reached by a `(. T *)` / `(. T A)` constructor-export clause).
     pub exports: Vec<String>,
+    /// Per exported sum TYPE, which of its constructors are also public. A type in `exports` but absent
+    /// here exports ONLY its handle → it is ABSTRACT to importers. See [`CtorVis`].
+    pub type_ctor_exports: std::collections::BTreeMap<String, CtorVis>,
     /// The names this file imports from sibling modules.
     pub imports: Vec<Import>,
 }
@@ -271,6 +294,11 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     // Per-file export NAME sets, gathered in the first pass so an import can be validated against the
     // target module's public surface in the second (a file may import a name from a file spliced later).
     let mut exports_of: Vec<Vec<String>> = Vec::with_capacity(files.len());
+    // Per-file constructor-visibility of each exported TYPE — parallel to `exports_of`. A type in
+    // `exports_of` but absent here exports only its handle (ABSTRACT). Drives whether importing the type
+    // brings its constructors (`build_file_scope`).
+    let mut type_ctor_exports_of: Vec<std::collections::BTreeMap<String, CtorVis>> =
+        Vec::with_capacity(files.len());
     // Per-file DEFINED names (top-level def/type/effect) — parallel to `exports_of`; used only to make an
     // "imported name is defined but not exported" diagnostic actionable.
     let mut defined_of: Vec<Vec<String>> = Vec::with_capacity(files.len());
@@ -321,19 +349,49 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         // DEFINES but does not EXPORT give an actionable "add `export`" message instead of a bare "does
         // not export".
         let mut exports = Vec::new();
+        let mut type_ctor_exports: std::collections::BTreeMap<String, CtorVis> =
+            std::collections::BTreeMap::new();
         let mut defined = Vec::new();
         for item in top_items(ast) {
             if let Some(tail) = ast.as_form(item, "export") {
-                // Gather EVERY name in the clause — `(export a b)` publishes both, matching the main
-                // scan (`scan_top_level`). Reading only `tail.first()` here silently dropped every name
-                // past the first, so an importer of a valid `(export Color mk)` library saw only `Color`
-                // and an `(import "lib" (mk))` was falsely rejected as "does not export mk". A
-                // member-access element (`(. T A)`, the concrete-ctor export form) contributes no bare
-                // name here; its constructor visibility is handled by the type-export path, not this
-                // value-import surface.
+                // Gather EVERY element in the clause — `(export a b)` publishes both, matching the main
+                // scan (`scan_top_level`). Reading only `tail.first()` once silently dropped every name
+                // past the first. Three element FORMS (opaque/abstract types — the handle and the
+                // constructors are independently exportable):
+                //  - a BARE NAME `T` / `f` → publish the name (a value def OR a type HANDLE; a type
+                //    handle exported bare is ABSTRACT unless a ctor-export clause below also names it).
+                //  - `(. T *)` → the WILDCARD: publish the handle `T` + mark its ctors `All` (concrete).
+                //  - `(. T A)` → publish the handle `T` + mark ctor `A` exported (`Named`).
+                // A malformed element is left for the well-formedness pass (`malformed_exports`).
+                //= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
+                //# A sum type's handle — the name that denotes the type itself — and its constructors MUST be independently exportable, so that a module can publish a type for other modules to name and hold values of without publishing the way to construct or take those values apart.
+                //= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
+                //# A module MUST be able to make every constructor of a type visible in one act that also makes the type's handle visible, so that publishing a type together with its whole constructor set does not require enumerating the constructors one by one and does not drift as the constructor set changes.
                 for &s in tail.iter() {
                     if let Some(name) = ast.as_name(s) {
                         exports.push(name.to_string());
+                    } else if let Some((ty, ctor)) = as_ctor_export(ast, s) {
+                        // The handle is public (an importer must be able to NAME the type it can
+                        // construct). Idempotent — a repeated `(. T A)` re-adds the same handle name.
+                        exports.push(ty.to_string());
+                        match ctor {
+                            // `(. T *)` — every constructor. `All` subsumes any `Named`.
+                            None => {
+                                type_ctor_exports.insert(ty.to_string(), CtorVis::All);
+                            }
+                            // `(. T A)` — accumulate the named ctor unless the type is already `All`.
+                            Some(c) => match type_ctor_exports
+                                .entry(ty.to_string())
+                                .or_insert_with(|| CtorVis::Named(Vec::new()))
+                            {
+                                CtorVis::All => {}
+                                CtorVis::Named(names) => {
+                                    if !names.iter().any(|n| n == c) {
+                                        names.push(c.to_string());
+                                    }
+                                }
+                            },
+                        }
                     }
                 }
             } else if let Some(name) = top_item_defined_name(ast, item) {
@@ -341,6 +399,7 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
             }
         }
         exports_of.push(exports);
+        type_ctor_exports_of.push(type_ctor_exports);
         defined_of.push(defined);
 
         file_spans.push(FileSpan {
@@ -372,6 +431,7 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         }
         scopes.push(FileScope {
             exports: exports_of[fi].clone(),
+            type_ctor_exports: type_ctor_exports_of[fi].clone(),
             imports,
         });
     }
@@ -625,6 +685,27 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
         return tail.to_vec();
     }
     vec![root]
+}
+
+/// Parse an `(export …)` element that is a member-access ctor-export form `(. T A)` or the wildcard
+/// `(. T *)`. Returns `Some((type_name, Some(ctor)))` for a specific constructor, `Some((type_name,
+/// None))` for the wildcard `*`, or `None` if `s` is not a `(. name name)` member access (a bare name,
+/// an integer projection `(. t 0)`, or anything else — handled elsewhere). This is the surface for
+/// exporting a type's constructors alongside (or instead of implying) its handle: `*` is a RESERVED
+/// final member segment meaning "every constructor", not a name glob — it is recognized only in this
+/// export position, so it never collides with the multiply operator.
+fn as_ctor_export(ast: &Arenas, s: StructId) -> Option<(&str, Option<&str>)> {
+    let tail = ast.as_form(s, ".")?;
+    if tail.len() != 2 {
+        return None;
+    }
+    let ty = ast.as_name(tail[0])?;
+    let key = ast.as_name(tail[1])?;
+    if key == "*" {
+        Some((ty, None))
+    } else {
+        Some((ty, Some(key)))
+    }
 }
 
 /// The name a top-level item DEFINES, if it is a `def`/`type`/`effect` — used only to tell an import of
@@ -997,16 +1078,19 @@ mod tests {
     }
 
     /// The composing form for a recursive user sum across a module boundary: IMPORT the type both files
-    /// share. `lib` exports its `L` + `mk`; the entry imports `(L mk)` and folds the imported value with
-    /// a `sm` typed over the imported `L`. Because both refer to the SAME nominal declaration (the lib's),
-    /// the value satisfies `sm`'s parameter and the fold composes → 11. This is the file-scoped-types
-    /// replacement for the old "structural copy" form (which relied on the flat type index collapsing two
-    /// same-named decls — a forging path §Nominal forbids). Mirrors the 11-modules corpus case.
+    /// share, exported CONCRETELY (`L.*` — the handle + all constructors). `lib` exports `(. L *)` + `mk`;
+    /// the entry imports `(L mk)` and folds the imported value with a `sm` typed over the imported `L`,
+    /// MATCHING on `L.Nil`/`L.Cons` (which the wildcard export makes visible). Because both refer to the
+    /// SAME nominal declaration (the lib's), the value satisfies `sm`'s parameter and the fold composes →
+    /// 11. This is the file-scoped-types replacement for the old "structural copy" form (which relied on
+    /// the flat type index collapsing two same-named decls — a forging path §Nominal forbids). A bare
+    /// `(export L)` would export the HANDLE ONLY (abstract), and the entry's `L.Nil`/`L.Cons` match would
+    /// be CDZ0214 — so a type whose constructors an importer must use is exported `L.*`.
     #[test]
     fn an_imported_recursive_sum_is_folded_over_the_imported_type() {
         let out = compile_package(
             "(do (type L (Nil) (Cons Int64 L)) \
-                 (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil)))) (export L mk))",
+                 (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil)))) (export (. L *) mk))",
             "(do (import \"lib\" (L mk)) \
                  (def (sm (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t))))) \
                  (def (main) (sm (mk))) (export main))",
@@ -1014,6 +1098,44 @@ mod tests {
         assert!(
             !out.has_error(),
             "an imported recursive sum should fold over the imported type; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// OPAQUE TYPE: `lib` exports the HANDLE `Color` bare (abstract) + a smart constructor `mk`, NOT its
+    /// variant constructors. The entry may name `Color` and call `mk`, but CONSTRUCTING `(Color.Green)`
+    /// reaches a withheld constructor → CDZ0214 (the constructor is hidden on purpose, distinct from an
+    /// unbound name — the type IS in scope). The abstract-data-type / smart-constructor guarantee.
+    #[test]
+    fn an_abstract_types_constructor_is_not_reachable_outside_its_module() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export Color mk))",
+            "(do (import \"lib\" (Color mk)) (def (main) (Color.Green)) (export main))",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0214")),
+            "constructing an abstract type's withheld variant should be CDZ0214; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// The concrete companion: the SAME type exported with the wildcard `(. Color *)` makes every
+    /// constructor public, so the entry CAN construct `(Color.Green)` and it compiles clean. Pins that
+    /// `T.*` is the opt-in that turns an otherwise-abstract handle export concrete.
+    #[test]
+    fn a_wildcard_export_makes_every_constructor_reachable() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) \
+                 (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3))) \
+                 (export (. Color *) rank))",
+            "(do (import \"lib\" (Color rank)) (def (main) (rank (Color.Green))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a wildcard-exported type's constructor should be reachable; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());

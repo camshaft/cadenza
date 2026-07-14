@@ -152,6 +152,18 @@ A set of list-element arms MUST be treated as exhaustive when it covers both the
 
 An element pattern MUST observe a list only through its length and its elements in order; it MUST NOT expose or depend on any internal cell or node structure of the list's representation, so that the same pattern matches a list regardless of how the list is represented.
 
+### A Map Is Matched By Key-Directed Patterns
+
+A map MUST be matchable by a key-directed pattern that names some number of keys, each with a value binder position, and MAY end in a rest binder for the remaining entries. A map's key set is runtime data, not a static shape, so a map pattern is a QUERY on the presence of specific keys rather than a structural decomposition of a fixed layout.
+
+A key-directed pattern naming keys `k₁ … kₙ` MUST match a map that CONTAINS every named key, binding each key's value binder to the value the map associates with that key; a map lacking any named key MUST NOT match that pattern, so that matching falls through to a later arm. Each named key MUST be an ordinary value expression, compared to the map's keys by the same value equality the map itself uses, so that a key computed at run time selects an entry exactly as a constant key does.
+
+Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`). A pattern MAY end in a rest binder that binds a map of the same type containing every entry of the matched map EXCEPT the named keys, so that the named entries are consumed and the remainder is available for further matching.
+
+Because a map's key set is unbounded, no finite set of key-directed patterns can cover every map, so a match on a map MUST end in a name or wildcard pattern that binds the whole map; a set of key-directed arms with no such catch-all MUST be a compile-time error under *Matching Is Exhaustive Or Rejected*.
+
+A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
+
 ## Types As First-Class Values
 
 ### Types Are First-Class Values

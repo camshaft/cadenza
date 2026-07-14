@@ -580,6 +580,7 @@ pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
+pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
@@ -613,6 +614,7 @@ pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
 pass	a map with a user-sum VALUE looks up and matches the stored variant
@@ -798,6 +800,7 @@ pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a performed operation composes as a RECORD field value that is then projected
@@ -806,9 +809,11 @@ pass	a performed operation is the scrutinee of a match that dispatches on its re
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performing argument to a multiply-using performing callee is not duplicated
 pass	a performing match SCRUTINEE threads its state into a performing arm body
+pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
+pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
@@ -1065,9 +1070,11 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
+pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
@@ -1089,6 +1096,7 @@ pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
 pass	a slice whose start equals its end is Some of the empty string
 pass	a slice with a negative start yields None
+pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
@@ -1099,7 +1107,7 @@ pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
-pass	a sum TYPE and its constructors are imported by name and constructed in the entry
+pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
@@ -1255,6 +1263,8 @@ pass	an abortive perform in an if condition abandons the computation before bran
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
+pass	an abstract type is used through the module's exported constructor and accessor
+pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
@@ -1396,6 +1406,8 @@ pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
+pass	and evaluates the right operand when the left is true
+pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
 pass	applying a float is a type error
@@ -1697,6 +1709,8 @@ pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
+pass	or evaluates the right operand when the left is false
+pass	or short-circuits at run time: a true left operand skips the trapping right operand
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
@@ -1890,6 +1904,7 @@ pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a fixed-width construction is the sum of its segment widths
 pass	the length of a grown list is its element count
+pass	the length of a list looked up from a map by a runtime key
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
 pass	the maximum Int64 in hexadecimal reads as an integer

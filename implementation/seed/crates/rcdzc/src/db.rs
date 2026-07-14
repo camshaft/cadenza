@@ -121,9 +121,12 @@ pub(crate) struct FileScopeTable {
     /// global index let any file name any sibling's type + construct its variants with no import.
     visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>>,
     /// Per file, the visible bare VARIANT-CONSTRUCTOR names → the ctor record occurrence
-    /// (`Variant::ctor`). Populated from the SAME set of type declarations as `visible_types` (a file
-    /// that can name a type can construct/match its variants) — so importing a type brings its handle
-    /// AND its constructors. A ctor name absent here is not a visible bare variant in that file.
+    /// (`Variant::ctor`). Populated from `visible_types` gated by each import's constructor visibility:
+    /// a file's OWN types + CONCRETELY-imported types bring their ctors; an ABSTRACTLY-imported type
+    /// (handle only) brings none; a PARTIALLY-concrete import brings only its named ctors. A ctor name
+    /// absent here is not a visible bare variant in that file. This is also the surface the CDZ0214 check
+    /// consults for a QUALIFIED `(. T A)`: `T`'s handle visible + `A` a genuine variant of `T` but `A`
+    /// NOT here = a withheld constructor (an abstract or partially-concrete import).
     visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>>,
 }
 
@@ -178,6 +181,7 @@ fn build_file_scope(
         |fi: usize,
          decl: &TypeDecl,
          local_name: &str,
+         ctor_vis: Option<&crate::link::CtorVis>,
          visible_types: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
          visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
             if let Some(synth) = decl.synth {
@@ -189,14 +193,32 @@ fn build_file_scope(
                 if prelude_type_module_names.contains(&v.name) {
                     continue;
                 }
-                if let Some(ctor) = v.ctor {
+                // Bring this variant's ctor into the file only if `ctor_vis` admits it. `All` (own
+                // decl, or a wildcard `T.*` import) brings every ctor; `Named(set)` brings only the
+                // explicitly-exported ctors; a `None` `ctor_vis` (an ABSTRACT import — handle only)
+                // brings none, so the importer cannot construct or bare-match the type.
+                let admit = match &ctor_vis {
+                    None => false,
+                    Some(crate::link::CtorVis::All) => true,
+                    Some(crate::link::CtorVis::Named(set)) => set.iter().any(|n| n == &v.name),
+                };
+                if admit && let Some(ctor) = v.ctor {
                     visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
                 }
             }
         };
+    // Own types: a file sees its OWN declarations concretely (handle + all constructors) — opacity is a
+    // BOUNDARY property, never restricting a type within its declaring file.
     for decl in type_decls {
         if let Some(fi) = files.iter().position(|f| f.contains(decl.occ)) {
-            add_type_to_file(fi, decl, &decl.name, &mut visible_types, &mut visible_ctors);
+            add_type_to_file(
+                fi,
+                decl,
+                &decl.name,
+                Some(&crate::link::CtorVis::All),
+                &mut visible_types,
+                &mut visible_ctors,
+            );
         }
     }
 
@@ -218,7 +240,23 @@ fn build_file_scope(
                 d.name == imp.exported
                     && files.get(imp.from_file).is_some_and(|f| f.contains(d.occ))
             }) {
-                add_type_to_file(fi, decl, &imp.local, &mut visible_types, &mut visible_ctors);
+                // The exporting file's constructor visibility for this type decides which ctors cross.
+                // `None` (the type is exported but NOT in `type_ctor_exports`) = ABSTRACT: bring the
+                // handle only, so a `(. T A)` construction / bare-ctor use in this file is a CDZ0214 (the
+                // ctor is hidden on purpose, `withheld_ctor_reject` — a visible handle but no visible
+                // ctor), distinct from an unbound name. `Named`/`All` bring the named / all ctors.
+                let ctor_vis = linkage
+                    .scopes
+                    .get(imp.from_file)
+                    .and_then(|s| s.type_ctor_exports.get(&imp.exported));
+                add_type_to_file(
+                    fi,
+                    decl,
+                    &imp.local,
+                    ctor_vis,
+                    &mut visible_types,
+                    &mut visible_ctors,
+                );
             }
             // Value import: the exporting file's def under the exported name.
             let idx = visible
@@ -491,6 +529,11 @@ pub struct BuildKey {
 /// The call-site index (`Db::call_sites_by_callee`): `callee def index → the (caller-body, argument-
 /// occurrences) of every application calling that callee`. Named to keep the field type legible.
 pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, Vec<StructId>)>>;
+
+/// A cached record-field "did you mean?" result (`Db::no_field_suggestion`): the confident single winner
+/// (drives the fix, `None` when the typo is too far) and the full hint-message suffix (`— did you mean …`
+/// or `— closest matches: …`).
+pub(crate) type NoFieldSuggestion = (Option<String>, String);
 
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
@@ -1112,6 +1155,16 @@ pub struct Db {
     /// computed once per distinct query. A pure function of the sum declaration + the mistyped key.
     pub(crate) variant_closest_matches: crate::fxhash::FxHashMap<(StructId, String), Vec<String>>,
 
+    /// Memo of the RECORD-FIELD "no field `k` — did you mean?" enrichment (`infer::no_field_reject`), keyed
+    /// by `(reduced-record occ, mistyped-key)` → the `(confident-winner, hint-message)` pair. The enricher
+    /// builds the record's O(fields) name list and edit-distance-scans it TWICE (`nearest` for the fix, then
+    /// `did_you_mean` for the message), so a WIDE record with a renamed/typo'd field accessed from N sites
+    /// re-ran that per access → O(N²). Keyed by `(record occ, key)`, computed once per distinct query — the
+    /// record-field twin of `variant_suggest_winner`; a pure function of the record's field set and the
+    /// mistyped key. Populated only when the operand reduces to a concrete record occurrence (the shared
+    /// case that repeats); a type-only fallback re-scans (rare, not the hot repeat).
+    pub(crate) no_field_suggestion: crate::fxhash::FxHashMap<(StructId, String), NoFieldSuggestion>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1586,6 +1639,7 @@ impl Db {
             suggest_pool_winner: crate::fxhash::FxHashMap::default(),
             variant_suggest_winner: crate::fxhash::FxHashMap::default(),
             variant_closest_matches: crate::fxhash::FxHashMap::default(),
+            no_field_suggestion: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
@@ -2418,6 +2472,14 @@ impl Db {
             return self.type_decls.get(i);
         }
         self.type_decls.iter().find(|t| t.occ == occ)
+    }
+
+    /// The `TypeDecl` whose SYNTHESIZED record occurrence is `synth` — the reverse of `TypeDecl::synth`.
+    /// Used to recover a type's variants from the handle a name resolves to (`type_decl_by_name` /
+    /// `file_scoped_type` return the synth record, not the decl), e.g. to list an abstract type's
+    /// constructors for a CDZ0214 diagnostic. `None` if no declaration synthesized that record.
+    pub fn type_decl_by_synth(&self, synth: StructId) -> Option<&TypeDecl> {
+        self.type_decls.iter().find(|t| t.synth == Some(synth))
     }
 
     /// The SYNTHESIZED record occurrence an effect NAME resolves to — the effect analogue of
@@ -3591,6 +3653,13 @@ fn collect_module_decl(
 /// walked when `collect_default_int_literals` is called for it). Keyed by the ORIGINAL literal node, so a
 /// later β-copy that reparents the literal (moving it out of the module structurally) still finds its
 /// default via this map — the parent-walk a naive lookup would use is unusable post-copy.
+///
+/// `(pragma default-integer <T>)` is a MEANING-CHANGING directive — it changes the type its module's bare
+/// literals take — and it is read HERE from the module's CANONICAL AST (`mod_form`, the pragma node in the
+/// binary AST), never from a compilation option outside the form. So a module's meaning is determined by
+/// its canonical form alone.
+//= spec/capabilities/modules-and-namespaces.md#a-meaning-changing-directive-is-part-of-the-canonical-form
+//# A module directive that changes the meaning of the module's definitions MUST be carried in the module's canonical form, so that the module's meaning is determined by its canonical form alone and does not depend on a compilation option outside it.
 fn collect_default_int_literals(
     ast: &Arenas,
     mod_form: StructId,

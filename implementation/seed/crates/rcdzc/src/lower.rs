@@ -10421,6 +10421,14 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         Core::ListLen { operand } | Core::BytesLen { operand } => is_trap_free(db, operand),
         Core::MapSize { map } => is_trap_free(db, map),
         Core::SetLen { set } => is_trap_free(db, set),
+        // A TUPLE/RECORD PROJECTION is a total borrowing read: its `index` is WITHIN the operand's static
+        // arity (`type_errors` rejects an out-of-arity index at compile time — never a runtime OOB trap;
+        // an arity-≥1 compound is never the immediate that `arr-get` would OOB on), so `arr-get(compound,
+        // const-index)` cannot trap. Trap-free when the compound operand is. This lets an invariant field
+        // read (`(. p 0)` over a pass-through tuple `p`) hoist out of a loop and a dead projection be
+        // dropped by a discarding fold. (A `SumPayload` `Elem` step is EXCLUDED — reading a variant's
+        // payload before its discriminant is checked CAN mismatch, so it stays possibly-trapping in `_`.)
+        Core::Proj { operand, .. } => is_trap_free(db, operand),
         // A RIGHT SHIFT by a CONSTANT in-range count (`0 <= k < width`) never traps: `>>` cannot overflow
         // (its magnitude only shrinks), and a valid constant count trips no count-guard. So it is trap-free
         // when its value operand is. (A `<<` is EXCLUDED — it is exact `·2^k` and can overflow the type, so

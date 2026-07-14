@@ -3352,13 +3352,237 @@ fn read_u32_at(raw: &[u8], off: usize) -> u32 {
     u32::from_le_bytes(b)
 }
 
-/// The count of a trie node's children (its arity). A null node has none (benign).
+// ─── Packed-bool vector leaves (memory-dense `List Bool`) ─────────────────────────────────────
+// A `List Bool` LEAF stores its ≤32 boolean elements BIT-PACKED into a single `u32` instead of as up
+// to 32 separate `imm_bool` handles in a heap `Vec` — ~6× denser (5 inline bytes vs a heap Vec of 32
+// pointers) and one fewer allocation per leaf. This is a PURE-RUNTIME optimization: the compiler emits
+// the identical `vec-*` ops for a `List Bool`, and the runtime auto-detects a bool element at leaf
+// construction (`vec_leaf_of`/`op_vec_of_arr`) — no WIT op, no hint, no type channel.
+//
+// A leaf is PACKED iff `handles` is EMPTY and `raw` is exactly `[count: u8][bits: u32 LE]` = 5 bytes
+// (`PACKED_BOOL_LEAF_RAW_LEN`), stored INLINE. Bit `i` of `bits` (LSB-first) is element `i`; bits at or
+// above `count` are 0. The 5-byte length is the discriminant: within the vec subsystem a strict leaf
+// carries its elements in `handles` (empty raw), a relaxed node's raw is `4*arity` bytes, a vec header's
+// raw is 8, so no other trie node collides — and `vec_leaf_is_packed` is only ever asked of a genuine
+// trie node (a leaf or interior), never of an element, so an unrelated 5-byte bytes/scalar VALUE that
+// happens to be a list element is never misread as a packed leaf.
+//
+// WHY IT IS UNOBSERVABLE. A `List` is already non-byte-canonical (a concat-built vector has relaxed
+// nodes where an `of-arr`-built one is strict, for the same logical value), so `ty_heap_walkable`
+// returns `false` for `Ty::List` — a list is NEVER structurally `value-eq`'d nor used as a map/set key
+// (never `champ_hash`/`champ_eq`'d). Packing adds a THIRD leaf shape beside strict/relaxed; a tree may
+// freely MIX them (e.g. a packed leaf beside an unpacked one after a concat) and still read correctly,
+// because every read funnels through `vec_arity`/`vec_child` (below) which decode a packed leaf on the
+// fly into a count and `imm_bool` elements. A bool `imm_bool` is an `op_dup`/`op_drop`/`node_rc` no-op,
+// so handing synthesized immediates back to callers that dup/drop them is ownership-trivial.
+
+/// The `raw` length of a packed-bool leaf: `[count: u8]` + `[bits: u32 LE]`.
+const PACKED_BOOL_LEAF_RAW_LEN: usize = 5;
+
+/// Whether `h` is an inline boolean immediate (the element type a packed leaf holds). A non-immediate
+/// (a heap node) or a non-bool immediate (unit/int) is not — so a non-`Bool` list never packs.
+#[inline]
+fn imm_is_bool(h: Handle) -> bool {
+    is_immediate(h) && matches!(imm_kind(h), ImmKind::Bool)
+}
+
+/// Whether `node` is a packed-bool leaf (empty handles + a 5-byte `[count][bits]` raw). Total: a null
+/// handle, an immediate, or any other node shape yields `false`.
+#[inline]
+fn vec_leaf_is_packed(node: Handle) -> bool {
+    with_node(node, false, |n| {
+        n.handles.is_empty() && n.raw.len() == PACKED_BOOL_LEAF_RAW_LEN
+    })
+}
+
+/// The element count of a packed leaf (its `raw[0]`). Caller has verified `vec_leaf_is_packed`.
+#[inline]
+fn packed_leaf_count(node: Handle) -> usize {
+    with_node(node, 0, |n| n.raw.first().copied().unwrap_or(0) as usize)
+}
+
+/// The `count` and `bits` of a packed leaf in one borrow. Caller has verified `vec_leaf_is_packed`.
+#[inline]
+fn packed_leaf_parts(node: Handle) -> (u8, u32) {
+    with_node(node, (0, 0), |n| {
+        (n.raw.first().copied().unwrap_or(0), read_u32_at(&n.raw, 1))
+    })
+}
+
+/// Element `i` (`i < count ≤ 32`) of a packed leaf as an `imm_bool`. Caller has verified
+/// `vec_leaf_is_packed`; `i` is a leaf slot (`idx & VEC_MASK`) so `i < 32` and the shift never overflows.
+#[inline]
+fn packed_leaf_get(node: Handle, i: usize) -> Handle {
+    let (_, bits) = packed_leaf_parts(node);
+    imm_bool((bits >> i) & 1 != 0)
+}
+
+/// Build the 5-byte `[count][bits]` raw of a packed leaf, inline (no heap).
+#[inline]
+fn packed_leaf_raw(count: u8, bits: u32) -> Raw {
+    let mut buf = [0u8; PACKED_BOOL_LEAF_RAW_LEN];
+    buf[0] = count;
+    buf[1..5].copy_from_slice(&bits.to_le_bytes());
+    Raw::inline(&buf)
+}
+
+/// A freshly-owned packed leaf (rc 1) of `count` bools whose values are `bits` (LSB-first).
+#[inline]
+fn packed_leaf_new(count: u8, bits: u32) -> Handle {
+    alloc_raw(Handles::new(), packed_leaf_raw(count, bits))
+}
+
+/// Set (or clear) bit `i` of `bits` to `v`.
+#[inline]
+fn set_bit(bits: u32, i: usize, v: bool) -> u32 {
+    (bits & !(1u32 << i)) | ((v as u32) << i)
+}
+
+/// Convert an rc==1 packed leaf IN PLACE back to a normal strict leaf (elements as `imm_bool` handles,
+/// empty raw). The defensive escape hatch for the (well-typed-impossible) case of a NON-bool element
+/// joining a `List Bool` leaf — a list is homogeneous, so a packed leaf only ever exists in a `List Bool`
+/// whose every element is a bool immediate, and this never fires for well-typed code; it keeps the leaf
+/// mutators TOTAL (deterministic, never a miscompile) if the compiler ever emitted a mixed list.
+fn packed_leaf_unpack_inplace(node: Handle) {
+    let (count, bits) = packed_leaf_parts(node);
+    if let Some(n) = unsafe { node.0.as_mut() } {
+        let mut hs = Handles::new();
+        for i in 0..count as usize {
+            hs.push(imm_bool((bits >> i) & 1 != 0));
+        }
+        n.handles = hs;
+        n.raw = Raw::from(Vec::new());
+    }
+}
+
+/// PATH-COPY append of element `e` to a packed leaf: a fresh packed leaf of `count + 1` bits with bit
+/// `count` = `e`'s value. `e` (a bool immediate) is consumed with no drop (an immediate owns no heap).
+/// The original leaf is untouched (the caller releases it), matching `vec_node_append`'s dup-siblings
+/// contract (a packed leaf has no siblings to dup). Defensive strict-leaf fallback if `e` is not a bool
+/// or the leaf is somehow full (well-typed-impossible for a `List Bool` — a leaf-level append has room).
+fn packed_leaf_append(node: Handle, e: Handle) -> Handle {
+    let (count, bits) = packed_leaf_parts(node);
+    if imm_is_bool(e) && (count as usize) < 32 {
+        return packed_leaf_new(count + 1, set_bit(bits, count as usize, imm_as_bool(e)));
+    }
+    let mut hs = Vec::with_capacity(count as usize + 1);
+    for i in 0..count as usize {
+        hs.push(imm_bool((bits >> i) & 1 != 0));
+    }
+    hs.push(e);
+    alloc(hs, Vec::new())
+}
+
+/// PATH-COPY replace of element `sub` of a packed leaf with `e`: a fresh packed leaf with bit `sub` =
+/// `e`'s value. `e` (bool imm) consumed with no drop; the replaced element (also a bool imm) needs none.
+/// The original leaf is untouched. Defensive strict-leaf fallback if `e` is not a bool.
+fn packed_leaf_replace(node: Handle, sub: usize, e: Handle) -> Handle {
+    let (count, bits) = packed_leaf_parts(node);
+    if imm_is_bool(e) {
+        return packed_leaf_new(count, set_bit(bits, sub, imm_as_bool(e)));
+    }
+    let mut hs = Vec::with_capacity(count as usize);
+    for i in 0..count as usize {
+        hs.push(if i == sub {
+            e
+        } else {
+            imm_bool((bits >> i) & 1 != 0)
+        });
+    }
+    alloc(hs, Vec::new())
+}
+
+/// IN-PLACE append (FBIP, rc==1) of `e` to a packed leaf: bump `count` and set bit `count`, patching
+/// the 5-byte raw. SAFETY: caller verified rc == 1. Defensive unpack-then-push if `e` is not a bool or
+/// the leaf is full.
+fn packed_leaf_push_inplace(node: Handle, e: Handle) {
+    if imm_is_bool(e) {
+        let (count, bits) = packed_leaf_parts(node);
+        if (count as usize) < 32 {
+            if let Some(n) = unsafe { node.0.as_mut() } {
+                n.raw = packed_leaf_raw(count + 1, set_bit(bits, count as usize, imm_as_bool(e)));
+            }
+            return;
+        }
+    }
+    packed_leaf_unpack_inplace(node);
+    if let Some(n) = unsafe { node.0.as_mut() } {
+        n.handles.push(e);
+    }
+}
+
+/// IN-PLACE set (FBIP, rc==1) of element `sub` of a packed leaf to `e`: patch bit `sub` in the raw.
+/// SAFETY: caller verified rc == 1. The caller separately releases the OLD element (a bool imm — a
+/// drop no-op). Defensive unpack-then-set if `e` is not a bool.
+fn packed_leaf_set_inplace(node: Handle, sub: usize, e: Handle) {
+    if imm_is_bool(e) {
+        let (count, bits) = packed_leaf_parts(node);
+        if let Some(n) = unsafe { node.0.as_mut() } {
+            n.raw = packed_leaf_raw(count, set_bit(bits, sub, imm_as_bool(e)));
+        }
+        return;
+    }
+    packed_leaf_unpack_inplace(node);
+    if let Some(n) = unsafe { node.0.as_mut() } {
+        if let Some(slot) = n.handles.get_mut(sub) {
+            *slot = e;
+        }
+    }
+}
+
+/// Build a leaf from a slice of ≤32 element handles: PACKED when they are all bool immediates (the
+/// `List Bool` case), else a normal strict leaf. Consumes the handles (moved into the leaf, or read as
+/// bits — bool immediates own no heap so no drop is needed). Used by the `op_vec_of_arr` >32 chunking
+/// path so a large `List Bool` literal packs every leaf, matching a push-built one.
+fn vec_leaf_from_handles(hs: Vec<Handle>) -> Handle {
+    if !hs.is_empty() && hs.len() <= 32 && hs.iter().all(|&e| imm_is_bool(e)) {
+        let mut bits = 0u32;
+        for (i, &e) in hs.iter().enumerate() {
+            if imm_as_bool(e) {
+                bits |= 1 << i;
+            }
+        }
+        return packed_leaf_new(hs.len() as u8, bits);
+    }
+    alloc(hs, Vec::new())
+}
+
+/// If `arr` (an array node whose `handles` ARE its elements) holds 1..=32 elements that are ALL bool
+/// immediates, return their packed bits (LSB = element 0); else `None`. Used to pack a `List Bool`
+/// literal at `op_vec_of_arr` instead of reusing the arr node as a strict leaf.
+fn arr_all_bool_bits(arr: Handle) -> Option<u32> {
+    with_node(arr, None, |n| {
+        let els = n.handles.as_slice();
+        if els.is_empty() || els.len() > 32 || !els.iter().all(|&e| imm_is_bool(e)) {
+            return None;
+        }
+        let mut bits = 0u32;
+        for (i, &e) in els.iter().enumerate() {
+            if imm_as_bool(e) {
+                bits |= 1 << i;
+            }
+        }
+        Some(bits)
+    })
+}
+
+/// The count of a trie node's children (its arity). A null node has none (benign). A PACKED leaf reports
+/// its bit count so every element-count reader (get/len/subtree-size/split/concat/invariant walks) sees
+/// a packed leaf as a leaf of `count` elements with no other change.
 fn vec_arity(node: Handle) -> usize {
+    if vec_leaf_is_packed(node) {
+        return packed_leaf_count(node);
+    }
     with_node(node, 0, |n| n.handles.len())
 }
 /// The `i`-th child handle of a trie node, or NULL if absent (benign — the descent stays within a
-/// valid tree by construction, so this never returns NULL in correct operation).
+/// valid tree by construction, so this never returns NULL in correct operation). A PACKED leaf decodes
+/// bit `i` into an `imm_bool` on the fly, so every reader (leaf reads, dup-collect, split partition) sees
+/// the same `imm_bool` elements it would from an unpacked leaf.
 fn vec_child(node: Handle, i: usize) -> Handle {
+    if vec_leaf_is_packed(node) {
+        return packed_leaf_get(node, i);
+    }
     with_node(node, Handle::NULL, |n| {
         n.handles.get(i).copied().unwrap_or(Handle::NULL)
     })
@@ -3392,6 +3616,11 @@ fn vec_read_header(v: Handle) -> (u32, u32, Handle) {
 
 /// A one-element leaf node holding `e` (consumed into it).
 fn vec_leaf_of(e: Handle) -> Handle {
+    if imm_is_bool(e) {
+        // A `List Bool` leaf packs: element 0's value goes in bit 0. `e` is an immediate (nothing to
+        // consume — no heap), so no drop is needed. Subsequent pushes grow this packed leaf in place.
+        return packed_leaf_new(1, imm_as_bool(e) as u32);
+    }
     // Born on the HEAP arm: an RRB leaf grows toward 32 elements via in-place `vec_push_child_inplace`,
     // so inlining it (≤2) would only pay a spill on the 3rd push with no lasting benefit (it ends up
     // heap regardless). `from_vec_heap` keeps the single-element Vec as the backing to grow into.
@@ -3403,6 +3632,11 @@ fn vec_leaf_of(e: Handle) -> Handle {
 /// (the subtree is now shared). Used both for a leaf gaining an element and an interior gaining a
 /// branch; the two are the same op over `handles`.
 fn vec_node_append(node: Handle, child: Handle) -> Handle {
+    if vec_leaf_is_packed(node) {
+        // A packed leaf (always level 0) gains one element — grow the packed bits, no per-sibling dup
+        // (its elements live in the raw, not in `handles`).
+        return packed_leaf_append(node, child);
+    }
     // Deref `node` ONCE and copy its children from the borrowed slice (was one `vec_child` deref +
     // null-check per sibling — up to 32 for a strict node; the compiler can't hoist them because
     // `op_dup` writes child memory, defeating alias analysis on the parent). `op_dup(c)` mutates a
@@ -3427,6 +3661,11 @@ fn vec_node_append(node: Handle, child: Handle) -> Handle {
 /// the node's kind. For a relaxed node whose sizes are unchanged (e.g. an in-place element update),
 /// use `vec_node_replace_keep_raw` so the size table survives the copy.
 fn vec_node_replace(node: Handle, sub: usize, new_child: Handle) -> Handle {
+    if vec_leaf_is_packed(node) {
+        // A packed leaf (always level 0): replace bit `sub`. Its "siblings" are bits, not handles, so
+        // there is nothing to dup and the old element (a bool imm) needs no drop.
+        return packed_leaf_replace(node, sub, new_child);
+    }
     // One deref of `node` + copy from the borrowed slice (was a `vec_child` deref per sibling). See
     // `vec_node_append` for the aliasing argument (op_dup mutates a disjoint CHILD node).
     let hs = with_node(node, Vec::new(), |n| {
@@ -3714,6 +3953,12 @@ fn op_vec_get(v: Handle, index: u32) -> Handle {
 /// owns the transferred `child` and separately releases whatever was there). SAFETY contract: the
 /// caller has verified this node is uniquely owned (rc == 1) before mutating it.
 fn vec_set_child_inplace(node: Handle, sub: usize, child: Handle) {
+    if vec_leaf_is_packed(node) {
+        // A packed leaf (always level 0): patch bit `sub` in place. The old element (a bool imm) is
+        // released by the caller — a drop no-op.
+        packed_leaf_set_inplace(node, sub, child);
+        return;
+    }
     if let Some(n) = unsafe { node.0.as_mut() } {
         if let Some(slot) = n.handles.get_mut(sub) {
             *slot = child;
@@ -3723,6 +3968,12 @@ fn vec_set_child_inplace(node: Handle, sub: usize, child: Handle) {
 
 /// In-place append `child` to an rc==1 node's handles (no dup). SAFETY: caller verified rc == 1.
 fn vec_push_child_inplace(node: Handle, child: Handle) {
+    if vec_leaf_is_packed(node) {
+        // A packed leaf (always level 0) gains one element: grow the packed bits in place. (The header
+        // and interior nodes carry ≥1 handle or an 8-byte raw, so they never match here.)
+        packed_leaf_push_inplace(node, child);
+        return;
+    }
     if let Some(n) = unsafe { node.0.as_mut() } {
         n.handles.push(child);
     }
@@ -4107,12 +4358,20 @@ fn op_vec_of_arr(arr: Handle) -> Handle {
     }
     let cap = VEC_MASK as usize + 1; // 32 elements per leaf
     if (count as usize) <= cap {
+        // A `List Bool` literal (≤32 all-bool elements) packs into ONE dense leaf instead of reusing the
+        // arr node — ~6× denser. `arr`'s elements are bool immediates (nothing to drop individually);
+        // release the now-superseded arr shell.
+        if let Some(bits) = arr_all_bool_bits(arr) {
+            let leaf = packed_leaf_new(count as u8, bits);
+            op_drop(arr);
+            return vec_alloc_header(count, 0, leaf);
+        }
         // The arr node IS a valid strict single leaf (handles = elements, empty raw). Move it in as the
         // root — no copy, no per-element push. `shift == 0` for a leaf-only tree.
         return vec_alloc_header(count, 0, arr);
     }
     // >32: take the arr's element handles out (a move — no dup, they relocate into the leaves) and pack
-    // them into ≤32-element strict leaves.
+    // them into ≤32-element leaves — packed when all-bool (a large `List Bool` literal), else strict.
     let mut elems = champ_take_handles(arr).into_vec();
     op_drop(arr); // the now-empty arr shell
     let mut leaves: Vec<Handle> = Vec::with_capacity(elems.len().div_ceil(cap));
@@ -4120,7 +4379,7 @@ fn op_vec_of_arr(arr: Handle) -> Handle {
     while !rest.is_empty() {
         let take = rest.len().min(cap);
         let (chunk, tail) = rest.split_at_mut(take);
-        leaves.push(alloc(chunk.to_vec(), Vec::new())); // strict leaf
+        leaves.push(vec_leaf_from_handles(chunk.to_vec()));
         rest = tail;
     }
     // Build a strict, left-full radix trie bottom-up: each interior level groups ≤32 children until one
@@ -13801,6 +14060,295 @@ mod tests {
         assert_vec_invariants(v);
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak across the mixed sequence");
+    }
+
+    // ── Packed-bool vector leaves (memory-dense `List Bool`) ────────────────────────────────────
+    // A `List Bool` stores each leaf's ≤32 bools BIT-PACKED (`[count][bits]`, 5 inline bytes) instead
+    // of as up to 32 handles in a heap Vec. The properties below mirror the int-vector suite: the
+    // OBSERVABLE contract (get/len/push/update/of-arr denote the same bool sequence, byte-interchangeable
+    // with an unpacked build), and RESOURCE behavior (packed = one node with NO heap Vec, drops clean).
+
+    /// Read a whole bool vector into a Rust `Vec<bool>` via the borrowing `vec-get` (mirrors the
+    /// renderer: `vec-len` then `vec-get` over `0..len`, decoding each element with `op_get_bool`).
+    fn vec_to_bools(v: Handle) -> Vec<bool> {
+        (0..op_vec_len(v))
+            .map(|i| op_get_bool(op_vec_get(v, i)))
+            .collect()
+    }
+
+    /// Build a bool vector by repeated push (each push consumes the running vector). The final handle
+    /// solely owns the whole sequence — and each leaf is packed by construction.
+    fn vec_of_bools(bs: &[bool]) -> Handle {
+        let mut v = op_vec_empty();
+        for &b in bs {
+            v = op_vec_push(v, op_box_bool(b));
+        }
+        v
+    }
+
+    /// Build an array node whose elements are `bs` as bool immediates (the `(list …)` literal shape a
+    /// `vec-of-arr` lowers from).
+    fn arr_of_bools(bs: &[bool]) -> Handle {
+        let a = op_arr_alloc(bs.len() as u32);
+        for (i, &b) in bs.iter().enumerate() {
+            op_arr_set(a, i as u32, op_box_bool(b));
+        }
+        a
+    }
+
+    /// A deterministic LCG-driven bool pattern of length `n` (bit 40 of the state), for stress tests.
+    fn bool_pattern(n: usize, seed: u64) -> Vec<bool> {
+        let mut lcg = seed;
+        (0..n)
+            .map(|_| {
+                lcg = lcg
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (lcg >> 40) & 1 != 0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn packed_bool_leaf_is_actually_packed_and_dense() {
+        reset();
+        let before = live_nodes();
+        // A ≤32 bool vector's ROOT leaf is packed: empty handles, 5-byte `[count][bits]` raw, and its
+        // whole footprint is header + ONE leaf node — no heap Vec of 32 handles.
+        let bs: Vec<bool> = (0..17).map(|i| i % 3 == 0).collect();
+        let v = op_vec_push(op_vec_empty(), op_box_bool(true)); // seed to allocate a header
+        op_drop(v);
+        let v = vec_of_bools(&bs);
+        let (_, shift, root) = vec_read_header(v);
+        assert_eq!(shift, 0, "≤32 bools live in a single leaf (shift 0)");
+        assert!(vec_leaf_is_packed(root), "the leaf is packed");
+        assert_eq!(
+            packed_leaf_count(root),
+            bs.len(),
+            "packed count == element count"
+        );
+        with_node(root, (), |n| {
+            assert!(n.handles.is_empty(), "packed leaf holds NO handles");
+            assert_eq!(
+                n.raw.len(),
+                PACKED_BOOL_LEAF_RAW_LEN,
+                "packed leaf raw is exactly [count][bits]"
+            );
+        });
+        // Footprint: header + one packed leaf = 2 nodes, regardless of the 17 elements (they're bits,
+        // and bool immediates are not nodes anyway).
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "a 17-bool vector is just header + one packed leaf"
+        );
+        assert_eq!(vec_to_bools(v), bs, "reads back the exact bool sequence");
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "packed leaf drops clean, no leak");
+    }
+
+    #[test]
+    fn packed_bool_get_len_push_update_match_oracle() {
+        reset();
+        let before = live_nodes();
+        // Cover single-leaf and multi-leaf sizes; the >32 cases exercise packed leaves inside a trie.
+        for &n in &[0usize, 1, 2, 31, 32, 33, 64, 100, 1000] {
+            let bs = bool_pattern(n, 0xC0FFEE ^ n as u64);
+            let v = vec_of_bools(&bs);
+            assert_eq!(op_vec_len(v) as usize, n, "len for n={n}");
+            assert_eq!(vec_to_bools(v), bs, "elements for n={n}");
+            assert_vec_invariants(v);
+            // push one more, then update every third index to its negation — packed-aware push/update.
+            let extra = n % 2 == 0;
+            let mut v = op_vec_push(v, op_box_bool(extra));
+            let mut want = bs.clone();
+            want.push(extra);
+            for i in (0..want.len()).step_by(3) {
+                v = op_vec_update(v, i as u32, op_box_bool(!want[i]));
+                want[i] = !want[i];
+            }
+            assert_eq!(vec_to_bools(v), want, "after push+updates for n={n}");
+            assert_vec_invariants(v);
+            op_drop(v);
+        }
+        assert_eq!(live_nodes(), before, "no leak across packed-bool sizes");
+    }
+
+    #[test]
+    fn packed_bool_persistence_old_version_unchanged() {
+        reset();
+        let before = live_nodes();
+        // Update on a SHARED packed leaf path-copies: the old version is byte-identical afterward.
+        let bs: Vec<bool> = (0..20).map(|i| i % 2 == 0).collect();
+        let v0 = vec_of_bools(&bs);
+        op_dup(v0); // share
+        let v1 = op_vec_update(v0, 7, op_box_bool(!bs[7]));
+        // v0 is unchanged; v1 has index 7 flipped.
+        assert_eq!(
+            vec_to_bools(v0),
+            bs,
+            "shared old version unchanged by update"
+        );
+        let mut want1 = bs.clone();
+        want1[7] = !bs[7];
+        assert_eq!(vec_to_bools(v1), want1, "new version reflects the update");
+        op_drop(v0);
+        op_drop(v1);
+        assert_eq!(live_nodes(), before, "no leak across the shared update");
+    }
+
+    #[test]
+    fn packed_bool_of_arr_packs_a_list_literal() {
+        reset();
+        let before = live_nodes();
+        // `vec-of-arr` of a ≤32 all-bool arr packs into ONE dense leaf. Footprint: header + packed leaf.
+        let bs: Vec<bool> = (0..25).map(|i| (i * 7) % 5 < 2).collect();
+        let a = arr_of_bools(&bs);
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "just the arr node (bool immediates)"
+        );
+        let v = op_vec_of_arr(a);
+        let (_, shift, root) = vec_read_header(v);
+        assert_eq!(shift, 0);
+        assert!(vec_leaf_is_packed(root), "of-arr produced a packed leaf");
+        // header + packed leaf (the arr shell was dropped and replaced by the packed leaf) = before + 2.
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "packed of-arr = header + one packed leaf"
+        );
+        assert_eq!(vec_to_bools(v), bs, "of-arr packed elements match");
+        // Interchangeable with a push-built twin.
+        let twin = vec_of_bools(&bs);
+        assert_eq!(vec_to_bools(v), vec_to_bools(twin));
+        op_drop(twin);
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn packed_bool_large_of_arr_all_leaves_packed() {
+        reset();
+        let before = live_nodes();
+        // A >32 all-bool arr builds a trie; EVERY leaf is packed (Inc 3 density), read-back matches.
+        let bs = bool_pattern(200, 0xABCD);
+        let v = op_vec_of_arr(arr_of_bools(&bs));
+        assert_eq!(op_vec_len(v) as usize, bs.len());
+        assert_eq!(vec_to_bools(v), bs, "large of-arr elements match");
+        assert_vec_invariants(v);
+        // Walk the leaves: every level-0 node is packed.
+        fn assert_all_leaves_packed(node: Handle, level: u32) {
+            if level == 0 {
+                assert!(vec_leaf_is_packed(node), "every bool leaf is packed");
+                return;
+            }
+            for i in 0..vec_arity(node) {
+                assert_all_leaves_packed(vec_child(node, i), level - VEC_BITS);
+            }
+        }
+        let (_, shift, root) = vec_read_header(v);
+        assert_all_leaves_packed(root, shift);
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn packed_bool_fbip_in_place_grows_and_sets() {
+        reset();
+        let before = live_nodes();
+        // A UNIQUE bool vector's packed leaf grows and updates IN PLACE (no path-copy alloc): pushing
+        // 30 bools onto a unique single-leaf vector never allocates a second leaf, and the whole thing
+        // stays header + one packed leaf.
+        let mut v = op_vec_empty();
+        let mut want = Vec::new();
+        for i in 0..30 {
+            let b = i % 4 == 0;
+            v = op_vec_push(v, op_box_bool(b));
+            want.push(b);
+        }
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "unique packed push stays header + one packed leaf (in-place bit growth)"
+        );
+        // In-place updates on the unique leaf.
+        for i in (1..30).step_by(5) {
+            v = op_vec_update(v, i as u32, op_box_bool(!want[i]));
+            want[i] = !want[i];
+        }
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "unique packed update mutates in place (no new node)"
+        );
+        assert_eq!(vec_to_bools(v), want, "in-place FBIP result matches oracle");
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn packed_bool_crossing_a_leaf_boundary_starts_a_new_packed_leaf() {
+        reset();
+        let before = live_nodes();
+        // Push 40 bools: the 33rd crosses the 32-element leaf boundary, growing a level and starting a
+        // SECOND packed leaf. Both leaves are packed; read-back matches; grows to shift VEC_BITS.
+        let bs = bool_pattern(40, 0x5EED);
+        let v = vec_of_bools(&bs);
+        let (_, shift, root) = vec_read_header(v);
+        assert_eq!(shift, VEC_BITS, "40 > 32 → one interior level");
+        assert_eq!(vec_arity(root), 2, "two leaves under the root");
+        assert!(vec_leaf_is_packed(vec_child(root, 0)), "first leaf packed");
+        assert!(vec_leaf_is_packed(vec_child(root, 1)), "second leaf packed");
+        assert_eq!(vec_to_bools(v), bs, "crossing-boundary elements match");
+        assert_vec_invariants(v);
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn packed_bool_value_encode_round_trips() {
+        reset();
+        // The host boundary reads a List via ONLY `op_vec_len` + `op_vec_get`, and `op_vec_get` returns
+        // an `imm_bool` for a packed leaf, so value-encode renders a packed `List Bool` element-by-element
+        // exactly as it would an unpacked one. Assert the get/len walk denotes the same booleans.
+        for &n in &[1usize, 32, 33, 100] {
+            let bs = bool_pattern(n, 0xF00D ^ n as u64);
+            let v = vec_of_bools(&bs);
+            let rendered: Vec<bool> = (0..op_vec_len(v))
+                .map(|i| op_get_bool(op_vec_get(v, i)))
+                .collect();
+            assert_eq!(rendered, bs, "value-encode get/len walk for n={n}");
+            op_drop(v);
+        }
+    }
+
+    #[test]
+    fn packed_bool_defensive_unpack_on_non_bool_element() {
+        reset();
+        let before = live_nodes();
+        // Well-typed code never mixes a non-bool into a `List Bool`, but the leaf mutators stay TOTAL:
+        // pushing a NON-bool onto a unique packed leaf unpacks it to a normal strict leaf and keeps the
+        // sequence readable (as ints here, since we deliberately mix — a deterministic, not corrupt,
+        // fallback). Build a packed leaf, then push a boxed int via the low-level in-place path.
+        let mut v = op_vec_push(op_vec_empty(), op_box_bool(true));
+        v = op_vec_push(v, op_box_bool(false));
+        let (_, _, root) = vec_read_header(v);
+        assert!(vec_leaf_is_packed(root), "starts packed");
+        // Push an out-of-window boxed int (a real heap node) — forces the defensive unpack.
+        let big = 1i64 << 40; // out of the fixnum window → a heap leaf
+        v = op_vec_push(v, op_box_int(big));
+        let (_, _, root) = vec_read_header(v);
+        assert!(!vec_leaf_is_packed(root), "unpacked after a non-bool push");
+        assert_eq!(vec_arity(root), 3, "three elements now");
+        // Elements read back: two bools (as 1/0 via get-int on the imm bools is not meaningful; read the
+        // first two as bools, the third as the int).
+        assert!(op_get_bool(op_vec_get(v, 0)));
+        assert!(!op_get_bool(op_vec_get(v, 1)));
+        assert_eq!(op_get_int(op_vec_get(v, 2)), big);
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak across the defensive unpack");
     }
 
     #[test]

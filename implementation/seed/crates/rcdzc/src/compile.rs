@@ -439,11 +439,12 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
     if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
-    // No mechanical fix is offered here even though the domain error is clear: the `default-integer`
-    // pragma's EFFECT is not yet modeled, so EVERY `(pragma default-integer <T>)` — even a well-formed
-    // `Int64` one — declines downstream as an unmodeled top-level form. Suggesting `Int64` would merely
-    // trade CDZ0303 for that decline (a cascade), which `--verify-fixes` rightly refuses. Honest-no-fix:
-    // the prose already says "must name an integer type"; a fix waits until the pragma actually compiles.
+    // No mechanical fix is offered here even though the domain error is clear: which integer type the
+    // author meant for the default is a guess (Int64? a narrower width? BigInt?), so suggesting one would
+    // be a heuristic edit the author must review, not a mechanical repair. The prose already says "must
+    // name an integer type", which is the actionable guidance. (A well-formed `(pragma default-integer
+    // <T>)` now COMPILES and applies to bare literals — the effect is modeled; only the NON-integer domain
+    // error reaches here.)
     Some(
         Reject::coded(
             Code::NonIntegerDefault,
@@ -937,12 +938,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {
+        // Each definition after the first with a given name is a REDUNDANT declaration — DELETE it (the
+        // first already binds the name; a module's names are a fixed set). The delete target is the whole
+        // `(def <sig> <body>)` FORM (the parent of the signature occurrence), so the fix removes the entire
+        // redundant definition, not just its signature — the def analogue of the duplicate-variant / -type
+        // / -export / -operation delete fixes. A `sig_occ` with no parent (a malformed shape) anchors + is
+        // deleted at the signature itself. Heuristic: deleting the LATER def is the direct resolution, but
+        // the author may have meant to keep the second and rename/remove the first — so an agent confirms.
+        let delete_at = db.parent_of(sig_occ).unwrap_or(sig_occ);
         faults.push(
             Reject::coded(
                 Code::Malformed,
                 format!("`{name}` is defined more than once (a module has a fixed set of names)"),
             )
-            .at(sig_occ),
+            .at(sig_occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                delete_at,
+                format!("remove the duplicate definition of `{name}`"),
+            )),
         );
     }
     // DUPLICATE EXPORT. A module's exports are a record whose fields are the exported names
@@ -1308,6 +1321,48 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )
             .at(occ),
         );
+    }
+    // A MALFORMED EFFECT CLAUSE — a clause that is NOT an `(op …)` operation. An effect's members are its
+    // operations, `(op <name> (-> …))` (`capabilities-and-effects.md` §An Effect Declaration Names The
+    // Effect And Types Its Operations). `scan_effect_decl` SILENTLY DROPS any clause whose head is not
+    // `op` (a bare literal `(effect E 5)`, a non-`op`-headed list `(effect E (foo …))`) AND an `(op)` with
+    // no name at all (its `op_tail.first()` is `None`) — so a typo'd/garbled operation vanishes and the
+    // effect looks like it has fewer ops than written (a match/handle over it then wrongly type-checks as
+    // exhaustive — a correctness hazard, the effect analogue of the malformed-variant scan-drop). Reject
+    // each such clause CDZ0201 at the clause. A leading `(doc "…")` clause is TOLERATED (the doc affordance
+    // effects share with defs — silently ignored, not a fault). Walked over the raw `(effect …)` AST tail
+    // (the scanned `ops` already dropped the bad ones), for USER effect declarations only.
+    let effect_decl_occs: Vec<StructId> = db
+        .effect_decls
+        .iter()
+        .filter(|e| db.is_user_node(e.occ))
+        .map(|e| e.occ)
+        .collect();
+    for occ in effect_decl_occs {
+        let Some(tail) = db.ast.as_form(occ, "effect").map(<[_]>::to_vec) else {
+            continue;
+        };
+        // tail[0] is the effect NAME; tail[1..] are its clauses — each must be an `(op …)` (or a tolerated
+        // `(doc …)`).
+        for &clause in tail.iter().skip(1) {
+            let head = db.ast.head_name(clause);
+            // A well-shaped `(op …)` clause is validated by the nameless-ops / op-type checks; a `(doc …)`
+            // clause is tolerated. Anything else (a bare atom, a non-op/doc-headed list, an `(op)` with no
+            // name) never registered an operation — reject it here.
+            let is_op =
+                head == Some("op") && db.ast.as_form(clause, "op").is_some_and(|t| !t.is_empty());
+            let is_doc = head == Some("doc");
+            if !is_op && !is_doc {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an effect clause must be an operation `(op <name> (-> Arg… Result))` — this is \
+                         not one, so it declares no operation",
+                    )
+                    .at(clause),
+                );
+            }
+        }
     }
     // A `handle` HEAD THAT NAMES A VALUE. `(handle foo 0 …)` where `foo` is a `(def foo …)` value — the head
     // must name an EFFECT (the arms ARE that effect's operations). The desugar folds the head into each
@@ -1776,6 +1831,61 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             faults.push(
                 Reject::coded(Code::Malformed, crate::diag::MALFORMED_EXTERN_MESSAGE).at(anchor),
             );
+            // A malformed-interface extern registers no ops at all — the interface reject is the primary,
+            // and each op it would bind is unbound-deduped below. So do NOT also validate its op clauses
+            // (they never registered); only a WELL-FORMED-interface extern's op clauses are checked.
+            continue;
+        }
+        // Each OP CLAUSE of a well-formed extern must be `(<name> (-> Arg… Result))`. `scan_extern_decl`
+        // SILENTLY DROPS a clause that is not a list, or whose head is not a name (a `(NAME TYPE)` shape),
+        // and records `ty: None` for one with no type — so a `(neg)` / a bare `neg` / a `(5 …)` clause
+        // leaves `neg` unbound (the misleading "unbound name `neg` → did you mean `Neg`?"), and a non-arrow
+        // type (`(neg Int64)`) makes the bound op a non-function that only faults at the call site ("cannot
+        // apply a value of type Int64"). Reject each malformed clause at the declaration — the op-clause
+        // companion of the interface check + the effect-op `(op NAME (-> …))` shape checks. Skip the
+        // interface (element 0); validate each clause after it.
+        for &clause in etail.iter().skip(1) {
+            // The clause must be a `(name type…)` LIST with a NAME head. A bare atom / a non-name head is
+            // malformed — it binds no op.
+            let name_head = match db.ast.get(clause) {
+                crate::ast::Struct::List(parts) => {
+                    parts.first().and_then(|&h| db.ast.as_name(h)).is_some()
+                }
+                crate::ast::Struct::Atom(_) => false,
+            };
+            if !name_head {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an `(extern …)` operation is `(<name> (-> Arg… Result))` — a bare name or a \
+                         non-name head binds no operation",
+                    )
+                    .at(clause),
+                );
+                continue;
+            }
+            // A well-shaped `(name …)` clause whose TYPE (element 1) is missing or not an arrow `(-> …)`.
+            // The type is what the extern application checks against; a missing/non-arrow one binds an op
+            // with no callable signature. Reuse the effect-op wording ("performed like a function; a
+            // nullary operation is `(-> Result)`") so the two operation-type checks read alike.
+            let crate::ast::Struct::List(parts) = db.ast.get(clause) else {
+                continue; // unreachable (name_head implied a list), but keep the borrow total
+            };
+            let parts = parts.clone();
+            let ty_is_arrow = parts
+                .get(1)
+                .is_some_and(|&t| db.ast.as_form(t, "->").is_some());
+            if !ty_is_arrow {
+                let anchor = parts.first().copied().unwrap_or(clause);
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an `(extern …)` operation's type must be an arrow `(-> Arg… Result)` — it is \
+                         called like a function; a nullary operation is `(-> Result)`",
+                    )
+                    .at(anchor),
+                );
+            }
         }
     }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
@@ -1960,6 +2070,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // (not a def body `type_errors` walks), so its uniqueness is checked here: a name declared with a
     // conversion conflicting with the built-in family table or an earlier declaration is CDZ0502
     // (`units-of-measure.md` §A Named Unit's Conversion Is Unique). An agreeing redeclaration is fine.
+    // A MALFORMED `(Unit.define …)` — wrong arity / non-symbol name / non-integer scale — is silently
+    // DROPPED by `scan_unit_defines`, so it registers no family unit and a later use surfaces only as
+    // "unknown unit `…`". Reject the malformed FORM here so the real defect is named (the scan-and-drop
+    // companion of the malformed-extern / -effect checks); a well-formed one flows to the conflict check.
+    crate::infer::check_malformed_unit_defines(db, &mut faults);
     crate::infer::check_unit_defines(db, &mut faults);
     // UNKNOWN UNITS. A quantity literal / `(Unit.of #"name")` naming a unit that is neither a built-in
     // family nor a user `Unit.define` (`5zorks`, `5gram`) fails to reduce and otherwise surfaces only as a
@@ -2121,11 +2236,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_malformed_host_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
     });
-    // A MALFORMED `(extern …)` (non-string interface) does not register, so each op it would bind goes
-    // unbound — a misleading consequent "unbound name `neg`" the malformed-extern reject already explains.
-    // When such a reject is present, collect the op NAMES from every malformed extern in the arena so the
-    // consequent unbound-name faults for exactly those names are dropped (one primary "no"). Re-derived
-    // here (not threaded from `collect_faults`) because `dedup_faults` re-computes its flags from `faults`.
+    // A MALFORMED `(extern …)` — a non-string INTERFACE (no ops register) OR a malformed OP CLAUSE (a
+    // bare-name/non-name head, a missing/non-arrow type — that op does not register) — leaves the op(s) it
+    // would bind UNBOUND, a misleading consequent "unbound name `neg`" the malformed-extern reject already
+    // explains. When any such reject is present, collect the affected op NAMES from every extern in the
+    // arena so the consequent unbound-name faults for exactly those names are dropped (one primary "no").
+    // Re-derived here (not threaded from `collect_faults`) because `dedup_faults` re-computes its flags
+    // from `faults`+`db`.
     let malformed_extern_op_names: std::collections::HashSet<String> = if faults
         .iter()
         .any(|r| r.message.starts_with(crate::diag::MALFORMED_EXTERN_PREFIX))
@@ -2137,14 +2254,23 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             };
             let etail = etail.to_vec();
             let interface_ok = etail.first().is_some_and(|&i| db.ast.as_str(i).is_some());
-            if !interface_ok {
-                for &clause in etail.iter().skip(1) {
-                    if let crate::ast::Struct::List(parts) = db.ast.get(clause)
-                        && let Some(&name_occ) = parts.first()
-                        && let Some(name) = db.ast.as_name(name_occ)
-                    {
-                        names.insert(name.to_string());
-                    }
+            for &clause in etail.iter().skip(1) {
+                // A clause's op name (if it has one) — the name the author expected bound. When the
+                // INTERFACE is bad, NONE registered (collect every clause's name); when the interface is
+                // OK, only a MALFORMED clause (non-arrow / no type) failed to register — collect just those.
+                let (name, ty_is_arrow) = match db.ast.get(clause) {
+                    crate::ast::Struct::List(parts) => (
+                        parts.first().and_then(|&h| db.ast.as_name(h)),
+                        parts
+                            .get(1)
+                            .is_some_and(|&t| db.ast.as_form(t, "->").is_some()),
+                    ),
+                    crate::ast::Struct::Atom(_) => (db.ast.as_name(clause), false),
+                };
+                if let Some(name) = name
+                    && (!interface_ok || !ty_is_arrow)
+                {
+                    names.insert(name.to_string());
                 }
             }
         }

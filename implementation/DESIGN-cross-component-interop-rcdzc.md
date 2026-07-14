@@ -18,6 +18,49 @@ boundaries in multiple Cadenza components without too much overhead."
 
 ---
 
+## ⭐ PIVOT (operator, 2026-07-14): UNIFY cross-component interop WITH EFFECTS — remove `extern`
+
+**The insight (operator):** rather than a separate `(extern …)` form, REUSE the effect system. A component
+declares a contract as an EFFECT (`(effect Math (op add (-> …)))`), defaults the whole component scope to
+route that effect to a specific peer contract, and OVERRIDES it — for a unit test, or to do its own thing —
+with an ordinary in-program `(handle Math …)`. **This unifies the whole feature set: a peer dependency and
+a host effect become ONE concept — an escaping effect the manifest records.**
+
+**Why it's sound (already 80% true in the code):** `envelope::assemble_extern` is a byte-fork of
+`assemble_host`; the frozen ABI v4 already made a host-delegated effect "an ordinary imported-function
+call." So at the transport/emit layer a peer call and a host-delegated effect are ALREADY the same. The
+`(handle E …)` machinery (E0–E5, complete) gives the test-override for FREE — a nearer handler discharges
+the effect before it escapes, so a mock needs no peer. This also aligns with the capability/manifest model:
+a component's escaping-effect row = its dependencies (host OR peer), one row.
+
+**The model:**
+| was (`extern`) | unified (effects) |
+|---|---|
+| `(extern "cadenza:math/api" (add (-> …)))` | `(effect Math (op add (-> …)))` + a binding of `Math`→peer `cadenza:math/api` |
+| binds `add` to that peer | a component-scope DEFAULT route for `Math` (the `(host (E) …)` analogue, with a TARGET) |
+| — | `(handle Math …)` in a test overrides → mocked in-program, no peer |
+| `Core::ExternCall` → `assemble_extern` | escaping `Math.add` → `Core::HostCall` → the SAME boundary envelope |
+
+**Binding precedence (operator, 2026-07-14):** in-source DEFAULT (a top-level directive binds `Math`→a peer
+contract) < COMPILE-REQUEST override (a `--bind Math=<iface>` input, or dropping it) < in-program `(handle
+Math …)`. So source declares the default, the compiler can rebind (or drop for a test), and a handler always
+wins.
+
+**Migration decision (operator):** MIGRATE `extern`→effects and REMOVE the `(extern …)` form + merge
+`Core::ExternCall` into `Core::HostCall`. What SURVIVES the merge (surface-agnostic, all reused verbatim):
+the shared-runtime value-handle TRANSPORT (X5), the RUNNER (`run_with_peers`), the PROVIDER side
+(`assemble_provider`/`assemble_provider_runtime` + `--component-name`), and the boundary ENVELOPE
+(`assemble_extern`/`_runtime` — the peer-interface import shape, now reached from an escaping effect). What
+GOES: the `(extern …)` scan, `Resolved::Extern`, the `Core::ExternCall` variant (folded into `HostCall`),
+`db.extern_op_by_name`, `collect_extern_imports` (merges into the host-import collection with a per-effect
+TARGET). Unification bricks: **U1** (this pivot record) → **U2** (an effect bound to a peer routes to the
+boundary envelope) → **U3** (compile-request override) → **U4** (remove `extern`, merge into `HostCall`).
+
+⚠ The X0–X5d/X4b-4 work below LANDED as the `extern` surface — it is the low-level mechanism the effects
+surface now sits on. The transport/envelope/runner/provider stay; the `extern` front-end is removed in U4.
+
+---
+
 ## 0. The load-bearing distinction (READ FIRST)
 
 Two different things both get called "linking," and this design is about the second:

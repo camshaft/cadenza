@@ -704,6 +704,16 @@
   (input  (+ (Qty.of 1.0 (Unit.of #"inch")) (Qty.of 1.0 (Unit.of #"second"))))
   (error  CDZ0501))
 
+(case "a plural family-unit spelling names the same unit as its singular"
+  (doc    "The ML quantity-literal surface reads for natural language (`4.0 feet`, `1.0 meters`), so a
+           common English PLURAL spelling names the SAME family unit as its canonical singular: `feet`
+           is `foot`, `meters` is `meter`. Adding one meter to four feet therefore converts feet to the
+           meter reference (foot = 381/1250 m) and adds: 1 + 4 * 0.3048 = 2.2192 m — the plural resolves
+           and converts exactly as the singular would, rather than failing as an unknown unit.")
+  (input  (Qty.value (+ (Qty.of 1.0 (Unit.of #"meters"))
+                        (Qty.of 4.0 (Unit.of #"feet")))))
+  (output (: 2.2192 Float64)))
+
 ; ============================================================================================
 ; Unit.in — EXPLICIT conversion to a chosen unit over concrete numerics. `(Unit.in TARGET q)` converts
 ; q's magnitude from its unit to TARGET (result `(Qty T TARGET)`), the way a program pins a specific

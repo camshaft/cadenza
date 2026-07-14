@@ -3094,6 +3094,80 @@
   (input     (= (list (map ("a" 1)) (map ("b" 2))) (list (map ("a" 1)) (map ("b" 2)))))
   (output    (: true Bool)))
 
+; --- Nested collections at RUN TIME: a collection op's result feeds another collection op --------------
+; The cases above compare or read a single collection. A COMPOSITION — a `Map.lookup` that returns a LIST
+; and then indexes it, a `List.at` that returns a MAP and then looks a key up in it — exercises a distinct
+; path: the inner op's result is a value-heap HANDLE that must cross into the outer op as an operand of the
+; right type, at run time. A single-op case never reaches this handle hand-off; a representation slip (a
+; mis-typed handle, a lost element/value type) would surface here as a wrong value or a decline. These pin
+; that nested runtime collections compose correctly, with the runtime key/index crossing the boundary so
+; nothing folds.
+
+(case "a map whose value is a list: a runtime lookup then indexes the returned list"
+  (doc    "`(Map.lookup {1↦[10 20 30], 2↦[40 50]} k)` returns a `(List Int64)` value (present) or None; the
+           returned list handle is then indexed by `List.at … i` at run time. `k`=1,i=2 → 30; k=2,i=1 → 50;
+           an out-of-bounds index into the found list → -1; an absent key → -2. Pins that a map VALUE that
+           is itself a collection round-trips through `Map.lookup` as a usable list handle — the lookup's
+           `Option (List Int64)` payload is a real list the outer `List.at` reads, not an opaque cell.")
+  (input  (do (def (main (: k Int64) (: i Int64))
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 (list 10 20 30)) 2 (list 40 50)) k)
+                  ((Some xs) (match (List.at xs i) ((Some v) v) (None -1)))
+                  (None -2))) (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 2 Int64) (: 1 Int64)) (output (: 50 Int64))
+  (call   main (: 2 Int64) (: 5 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+
+(case "the length of a list looked up from a map by a runtime key"
+  (doc    "`(List.len xs)` where `xs` is the list value found by `(Map.lookup … k)`: the two keys hold lists
+           of different lengths (3 and 2), so the length reported reflects WHICH list the runtime key found —
+           k=1 → 3, k=2 → 2. Pins that the looked-up list carries its own length (the map value is a genuine
+           list handle, not a placeholder), the len companion of the index case.")
+  (input  (do (def (main (: k Int64))
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 (list 10 20 30)) 2 (list 40 50)) k)
+                  ((Some xs) (List.len xs))
+                  (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64)))
+
+(case "a list of maps: a runtime index then looks a runtime key up in the found map"
+  (doc    "`(List.at [{1↦100}, {2↦200}] i)` returns a MAP value (present) or None; the returned map handle is
+           then probed by `(Map.lookup m k)` at run time. i=0,k=1 → 100; i=1,k=2 → 200; a key absent from the
+           found map → -1; an out-of-bounds list index → -2. Pins that a list ELEMENT that is itself a map
+           round-trips through `List.at` as a usable map handle — collections nest both ways (a map of lists
+           above, a list of maps here), each inner handle usable by the outer op at run time.")
+  (input  (do (def (main (: i Int64) (: k Int64))
+                (match (List.at (list (Map.insert Map.empty 1 100) (Map.insert Map.empty 2 200)) i)
+                  ((Some m) (match (Map.lookup m k) ((Some v) v) (None -1)))
+                  (None -2))) (export main)))
+  (call   main (: 0 Int64) (: 1 Int64)) (output (: 100 Int64))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 200 Int64))
+  (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
+  (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64)))
+
+(case "a set as a map value: runtime membership tested through the lookup"
+  (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
+           returned set at run time. k=1,e=10 → present (1); k=1,e=99 → absent (0); an absent key → -1. Pins
+           that a SET map value round-trips through the lookup as a usable set handle whose membership is
+           queryable — the third collection kind nested as a map value, beside the list-value case above.")
+  (input  (do (def (main (: k Int64) (: e Int64))
+                (match (Map.lookup (Map.insert Map.empty 1 (Set.of (list 10 20))) k)
+                  ((Some s) (if (Set.contains s e) 1 0))
+                  (None -1))) (export main)))
+  (call   main (: 1 Int64) (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64) (: 99 Int64)) (output (: 0 Int64))
+  (call   main (: 9 Int64) (: 10 Int64)) (output (: -1 Int64)))
+
+(case "a set nested in a tuple compares equal with a runtime element, order-independent"
+  (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
+           element is a runtime-built set: with `x`=2 the sets are {1,2} = {1,2} so the tuples are equal;
+           with `x`=9 they differ. Pins that a Set nested inside a tuple compares by its order-independent
+           set value on the runtime path (a regression witness for the runtime-element set-equality fold in
+           a NESTED position — the tuple's structural equality recurses into the set's `value-eq` walk).")
+  (input  (do (def (main (: x Int64)) (= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))) (export main)))
+  (call   main (: 2 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64)) (output (: false Bool)))
+
 (case "indexing a list in bounds yields Some of the element"
   (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
            well-typed list access whose index is in range yields the element wrapped in Some — an
