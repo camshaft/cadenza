@@ -11599,6 +11599,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_malformed_export_clause_is_rejected_not_silently_dropped() {
+        // `(export (g x))` / `(export 5)` / `(export)` — an export whose argument is NOT a bare name. The
+        // module scan only records an `Export` when the argument `as_name`s, so a malformed clause was
+        // SILENTLY DROPPED: the program compiled as if the export were never written, and the emit path
+        // reported the misleading "nothing is public". A scan-and-drop correctness hazard — now rejected
+        // CDZ0201 at the chokepoint, naming how to fix it (`(export <name>)`).
+        let find_export_fault = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("an export names a single definition"))
+        };
+        // A compound whose HEAD is a name recovers the likely intent — replace the clause with `(export g)`.
+        let d = find_export_fault("(module m (def (g) 1) (export (g x)))")
+            .expect("a malformed compound export clause is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        let fix = d.fix.as_ref().expect("carries a recover-the-name fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "(export g)",
+            "recovers the head name: {}",
+            d.message
+        );
+
+        // A non-name argument (`5`) or an empty `(export)` has no name to recover → message only, no fix.
+        let bare = find_export_fault("(module m (def (g) 1) (export 5))")
+            .expect("a non-name export argument is rejected");
+        assert!(
+            bare.fix.is_none(),
+            "no fix for a non-recoverable argument: {:?}",
+            bare.fix
+        );
+        assert!(
+            find_export_fault("(module m (def (g) 1) (export))").is_some(),
+            "an empty export clause is rejected"
+        );
+
+        // NO false positive: a well-formed `(export g)` produces no malformed-export fault.
+        assert!(
+            find_export_fault("(module m (def (g) 1) (export g))").is_none(),
+            "a well-formed export is not flagged"
+        );
+    }
+
+    #[test]
     fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
         // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
         // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.
@@ -11803,6 +11847,47 @@ mod match_engine {
             reject_code("(module m (def (f (: b BigInt) (: c BigInt)) (+ b c)) (def (main) 5) (export main))")
                 .is_none(),
             "BigInt arithmetic still compiles"
+        );
+    }
+
+    #[test]
+    fn a_long_chained_rational_sum_folds_in_bounded_time() {
+        // REGRESSION (perf): constant `Rational` arithmetic folds via `normalized_rational`, which reduces
+        // the result to lowest terms with `IntValue::gcd`. `gcd` WAS Euclidean over the bit-serial
+        // `divmod_mag` (`8·len(a)` iterations per call regardless of quotient size), so a chained exact sum
+        // of fractions with DISTINCT denominators — which MULTIPLY without cancellation, so the magnitude
+        // grows unbounded — was super-cubic: a 160-term sum took ~1.8s, a 320-term ~30s (99% in
+        // `divmod_mag`), an effective HANG of `cdz check` on a small program. The fix makes `gcd_mag`
+        // BINARY GCD (Stein's — shift/subtract only, never trial division), dropping it to O(bits²): the
+        // 320-term sum now folds in ~200ms, the realistic 10-50-term case in single-digit ms. This 200-term
+        // chain would be seconds pre-fix; that `diagnostics` returns quickly is the gate.
+        let mut primes: Vec<u64> = Vec::new();
+        let mut x = 2u64;
+        while primes.len() < 200 {
+            if primes.iter().all(|&p| !x.is_multiple_of(p)) {
+                primes.push(x);
+            }
+            x += 1;
+        }
+        let mut expr = format!("(Rational.of 1 {})", primes[0]);
+        for p in &primes[1..] {
+            expr = format!("(+ {expr} (Rational.of 1 {p}))");
+        }
+        // Compare to a constant so the whole thing folds to a scalar `Bool` (a bare Rational has no host
+        // render); the equality also folds, exercising the `cmp` after the reducing adds.
+        let src = format!("(module m (def (main) (= {expr} (Rational.of 0 1))) (export main))");
+        // Through the host-stack guard the bin uses (`host.rs`): the fold/reached-poison walk over a
+        // 200-term chain recurses ~per term, which SIGABRTs a default `cargo test` worker's ≈2 MB stack
+        // (EXIT=101, 0 FAILED) even though it TERMINATES — deep-but-finite frame bloat, not a loop
+        // (`RUST_MIN_STACK=64M` passes). Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth.
+        let diags = crate::host::run_with_compiler_stack(move || {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a long chained Rational sum folds with no error diagnostics: {diags:?}"
         );
     }
 
@@ -12589,8 +12674,7 @@ mod match_engine {
         // `cdz check`'s Diagnostics query MISSED it). Now it is a coded CDZ0101 in `collect_faults`, so
         // BOTH surfaces report it, anchored at the `(export …)` clause and (for a typo) with a suggestion.
         // Use the DIAGNOSTICS query — the path `cdz check` runs (`collect_faults`) — where the fault is
-        // the coded CDZ0101 (the full `compile` pipeline ALSO surfaces the emit-path layout decline for
-        // the same issue, uncoded; `check` is the surface this fix is about).
+        // the coded CDZ0101.
         let mut db = crate::db::Db::load(parse("(module m (def (main) 1) (export mian))"));
         let diags = crate::compile::diagnostics(&mut db);
         let d = diags
@@ -12609,6 +12693,40 @@ mod match_engine {
             d.message.contains("`mian`") && d.message.contains("did you mean `main`?"),
             "names the bad export + suggests the nearest def: {}",
             d.message
+        );
+
+        // The FULL `compile` pipeline agrees now (a check≡compile fix): layout declines a missing export
+        // with an UNCODED "names no definition", and `compile` used to short-circuit on that BEFORE
+        // `collect_faults` ran — so `cdz compile` showed the fix-less message while `cdz check` showed the
+        // coded CDZ0101 + suggestion. `compile` now runs `collect_faults` on a layout decline and reports
+        // its richer coded set, so BOTH surfaces carry the code, the "did you mean?", and the replace fix.
+        let compiled = reject_full("(module m (def (main) 1) (export mian))")
+            .expect("compile reports the missing export");
+        assert_eq!(
+            compiled.code.as_deref(),
+            Some("CDZ0101"),
+            "compile agrees with check — coded, not the uncoded layout decline: {}",
+            compiled.message
+        );
+        assert!(
+            compiled.message.contains("did you mean `main`?"),
+            "compile carries the suggestion too: {}",
+            compiled.message
+        );
+        assert_eq!(
+            compiled.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Replace),
+            "compile carries the replace fix: {:?}",
+            compiled.fix
+        );
+        // A layout decline with NO `collect_faults` fault still falls back to the layout message — a
+        // program with no export at all is not a `collect_faults` fault, so its decline is preserved.
+        let no_export =
+            reject_full("(module m (def (main) 1))").expect("a program with no export declines");
+        assert!(
+            no_export.message.contains("nothing is public"),
+            "the no-export layout decline is preserved (no collect fault to prefer): {}",
+            no_export.message
         );
     }
 
@@ -21529,6 +21647,62 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_multi_name_export_clause_exports_every_name() {
+        // `(export a b)` — the multi-name surface the ML reader writes `export { a, b }` and the printer
+        // round-trips — exports EVERY name. The scanner used to read only `tail.first()`, SILENTLY dropping
+        // every name past the first, so `(export main helper)` published only `main` (a correctness bug: a
+        // valid public name vanished from the component). Now both defs are exported and reachable.
+        let clean = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (def (helper) 2) (export main helper))",
+        )));
+        assert!(
+            clean
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid multi-name export compiles: {:?}",
+            clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // Both names resolve to a def (neither is silently dropped) — `helper` is no longer reported as an
+        // unused definition either, because the export references it.
+        assert!(
+            !clean.iter().any(|d| d.message.contains("`helper`")),
+            "the second export name `helper` is not dropped/unused: {:?}",
+            clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // A DIAGNOSTIC on the 2nd+ name anchors to THAT name, not the clause's first. An undefined 2nd
+        // name gets its own coded "names no definition" + did-you-mean over the defined names (the `check`
+        // path — the fast path an agent runs, which carries the suggestion + fix).
+        let d = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (def (helper) 2) (export main helpr))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("the undefined 2nd export name is a CDZ0101");
+        assert!(
+            d.message.contains("`helpr`") && d.message.contains("did you mean `helper`?"),
+            "the 2nd export name's typo is caught with a suggestion: {}",
+            d.message
+        );
+
+        // A duplicate WITHIN a multi-name clause `(export main main)` reports once, anchored+deleting the
+        // redundant name (not the whole clause — the first `main` must survive).
+        let dup = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (export main main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("exported more than once"))
+        .expect("a duplicate name in one clause is caught");
+        assert_eq!(dup.code.as_deref(), Some("CDZ0201"), "got: {}", dup.message);
+        assert_eq!(
+            dup.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the duplicate name carries a delete fix: {:?}",
+            dup.fix
+        );
+    }
+
+    #[test]
     fn a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix() {
         // The remaining duplicate-name family members (siblings of dup-field/dup-export D32) now carry a
         // DELETE fix removing the redundant clause: a repeated sum VARIANT (payload form), a repeated
@@ -26646,6 +26820,52 @@ mod stage1 {
     }
 
     #[test]
+    fn a_literal_parameter_position_is_rejected() {
+        // A parameter is a BINDER: a bare name, a wildcard `_`, an annotated `(: name T)`, or a
+        // destructuring pattern. A bare LITERAL — `(def (f 5) …)`, `(def (f true) …)` — is NONE of these:
+        // it binds nothing, so the parameter is dead and any argument passed to it is silently ignored. It
+        // used to be accepted with NO diagnostic (the scan reads `children[1..]` without validating each is
+        // a binder). Now it rejects CDZ0201, anchored at the literal. A COMPOUND list parameter is a
+        // destructuring pattern — left to the binding-pattern path — so this fires ONLY on a bare literal.
+        let d = |src: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("a parameter must be a name"))
+                .unwrap_or_else(|| panic!("no malformed-parameter reject for {src}"))
+        };
+        for src in [
+            "(module m (def (f 5) 1) (export f))",
+            "(module m (def (f true) 1) (export f))",
+            "(module m (def (f \"x\") 1) (export f))",
+            // A literal amid valid params is still caught (anchored at the literal, not the whole list).
+            "(module m (def (f x 5 y) 1) (export f))",
+        ] {
+            assert_eq!(
+                d(src).code.as_deref(),
+                Some("CDZ0201"),
+                "{src}: {}",
+                d(src).message
+            );
+        }
+        // NO false positive: a name, a wildcard `_`, an annotated binder, a destructuring pattern, and a
+        // nullary def all stay clear of THIS fault (a `_`/name may still get the separate ambiguous-boundary
+        // fault when exported, which is unrelated).
+        for ok in [
+            "(module m (def (f (: x Int64)) (+ x 1)) (export f))",
+            "(module m (def (g _) 1) (def (main) (g 5)) (export main))",
+            "(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b)) (export f))",
+            "(module m (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("a parameter must be a name")),
+                "a valid parameter is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_duplicate_export_is_rejected_not_miscompiled() {
         // A module's exports are a record whose fields are the exported names — exporting `a` twice is
         // the same CDZ0201 duplicate-field ill-formedness as a duplicate definition. It MUST reject
@@ -28010,6 +28230,116 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail recursive abort must decline, not miscompile to 102"
         );
+    }
+
+    #[test]
+    fn two_abortive_performs_on_a_strict_spine_the_first_wins() {
+        // E4 abortive FIRST-WINS (a MISCOMPILE regression). Two abortive performs on one strict spine —
+        // `(+ (Bail.bail 7) (Bail.bail 9))` — evaluate LEFT-TO-RIGHT, and an abort ABANDONS the rest, so the
+        // FIRST (leftmost) abort wins → 7; the second `(Bail.bail 9)` never runs. The fold threads operands
+        // in evaluation order and records each abort in a shared `abort_value` cell — but it kept threading
+        // PAST the first abort, so the second perform OVERWROTE the cell and the handle yielded 9 (a
+        // miscompile). Fix: once the cell is set, a later abort does not overwrite it (first wins).
+        let two = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(two)))
+                    .expect("two abortive performs compile"),
+                "main"
+            ),
+            7,
+            "the FIRST (leftmost, evaluated-first) abort wins — never the second"
+        );
+        // Three performs, and the abort value READING the seed state, both still take the FIRST abort.
+        let three = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (+ (Bail.bail 8) (Bail.bail 9))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(three))).expect("compiles"),
+                "main"
+            ),
+            7
+        );
+        let reads_state = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 5 ((bail (n) s (+ n s))) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(reads_state))).expect("compiles"),
+                "main"
+            ),
+            12,
+            "the first abort's value (7) plus the seed state (5) = 12; the second abort is dead"
+        );
+    }
+
+    #[test]
+    fn abortive_compositions_fold_to_the_correct_value_or_decline_cleanly() {
+        // E4 abortive SOUNDNESS SWEEP pinned as a regression (abortive is the most miscompile-prone fold —
+        // 5 miscompiles found historically). Each shape must fold to the value the deep-handler semantics
+        // dictate, or decline cleanly — NEVER a wrong value. `run_returns` only accepts a compiling artifact,
+        // so a wrong value fails the assert and a decline fails `.expect` (both catch a regression).
+        let folds: &[(&str, i64)] = &[
+            // A tail-resumptive perform BEFORE an abort on the same spine: get resumes (seed 5), then stop
+            // aborts → 99 (the `(+ 5 …)` continuation is abandoned).
+            (
+                "(do (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64))) \
+               (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.get) (E.stop 99)))) (export main))",
+                99,
+            ),
+            // An abort BEFORE a tail-resumptive perform: the abort wins, `get` never runs → 99.
+            (
+                "(do (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64))) \
+               (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.stop 99) (E.get)))) (export main))",
+                99,
+            ),
+            // An abort in a match SCRUTINEE abandons the whole match → 7.
+            (
+                "(do (effect Bail (op bail (-> Int64 Int64))) \
+               (def (main) (handle Bail 0 ((bail (n) s n)) (match (Bail.bail 7) (0 100) (_ 200)))) (export main))",
+                7,
+            ),
+            // The abort value is COMPUTED from the op argument: `(* n 2)` with n=7 → 14.
+            (
+                "(do (effect Bail (op bail (-> Int64 Int64))) \
+               (def (main) (handle Bail 0 ((bail (n) s (* n 2))) (+ 1 (Bail.bail 7)))) (export main))",
+                14,
+            ),
+            // An abort deeply nested under pure operators is still abandoned to the arm value → 7.
+            (
+                "(do (effect Bail (op bail (-> Int64 Int64))) \
+               (def (main) (handle Bail 0 ((bail (n) s n)) (* 2 (+ 1 (- 10 (Bail.bail 7)))))) (export main))",
+                7,
+            ),
+            // An abort under an OUTER tail-resumptive handler of a DIFFERENT effect: the inner Bail aborts →
+            // 7 (the outer A handler's body value IS the reduced inner-handle value).
+            (
+                "(do (effect A (op a (-> Unit Int64))) (effect Bail (op bail (-> Int64 Int64))) \
+               (def (main) (handle A 0 ((a (u) s (resume 10 s))) (handle Bail 0 ((bail (n) s2 n)) (+ (A.a) (Bail.bail 7))))) (export main))",
+                7,
+            ),
+        ];
+        for (src, want) in folds {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(src)))
+                        .expect("abortive composition compiles"),
+                    "main"
+                ),
+                *want,
+                "abortive composition folded to the wrong value: {src}"
+            );
+        }
+        // A conditional abort hoisted ALONGSIDE a second abortive sibling declines cleanly (the hoist bails on
+        // an effectful sibling — sound over-decline, never a mis-fold). Not a miscompile.
+        let clean_declines: &[&str] = &["(do (effect Bail (op bail (-> Int64 Int64))) \
+               (def (main) (handle Bail 0 ((bail (n) s n)) (+ (if (< 3 5) (Bail.bail 7) 0) (Bail.bail 9)))) (export main))"];
+        for src in clean_declines {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_err(),
+                "a conditional-abort-plus-abortive-sibling must decline cleanly, not miscompile: {src}"
+            );
+        }
     }
 
     #[test]

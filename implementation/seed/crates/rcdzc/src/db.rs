@@ -145,6 +145,11 @@ pub struct Export {
     pub def: Option<usize>,
     /// The `(export NAME)` clause occurrence, for a diagnostic to anchor to (e.g. a duplicate export).
     pub occ: StructId,
+    /// The specific NAME atom this export came from within the clause — `(export a b)` yields two exports
+    /// sharing one `occ` (the clause) but each carrying its own `name_occ` (the `a` / `b` atom). A
+    /// diagnostic that points at (or edits) a single exported name uses THIS, not `occ`'s first element,
+    /// so a fault on the 2nd+ name of a multi-name clause anchors correctly.
+    pub name_occ: StructId,
 }
 
 /// One variant of a sum declaration — a `(name payload-type…)` list or a bare nullary name. Its
@@ -2016,6 +2021,27 @@ impl Db {
         }
         out
     }
+
+    /// Top-level `(export …)` forms whose argument is NOT a bare name — `(export (g x))`, `(export 5)`,
+    /// `(export)`. The scan (`scan_module`) only records an `Export` when the clause's first tail element
+    /// `as_name`s, so a MALFORMED export clause is otherwise SILENTLY DROPPED: no `Export` is registered,
+    /// `unknown_top_forms` skips it (its head IS `export`, a known top form), and the program compiles as
+    /// if the export were never written — the author's public-surface intent vanishes with no diagnostic
+    /// (the emit path then reports the misleading "nothing is public"). Return each such clause occurrence
+    /// so `collect_faults` can reject it with the actionable "an export names a definition: `(export g)`"
+    /// (a scan-and-drop correctness hazard, the export-clause analogue of the malformed-variant reject).
+    /// The bad-argument occurrence (for a fix anchor) is the clause's first tail element, if any.
+    pub fn malformed_exports(&self) -> Vec<(StructId, Option<StructId>)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            if let Some(tail) = self.ast.as_form(item, "export")
+                && tail.first().is_none_or(|&s| self.ast.as_name(s).is_none())
+            {
+                out.push((item, tail.first().copied()));
+            }
+        }
+        out
+    }
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
@@ -2419,14 +2445,24 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
                 body,
                 internal: false,
             });
-        } else if let Some(tail) = ast.as_form(item, "export")
-            && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
-        {
-            exports.push(Export {
-                name: name.to_string(),
-                def: None,
-                occ: item,
-            });
+        } else if let Some(tail) = ast.as_form(item, "export") {
+            // An `(export a b …)` clause exports EVERY name in its tail — the multi-name surface the ML
+            // reader writes `export { a, b, … }` and the printer round-trips (per `is_export_shape`). One
+            // `Export` per name, each sharing the clause `occ` but carrying its OWN `name_occ`. A non-name
+            // element (a malformed `(export a 5)`) is caught by the well-formedness pass; skip it here so
+            // the well-formed names still register (matching how `scan_type_decl`/`scan_effect_decl` scan
+            // per element). Reading only `tail.first()` — the prior behavior — SILENTLY dropped every name
+            // past the first, so a valid `(export main helper)` published only `main`.
+            for &s in tail.iter() {
+                if let Some(name) = ast.as_name(s) {
+                    exports.push(Export {
+                        name: name.to_string(),
+                        def: None,
+                        occ: item,
+                        name_occ: s,
+                    });
+                }
+            }
         } else if ast.as_form(item, "type").is_some()
             && let Some(decl) = scan_type_decl(ast, item)
         {

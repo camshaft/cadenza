@@ -150,7 +150,11 @@ pub enum Prim {
     /// CONSTANT float FOLDS (round the exact `Decimal` at the target width); a runtime float emits the
     /// demote/promote op. The float-width companion of the integer `T.of`, but TOTAL (a float always has
     /// an image at another float width — no trap). No implicit promotion (numeric-model.md §A Conversion
-    /// Involving A Floating-Point Type Is Explicit).
+    /// Involving A Floating-Point Type Is Explicit): a float↔float-width conversion (this `FloatOf`) and a
+    /// float↔other-numeric conversion (`FloatOfInt` / a checked `Int.of` from a float) are each WRITTEN —
+    /// the seed inserts none implicitly (a cross-width/cross-kind numeric mix is CDZ0301, no promotion).
+    //= spec/capabilities/numeric-model.md#a-conversion-involving-a-floating-point-type-is-explicit
+    //# A conversion between a floating-point type and any other numeric type, or between two floating-point types of different width, MUST be written explicitly rather than performed as an implicit promotion or narrowing.
     FloatOf,
     /// `nan` — the canonical not-a-number Float VALUE (a bare prelude name, like `unit`). NOT a literal
     /// (`Decimal` holds only finite values); it resolves to this prim and lowers to `Core::ConstFloatNan`,
@@ -220,8 +224,12 @@ pub enum Prim {
     /// `BigInt` is a DISTINCT numeric type (`Ty::BigInt`): a fixed-width integer never silently becomes a
     /// `BigInt` (nor the reverse) — the widening `BigInt.of` here and the checked narrowing `Int64.of` are
     /// the only crossings, each written explicitly (a `BigInt`/fixed-width mix is CDZ0301, no promotion).
+    /// The narrowing direction cannot preserve exactness (a `BigInt` may not fit the fixed width), so it
+    /// is exactly the WRITTEN, checked/trapping `Int64.of` — never an implicit conversion.
     //= spec/capabilities/numeric-model.md#an-arbitrary-precision-integer-is-a-distinct-type-opted-into-explicitly
     //# An arbitrary-precision integer MUST be a distinct numeric type, so that it does not silently convert to or from a fixed-width integer without an explicit conversion.
+    //= spec/capabilities/numeric-model.md#exact-arithmetic-is-exact
+    //# A conversion that cannot preserve a value's exactness MUST be written explicitly rather than performed implicitly.
     BigIntOf,
     /// The ground `Rational` type-value — held in the `Rational` module record's `(meta t)`, so bare
     /// `Rational` in type position reduces to `Ty::Rational` (a NULLARY type, like `BigInt`; the

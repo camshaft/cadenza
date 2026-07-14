@@ -480,48 +480,42 @@
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
 
-; The DISCRIMINATOR for the closure-param-capture gap: a returned lambda capturing the def's SCALAR parameter
-; works (below — the scalar argument substitutes cleanly), but capturing a CLOSURE-typed parameter declines
-; (the case after). So it is the closure-TYPEDNESS of the captured param that triggers the gap, not
-; "capturing a def param" in general — the closure argument is a `resolve_subtree`-pinned lambda whose own
-; params dangle when it is spliced into the returned lambda that then lifts.
+; A returned lambda capturing the def's SCALAR parameter (the C-HOST-2 make-forwarding shape at the def
+; level): the scalar argument substitutes cleanly into the returned lambda's cell.
 
 (case "a factory RETURNS a closure capturing the def's SCALAR parameter"
   (doc    "`(def (mk (: k Int64)) (fn (x) (+ x k)))` — the returned closure captures the def's SCALAR param
            `k`. Applied `((mk 10) n)` with n = 5 → 5 + 10 = 15. The scalar argument `10` substitutes cleanly
-           into the returned lambda's cell (this is the C-HOST-2 make-forwarding shape at the def level). The
-           companion of the closure-param case below — proving SCALAR-param capture in a returned lambda
-           works, so the decline there is specific to a CLOSURE-typed captured param.")
+           into the returned lambda's cell.")
   (input  (do (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
               (def (main (: n Int64)) ((mk 10) n))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
 
-; A nested lambda capturing a closure-typed DEF PARAMETER (rather than a scalar param or a let-bound closure)
-; is NOT yet supported: when the def is applied to a closure argument and inlined, the argument lambda is
-; `resolve_subtree`-pinned and later copied, leaving a body occurrence resolving to the ORIGINAL param binder
-; with no local slot at the build site. The compiler DECLINES ("parameter reference has no local slot") rather
-; than emit an invalid module — reject-don't-miscompile. A sound α-renaming fix to the copy machinery is a
-; separate, larger reduction-engine change. (Contrast: capturing a LET-bound closure OR a scalar param works.)
+; A nested lambda capturing a closure-typed DEF PARAMETER now works too, including when the def is applied to
+; an INLINE lambda argument. The fix (`eval::apply_lambda`): a lambda ARGUMENT is pinned by its FREE variables
+; only (`pin_free_vars`, excluding the arg lambda's own params) rather than by a blunt whole-subtree
+; `resolve_subtree` — so its own-param body references stay unpinned and re-substitute when the arg lambda is
+; later applied inside the returned lambda that lifts (previously they dangled as slot-less `Core::Param`, the
+; "parameter reference has no local slot" decline). A def-ref or a let-bound lambda already worked; this
+; brings the INLINE lambda argument to parity.
 
-(case "a nested lambda capturing a closure-typed def PARAMETER is declined"
+(case "a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)"
   (doc    "`(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returns a closure that captures the def's
-           CLOSURE-typed parameter `g`. Applied `((mk (fn (y) (+ y 1))) n)`, the returned lambda captures `g`
-           — but `g` is a closure PARAM pinned+copied through the inline, so its body reference has no local
-           slot. Declines (a `todo`), not a miscompile. The let-bound-closure capture above works; this is the
-           closure-PARAM-capture α-renaming gap.")
+           CLOSURE-typed parameter `g`, applied to an INLINE lambda `((mk (fn (y) (+ y 1))) n)`. The returned
+           lambda captures `g` (= the arg lambda) and dispatches it; with n = 5 → `(fn y -> y+1)` applied to 5
+           = 6. The arg lambda's own param `y` re-substitutes correctly inside the lifted returned body (the
+           free-vars-only pinning fix). A higher-order (closure-arg) FACTORY at runtime.")
   (input  (do (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
               (def (main (: n Int64)) ((mk (fn (y) (+ y 1))) n))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
-; The FINE discriminator: the decline above is specific to an INLINE-LAMBDA argument (whose body references
-; its OWN param). Passing the SAME shape a TOP-LEVEL DEF as the closure argument WORKS — a def reference is a
-; global that re-resolves by name (no pinned own-param to dangle), so the returned lambda captures it and
-; dispatches cleanly. So the gap is precisely: an inline lambda arg (with an own-param body ref) substituted
-; for a closure param and captured into a returned lambda that lifts — NOT closure-param capture in general.
+; The same factory with the closure argument supplied three OTHER ways — all equivalent now: a TOP-LEVEL def
+; (a global ref), and (below) a LET-bound lambda. These already worked before the inline-arg fix; kept as
+; coverage that the closure-arg factory is uniform across argument spellings.
 
 (case "a returned lambda captures+applies a closure param bound to a TOP-LEVEL def"
   (doc    "The same `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returning a closure that captures its
@@ -536,18 +530,13 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
-; And the WORKAROUND that confirms the trigger is the INLINE form: LET-BIND the lambda argument first, then
-; pass the let name. A let-bound lambda is a value node with its own binding (not a param-substituted inline
-; AST), so `mk`'s returned closure captures it cleanly. So the decline is specific to passing the lambda
-; INLINE at the call site — hoisting it to a `let` is a working escape hatch (and the same normalization a
-; future reduction-engine fix would apply automatically).
+; The third argument spelling: a LET-bound lambda. Equivalent to the inline and top-level-def forms above —
+; all three now capture + dispatch the closure argument through the returned lambda cleanly.
 
-(case "a let-bound lambda passed to a returned-closure factory works (the inline-arg workaround)"
-  (doc    "The SAME `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returned-closure factory, but the
-           lambda argument is LET-BOUND first: `(let ((f (fn (y) (+ y 1)))) ((mk f) n))`. Passing the let name
-           `f` (a value binding, not an inline AST substituted for the param) captures cleanly. `main(5)` → the
-           returned closure applies `f` to 5 = 6. Confirms the decline above is specific to the INLINE lambda
-           argument — hoisting it to a `let` is a working escape hatch.")
+(case "a let-bound lambda passed to a returned-closure factory"
+  (doc    "The SAME `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returned-closure factory, with the
+           lambda argument LET-BOUND first: `(let ((f (fn (y) (+ y 1)))) ((mk f) n))`. `main(5)` → the returned
+           closure applies `f` to 5 = 6. Equivalent to the inline and def-ref argument spellings above.")
   (input  (do (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
               (def (main (: n Int64)) (let ((f (fn ((: y Int64)) (+ y 1)))) ((mk f) n)))
               (export main)))

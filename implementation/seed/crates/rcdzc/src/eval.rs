@@ -768,7 +768,23 @@ fn apply_lambda_uncached(
         // position, so the later re-parent cannot change how a caller-bound name inside the argument
         // resolves (`(let ((k 10)) (inc k))` — `k` must stay bound to the caller's `let`). The body's
         // OWN names still resolve lazily after the copy, against the copied scope, as intended.
-        crate::resolve::resolve_subtree(db, *a);
+        //
+        // A LAMBDA argument is the exception: pinning its WHOLE subtree freezes its OWN params too, so
+        // when that arg lambda is later APPLIED inside a lifted body (`(def (mk (: g (-> A B))) (fn (x)
+        // (g x)))` given `(fn (y) (+ y 1))` — `g`'s body substitutes the arg lambda, and `((fn y..) x)`
+        // must β-reduce), `beta_reduce`'s pinned-→-share arm shares the arg lambda's own-param refs as-is
+        // instead of substituting them, leaving `y` a slot-less `Core::Param` ("parameter reference has no
+        // local slot"). So pin only the arg lambda's FREE variables (its captures, bound OUTSIDE it),
+        // exactly as `pin_free_vars` does for a returned lambda — leaving its own params unpinned to
+        // re-resolve/substitute on the later application. (A LET-bound lambda already works because the
+        // binding is a distinct value node, not a param-substituted inline AST — this brings the inline
+        // form to parity.)
+        if let Some((arg_params, arg_body)) = syntactic_lambda(db, *a) {
+            let own: Vec<StructId> = arg_params.iter().map(|&p| param_name_occ(db, p)).collect();
+            pin_free_vars(db, arg_body, arg_body, &own);
+        } else {
+            crate::resolve::resolve_subtree(db, *a);
+        }
         // A body reference to a parameter binds to the parameter's NAME occurrence (resolve's
         // `binder_in` returns the name, seeing through a `(: name T)` annotated binder). So key the
         // substitution on the name occurrence too, not the raw signature child (which is the `(:…)`
@@ -1194,6 +1210,19 @@ fn callee_body(db: &mut Db, head: StructId) -> Option<StructId> {
         }
         _ => None,
     }
+}
+
+/// If `id` is SYNTACTICALLY a `(fn (params…) body)` form, its param occurrences + body — WITHOUT reducing
+/// or resolving (unlike [`lambda_of`], which follows refs and β-reduces). Used by `apply_lambda` to pin a
+/// lambda ARGUMENT's free variables only (excluding its own params), so its own-param body references stay
+/// unpinned to substitute when the arg lambda is later applied. `None` for a non-`fn` argument.
+fn syntactic_lambda(db: &Db, id: StructId) -> Option<(Vec<StructId>, StructId)> {
+    let tail = db.ast.as_form(id, "fn")?;
+    let (&params_occ, &body) = (tail.first()?, tail.get(1)?);
+    let crate::ast::Struct::List(params) = db.ast.get(params_occ) else {
+        return None;
+    };
+    Some((params.clone(), body))
 }
 
 /// If the value at `id` reduces to a lambda, its parameters and body. Follows a `Ref` (a `let`-bound

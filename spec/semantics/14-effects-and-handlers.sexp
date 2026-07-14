@@ -183,6 +183,18 @@
               (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
+(case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
+  (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
+           abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
+           FIRST operand `(Bail.bail 7)` fires first and abandons everything — the handle evaluates to 7, and
+           the second `(Bail.bail 9)` never runs. The result is the leftmost abort's value, never the second,
+           mirroring the left-to-right evaluation order the strict operator imposes.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (Bail.bail 9)))) (export main)))
+  (output (: 7 Int64)))
+
 (case "an abortive perform in the tail of an if branch abandons only that branch"
   (doc    "Refines the abortive class for a CONDITIONAL early-exit. `Bail.bail` is abortive (its arm never
            resumes). The handle body is `(if true (Bail.bail 7) 99)` — the `if` IS the handle's value, so an
