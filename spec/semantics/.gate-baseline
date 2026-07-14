@@ -2197,6 +2197,7 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the exponent marker is case-insensitive
+pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
@@ -2250,6 +2251,9 @@ pass	the three-way comparison orders Bool with false below true
 pass	the three-way comparison orders Float64 by numeric value — Equal
 pass	the three-way comparison orders Float64 by numeric value — Greater
 pass	the three-way comparison orders Float64 by numeric value — Less
+pass	the three-way comparison orders chars by scalar value — Equal
+pass	the three-way comparison orders chars by scalar value — Greater
+pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
@@ -2282,6 +2286,7 @@ pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
+pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal

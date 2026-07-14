@@ -939,6 +939,44 @@
   (input  (= #\a #\a))
   (output (: true Bool)))
 
+(case "two chars with different scalar values are unequal"
+  (doc    "`(= #\\a #\\b)` is false — the discriminator for the equal-chars case above: Char equality is a
+           genuine scalar comparison, not a blanket true. `a` (97) and `b` (98) have distinct scalar values,
+           so they are unequal. Pins that Char `=` distinguishes chars (the false companion of `(= #\\a
+           #\\a)`).")
+  (input  (= #\a #\b))
+  (output (: false Bool)))
+
+(case "the greater-than operator on chars follows scalar order"
+  (doc    "`(> #\\b #\\a)` is true — `b` (scalar 98) is greater than `a` (97), the `>` companion of the
+           `(< #\\a #\\b)` order case. Pins that the strict-greater operator over Char also follows the
+           scalar order (both directions of the Char order are reachable).")
+  (input  (> #\b #\a))
+  (output (: true Bool)))
+
+(case "the three-way comparison orders chars by scalar value — Less"
+  (doc    "`(compare #\\a #\\b)` is `(Ordering.Less unit)` — Char offers a total order (its scalar order,
+           collections-and-text.md #A Char Is A Single Unicode Scalar Value), so `compare` reports it as
+           the Less variant exactly as over Int64/Float64 (core-semantics.md #A Total Order Is Observed
+           Through A Three-Way Comparison). Pins that the three-way comparison spans Char, the compare
+           companion of the `(< #\\a #\\b)` operator case.")
+  (input  (compare #\a #\b))
+  (output (: (Less unit) Ordering)))
+
+(case "the three-way comparison orders chars by scalar value — Greater"
+  (doc    "`(compare #\\b #\\a)` is `(Ordering.Greater unit)` — the Greater variant over Char, so `b`
+           orders after `a` by scalar value. The Greater companion of the Less case, pinning that compare's
+           direction agrees with `>` on Char.")
+  (input  (compare #\b #\a))
+  (output (: (Greater unit) Ordering)))
+
+(case "the three-way comparison orders chars by scalar value — Equal"
+  (doc    "`(compare #\\a #\\a)` is `(Ordering.Equal unit)` — two chars of the same scalar report the middle
+           variant. With the Less and Greater cases this pins all three Ordering variants are reachable over
+           Char and discriminated by the scalar relation, exactly as the Int64/Float64 triples are.")
+  (input  (compare #\a #\a))
+  (output (: (Equal unit) Ordering)))
+
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
 ; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces
