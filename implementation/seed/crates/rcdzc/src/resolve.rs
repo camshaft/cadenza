@@ -3919,7 +3919,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 decl: StructId(decl),
                 name,
                 args,
-                inner: Box::new(inner),
+                inner: std::rc::Rc::new(inner),
             })
         }
         // A map type-value: `(Map K V)` — two type arguments (key first, then value), the dual of

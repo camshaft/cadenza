@@ -38956,6 +38956,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deeply_nested_generic_nominal_annotation_reduces_to_a_linear_size_type() {
+        // REGRESSION (perf): `Db::normalize_sum` reduces a generic NOMINAL (erasable newtype, `(type Box
+        // (Mk a))`) at an instantiation to `Ty::Nominal { args, inner }`, where `inner` is the template with
+        // `args` substituted. `inner` was a `Box<Ty>`, so for a NESTED `(Box (Box … Int64))` the child
+        // nominal was stored in BOTH `args` and (DEEP-CLONED into) `inner` at every level → the materialized
+        // `Ty` DOUBLED per nesting level = O(2^depth) (depth 20 built a ~2M-node `Ty`; the compiler hung —
+        // depth 24 took ~6s, depth 30+ timed out). FIX: `Nominal.inner: Rc<Ty>` — the child's allocation is
+        // SHARED across `args`/`inner` and across levels, so a depth-D nesting is O(D) nodes, not O(2^D).
+        //
+        // The NOISE-FREE signal is the `subst_template_vars` VISIT COUNT (the template-substitution work
+        // that builds each `Nominal.inner`): O(depth) after the fix, O(2^depth) before — a pure function of
+        // the program, deterministic, no timing. (A `Ty`-node COUNT is the WRONG measure here: with the
+        // `Rc` sharing the built type is O(depth) in MEMORY but a naive tree-walk that doesn't dedup shared
+        // `Rc`s would itself re-expand to O(2^depth) — so the fix is in the WORK, counted directly.)
+        use crate::db::Db;
+        use crate::testkit::parse;
+        fn subst_visits_for_nested_box(depth: usize) -> u64 {
+            crate::host::run_with_compiler_stack(move || {
+                let mut ty = String::from("Int64");
+                for _ in 0..depth {
+                    ty = format!("(Box {ty})");
+                }
+                let src = format!(
+                    "(module m (type Box (Mk a)) (def (g (: x {ty})) x) (def (main) 0) (export main))"
+                );
+                crate::db::SUBST_TEMPLATE_VARS_VISITS.with(|c| c.set(0));
+                // Loading + a full `diagnostics` run reduces the annotation (`typeval_of`→`normalize_sum`→
+                // `subst_template_vars`) — forcing exactly the work whose count we measure.
+                let mut db = Db::load(parse(&src));
+                let _ = crate::diagnostics(&mut db);
+                crate::db::SUBST_TEMPLATE_VARS_VISITS.with(|c| c.get())
+            })
+        }
+        // Sanity: the substitution actually runs for a nested nominal.
+        assert!(subst_visits_for_nested_box(4) > 0);
+        // Linear ⇒ the work for 2× depth is ~2×; the O(2^depth) blowup was ~1000×+ (and would hang at these
+        // depths — depth 20 alone drove ~2^20 substitutions before the fix). Measure depth 20 vs 40 and
+        // require sub-quadratic growth: linear (~2×) clears < 4× easily, and any exponential regression
+        // fails catastrophically (it would not even complete). Deterministic; no min-of-runs.
+        let v20 = subst_visits_for_nested_box(20);
+        let v40 = subst_visits_for_nested_box(40);
+        let ratio = v40 as f64 / (v20.max(1)) as f64;
+        assert!(
+            ratio < 4.0,
+            "a deeply-nested generic-nominal annotation must reduce with O(depth) template-substitution \
+             work, not O(2^depth) (was `Nominal.inner: Box<Ty>` deep-cloning the child into both `args` and \
+             `inner` per level; `inner: Rc<Ty>` shares it): depth 20→40 grew `subst_template_vars` visits \
+             {ratio:.1}× (v20={v20}, v40={v40}); linear is ~2×, the exponential doubled PER LEVEL"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

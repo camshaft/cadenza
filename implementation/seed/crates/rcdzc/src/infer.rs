@@ -396,7 +396,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                         // type (a runtime no-op — the value is unchanged). `(Mk n)` over a `Ty::Nominal {
                         // inner: Int64 }` binds `n : Int64`.
                         if let Ty::Nominal { inner, .. } = &cur {
-                            *inner.clone()
+                            (**inner).clone()
                         } else {
                             match payload_ty_at_instantiation(db, head, &cur) {
                                 Some(t) => t,
@@ -2678,7 +2678,7 @@ fn walk_payload_ty(
                     return Ty::Any;
                 };
                 if let Ty::Nominal { inner, .. } = &cur {
-                    *inner.clone()
+                    (**inner).clone()
                 } else {
                     match payload_ty_at_instantiation(db, head, &cur) {
                         Some(t) => t,
