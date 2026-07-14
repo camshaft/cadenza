@@ -24398,6 +24398,23 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
+        // HOST + RUNTIME COMPOSITION: a host op result fed into a value-heap runtime op (`Map.insert` on the
+        // runtime `ask.ask` value imports the `"heap"` runtime; `ask` imports `"host"`). Previously declined
+        // ("a program that both delegates a host effect AND uses the value-heap runtime is not yet emitted");
+        // now `envelope::assemble_host_runtime` composes BOTH imported interfaces and the program emits a
+        // VALID component (wasmtime parses it). Running it end-to-end also needs cdz-run to link both the
+        // host responses and the runtime — a separate increment; component validity is the structural gate.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (Map.size (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a host op composed with the value-heap runtime now emits");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the composed host+runtime component must be valid");
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /

@@ -417,10 +417,14 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    if !host_imports.is_empty() && !imports.is_empty() {
+    // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
+    // (`envelope::assemble_host_runtime`, wired in the host block below). One remaining combination still
+    // declines: a host op with a STRING parameter (needs the shared-memory shape) composed with the runtime
+    // — the memory + two-interface fusion is a further increment. A scalar/unit host op + runtime is emitted.
+    if !host_imports.is_empty() && !imports.is_empty() && host::set_needs_memory(&host_imports) {
         return Err(Reject::decline(
-            "a program that both delegates a host effect AND uses the value-heap runtime is not yet \
-             emitted (the host + runtime import index spaces compose in a later increment)",
+            "a host op with a string parameter composed with the value-heap runtime is not yet emitted \
+             (the shared-memory host shape and the runtime import compose in a later increment)",
         ));
     }
 
@@ -663,6 +667,23 @@ pub fn emit(
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
+        // A program that ALSO uses the value-heap runtime (a host op result fed into a runtime collection
+        // op — `imports` non-empty) composes BOTH imported interfaces: `assemble_host_runtime` imports the
+        // effect (as `"host"`) AND the runtime (as its versioned name, `"heap"`), aliases + lowers both op
+        // sets, and instantiates the program with both bound. (A string-param host op + runtime declined
+        // above; here the host set is scalar/unit, so no shared memory.) The core module already composed
+        // both import spaces (`core_module_with_host` above).
+        if !imports.is_empty() {
+            let import_name = runtime_import_name();
+            return Ok(envelope::assemble_host_runtime(
+                &core,
+                &boundary,
+                &iface,
+                &host_fns,
+                &imports,
+                &import_name,
+            ));
+        }
         // A host op with a STRING parameter needs the shared-memory shape (the `(ptr,len)` a `string`
         // lowers to is read from a memory both the program and the op's canon-lower bind); a scalar-only
         // host set takes the memoryless shape (byte-identical to E2h-2).
