@@ -25,6 +25,26 @@ export default function Rationals() {
       </P>
       <Runnable source={`(Rational.of-int 5)`} />
 
+      <H2>Writing one directly: the <C>R</C> suffix</H2>
+      <P>
+        Spelling out <C>Rational.of</C> every time is wordy when you already know the number. A decimal
+        with an <C>R</C> suffix is a rational <em>literal</em> — the compiler reads the decimal exactly and
+        converts it to a fraction, so <C>0.5R</C> is <C>1/2</C> and <C>1.25R</C> is <C>5/4</C>:
+      </P>
+      <Runnable source={`0.5R`} />
+      <P>
+        It's the very same value as the constructor — <C>0.5R</C> equals <C>(Rational.of 1 2)</C> — just
+        terser to write. Here's the point of it, and the contrast with <strong>Floating-point numbers</strong>:
+        write the tenths as rationals and <C>0.1 + 0.2</C> is <em>exactly</em> <C>3/10</C>, where the float{" "}
+        <C>(+. 0.1 0.2)</C> drifted to <C>0.30000000000000004</C>:
+      </P>
+      <Runnable source={`(+ 0.1R 0.2R)`} />
+      <P>
+        Same digits you'd type for a float, one letter's difference — and the answer is the number you
+        meant, not the nearest float to it. (Integers take an <C>N</C> suffix for the arbitrary-precision{" "}
+        <C>BigInt</C> type, the same idea for whole numbers that outgrow <C>Int64</C>.)
+      </P>
+
       <H2>Always in lowest terms</H2>
       <P>
         A rational normalizes itself on construction: it's stored in lowest terms, with the sign on the
