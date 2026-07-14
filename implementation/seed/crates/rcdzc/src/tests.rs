@@ -17476,6 +17476,23 @@ mod match_engine {
             Some("CDZ0201"),
             "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
         );
+        // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
+        // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
+        // "quasiquote produces an AST value (not yet built)"), NOT the leaky CDZ0201 "variant
+        // constructor's payload has declared type Int64, but Float64 was applied" the naive `(Ast.Int
+        // 2.0)` wrap produced — whose coercion fix would have silently rewritten the author's `2.0`→`2`.
+        // The reifier bails so no misleading coded reject + no value-corrupting fix is emitted.
+        for lit in ["2.0", "\"s\"", "true"] {
+            let src = format!("(module m (def (main) (quasiquote (unquote {lit}))) (export main))");
+            let d = reject_full(&src);
+            assert!(
+                d.as_ref().is_none_or(|d| {
+                    d.code.is_none() && !d.message.contains("variant constructor's payload")
+                }),
+                "an active unquote of a non-int literal declines honestly, not the leaky Ast.Int \
+                 payload error: {d:?}"
+            );
+        }
     }
 
     #[test]

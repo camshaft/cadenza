@@ -233,6 +233,21 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             if items.len() != 2 {
                 return None;
             }
+            // A NON-INTEGER LITERAL operand (`,2.0`, `,"s"`, `,true`) cannot lift: the only value-carrying
+            // `Ast` variant this increment builds is `Ast.Int` (Int64 payload). Wrapping such a literal
+            // `(Ast.Int 2.0)` would leak the INTERNAL reification mechanism as a misleading "variant
+            // constructor's payload has declared type Int64, but Float64 was applied" — worse, its
+            // coercion fix would silently REWRITE the author's `2.0`→`2`, corrupting their value. BAIL
+            // instead (as `reify` does for a bare non-Int leaf), so the quasiquote declines honestly with
+            // "quasiquote produces an AST value (not yet built)" — the type-directed lift of a non-Int
+            // active operand is a later increment (module docs §Quasiquote). A NON-literal operand (a
+            // name, a call) stays LIVE and wraps in `Ast.Int` as before — its type is unknown at reify
+            // time (pre-typecheck), and an Int-valued one is the corpus case.
+            if let Struct::Atom(l) = ast.get(items[1])
+                && !matches!(ast.leaf(*l), Leaf::Int { .. })
+            {
+                return None;
+            }
             // Reuse the operand node LIVE (it is evaluated code, not reified) and wrap it `(Ast.Int e)`:
             // the Int64 value lifts to an `Ast.Int` node identical to a const fold's.
             Some(ast_ctor(ast, "Int", items[1]))
