@@ -2879,22 +2879,31 @@ fn emit_roundtrip_resource(
             ));
         }
     }
-    // VALIDATE the shared closure signature crosses as scalars (a producer minting a closure whose arg or
-    // result is a compound must decline). The bytes themselves are not used directly — a producer's `make`
-    // functype takes the EXPORT's own params, and a consumer's functype its OWN params (`abi_params`); the
-    // closure signature only shapes the in-guest `call_indirect` (core valtypes, always representable). But
-    // the scalar-boundary check must still fire here so a compound-closure round trip declines.
+    // VALIDATE the shared closure signature is MACHINE-representable. On the ROUND-TRIP path the closure is
+    // applied ENTIRELY IN-GUEST by a consumer (`(g …)` inside the consumer body) — its argument is BUILT in
+    // the guest and never crosses the host boundary; only the closure HANDLE (an `own<t>` resource, i32) and
+    // the consumer's OWN scalar params cross. So a closure ARGUMENT need only have a machine valtype (a
+    // compound is an i32 heap handle in-guest) — NOT a scalar host-boundary byte. The bytes are not used
+    // directly here: a producer's `make` functype takes the EXPORT's own params, a consumer's functype its
+    // OWN params (`abi_params`); the closure signature only shapes the in-guest `call_indirect` (core
+    // valtypes). This LIFTS the earlier scalar-arg fence for the round-trip: a `(-> (Tuple …) R)` closure
+    // handed back and applied to a guest-built tuple now compiles. (A compound closure arg on the DIRECT-CALL
+    // path — where the host supplies the arg — still declines: that needs host→guest decode.)
     for t in &arg_tys {
-        closure_boundary_byte(t).ok_or_else(|| {
+        valtype_of(t).ok_or_else(|| {
             Reject::decline(format!(
-                "a closure argument of type {} has no scalar host-boundary representation",
+                "a closure argument of type {} has no machine representation",
                 t.render_name()
             ))
         })?;
     }
-    closure_boundary_byte(&ret_ty).ok_or_else(|| {
+    // The closure RESULT is consumed by the consumer body (fed into whatever the consumer returns); the
+    // consumer's OWN result type is validated separately (scalar/byte-rope/compound/collection below). So the
+    // closure result need only be machine-representable too — a consumer applying a `(-> A (Tuple …))` closure
+    // and returning that tuple crosses it as the consumer's compound result (already handled).
+    valtype_of(&ret_ty).ok_or_else(|| {
         Reject::decline(format!(
-            "a closure result of type {} has no scalar host-boundary representation",
+            "a closure result of type {} has no machine representation",
             ret_ty.render_name()
         ))
     })?;

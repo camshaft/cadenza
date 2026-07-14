@@ -717,12 +717,27 @@ the component type. The new work:
   The envelope re-export/instantiate path is UNCHANGED (it already lifts a `ret_is_bytes` consumer as
   `(…)->list<u8>`). `cdz-run` already try-decodes. +6 corpus (a List + scalar consumer of distinct sigs; two
   collection consumers — List + Map; a List + a compound consumer).
-- **REMAINING (all optional, none blocking):** a compound closure ARG (host→guest decode — harder); a closure
-  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
-  handle. **The entire byte-rope (`Bytes`/`String`) result surface, the entire fixed-shape compound
-  (tuple/record/sum) result surface, AND the variable-length collection (List/Map/Set) result surface are ALL
-  DONE across EVERY closure shape — single-export + multi-export + mixed + distinct-sig + round-trip +
-  distinct-sig-round-trip. The complete closure-RESULT matrix is closed.**
+- **✅ COMPOUND closure ARGUMENT on the ROUND-TRIP path COMPLETE `@3f9ff427`.** On the round-trip path the
+  consumer APPLIES its handed-back closure ITSELF, in-guest (`(g <compound>)` inside the consumer body), so
+  the closure's ARGUMENT is built in the guest heap and NEVER crosses the host boundary — only the closure
+  HANDLE (an `own<t>` resource, i32) and the consumer's own scalar params cross. So a closure argument (and
+  result) need only be MACHINE-representable (a value-heap compound is an i32 handle in-guest), NOT
+  scalar-host-boundary-representable. `emit_roundtrip_resource` widens the closure-signature arg + result
+  checks from `closure_boundary_byte` (aliased scalar) to `valtype_of` (any machine value) — a pure
+  fence-relaxation: the closure signature's ABI bytes were never consumed downstream (a `make` functype takes
+  the export's own params, a consumer's its own; the signature only shapes the in-guest `call_indirect`). A
+  `(-> (Tuple …) R)`/`(-> (Record …) R)`/`(-> (List …) R)` closure handed back and applied to a guest-built
+  compound now compiles + runs. The DIRECT-CALL path (`emit_closure_resource`) is UNCHANGED — it still
+  declines a compound closure arg (the HOST supplies it over the boundary → needs host→guest decode). +5
+  corpus (Tuple/Record/List arg applied round-trip; compound arg + compound consumer result; the direct-call
+  compound-arg decline).
+- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path (host→guest
+  decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
+  `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface, the entire
+  fixed-shape compound (tuple/record/sum) result surface, AND the variable-length collection (List/Map/Set)
+  result surface are ALL DONE across EVERY closure shape — single-export + multi-export + mixed + distinct-sig
+  + round-trip + distinct-sig-round-trip; the complete closure-RESULT matrix is closed. A COMPOUND closure
+  ARGUMENT is now supported on the round-trip path (built in-guest).**
 
 ## Risks / open questions
 
@@ -731,9 +746,12 @@ the component type. The new work:
    green, then resolve.
 2. **Interface naming** — DECIDED: a dedicated `cadenza:closure/*` interface (host
    contract is a callable method, distinct from the value-escape's `encode`).
-3. **Arg/result boundary types** — first cut restricts `call` args + result to the aliased
-   scalar widths (same restriction as host-call `abi_val_type`); a closure whose arg is
-   itself a compound/closure is a later increment (recursion into the resource machinery).
+3. **Arg/result boundary types** — the DIRECT-CALL path restricts `call` args + result to the
+   aliased scalar widths (same restriction as host-call `abi_val_type`), because the host supplies
+   the argument over the boundary. RESOLVED for the ROUND-TRIP path (`@3f9ff427`): there the closure
+   is applied in-guest, so a COMPOUND arg is built guest-side and need only be machine-representable
+   (an i32 heap handle). A compound arg on the direct-call path (host→guest decode) + a closure-typed
+   arg (recursion into the resource machinery) remain later increments.
 4. **Lifetime / RC** — who drops the closure cell and its captures? Tied to own vs borrow;
    the general Perceus drop work (`a_runtime_closure_leaks_exactly_one_cell_known_gap`)
    and the resource dtor converge here.

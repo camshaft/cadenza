@@ -600,6 +600,72 @@ pub mod exports {
                     let result0 = T::get_float32(arg0 as u32);
                     _rt::as_f32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_of_i64_cabi<T: Guest>(arg0: i64) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_of_i64(arg0);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_to_i64_checked_cabi<T: Guest>(
+                    arg0: i32,
+                ) -> i64 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_to_i64_checked(arg0 as u32);
+                    _rt::as_i64(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_add_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_add(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_sub_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_sub(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_mul_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_mul(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_div_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_div(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bigint_cmp_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i64 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bigint_cmp(arg0 as u32, arg1 as u32);
+                    _rt::as_i64(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -928,6 +994,28 @@ pub mod exports {
                     fn box_float32(v: f32) -> u32;
                     /// 63 — box a Float32 (4-byte leaf, NaN-canonical)
                     fn get_float32(handle: u32) -> f32;
+                    /// 64 — read a Float32 back
+                    /// ── Arbitrary-precision integer (BigInt, indices 65–71) — a sign-magnitude limb-array LEAF (the
+                    ///    `Bytes`-leaf shape: raw bytes, zero handles), ALWAYS heap (never a fixnum immediate — a BigInt is a
+                    ///    DISTINCT type from a fixed-width int). Backed by the `bigint::Big` limb library. The compiler emits
+                    ///    these for RUNTIME-valued BigInt (a constant folds in the compiler via num-bigint and never calls
+                    ///    them). `bigint-of-i64` widens a fixed-width int in; `bigint-to-i64-checked` narrows back, trapping
+                    ///    out of range; add/sub/mul never trap (the range grows); `bigint-div` truncates toward zero and
+                    ///    traps on a zero divisor; `bigint-cmp` is the three-way compare `<`/`=`/`>` lower to
+                    ///    (numeric-model.md §Arbitrary Precision; options/numeric-model/explicit-checked.md).
+                    fn bigint_of_i64(v: i64) -> u32;
+                    /// 65 — widen a fixed-width int into a BigInt leaf
+                    fn bigint_to_i64_checked(handle: u32) -> i64;
+                    /// 66 — checked narrow back (traps out of range)
+                    fn bigint_add(a: u32, b: u32) -> u32;
+                    /// 67 — a + b (never traps for magnitude)
+                    fn bigint_sub(a: u32, b: u32) -> u32;
+                    /// 68 — a - b
+                    fn bigint_mul(a: u32, b: u32) -> u32;
+                    /// 69 — a * b
+                    fn bigint_div(a: u32, b: u32) -> u32;
+                    /// 70 — a / b truncating (traps on zero divisor)
+                    fn bigint_cmp(a: u32, b: u32) -> i64;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1160,7 +1248,33 @@ pub mod exports {
                         #[unsafe (export_name = "cadenza:runtime/heap#get-float32")]
                         unsafe extern "C" fn export_get_float32(arg0 : i32,) -> f32 {
                         unsafe { $($path_to_types)*:: _export_get_float32_cabi::<$ty >
-                        (arg0) } } };
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#bigint-of-i64")] unsafe extern "C" fn
+                        export_bigint_of_i64(arg0 : i64,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_bigint_of_i64_cabi::<$ty > (arg0) }
+                        } #[unsafe (export_name =
+                        "cadenza:runtime/heap#bigint-to-i64-checked")] unsafe extern "C"
+                        fn export_bigint_to_i64_checked(arg0 : i32,) -> i64 { unsafe {
+                        $($path_to_types)*:: _export_bigint_to_i64_checked_cabi::<$ty >
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#bigint-add")] unsafe extern "C" fn
+                        export_bigint_add(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_bigint_add_cabi::<$ty > (arg0, arg1)
+                        } } #[unsafe (export_name = "cadenza:runtime/heap#bigint-sub")]
+                        unsafe extern "C" fn export_bigint_sub(arg0 : i32, arg1 : i32,)
+                        -> i32 { unsafe { $($path_to_types)*::
+                        _export_bigint_sub_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#bigint-mul")] unsafe extern
+                        "C" fn export_bigint_mul(arg0 : i32, arg1 : i32,) -> i32 { unsafe
+                        { $($path_to_types)*:: _export_bigint_mul_cabi::<$ty > (arg0,
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#bigint-div")] unsafe extern "C" fn
+                        export_bigint_div(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_bigint_div_cabi::<$ty > (arg0, arg1)
+                        } } #[unsafe (export_name = "cadenza:runtime/heap#bigint-cmp")]
+                        unsafe extern "C" fn export_bigint_cmp(arg0 : i32, arg1 : i32,)
+                        -> i64 { unsafe { $($path_to_types)*::
+                        _export_bigint_cmp_cabi::<$ty > (arg0, arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1369,9 +1483,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1705] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xab\x0c\x01A\x02\x01\
-A\x02\x01Bl\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1835] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xad\x0d\x01A\x02\x01\
+A\x02\x01Bt\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
 \x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
 andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
 \x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
@@ -1406,9 +1520,12 @@ y\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\x10set-intersectio
 n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\x01\x09\x01@\x02\x01\
 ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x01@\x02\x01vy\x04descy\0y\x04\0\x0cvalue-\
 encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01@\x01\x06handley\0v\x04\
-\0\x0bget-float32\x01*\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runt\
-ime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproces\
-sed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\0\x0bget-float32\x01*\x04\0\x0dbigint-of-i64\x01\0\x04\0\x15bigint-to-i64-check\
+ed\x01\x01\x04\0\x0abigint-add\x01\x1d\x04\0\x0abigint-sub\x01\x1d\x04\0\x0abigi\
+nt-mul\x01\x1d\x04\0\x0abigint-div\x01\x1d\x01@\x02\x01ay\x01by\0x\x04\0\x0abigi\
+nt-cmp\x01+\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\
+\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
