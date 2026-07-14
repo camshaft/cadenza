@@ -65,7 +65,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
                 Some(ident)
             } else {
                 let mut params = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     params.push(rust_type(a)?);
                 }
                 Some(format!("{ident}<{}>", params.join(", ")))

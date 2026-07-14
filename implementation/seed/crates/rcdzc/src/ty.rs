@@ -755,7 +755,17 @@ pub enum Ty {
     Sum {
         decl: crate::ast::StructId,
         name: String,
-        args: Vec<Ty>,
+        // `Rc<[Ty]>` (an immutable shared slice), NOT `Vec<Ty>`: a sum's type-arguments are cloned on
+        // every `Ty::clone` (which `type_of`/`unify`/`subst.apply` do constantly), and a GENERIC sum
+        // NESTED in another (`(Option (Option … Int64))`) held its inner sum in `args`, so a `Vec<Ty>`
+        // clone DEEP-COPIED the whole nesting at every level — an O(depth) copy done O(depth) times
+        // (`ty_at_path`/`payload_ty_at_instantiation` per match level) → O(depth³) (a deep-nested-Option
+        // match: depth 800 = 610ms, ~3.9×/dbl). `Rc<[Ty]>` makes the clone a refcount bump, sharing the
+        // nesting across levels — the SAME fix `Tuple`/`Record` (fix-33/50) and `Nominal.inner` (fix-53)
+        // already carry. Indexing/iterating are unchanged (it derefs to a slice); only construction
+        // differs (`.collect()`/`vec![…].into()`/`.into()`). Identity is still `decl + args` (the
+        // hand-written `PartialEq` compares the slices elementwise).
+        args: std::rc::Rc<[Ty]>,
     },
     /// A NOMINAL type — an underlying structural type `inner` tagged with a compile-time NAME
     /// (`type-system.md §Nominal Is An Orthogonal Modifier Over Any Structural Type`). Realized as the
@@ -791,7 +801,10 @@ pub enum Ty {
     Nominal {
         decl: crate::ast::StructId,
         name: String,
-        args: Vec<Ty>,
+        // `Rc<[Ty]>` (not `Vec<Ty>`), the sibling of `Ty::Sum::args` — a nominal's type-arguments are
+        // cloned on every `Ty::clone` and a nested generic nominal held its child in `args`, so a
+        // `Vec<Ty>` clone deep-copied the nesting per level; `Rc<[Ty]>` shares it (a refcount bump).
+        args: std::rc::Rc<[Ty]>,
         // `Rc`, not `Box`: `inner` is the derived machine-rep template with `args` substituted, and for a
         // NESTED generic nominal (`(Box (Box … Int64))`) the child nominal is stored BOTH here and in
         // `args` — with a `Box`, each level deep-CLONED the child into `inner`, so the materialized `Ty`
@@ -1256,7 +1269,11 @@ impl Ty {
                 Ty::Sum {
                     decl: b, args: ab, ..
                 },
-            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            ) => {
+                a == b
+                    && aa.len() == ab.len()
+                    && aa.iter().zip(ab.iter()).all(|(x, y)| x.agrees_with(y))
+            }
             // Two nominals agree iff their DECLARATIONS match AND their type ARGS agree pairwise — the
             // exact `Ty::Sum` rule (decl is identity, args the instantiation). NOT `inner` — a recursive
             // nominal's inner diverges by derivation path, so comparing it would make `Lst` disagree with
@@ -1270,7 +1287,11 @@ impl Ty {
                 Ty::Nominal {
                     decl: b, args: ab, ..
                 },
-            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            ) => {
+                a == b
+                    && aa.len() == ab.len()
+                    && aa.iter().zip(ab.iter()).all(|(x, y)| x.agrees_with(y))
+            }
             // A RECURSIVE NOMINAL, FOLDED (`Ty::Nominal{decl}`) vs UNFOLDED μ back-edge (`Ty::Sum{decl}`) —
             // the same recursive newtype reached by different derivation paths (see the matching `unify`
             // arm). A recursive field projected out of the compound is the bare-Sum back-edge; it must
@@ -1293,7 +1314,11 @@ impl Ty {
                 Ty::Sum {
                     decl: b, args: ab, ..
                 },
-            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            ) => {
+                a == b
+                    && aa.len() == ab.len()
+                    && aa.iter().zip(ab.iter()).all(|(x, y)| x.agrees_with(y))
+            }
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
             // `Char` is monomorphic — the one char type agrees only with itself.
@@ -1513,7 +1538,7 @@ impl Ty {
                     name.clone()
                 } else {
                     let mut s = format!("({name}");
-                    for a in args {
+                    for a in args.iter() {
                         s.push(' ');
                         s.push_str(&a.render_name());
                     }

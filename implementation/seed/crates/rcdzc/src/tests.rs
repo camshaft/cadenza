@@ -12036,6 +12036,73 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_sum_types_args_are_rc_shared_so_a_clone_is_a_refcount_bump() {
+        // REGRESSION (perf): `Ty::Sum { args }` (and `Ty::Nominal { args }`) held their type-ARGUMENTS in a
+        // `Vec<Ty>`, so cloning the type deep-copied every arg. A GENERIC sum NESTED in another —
+        // `(Option (Option … Int64))`, whose inner `Option` sits in the outer's `args` — thus deep-copied
+        // the WHOLE nesting on each `Ty::clone`, and `payload_ty_at_instantiation`/`ty_at_path` clone once
+        // PER match level → an O(depth) copy done O(depth) times = O(depth³) (a deep-Option-match param:
+        // depth 800 was 610ms, ~3.9×/dbl; now 77ms, 8× faster). FIX: `args` is an `Rc<[Ty]>` (the sibling
+        // of `Ty::Tuple`/`Ty::Record`/`Ty::Nominal::inner`), so a clone shares the slice — a refcount bump,
+        // not a deep copy.
+        //
+        // Lock the REPRESENTATION directly: a clone of a `Ty::Sum` shares the SAME `args` allocation as the
+        // original (`Rc::ptr_eq`). A revert to `Vec<Ty>` makes the clone a fresh allocation — `ptr_eq`
+        // false — so this test fails. Deterministic, noise-free (no timing).
+        use crate::ty::Ty;
+        let inner = Ty::Sum {
+            decl: crate::ast::StructId(7),
+            name: "Option".to_string(),
+            args: std::rc::Rc::from([Ty::int64()]),
+        };
+        let outer = Ty::Sum {
+            decl: crate::ast::StructId(7),
+            name: "Option".to_string(),
+            args: std::rc::Rc::from([inner]),
+        };
+        let cloned = outer.clone();
+        let (Ty::Sum { args: a0, .. }, Ty::Sum { args: a1, .. }) = (&outer, &cloned) else {
+            panic!("both are Ty::Sum");
+        };
+        assert!(
+            std::rc::Rc::ptr_eq(a0, a1),
+            "cloning a Ty::Sum must SHARE its `args` Rc (a refcount bump), not deep-copy the Vec — the \
+             `Rc<[Ty]>` representation that makes a nested-generic-sum clone O(1) instead of O(depth)"
+        );
+
+        // And end-to-end: a deeply-nested generic-Option PARAM match (the path through
+        // `payload_ty_at_instantiation` → `unify` → `subst.apply`, which drove the O(depth³) deep-clone)
+        // compiles cleanly and quickly. Depth 200 was well into the super-cubic regime before the fix.
+        let depth = 200usize;
+        let ty = {
+            let mut t = String::from("Int64");
+            for _ in 0..depth {
+                t = format!("(Option {t})");
+            }
+            t
+        };
+        let pat = {
+            let mut p = String::from("n");
+            for _ in 0..depth {
+                p = format!("(Some {p})");
+            }
+            p
+        };
+        let src = format!(
+            "(module m (def (f (: o {ty})) (match o ({pat} n) (_ 0))) (def (main) 0) (export main))"
+        );
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested generic-Option param match compiles with no error diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
     fn a_deeply_nested_match_lowers_without_a_cubic_constraint_reclone() {
         // REGRESSION (perf): even after the `PathTypes` `Rc<Ty>` fix (see
         // `a_deeply_nested_option_pattern_lowers_in_bounded_time`), `lower::build_tree` stayed O(depth³) on
@@ -41735,12 +41802,12 @@ mod stage1 {
         let opt_int = Ty::Sum {
             decl: decl.occ,
             name: "Option".to_string(),
-            args: vec![Ty::int64()],
+            args: std::rc::Rc::from([Ty::int64()]),
         };
         let opt_bool = Ty::Sum {
             decl: decl.occ,
             name: "Option".to_string(),
-            args: vec![Ty::Bool],
+            args: std::rc::Rc::from([Ty::Bool]),
         };
         assert!(
             !opt_int.agrees_with(&opt_bool),

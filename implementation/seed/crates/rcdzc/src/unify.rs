@@ -1012,7 +1012,7 @@ mod tests {
             inner = Ty::Sum {
                 decl: crate::ast::StructId(0),
                 name: "Option".into(),
-                args: vec![inner],
+                args: std::rc::Rc::from([inner]),
             };
         }
         let mut s = Subst::new();
@@ -1026,7 +1026,7 @@ mod tests {
             cyclic = Ty::Sum {
                 decl: crate::ast::StructId(0),
                 name: "Option".into(),
-                args: vec![cyclic],
+                args: std::rc::Rc::from([cyclic]),
             };
         }
         let mut s2 = Subst::new();
@@ -1068,14 +1068,14 @@ mod tests {
         let opt0 = Ty::Sum {
             decl: crate::ast::StructId(0),
             name: "Option".to_string(),
-            args: vec![Ty::Var(0)],
+            args: std::rc::Rc::from([Ty::Var(0)]),
         };
         let mut fresh = Fresh::new();
         let _ = fresh.var(); // advance to 1 (as a head instantiation would have reserved ?0)
         let freshened = freshen_free(&opt0, &mut fresh);
         // The free `?0` renamed to a var != 0 (disjoint from the head's `?0`).
         match &freshened {
-            Ty::Sum { args, .. } => match args.as_slice() {
+            Ty::Sum { args, .. } => match &args[..] {
                 [Ty::Var(v)] => assert_ne!(*v, 0, "the free var must be renamed away from 0"),
                 other => panic!("expected one Var arg, got {other:?}"),
             },

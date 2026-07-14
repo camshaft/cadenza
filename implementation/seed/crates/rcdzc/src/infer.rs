@@ -122,8 +122,10 @@ pub(crate) fn ty_has_free_var(db: &mut Db, t: &Ty) -> bool {
         Ty::List(elem) | Ty::Set(elem) => ty_has_free_var(db, elem),
         Ty::Map(k, v) => ty_has_free_var(db, k) || ty_has_free_var(db, v),
         Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
-            let tys: Vec<Ty> = args.clone();
-            tys.iter().any(|a| ty_has_free_var(db, a))
+            // `args` is a shared `Rc<[Ty]>`; clone the handle (a refcount bump) so the recursive `&mut db`
+            // calls don't hold a borrow of `t`, then walk its elements — no per-call deep Vec copy.
+            let args = args.clone();
+            args.iter().any(|a| ty_has_free_var(db, a))
         }
         Ty::Qty { inner, .. } => ty_has_free_var(db, inner),
         Ty::Int(_)
@@ -3977,7 +3979,7 @@ fn call_argument_mismatch_message(
 fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     if let Ty::Sum { name, args, .. } = actual
         && name == "Option"
-        && let [payload] = args.as_slice()
+        && let [payload] = &args[..]
         && payload.agrees_with(expected)
     {
         return Some(

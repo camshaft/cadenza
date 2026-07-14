@@ -2840,11 +2840,15 @@ impl Db {
                 // Bool` differ here. `inner` is the derived machine-rep hint (the template with `args`
                 // substituted); it is never compared, so a recursive nominal's divergent inner is
                 // harmless. Both come from the same `args`, kept consistent.
-                args,
+                args: args.into(),
                 inner: std::rc::Rc::new(inner),
             };
         }
-        crate::ty::Ty::Sum { decl, name, args }
+        crate::ty::Ty::Sum {
+            decl,
+            name,
+            args: args.into(),
+        }
     }
 
     /// The synthesized SUM RECORD of the type named `name`, if one is declared — how a `(type NAME …)`
