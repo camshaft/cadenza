@@ -952,14 +952,58 @@ fn op_bigint_to_i64_checked(h: Handle) -> i64 {
 fn trap_bigint_narrow() -> ! {
     panic!("cdz-runtime: BigInt value out of range for the target integer type")
 }
-/// `bigint-add`/`-sub`/`-mul` — the total (never-trapping) arithmetic: unbox both, compute, re-box.
+/// Read a BigInt leaf's raw sign-magnitude bytes as an `i128`, or `None` if the value exceeds i128 range
+/// (needs the full `Big` path). Borrows the node's `raw` slice DIRECTLY — no `Big`, no limb `Vec`. A
+/// null/missing node reads as the empty slice = canonical zero. The small-operand arithmetic fast path.
+#[inline]
+fn bigint_as_i128(h: Handle) -> Option<i128> {
+    let raw = unsafe { h.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    bigint::Big::i128_from_sign_magnitude_bytes(raw)
+}
+/// Box an `i128` result as a BigInt leaf directly from its sign-magnitude bytes — no intermediate `Big`.
+/// An `i128`'s bytes are ≤17 (`[sign] + ≤16 magnitude`), which exceeds `INLINE_RAW_CAP` (12) only for a
+/// value needing >11 magnitude bytes; such a value falls back to the heap `Raw`. Byte-identical to
+/// `box_bigint(&Big::from_i128(v))`.
+#[inline]
+fn box_bigint_i128(v: i128) -> Handle {
+    let mut buf = [0u8; 17]; // sign + 16 LE magnitude bytes (i128 max)
+    let n = bigint::Big::i128_to_sign_magnitude_bytes_into(v, &mut buf)
+        .expect("17-byte buf fits any i128");
+    if n <= INLINE_RAW_CAP {
+        alloc_raw(Vec::new(), Raw::inline(&buf[..n]))
+    } else {
+        alloc_raw(Vec::new(), Raw::from(buf[..n].to_vec()))
+    }
+}
+/// `bigint-add`/`-sub`/`-mul` — the total (never-trapping) arithmetic. FAST PATH: when both operands fit
+/// `i128` (the common case — a runtime BigInt is a BigInt by TYPE, its magnitude usually small) and the
+/// native `checked_*` op does not overflow, compute + box the `i128` result with NO limb `Vec` on either
+/// operand (was 2 unbox Vecs + a result Vec; now just the result node). SLOW PATH: an operand out of i128
+/// range, or an overflowing result, falls back to the full `Big` path — byte-identical either way (both
+/// produce the canonical sign-magnitude leaf; guarded by the `num-bigint` differential + the i128-boundary
+/// differential test).
 fn op_bigint_add(a: Handle, b: Handle) -> Handle {
+    if let (Some(x), Some(y)) = (bigint_as_i128(a), bigint_as_i128(b)) {
+        if let Some(r) = x.checked_add(y) {
+            return box_bigint_i128(r);
+        }
+    }
     box_bigint(&unbox_bigint(a).add(&unbox_bigint(b)))
 }
 fn op_bigint_sub(a: Handle, b: Handle) -> Handle {
+    if let (Some(x), Some(y)) = (bigint_as_i128(a), bigint_as_i128(b)) {
+        if let Some(r) = x.checked_sub(y) {
+            return box_bigint_i128(r);
+        }
+    }
     box_bigint(&unbox_bigint(a).sub(&unbox_bigint(b)))
 }
 fn op_bigint_mul(a: Handle, b: Handle) -> Handle {
+    if let (Some(x), Some(y)) = (bigint_as_i128(a), bigint_as_i128(b)) {
+        if let Some(r) = x.checked_mul(y) {
+            return box_bigint_i128(r);
+        }
+    }
     box_bigint(&unbox_bigint(a).mul(&unbox_bigint(b)))
 }
 /// `bigint-div` — TRUNCATING integer division (quotient toward zero); TRAPS on a zero divisor (an
@@ -8868,12 +8912,12 @@ mod tests {
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
 
         // (K4) `bigint-add` — a runtime BigInt op (B3b/B3c emit these for runtime-valued BigInt arithmetic),
-        // now on the hot path of any bignum loop. Each op UNBOXES both operands to a `Big` (a limb `Vec`
-        // each), computes, and BOXES the normalized result (its sign-magnitude bytes + a node). So a single
-        // op over SMALL (single-limb) operands allocates several small Vecs — untracked until now. Build
-        // the two operands ONCE outside the loop (their construction is not the op's cost); measure only
-        // the add + the drop of each result. Guards against a regression that adds per-op churn (e.g. a
-        // wider intermediate, a lost small-Raw inline) on the runtime bignum path.
+        // now on the hot path of any bignum loop. The SMALL-operand FAST PATH reads both operands as `i128`
+        // DIRECTLY from their raw sign-magnitude bytes (no limb `Vec`), computes with `checked_add`, and
+        // boxes the `i128` result — so a small add allocates ONLY the result node (was: 2 unbox Vecs + a
+        // result magnitude Vec + the node = 4/op; now 1/op). A value out of i128 range or an overflowing
+        // result falls back to the full `Big` path (byte-identical). Build the two operands ONCE outside
+        // the loop; measure only the add + result drop. Guards that the fast path stays alloc-lean.
         let (bi_a, bi_b) = (op_bigint_of_i64(12345), op_bigint_of_i64(67890));
         let bigadd = measure(&mut || {
             for _ in 0..N {
@@ -8884,12 +8928,13 @@ mod tests {
         op_drop(bi_a);
         op_drop(bi_b);
         println!("ALLOC bigint_add x{N}: {bigadd}");
-        // Per op: unbox a (limb Vec) + unbox b (limb Vec) + the result's sign-magnitude Vec + the result
-        // node = a small constant, N-independent per op. The ceiling catches a regression toward per-op
-        // extra churn; the exact figure is measured + baselined.
+        // Per op on SMALL operands: ONLY the result node (both operands read as i128 from their raw bytes,
+        // the i128 result boxed directly) = 1/op. Was 4/op (2 unbox Vecs + a result magnitude Vec + node)
+        // before the i128 fast path. The ceiling catches a regression that loses the fast path (climbs back
+        // to ~4/op = 4000) or adds per-op churn; the exact figure is measured + baselined.
         assert!(
-            bigadd <= 8000,
-            "bigint_add x{N} allocs {bigadd} exceeds ceiling 8000 (unbox 2 limb Vecs + box the result Vec+node per op; a per-op churn regression would climb)"
+            bigadd <= 2000,
+            "bigint_add x{N} allocs {bigadd} exceeds ceiling 2000 (i128 fast path: only the result node, ~1/op; was 4/op with the full Big unbox/box — a lost fast path would climb back to ~4000)"
         );
 
         // (K4b) `bigint-cmp` — a READ-ONLY comparison (the primitive `<`/`>`/`<=`/`>=`/`=` on BigInt lower
@@ -9147,7 +9192,10 @@ mod tests {
         // 5000→2400 to track the reduced floor; catches an O(N²) re-walk, a lost pool reuse, or a return of
         // per-node Vec / output-realloc churn. `xtask bench`'s baseline (1924) is the tight guard; this
         // is the coarse in-suite backstop.
-        assert!(venc <= 2400, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 2400 (~19/encode of a 50-node list: was ~92 (per-int magnitude Vec, `DocLeaf::IntScalar` cut it), then ~43 (a fresh `DocBuilder` + `out` Vec grew from ZERO each call). Now `ENCODE_BUILDER`+`ENCODE_OUT` are reused thread-locals (clear + retain capacity) so the pool growth is paid ONCE — the residual is the output byte Vec + the per-call `work` stack + descriptor table. A per-int-Vec, a lost builder/out reuse, or an output-realloc regression would climb)");
+        assert!(
+            venc <= 2400,
+            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 2400 (~19/encode of a 50-node list: was ~92 (per-int magnitude Vec, `DocLeaf::IntScalar` cut it), then ~43 (a fresh `DocBuilder` + `out` Vec grew from ZERO each call). Now `ENCODE_BUILDER`+`ENCODE_OUT` are reused thread-locals (clear + retain capacity) so the pool growth is paid ONCE — the residual is the output byte Vec + the per-call `work` stack + descriptor table. A per-int-Vec, a lost builder/out reuse, or an output-realloc regression would climb)"
+        );
         op_drop(ve_list);
     }
 
@@ -10205,6 +10253,87 @@ mod tests {
         op_drop(hp2);
         op_drop(hp3);
         assert_eq!(live_object_count(), before, "no leak across the large-value ops");
+    }
+
+    /// The `i128` arithmetic FAST PATH (add/sub/mul when both operands fit i128 and the result doesn't
+    /// overflow) must produce a leaf BYTE-IDENTICAL to the full `Big` SLOW path — the fast path is a pure
+    /// allocation optimisation, not a semantics change. Drives values that straddle the i128 boundary in
+    /// both directions: (a) both fit + result fits → fast path, result must `champ_eq` a freshly-boxed
+    /// `Big` result; (b) result OVERFLOWS i128 (e.g. `i128::MAX + 1`, `i128::MIN - 1`, `i128::MAX *
+    /// i128::MAX`) → falls back to the `Big` path, must still be canonical; (c) an OPERAND exceeds i128 →
+    /// fast path declined, `Big` path used. Also pins the `i128`↔bytes helpers via the op results. Guards
+    /// the fast/slow agreement the `num-bigint` differential (which goes through the ops) also protects,
+    /// but SPECIFICALLY at the overflow endpoints a random differential rarely hits exactly.
+    #[test]
+    fn bigint_i128_fast_path_matches_the_big_slow_path_at_the_boundary() {
+        reset();
+        let before = live_object_count();
+        // The oracle: the op result's leaf must be canonical == a fresh box of the `Big`-computed answer.
+        let check = |op: fn(Handle, Handle) -> Handle,
+                     big: fn(&bigint::Big, &bigint::Big) -> bigint::Big,
+                     a: &bigint::Big,
+                     b: &bigint::Big,
+                     name: &str| {
+            let (ha, hb) = (box_bigint(a), box_bigint(b));
+            let hr = op(ha, hb);
+            let want = big(a, b);
+            let hw = box_bigint(&want);
+            assert!(
+                champ_eq(hr, hw),
+                "{name}: fast/slow path leaf must be byte-identical (canonical champ_eq to the Big result)"
+            );
+            assert_eq!(
+                unbox_bigint(hr).cmp(&want),
+                core::cmp::Ordering::Equal,
+                "{name}: value equal"
+            );
+            for h in [ha, hb, hr, hw] {
+                op_drop(h);
+            }
+        };
+        let big = |v: i128| {
+            bigint::Big::from_sign_magnitude_bytes(&{
+                let mut buf = [0u8; 17];
+                let n = bigint::Big::i128_to_sign_magnitude_bytes_into(v, &mut buf).unwrap();
+                buf[..n].to_vec()
+            })
+        };
+        // (a) IN-RANGE operands + in-range results — the fast path.
+        for &(x, y) in &[
+            (0i128, 0i128),
+            (12345, 67890),
+            (-12345, 67890),
+            (i64::MAX as i128, i64::MAX as i128), // sum/product still < i128::MAX
+            (-(i64::MAX as i128), i64::MAX as i128),
+            (i128::MAX, 0), // add 0 — identity, top of range
+            (i128::MIN, 0),
+            (i128::MAX, -1), // sub path near the top
+        ] {
+            let (bx, by) = (big(x), big(y));
+            check(op_bigint_add, bigint::Big::add, &bx, &by, "add in-range");
+            check(op_bigint_sub, bigint::Big::sub, &bx, &by, "sub in-range");
+        }
+        // (b) result OVERFLOWS i128 → the checked op returns None → the `Big` slow path runs. Must be
+        // canonical. `i128::MAX + 1`, `i128::MIN - 1`, and `i128::MAX * i128::MAX` (~2^254).
+        {
+            let (one, negone) = (big(1), big(-1));
+            let (bmax, bmin) = (big(i128::MAX), big(i128::MIN));
+            let add = bigint::Big::add;
+            let (sub, mul) = (bigint::Big::sub, bigint::Big::mul);
+            check(op_bigint_add, add, &bmax, &one, "add ovf +1");
+            check(op_bigint_sub, sub, &bmin, &one, "sub ovf -1");
+            check(op_bigint_add, add, &bmin, &negone, "add ovf neg");
+            check(op_bigint_mul, mul, &bmax, &bmax, "mul ovf ^2");
+        }
+        // (c) an OPERAND itself exceeds i128 (a multi-limb `Big` ~2^130) → fast path declined for that op.
+        {
+            let huge = big(i128::MAX).mul(&bigint::Big::from_i64(8)); // ~2^130, out of i128 range
+            let small = big(3);
+            let (add, mul) = (bigint::Big::add, bigint::Big::mul);
+            check(op_bigint_add, add, &huge, &small, "add op>i128");
+            check(op_bigint_mul, mul, &huge, &small, "mul op>i128");
+        }
+        assert_eq!(live_object_count(), before, "no leak across the boundary ops");
     }
 
     /// DESIGN VALIDATION for the pending BigInt ESCAPE (B3c): a runtime BigInt crossing the host boundary

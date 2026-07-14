@@ -2017,3 +2017,21 @@
   (input  (do (def (main (: n Int8)) (: (+ (match n (0 5) (_ 1)) 2) Int8)) (export main)))
   (call   main (: 9 Int8))
   (output (: 3 Int8)))
+
+
+
+(case "a runtime BigInt accumulator threaded through recursion grows past Int64"
+  (doc    "`(loop 70 (BigInt.of 1))` doubles a BigInt accumulator 70 times — `2^70` =
+           1180591620717411303424, a value FAR beyond Int64.max (~9.2e18). The accumulator is a runtime
+           BigInt threaded through the recursion (a param at every level), multiplied on the runtime limb
+           library each step, and the result crosses to the host via the value-encode walker. Pins the
+           real BigInt use case (an exponentiation/factorial accumulator) end to end: the initial
+           constant `(BigInt.of 1)` argument materializes as a heap handle (not a raw i64 — the fixed
+           call-arg-to-a-BigInt-param miscompile), the recursion threads the handle, and the unbounded
+           result never overflows.")
+  (input  (do
+            (def (loop (: n Int64) (: acc BigInt))
+              (if (= n 0) acc (loop (- n 1) (* acc (BigInt.of 2)))))
+            (def (main) (loop 70 (BigInt.of 1)))
+            (export main)))
+  (output (: 1180591620717411303424 BigInt)))

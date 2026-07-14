@@ -1296,6 +1296,27 @@ pub struct PlainExport {
     pub body_abs: u32,
 }
 
+/// How the shared `call` reassembles ONE flattened compound argument into the single value-heap CELL its
+/// lifted closure body expects. A FIXED-SHAPE SCALAR tuple/record closure argument crosses the DIRECT-CALL
+/// boundary as a native component `tuple<…>`/`record<…>` type, which the canonical ABI FLATTENS into scalar
+/// core params — so the core `call` receives the fields as N separate core params, but the lifted body reads
+/// the argument as a SINGLE i32 cell handle (`arr-get`/`get-int` projections). This descriptor tells the
+/// `call` body to rebuild that cell in-guest (`arr-alloc N`, then per field: index, the flattened param,
+/// box, `arr-set`) — the exact `Core::Tuple` build shape (`select.rs`) — and push the resulting handle in
+/// place of the raw fields. Proven runnable by the `a_fixed_shape_tuple_closure_arg_crosses_by_native_
+/// flattening` oracle. `None` (the common case) is byte-identical to the scalar path.
+#[derive(Clone)]
+pub struct TupleArgRebuild {
+    /// The box op per field (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`, or `None` for a field
+    /// that is ALREADY a u32 handle — a nested compound — and is `arr-set` as-is). One entry per field, in
+    /// field order. Length = the number of FLATTENED core params this compound contributes.
+    pub field_box_ops: Vec<Option<&'static str>>,
+    /// True per field when it is an INTEGER (or enum-discriminant) that must be i32→i64 sign/zero extended
+    /// before `box-int` (which takes an i64). Mirrors `emit_box_i32_to_i64_extend`. Same length/order as
+    /// `field_box_ops`; ignored for a field whose box op is `None` or a float.
+    pub field_extend_signed: Vec<Option<bool>>,
+}
+
 /// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
 /// preserved for the single-closure-export path (`emit_closure_resource`) and its serializer unit test.
 #[allow(clippy::too_many_arguments)]
@@ -1353,6 +1374,7 @@ pub fn closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
+        None,
     )
 }
 
@@ -3435,6 +3457,7 @@ pub fn multi_closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
+        None,
     )
 }
 
@@ -3467,6 +3490,7 @@ pub fn multi_closure_resource_core_module_with_host(
         lifted_type_idx,
         layout,
         false,
+        None,
     )
 }
 
@@ -3492,6 +3516,7 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     lifted_type_idx: u32,
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let h = host_fns.len();
@@ -3669,12 +3694,16 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     // call(self, args…): recover the cell rep, materialize it into a local (read twice — as the env and
     // for the code slot), push env + args, read the table slot, `call_indirect`.
     {
-        // Locals beyond the params: one i32 for the cell rep. Params are: 0 = self, 1..1+arity = args.
+        // Locals beyond the params: one i32 for the cell rep, plus (for a flattened tuple arg) one i32 for
+        // the rebuilt tuple-cell handle. Params are: 0 = self, 1..1+arity = the closure's args (the FLATTENED
+        // tuple fields when `tuple_arg` is set). `arg_vts` is the boundary/core param list either way.
         let cell_local = (1 + arg_vts.len()) as u32;
+        let tuple_local = cell_local + 1; // used only when `tuple_arg` is Some
+        let n_extra_locals = if tuple_arg.is_some() { 2 } else { 1 };
         let mut inner = Vec::new();
-        // one local group: 1 × i32.
+        // one local group: n_extra_locals × i32.
         inner.extend_from_slice(&wasm_vec(1, &{
-            let mut g = uleb_bytes(1);
+            let mut g = uleb_bytes(n_extra_locals as u64);
             g.push(wasm_abi::CORE_I32);
             g
         }));
@@ -3690,12 +3719,67 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         }
         inner.push(op::LOCAL_SET);
         uleb128(cell_local as u64, &mut inner);
-        // push env (the cell) then each arg, in order — the lifted fn is `(env, args…) -> R`.
+        // push env (the cell) then the closure's argument(s). The lifted fn is `(env, closure-args…) -> R`.
         inner.push(op::LOCAL_GET);
         uleb128(cell_local as u64, &mut inner);
-        for a in 0..arg_vts.len() {
-            inner.push(op::LOCAL_GET);
-            uleb128((1 + a) as u64, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            // A FIXED-SHAPE SCALAR tuple/record argument crossed the boundary FLATTENED into its N scalar
+            // fields (core params 1..1+N). The lifted body reads it as ONE i32 cell handle, so REBUILD that
+            // cell here (`arr-alloc N` + per field: index, the flattened param, box, `arr-set`) — the exact
+            // `Core::Tuple` build shape (`select.rs`) — and push the single handle. The rebuilt cell is an
+            // OWNED temporary: the lifted body's projections only BORROW it, so `call` drops it after
+            // `call_indirect` (below), balancing this alloc.
+            //
+            // `arr-set(arr, i, handle) -> arr` RETURNS the array (FBIP in-place), so the array THREADS on the
+            // stack across the fill loop (never reloaded from a local) — the current top-of-stack is `[env,
+            // arr]`, and each field leaves `[env, arr]` again. A `local.tee` at the end stashes the handle for
+            // the post-`call_indirect` drop while leaving it on the stack as the closure's argument.
+            let nfields = rebuild.field_box_ops.len();
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(nfields as i64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index.get("arr-alloc").expect("arr-alloc imported") as u64,
+                &mut inner,
+            ); // [env, arr]
+            for (i, box_op) in rebuild.field_box_ops.iter().enumerate() {
+                inner.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(i as i64, &mut inner); // [env, arr, i]
+                inner.push(op::LOCAL_GET);
+                uleb128((1 + i) as u64, &mut inner); // the flattened field param → [env, arr, i, field]
+                if let Some(bop) = box_op {
+                    // A scalar field boxes to a u32 handle: a NARROW int i32→i64 sign/zero extends first
+                    // (box-int takes i64; a 64-bit field is already i64 → no extend, `field_extend_signed`
+                    // None); a float/bool box takes its native width. Mirrors `emit_box_i32_to_i64_extend` +
+                    // `Core::Tuple` element boxing.
+                    if let Some(signed) = rebuild.field_extend_signed[i] {
+                        inner.push(if signed {
+                            op::I64_EXTEND_I32_S
+                        } else {
+                            op::I64_EXTEND_I32_U
+                        });
+                    }
+                    inner.push(op::CALL);
+                    uleb128(
+                        *import_index.get(*bop).expect("field box op imported") as u64,
+                        &mut inner,
+                    );
+                }
+                // (a `None` box op = a nested compound field, already a u32 handle → arr-set as-is)
+                inner.push(op::CALL);
+                uleb128(
+                    *import_index.get("arr-set").expect("arr-set imported") as u64,
+                    &mut inner,
+                ); // → [env, arr]
+            }
+            // Stash the rebuilt handle for the post-dispatch drop, LEAVING it on the stack as the closure arg.
+            inner.push(op::LOCAL_TEE);
+            uleb128(tuple_local as u64, &mut inner); // [env, arr]
+        } else {
+            for a in 0..arg_vts.len() {
+                inner.push(op::LOCAL_GET);
+                uleb128((1 + a) as u64, &mut inner);
+            }
         }
         // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
         inner.push(op::LOCAL_GET);
@@ -3731,6 +3815,20 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
                 *import_index
                     .get("drop")
                     .expect("drop imported for the closure-cell release") as u64,
+                &mut inner,
+            );
+        }
+        // The REBUILT tuple-arg cell is an owned temporary this `call` fabricated per invocation (NOT owned
+        // by the host across calls, unlike the closure handle) — so it drops UNCONDITIONALLY here (both own
+        // and borrow), after the lifted body finished borrowing it, balancing its `arr-alloc`. Leaves R on top.
+        if tuple_arg.is_some() {
+            inner.push(op::LOCAL_GET);
+            uleb128(tuple_local as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the tuple-arg cell release") as u64,
                 &mut inner,
             );
         }
