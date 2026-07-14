@@ -11761,30 +11761,16 @@ mod match_engine {
     }
 
     #[test]
-    fn adding_two_rationals_declines_honestly_without_a_phantom_int64() {
-        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic is not yet wired. The operator's
-        // `∀a. (Int a) → …` scheme does not accept a Rational, so the generic scheme-unify would default the
-        // first operand to `Int64` and report the second (Rational) as a numeric MIX — fabricating a phantom
-        // `Int64` the author never wrote. The honest outcome names Rational once, as a not-yet-supported op.
-        let d = reject_full(
-            "(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))",
-        )
-        .expect("Rational arithmetic must decline (not yet wired)");
+    fn adding_two_rationals_type_checks_without_a_phantom_int64() {
+        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic IS wired (B4-1, `@431d7833`:
+        // `apply_type` gives a Rational-operand `+`/`-`/`*`/`/` the result `Ty::Rational`). So it type-checks
+        // cleanly, WITHOUT the operator's `∀a. (Int a) → …` scheme defaulting the first operand to `Int64`
+        // and reporting the second as a numeric MIX (a phantom `Int64` the author never wrote). Before the
+        // wiring this DECLINED honestly (`adding_two_rationals_declines_honestly_…`); now it is well-typed.
         assert!(
-            d.message.contains("Rational"),
-            "the message names Rational: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("Int64"),
-            "no phantom Int64 operand (neither operand is Int64): {}",
-            d.message
-        );
-        // An uncoded decline (a not-yet-built construct), NOT the CDZ0301 numeric-mix rejection.
-        assert_eq!(
-            d.code, None,
-            "an uncoded decline, not a coded mismatch: {}",
-            d.message
+            reject_code("(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))")
+                .is_none(),
+            "Rational + Rational type-checks (no phantom Int64 mix)"
         );
 
         // CONTRAST — must be UNAFFECTED: equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
