@@ -44195,6 +44195,45 @@ mod closure_host_resource {
         );
     }
 
+    /// A PARTIAL APPLICATION whose residual parameter type is an unresolved unification variable — NOT
+    /// `Ty::Any` — escaping as an exported FUNCTION's result. `(def (g (: n Int64)) (Map.insert (Map.empty)
+    /// n))` returns `(-> ?7 (Map Int64 ?7))`: the residual first-parameter type inference never grounded
+    /// surfaces as a `Ty::Var(_)`, not `Any` (the `Any` case is the nullary-export sibling above). Before
+    /// the fix, `arrow_has_unconstrained` matched only `Any`, so `cdz check` accepted this while the backend
+    /// declined it deep in closure-resource emit — and the backend's message LEAKED the internal `?7`
+    /// verbatim ("a closure argument of type ?7 has no scalar host-boundary representation"). Matching
+    /// `Any | Var(_)` in BOTH the `collect_faults` detector and the backend's `closure_boundary_reject`
+    /// closes the check-vs-emit gap and replaces the leaky `?7` with the actionable partial-application
+    /// explanation. Pins: CDZ0201 on the compile surface, the partial-application wording, and that the raw
+    /// `?7` is NOT the whole message (it may appear once inside the backticked type context, but the
+    /// explanation must carry the cause).
+    #[test]
+    fn a_partial_application_with_a_var_residual_reports_at_both_surfaces_without_leaking_a_type_var()
+     {
+        use crate::testkit::parse;
+        let src = "(module m (def (g (: n Int64)) (Map.insert (Map.empty) n)) (export g))";
+        let encoded = crate::codec::encode(&parse(src));
+        // The COMPILE surface: a coded CDZ0201, not the leaky bare-`?7` backend decline.
+        let err = crate::compile::compile_component(&encoded)
+            .expect_err("a partial application escaping as a function result must decline");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+        assert!(
+            err.message.contains("cannot cross the component boundary")
+                && err.message.contains("partial application"),
+            "expected the partial-application explanation, got: {}",
+            err.message
+        );
+        // The CHECK surface must report the SAME fault (the check-vs-emit gap this increment closed): the
+        // `collect_faults` detector's `arrow_has_unconstrained` now matches a `Var(_)` residual too.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot cross the component boundary")),
+            "cdz check must also report the closure-boundary fault, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     /// A closure that PERFORMS AN EFFECT cannot escape to the host (operator decision 2026-07-13:
     /// "closures escaping effects — that's going to be super weird and I don't really want to support
     /// it"). The closure's handler context is the `(host …)`/`(handle …)` frame open when the closure

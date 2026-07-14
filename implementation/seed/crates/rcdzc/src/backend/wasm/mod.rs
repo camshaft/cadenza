@@ -1374,14 +1374,16 @@ fn emit_runtime_resource(
 /// `assemble_closure_resource`. First cut: the closure's args + result are the aliased scalar widths
 /// (`abi_val_type`); a compound/closure arg or an un-representable result declines.
 /// The decline for a closure `role` (`"argument"` / `"result"` / `"parameter"`) whose type `ty` cannot
-/// cross the closure `call` host boundary. When `ty` is `Any` — the parameter was never constrained to
-/// a concrete type — the "no scalar representation" phrasing is misleading (it reads as if a real type
-/// is unsupported): the usual cause is a PARTIAL APPLICATION escaping as an export result (e.g. an
+/// cross the closure `call` host boundary. When `ty` is UNCONSTRAINED — `Any`, or an unresolved
+/// unification variable `Ty::Var(_)` that inference never grounded (which `render_name` prints as a raw
+/// `?7`) — the "no scalar representation" phrasing is misleading (it reads as if a real type is
+/// unsupported), and dumping the internal `?7` at the user is the leaky-message anti-pattern. Both denote
+/// the same thing: the usual cause is a PARTIAL APPLICATION escaping as an export result (e.g. an
 /// entrypoint returning `(f 1)` for a two-parameter `f`), whose remaining parameter has no solved type.
 /// Say THAT. A concrete-but-unrepresentable type (a compound, a nested closure) keeps the precise
 /// "no scalar host-boundary representation (only aliased widths cross yet)" message.
 fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
-    if matches!(ty, crate::ty::Ty::Any) {
+    if matches!(ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
         Reject::decline(format!(
             "a closure crossing the host boundary has an unconstrained {role} type — the entrypoint's \
              result is a closure whose {role} type inference never fixed (a partial application like \
