@@ -1288,6 +1288,35 @@ pub struct Db {
     /// recursive-generic / type-valued / `const` instantiation — no cost to a monomorphic program.
     pub(crate) instantiations: Vec<Instantiation>,
 
+    /// The `db.defs` indices of definitions the lowerer INLINED (β-reduced at a call site) at least once
+    /// — the companion of `instantiations` for the OTHER monomorphization path. A non-recursive call to a
+    /// named def folds the callee body into the call site (`eval::apply_lambda`, `lower`'s β-reduce arm)
+    /// with NO `Core::Call` and no emitted function; a nullary def called by name inlines the same way via
+    /// the zero-argument identity path. Recorded at those inline sites (keyed on `callee_def_index` / the
+    /// nullary def-by-body), so the `Instantiations` query can report a def's DISPOSITION — inlined vs
+    /// specialized vs emitted-as-a-standalone-call vs unreferenced. Populated during lowering (an inline
+    /// leaves no other trace), forced complete by `layout::force_monomorphize`. Empty until a call is
+    /// lowered — no cost to a program that is never lowered/queried.
+    pub(crate) inlined: crate::fxhash::FxHashSet<usize>,
+
+    /// The `db.defs` indices of definitions that were EMITTED AS A STANDALONE FUNCTION and CALLED — a
+    /// `Core::Call { callee }` names them (a recursive def, an `inline-never` def, or a specialization).
+    /// The complement of `inlined`: a def reached through a real runtime call rather than folded away.
+    /// Recorded by `layout`'s reachable-callee walk (`collect_call_callees`) — the same walk
+    /// `force_monomorphize` already runs — so the `Instantiations` query can report "emitted" as a
+    /// disposition. Populated only when a body is lowered for reachability/monomorphization; empty
+    /// otherwise (no cost to a plain compile that does not run the query).
+    pub(crate) called: crate::fxhash::FxHashSet<usize>,
+
+    /// Source-def → synthesized-copy links for defs the ACCUMULATOR transform rewrote (`accum::introduce`,
+    /// at load): a linear non-tail recursion `f` is rewritten to seed a fresh tail-recursive copy `f$acc`
+    /// (which the loop transform then compiles to a constant-stack loop), so the SOURCE `f`'s own body
+    /// folds to a seed call while the emitted recursion lives under the copy's name. This map lets the
+    /// `Instantiations` query report `f`'s disposition as `transformed→f$acc` — truer than the literal
+    /// `inlined` (the seed wrapper folds) for "is there a function realizing f's recursion?". Keyed by the
+    /// SOURCE def index → the copy def index. Empty for a program with no accumulable recursion.
+    pub(crate) transformed: crate::fxhash::FxHashMap<usize, usize>,
+
     /// The NAME OCCURRENCES of parameters declared `const` — an EXPLICIT compile-time parameter (`(def (f
     /// (const (: d T)) …) …)`, `DESIGN-…-monomorphization-rcdzc.md` Addendum 3). A `const` param MUST be
     /// compile-time-known at each call: it is folded + inlined into a specialized copy and ERASED from the
@@ -1431,7 +1460,7 @@ impl Db {
         // to `defs` and the arena HERE, before the parent index / `def_by_name` are built, so the new def
         // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
         let mut defs = defs;
-        crate::accum::introduce(&mut ast, &mut defs);
+        let accum_links = crate::accum::introduce(&mut ast, &mut defs);
         // DESTRUCTURING PARAMETERS: rewrite a `def` whose parameter is a tuple PATTERN (`(def (f (tuple a
         // b)) …)`) into a fresh whole-value parameter plus a destructuring `let` over the body (`(def (f
         // p$0) (let (((tuple a b) p$0)) …))`) — so a body reference to `a`/`b` resolves through the `let`
@@ -1710,6 +1739,9 @@ impl Db {
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
             instantiations: Vec::new(),
+            inlined: crate::fxhash::FxHashSet::default(),
+            called: crate::fxhash::FxHashSet::default(),
+            transformed: accum_links.into_iter().collect(),
             const_params,
             inline_never,
             inline_always,

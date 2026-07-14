@@ -201,23 +201,29 @@ pub enum Query {
     /// span-free like `TypeAt`: the consumer resolves a cursor OFFSET to the node and asks this. TOTAL: a
     /// node that is not (and does not reference) a documented definition yields the empty result.
     DocAt { node: u32 },
-    /// Every CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition BY NAME — the reverse of
-    /// "one source def emits one function". Because generics do not cross the component boundary
-    /// (`component-abi.md` §Generics Do Not Cross The Boundary), the compiler MONOMORPHIZES a generic
-    /// definition into one specialized function per distinct concrete instantiation
-    /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md`): a recursive generic called at two element
-    /// types, a type-valued-parameter def applied to two types, and — the ad-hoc-polymorphism case — a
-    /// `const` dictionary parameter inlined at two concrete dictionaries. This query reads the record
-    /// monomorphization keeps (`db.instantiations`, filled by `lower::type_specialize`), reporting each
-    /// instance's specialized-def name and its concrete per-argument instantiation. It first FORCES
-    /// monomorphization over the whole program (`layout::force_monomorphize`) so the set is complete
-    /// regardless of what the query-only run would otherwise lower. Answered as one instance per line,
-    /// TAB-separated: `spec-name<TAB>def-name-node-id<TAB>arg;arg;…` — `spec-name` the synthesized
-    /// monomorphic function, `def-name-node-id` the SOURCE definition's name occurrence (so a consumer maps
-    /// it to a location), and the `;`-joined argument descriptions (a kept runtime param `name: TYPE`, an
-    /// erased compile-time param `const name = VALUE`). Total: a NON-generic definition (never specialized)
-    /// — or a name that names nothing — yields the empty result. A generic definition that is never
-    /// instantiated (unreferenced) also yields nothing, since no instance exists.
+    /// The DISPOSITION of a definition BY NAME — what the compiler DID with it — plus, if it is
+    /// specialized, every concrete instantiation. The reverse of "one source def emits one function":
+    /// because generics do not cross the component boundary (`component-abi.md` §Generics Do Not Cross The
+    /// Boundary) and the default is always-inline, one source def may become zero, one, or many emitted
+    /// functions. This query reports which happened, reading columns lowering/monomorphization already fill:
+    ///   - `specialized` — MONOMORPHIZED into one function per distinct instantiation
+    ///     (`db.instantiations`, `lower::type_specialize`): a recursive generic at each concrete type, a
+    ///     type-valued-parameter def at each type, or — the ad-hoc-polymorphism case — a `const` dictionary
+    ///     inlined at each concrete dictionary. Its instances are listed.
+    ///   - `transformed→COPY` — the ACCUMULATOR transform (`db.transformed`) rewrote a linear recursion into
+    ///     a tail-recursive copy (a constant-stack loop); the source's body folds to a seed of the copy.
+    ///   - `inlined` — β-reduced into each call site (`db.inlined`), no standalone function emitted (a
+    ///     non-recursive def / generic — monomorphization by β-reduction).
+    ///   - `emitted` — emitted as ONE standalone function under its own name and called (`db.called`) or
+    ///     exported (a recursive def with a runtime argument, an `inline-never` def, a boundary entry).
+    ///   - `unreferenced` — none of the above (dead code, or a template no use instantiated).
+    ///
+    /// It FORCES monomorphization over the whole program (`layout::force_monomorphize`) so the record is
+    /// complete regardless of what a query-only run would otherwise lower. Answered as TAB-tagged lines: one
+    /// `disp<TAB>def-name-node-id<TAB>disposition` (a `+`-joined set when more than one applies), then — for
+    /// a `specialized` def — one `inst<TAB>spec-name<TAB>def-name-node-id<TAB>arg;arg;…` per instance (a kept
+    /// runtime param `name: TYPE`, an erased compile-time param `const name = VALUE`). Total: an UNKNOWN
+    /// name yields the empty result; a known def always gets exactly one `disp` line.
     Instantiations { name: String },
 }
 
@@ -663,40 +669,101 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
     }
 }
 
-/// The `Instantiations` read: every concrete instantiation of the definition named `name`, one per line
-/// as `spec-name<TAB>def-name-node-id<TAB>arg;arg;…`. Reads `db.instantiations` (filled by
-/// `lower::type_specialize`, forced complete by the caller), keeping the records whose `orig_body` maps
-/// back to a def named `name`. Deterministic: the records are in synthesis order, which is a function of
-/// the source (definition index order, then a source-structure lowering walk). Total: a non-generic or
-/// unknown name has no records → the empty string.
+/// The `Instantiations` read: the definition named `name`'s DISPOSITION plus, if it is specialized, every
+/// concrete instantiation. Two line kinds, each TAB-separated with a leading KIND tag:
+///   - `disp<TAB>def-name-node-id<TAB>disposition` — the def's fate: `specialized` / `inlined` /
+///     `emitted` / `unreferenced` (a `+`-joined set when more than one applies — e.g. a def both inlined
+///     at one site and called at another). Exactly ONE `disp` line per matching def.
+///   - `inst<TAB>spec-name<TAB>def-name-node-id<TAB>arg;arg;…` — one per DISTINCT specialization (only for
+///     the `specialized` disposition), the instantiation payload (unchanged from before the disposition
+///     extension — the tag is the sole addition).
+///
+/// Reads `db.instantiations` (specializations), `db.inlined` (β-reduced call sites), `db.called`
+/// (`Core::Call` callees) and `db.exports`, all forced complete by the caller (`force_monomorphize`).
+/// Deterministic: instances are in synthesis order (a function of the source). Total: an UNKNOWN name has
+/// no def → the empty string (no `disp` line); a known def always gets exactly one `disp` line.
 fn instantiations_text(db: &mut Db, name: &str) -> String {
-    // The records are `(orig_body, spec_index, args)`; map each `orig_body` to its source def and keep
-    // those whose def name matches. Snapshot first (an immutable borrow of `db.instantiations` cannot
-    // coexist with the `def_index_by_body` reads below), then resolve the name-node per surviving record.
+    // Resolve the name to its source def. An unknown name → empty (total). A def name that ALSO has
+    // specializations resolves to the ORIGINAL (a specialization's synthetic `#mono` name never equals a
+    // user name), so `def_by_name` is the right lookup.
+    let Some(def_idx) = db.def_by_name(name) else {
+        return String::new();
+    };
+
+    // The disposition set: which fate(s) this def met over the whole program. Each is a read of a column
+    // monomorphization/lowering already fills.
+    //   - `specialized` — it has ≥1 instantiation record (a recursive-generic / type-valued / `const`-dict
+    //     copy, `db.instantiations`). Its instances are listed below. This SUBSUMES "emitted": the source
+    //     generic is realized AS its monomorphic copies, so `emitted` is not also reported.
+    //   - `transformed→COPY` — the ACCUMULATOR transform rewrote it (`db.transformed`): its own body folds
+    //     to a seed call while the emitted loop lives under the copy's name. Reported as `transformed→f$acc`
+    //     rather than the literal `inlined` (which the seed wrapper technically is) — the truer answer to
+    //     "is there a function realizing f's recursion?".
+    //   - `inlined` — β-reduced into a call site (`db.inlined`) and NOT accumulator-transformed (a
+    //     transformed def's seed-wrapper inline is reported as `transformed→…`, not doubled here).
+    //   - `emitted` — a `Core::Call` names it under its OWN name (`db.called`), or it is an EXPORT (emitted
+    //     as a boundary function even if nothing internal calls it) — and it is neither specialized nor
+    //     transformed (those describe HOW it is emitted more precisely).
+    //   - `unreferenced` — none of the above: never called, inlined, specialized, transformed, or exported.
+    // A def may hold more than one (e.g. inlined at one call yet emitted for a first-class reference) —
+    // report the set joined by `+`, in this fixed order (a function of the source).
+    let has_instances = db
+        .instantiations
+        .iter()
+        .any(|inst| db.def_index_by_body(inst.orig_body) == Some(def_idx));
+    let transformed_to: Option<String> = db
+        .transformed
+        .get(&def_idx)
+        .map(|&copy| db.defs[copy].name.clone());
+    let is_inlined = db.inlined.contains(&def_idx);
+    let is_exported = db.exports.iter().any(|e| e.def == Some(def_idx));
+    let is_called = db.called.contains(&def_idx) || is_exported;
+    let mut dispositions: Vec<String> = Vec::new();
+    if has_instances {
+        dispositions.push("specialized".to_string());
+    }
+    if let Some(copy) = &transformed_to {
+        dispositions.push(format!("transformed→{copy}"));
+    }
+    // A transformed def's own body inlines the seed wrapper — don't ALSO report that as `inlined`
+    // (`transformed→…` already describes it). A genuinely inlined non-transformed def reports `inlined`.
+    if is_inlined && transformed_to.is_none() {
+        dispositions.push("inlined".to_string());
+    }
+    // `emitted` only when no more-specific "how it is emitted" tag (specialized / transformed) applies.
+    if is_called && !has_instances && transformed_to.is_none() {
+        dispositions.push("emitted".to_string());
+    }
+    if dispositions.is_empty() {
+        dispositions.push("unreferenced".to_string());
+    }
+
+    // The source def's NAME occurrence (its signature's first child), so a consumer can jump to the
+    // definition; `-` if the signature is malformed. Same name-occurrence convention as `Exports`.
+    let sig = db.defs[def_idx].sig_occ;
+    let name_node = match db.ast.get(sig) {
+        Struct::List(kids) => kids
+            .first()
+            .map_or_else(|| "-".to_string(), |n| n.0.to_string()),
+        _ => "-".to_string(),
+    };
+
+    let mut text = format!("disp\t{name_node}\t{}\n", dispositions.join("+"));
+
+    // The instantiation payload lines — one per DISTINCT specialization of this def, in synthesis order.
+    // Snapshot first (the immutable `db.instantiations` borrow cannot coexist with the `def_index_by_body`
+    // reads), then keep those whose `orig_body` maps back to this def.
     let records: Vec<(StructId, usize, Vec<String>)> = db
         .instantiations
         .iter()
         .map(|inst| (inst.orig_body, inst.spec_index, inst.args.clone()))
         .collect();
-    let mut text = String::new();
     for (orig_body, spec_index, args) in records {
-        let Some(def_idx) = db.def_index_by_body(orig_body) else {
-            continue;
-        };
-        if db.defs[def_idx].name != name {
+        if db.def_index_by_body(orig_body) != Some(def_idx) {
             continue;
         }
-        // The source def's NAME occurrence (its signature's first child), so a consumer can jump to the
-        // generic definition; `-` if the signature is malformed. Same name-occurrence convention as the
-        // `Exports`/`ResolveOf` queries.
-        let sig = db.defs[def_idx].sig_occ;
-        let name_node = match db.ast.get(sig) {
-            Struct::List(kids) => kids
-                .first()
-                .map_or_else(|| "-".to_string(), |n| n.0.to_string()),
-            _ => "-".to_string(),
-        };
         let spec_name = db.defs[spec_index].name.clone();
+        text.push_str("inst\t");
         text.push_str(&spec_name);
         text.push('\t');
         text.push_str(&name_node);

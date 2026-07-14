@@ -1034,7 +1034,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Some(mut guard) => {
                         let g = guard.db();
                         return match crate::eval::apply_lambda(g, head, &args) {
-                            Ok(Some(reduced)) => core_of(g, reduced),
+                            Ok(Some(reduced)) => {
+                                // RECORD THE INLINE: this call β-reduced (folded the callee body into the
+                                // site, no `Core::Call`, no emitted function). If the head names a top-level
+                                // def, mark it inlined so the `Instantiations` query can report the def's
+                                // disposition. `callee_def_index` is `None` for an anonymous `fn` / a
+                                // let-bound lambda / a computed head (nothing to attribute) — exactly the
+                                // cases to skip. An inline leaves no other trace, so it must be recorded here.
+                                if let Some(callee) = callee_def_index(g, head) {
+                                    g.inlined.insert(callee);
+                                }
+                                core_of(g, reduced)
+                            }
                             Ok(None) => unreachable!("lambda_body implies a lambda head"),
                             // The reduction declined. If it declined because the callee is RECURSIVE
                             // (can't inline to a normal form), emit a real `Core::Call` to it instead —
@@ -5805,6 +5816,15 @@ fn should_emit_once_by_cost(db: &mut Db, callee: usize, args: &[StructId]) -> bo
 /// GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept) AND emitted once + called
 /// (inline avoided) — "avoid the inline but keep polymorphism", for free.
 fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[StructId]) -> Core {
+    // RECORD "emitted as a real call": this call did NOT inline — it emits a `Core::Call` to a standalone
+    // function (a recursive callee, an `inline-never` def, or — via `type_specialize` below — a
+    // specialization). Keyed by the SOURCE `callee` (the user def), NOT the synthesized copy `type_specialize`
+    // may return: so `fac` reads `emitted` even when the emitted loop is its accumulator/monomorphized twin
+    // `fac$acc`/`fac#mono`. This is the `db.inlined` complement the `Instantiations` query reports as the
+    // def's DISPOSITION. Recorded even if the signature is undetermined below (the AUTHOR wrote a call that
+    // is meant to emit — reporting it as "emitted" is truer than "unreferenced" for a decline). No cost to a
+    // plain compile: this path runs during lowering, which the query forces.
+    db.called.insert(callee);
     // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
     // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
     // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use

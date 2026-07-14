@@ -42956,8 +42956,8 @@ mod sidecar_driven {
         );
     }
 
-    /// The lines of an `Instantiations` query for `name` over `src` — the sorted concrete instances.
-    fn instantiations_of(src: &str, name: &str) -> Vec<String> {
+    /// The raw `Instantiations` query text for `name` over `src` (all lines — `disp` + `inst`).
+    fn instantiations_text_of(src: &str, name: &str) -> String {
         let out = compile(
             &inputs(
                 src,
@@ -42970,18 +42970,35 @@ mod sidecar_driven {
             "an instantiations query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default();
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        lines.sort();
-        lines
+        artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default()
     }
 
-    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each instance line, sorted —
-    /// dropping the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the node id.
+    /// The DISPOSITION of `name` — the `disp` line's third column (e.g. `specialized` / `inlined` /
+    /// `emitted` / `unreferenced` / `transformed→f$acc`). Empty string if there is no `disp` line (an
+    /// unknown name). The `transformed→` copy suffix embeds a `$acc` name (stable across runs).
+    fn disposition_of(src: &str, name: &str) -> String {
+        instantiations_text_of(src, name)
+            .lines()
+            .find_map(|l| {
+                let mut c = l.split('\t');
+                (c.next() == Some("disp")).then(|| c.nth(1).unwrap_or("").to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each `inst` line, sorted —
+    /// dropping the tag, the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the
+    /// node id. Empty when the def is not specialized.
     fn instantiation_args(src: &str, name: &str) -> Vec<String> {
-        let mut args: Vec<String> = instantiations_of(src, name)
-            .iter()
-            .filter_map(|l| l.splitn(3, '\t').nth(2).map(str::to_string))
+        let text = instantiations_text_of(src, name);
+        let mut args: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                // `inst<TAB>spec<TAB>node<TAB>args` — the args are the 4th column.
+                (cols.first() == Some(&"inst"))
+                    .then(|| cols.get(3).copied().unwrap_or("").to_string())
+            })
             .collect();
         args.sort();
         args
@@ -43004,21 +43021,61 @@ mod sidecar_driven {
 
     #[test]
     fn a_non_generic_definition_has_no_instantiations() {
-        // A monomorphic def is never specialized — it emits one function, so it has no instantiations. Total.
+        // A monomorphic def is never specialized — it emits no instantiation records (no `inst` line).
         let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
-        assert!(instantiations_of(src, "f").is_empty());
+        assert!(instantiation_args(src, "f").is_empty());
         // A non-recursive generic is INLINED (β-reduced) at each call site, emitting no shared function —
         // so it, too, reports no instantiation (a documented boundary of the query).
         let inl = "(module m (def (ident v) v) \
                    (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
-        assert!(instantiations_of(inl, "ident").is_empty());
+        assert!(instantiation_args(inl, "ident").is_empty());
     }
 
     #[test]
     fn an_instantiations_query_for_an_unknown_name_is_total() {
-        // A name that names no definition yields the empty result, never an error — the oracle contract.
+        // A name that names no definition yields the EMPTY result (no `disp` line at all), never an error.
         let src = "(module m (def (main) 42) (export main))";
-        assert!(instantiations_of(src, "ghost").is_empty());
+        assert!(instantiations_text_of(src, "ghost").is_empty());
+        assert!(disposition_of(src, "ghost").is_empty());
+    }
+
+    #[test]
+    fn disposition_reports_how_each_definition_was_compiled() {
+        // The query reports a def's DISPOSITION — what the compiler DID with it — for every kind:
+        //   - a NON-RECURSIVE function is INLINED (β-reduced away, no standalone function);
+        //   - a TREE recursion (not accumulable, runtime arg) is EMITTED as one standalone function + called;
+        //   - a RECURSIVE GENERIC is SPECIALIZED (monomorphized per type);
+        //   - a LINEAR recursion is TRANSFORMED into an accumulator loop (`f$acc`);
+        //   - an EXPORT is EMITTED (a boundary function);
+        //   - a def nothing references is UNREFERENCED.
+        let inl = "(module m (def (ident v) v) \
+                   (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
+        assert_eq!(disposition_of(inl, "ident"), "inlined");
+        assert_eq!(disposition_of(inl, "main"), "emitted");
+
+        // A TREE recursion with a runtime argument cannot fold or accumulate → a standalone emitted function.
+        let tree = "(module m \
+                    (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) \
+                    (def (main (: k Int64)) (fib k)) (export main))";
+        assert_eq!(disposition_of(tree, "fib"), "emitted");
+
+        // A RECURSIVE GENERIC is specialized (its instances are also listed).
+        let generic = "(module m \
+                   (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))) \
+                   (export main))";
+        assert_eq!(disposition_of(generic, "loopn"), "specialized");
+
+        // A LINEAR non-tail recursion is rewritten into an accumulator loop — reported `transformed→NAME`
+        // (the source's own body folds to a seed of the copy). The copy is named `<orig>$acc`.
+        let acc = "(module m \
+                   (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) \
+                   (def (main (: k Int64)) (sm k)) (export main))";
+        assert_eq!(disposition_of(acc, "sm"), "transformed→sm$acc");
+
+        // A def nothing references at all is unreferenced.
+        let dead = "(module m (def (dead (: x Int64)) (+ x 1)) (def (main) 0) (export main))";
+        assert_eq!(disposition_of(dead, "dead"), "unreferenced");
     }
 
     #[test]

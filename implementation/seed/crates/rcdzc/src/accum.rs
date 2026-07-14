@@ -58,7 +58,13 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
 /// and `defs` (rewriting a matched def's body to the seed call + appending its accumulator def). Called
 /// at load, after `scan_top_level` and BEFORE the parent index / `def_by_name` are built, so the
 /// synthesized def is indexed and resolvable like any other. A def that does not match is left untouched.
-pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) {
+/// Rewrite each linear non-tail recursion into a tail-recursive accumulator def, returning the
+/// `(source-def-index, accumulator-def-index)` link for every def transformed. The link lets a later
+/// consumer (the `Instantiations` query's DISPOSITION report) map a source def to the synthesized copy
+/// its recursion actually became — so `fac` reads `transformed→fac$acc` rather than the literal
+/// `inlined` (its seed wrapper folds, but the loop is emitted under the copy's name). Empty when no def
+/// matches (byte-identical to before — a non-matching def is untouched).
+pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) -> Vec<(usize, usize)> {
     // Index each top-level `(def sig body)` FORM by its signature occurrence ONCE, up front — an O(items)
     // pass. `match_linear_recursion` needs the enclosing form (to swap its body child), and the parent
     // index is not built yet; a per-def LINEAR scan of the module items (the old `find_def_form`) made
@@ -73,9 +79,15 @@ pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) {
             plans.push((i, m));
         }
     }
+    let mut links = Vec::with_capacity(plans.len());
     for (def_ix, m) in plans {
+        // `apply` appends the accumulator def at the current `defs.len()` — capture that index as the
+        // source→copy link before the append.
+        let acc_ix = defs.len();
         apply(ast, defs, def_ix, m);
+        links.push((def_ix, acc_ix));
     }
+    links
 }
 
 /// A recognized linear-accumulator recursion, with the occurrences the rewrite reuses/reads.

@@ -419,6 +419,13 @@ pub fn force_monomorphize(db: &mut Db) {
         if let Some(body) = db.defs[i].body {
             let mut sink = Vec::new();
             collect_call_callees(db, body, &mut sink);
+            // `db.called` (the "emitted as a real function" disposition) is populated by
+            // `emit_call_or_specialize` at the `Core::Call` construction site — keyed by the SOURCE callee
+            // (before an accumulator/specialization transform renames it), which the reachability walk's
+            // synthesized-copy index cannot recover. Here we only need the walk's SIDE EFFECT (it drives
+            // `core_of`, firing `type_specialize` + `emit_call_or_specialize`); the collected `sink` is
+            // discarded, exactly as before the disposition extension.
+            let _ = sink;
         }
         i += 1;
     }
