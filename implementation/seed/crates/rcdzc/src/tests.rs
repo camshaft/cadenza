@@ -13438,15 +13438,28 @@ mod match_engine {
             "it carries the annotate-`UInt64` wrap fix: {}",
             d.message
         );
-        // A value past UInt64.max (2^64) has NO fixed type — it gets the bare range message with the
-        // "widest fixed-size integer" note and NO fix (BigInt is not literal-spellable).
+        // A value past UInt64.max (2^64) has NO fixed type — but `BigInt` holds an integer literal of any
+        // magnitude, so it names "no fixed-size integer is wider" AND offers the total "annotate `BigInt`"
+        // repair (a value the arbitrary-precision type represents in one shot).
         let past = reject_full("(module m (def (main) 99999999999999999999) (export main))")
             .expect("a value past u64 is rejected");
         assert!(
-            past.message.contains("widest fixed-size integer") && past.fix.is_none(),
-            "a past-u64 bare literal keeps the widest-fixed note, no fix; got {} fix={:?}",
-            past.message,
-            past.fix
+            past.message.contains("no fixed-size integer is wider")
+                && past.message.contains("BigInt"),
+            "a past-u64 bare literal names the BigInt route; got {}",
+            past.message
+        );
+        assert_eq!(
+            past.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(: {} BigInt)", crate::abi::WRAP_HOLE)).as_deref(),
+            "it carries the annotate-`BigInt` wrap fix: {}",
+            past.message
+        );
+        // The BigInt fix actually clears the fault — a huge literal annotated `BigInt` compiles.
+        assert!(
+            reject_full("(module m (def (g) (: 99999999999999999999 BigInt)) (export g))")
+                .is_none_or(|d| !d.message.contains("out of range")),
+            "annotating the past-u64 literal `BigInt` resolves the range fault"
         );
         let d = reject_full(
             "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
@@ -24507,12 +24520,18 @@ mod diagnostics {
                 "the author may want a different width → heuristic"
             );
         }
-        // Past UInt64.max → no fixed type holds it → no fix (honest, not BigInt-guessing).
+        // Past UInt64.max → no FIXED width holds it, but `BigInt` holds an integer literal of any
+        // magnitude, so it offers the total "annotate `BigInt`" fix (a one-shot repair, not a guess).
         let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
-        assert!(
-            past.fix.is_none(),
-            "no fix for a value past UInt64.max: {:?}",
-            past.fix
+        let fix = past
+            .fix
+            .expect("an annotate-BigInt fix is carried past UInt64.max");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(: {} BigInt)", crate::abi::WRAP_HOLE),
+            "annotates the past-fixed literal BigInt: {}",
+            past.message
         );
     }
 

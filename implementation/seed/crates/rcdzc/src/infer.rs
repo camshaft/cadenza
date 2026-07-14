@@ -7921,19 +7921,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // A bare literal overflowing the signed-Int64 default that STILL FITS UNSIGNED 64 (`2^63 ..
                 // 2^64-1`, e.g. `18446744073709551615`) has a concrete fixed type — `UInt64` — it just is
                 // not the default a bare literal takes. The mechanical repair: ANNOTATE it `(: <lit>
-                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). Only the
-                // BARE case (`context.is_none()`) and only when the value fits unsigned 64 — a value past
-                // 2^64-1 has NO fixed type (BigInt is not literal-spellable), so no fix. When a fix applies,
-                // the message says UInt64 holds it rather than "Int64 is the widest".
-                let fits_u64 = context.is_none() && v.fits_width(false, 64);
+                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). A value
+                // PAST 2^64-1 fits no FIXED width — but `BigInt` holds an integer literal of ANY magnitude
+                // (`(: <lit> BigInt)` grounds the literal to the arbitrary-precision type, a TOTAL one-shot
+                // repair), so it gets a fix too. Both only in the BARE case (`context.is_none()` — a
+                // literal fixed by a UInt64/other operand has already picked its type). `fits_u64` chooses
+                // between the UInt64 and BigInt fix so the message names the tightest type that holds it.
+                let bare = context.is_none();
+                let fits_u64 = bare && v.fits_width(false, 64);
+                let past_fixed = bare && !fits_u64; // no fixed width holds it — BigInt does
                 let msg = match int_width_range(signed, width) {
                     Some(range) if fits_u64 => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}) — \
                          it fits `UInt64`; annotate it `(: … UInt64)`"
                     ),
-                    Some(range) if context.is_none() => format!(
-                        "integer literal is out of range for {ty_name} (the valid range is {range}; \
-                         Int64 is the widest fixed-size integer)"
+                    Some(range) if past_fixed => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}; no \
+                         fixed-size integer is wider) — it fits `BigInt`; annotate it `(: … BigInt)`"
                     ),
                     Some(range) => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range})"
@@ -7947,6 +7951,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         "(: ",
                         " UInt64)",
                         "annotate the literal `UInt64` (its range holds this value)",
+                    ));
+                } else if past_fixed {
+                    // `BigInt` holds an integer literal of any magnitude — the total repair for a value no
+                    // fixed width can represent. The annotation grounds the literal to the big-integer type.
+                    reject = reject.with_fix(Fix::wrap_heuristic(
+                        id,
+                        "(: ",
+                        " BigInt)",
+                        "annotate the literal `BigInt` (it holds an integer of any magnitude)",
                     ));
                 }
                 out.push(reject);
