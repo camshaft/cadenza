@@ -34007,9 +34007,14 @@ mod stage1 {
         // count grows sub-quadratically. Deterministic (a pure function of the program), so no min-of-runs
         // needed — the count is identical every run.
         fn crc_visits(src: &str) -> u64 {
-            crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(0));
-            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.get())
+            // The width-300/600 chain type-checks to a deep-but-finite recursion — set, run, and read the
+            // visit counter all on the depth-sized compiler thread (the counter is a thread-local, so the
+            // whole trio must share one thread) so it doesn't overflow the ~2 MB `cargo test` worker stack.
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.get())
+            })
         }
         let v300 = crc_visits(&chain_src(300));
         let v600 = crc_visits(&chain_src(600));
