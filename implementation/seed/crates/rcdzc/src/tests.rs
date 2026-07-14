@@ -43020,31 +43020,36 @@ mod closure_host_resource {
         );
     }
 
-    /// A fixed-shape compound ARGUMENT now composes with a fixed-shape COMPOUND result (both the value-form
-    /// result core + the shared list<u8> envelope thread the `TupleArgRebuild`) — it EMITS. But a
-    /// VARIABLE-LENGTH COLLECTION result (a `List`/`Map`/`Set`) combined with a tuple arg must still DECLINE:
-    /// the value-encode result core does not yet thread the rebuild, and combining would emit a scalar-arg
-    /// envelope over a flattened-field core (a module that fails to parse). Regression guard for that
-    /// miscompile-turned-decline + the now-working fixed-compound-result case.
+    /// A fixed-shape scalar tuple ARGUMENT now composes with EVERY single-export result shape — a fixed-shape
+    /// COMPOUND (value-form) result AND a VARIABLE-LENGTH COLLECTION (value-encode) result both emit (all four
+    /// result cores — scalar, byte-rope, value-form, value-encode — + the shared list<u8> envelope thread the
+    /// `TupleArgRebuild`). The genuinely-unsupported case is a compound arg with a VARIABLE-LENGTH FIELD (a
+    /// tuple CONTAINING a List): that has no fixed flattened form and declines at ARG detection.
     #[test]
-    fn a_tuple_arg_with_a_compound_result_emits_but_a_collection_result_declines() {
+    fn a_tuple_arg_composes_with_compound_and_collection_results() {
         use crate::testkit::parse;
-        // (a) a `(Tuple Int64 Int64)` argument AND a `(Tuple Int64 Int64)` result → now EMITS.
-        let ok_src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+        // (a) a `(Tuple Int64 Int64)` argument AND a `(Tuple Int64 Int64)` result → EMITS (value-form).
+        let compound_res = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
                    (tuple (. p 0) (. p 1)))) (export main))";
-        crate::compile::compile_component(&crate::codec::encode(&parse(ok_src)))
-            .expect("a tuple arg + a fixed-shape compound result now emits (rebuild threaded through value-form)");
-        // (b) a `(Tuple Int64 Int64)` argument AND a `(List Int64)` result → still DECLINES.
-        let bad_src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+        crate::compile::compile_component(&crate::codec::encode(&parse(compound_res)))
+            .expect("a tuple arg + a fixed-shape compound result emits (value-form + rebuild)");
+        // (b) a `(Tuple Int64 Int64)` argument AND a `(List Int64)` result → EMITS (value-encode).
+        let coll_res = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
                    (list (. p 0) (. p 1)))) (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_src))).expect_err(
-            "a tuple arg + a variable-length collection result must DECLINE (value-encode core lacks the rebuild)",
+        crate::compile::compile_component(&crate::codec::encode(&parse(coll_res))).expect(
+            "a tuple arg + a variable-length collection result emits (value-encode + rebuild)",
         );
+        // (c) a compound arg with a VARIABLE-LENGTH FIELD → still declines at arg detection (no fixed form).
+        let bad_arg = "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_arg)))
+            .expect_err(
+                "a tuple arg with a variable-length List field must DECLINE (needs runtime decode)",
+            );
         assert!(
-            err.message.contains("compound ARGUMENT")
-                && err.message.contains("COLLECTION RESULT")
+            err.message
+                .contains("no scalar host-boundary representation")
                 && err.code.is_none(),
-            "expected the compound-arg + collection-result decline, got: {:?} / {}",
+            "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
             err.code,
             err.message
         );

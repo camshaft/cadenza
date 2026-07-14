@@ -2706,23 +2706,34 @@
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (record (diff 7) (sum 13)) (Record (diff Int64) (sum Int64)))))
 
-; A fixed-shape compound ARGUMENT combined with a VARIABLE-LENGTH COLLECTION result (List/Map/Set) is still
-; not emitted: the value-encode result core (`closure_value_encode_resource_core_module`) inlines its own
-; `call` body and does NOT yet thread the `TupleArgRebuild`, while its envelope takes the scalar `arg_bytes`
-; (empty for a tuple arg) — so combining would emit a scalar-arg envelope over a flattened-field core, an
-; INVALID component. The compiler DECLINES cleanly (a `todo`). A scalar/byte-rope/fixed-compound result works
-; (the cases above); threading the rebuild through the value-encode serializer is the last list-result widening.
+; A fixed-shape compound ARGUMENT now composes with a VARIABLE-LENGTH COLLECTION result (List/Map/Set) too —
+; the value-encode result core + the shared list<u8> envelope thread the `TupleArgRebuild`. So a single-export
+; tuple-arg closure now works with EVERY result shape: scalar, byte-rope, fixed-shape compound, AND
+; variable-length collection. The `call` rebuilds the flattened tuple arg cell, dispatches, then renders the
+; returned collection via the runtime `value-encode(rep, desc)` op. (The genuinely-unsupported arg shape is a
+; compound arg with a VARIABLE-LENGTH FIELD — no fixed flattened form — which declines at arg detection.)
 
-(case "a fixed-shape Tuple ARG with a List RESULT is declined (value-encode core lacks the rebuild)"
+(case "a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary"
   (doc    "`(fn (p) (list (. p 0) (. p 1)))` — a `(Tuple Int64 Int64)` argument AND a `(List Int64)` result.
-           A variable-length collection result renders via the runtime `value-encode(rep, desc)` op, whose
-           core `call` body does not yet rebuild a flattened tuple argument — so the compiler DECLINES rather
-           than emit an invalid component. The fixed-shape compound + byte-rope + scalar result cases work;
-           this is the last list-result widening.")
+           The arg crosses flattened as a native `tuple<s64,s64>` the `call` rebuilds in-guest; the returned
+           List renders at run time via `value-encode(rep, desc)`, crossing as `list<u8>`. `make()` → handle,
+           `call(handle, (10, 3))` → `(list 10 3)`. The last single-export list-result core threaded — a
+           tuple-arg closure now composes with EVERY result shape.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (list 10 3) (List Int64))))
+
+(case "a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary"
+  (doc    "A tuple arg + a `(Map Int64 Int64)` result — a variable-length collection rendered via
+           `value-encode`, keyed in canonical sorted-key order. `(fn (p) (Map.insert (Map.insert (map) (. p 0)
+           100) (. p 1) 200))` with `(1, 2)` → `(map (1 100) (2 200))`. Confirms Map rides the same tuple-arg
+           value-encode path as List.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         ((. Map insert) ((. Map insert) (map) (. p 0) 100) (. p 1) 200)))
+              (export mk)))
+  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
+  (output (: (map (1 100) (2 200)) (Map Int64 Int64))))
 
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter

@@ -1609,18 +1609,11 @@ fn emit_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
-    // A fixed-shape scalar tuple/record ARGUMENT now works with a BYTE-ROPE result AND a fixed-shape COMPOUND
-    // (value-form) result — both cores + the shared list<u8> envelope thread the `TupleArgRebuild`. A
-    // VARIABLE-LENGTH COLLECTION (value-encode) result combined with a tuple arg still declines: that core
-    // doesn't yet thread the rebuild, and combining would emit a scalar-arg envelope over a flattened-field
-    // core (an INVALID component). Decline cleanly.
-    if tuple_arg.is_some() && ret_is_collection {
-        return Err(Reject::decline(
-            "a closure with BOTH a fixed-shape compound ARGUMENT and a variable-length COLLECTION RESULT is \
-             not yet emitted (the value-encode result core does not yet rebuild a flattened tuple argument — \
-             a later widening; a scalar-result, byte-rope-result, or fixed-compound-result compound arg works)",
-        ));
-    }
+    // A fixed-shape scalar tuple/record ARGUMENT now composes with EVERY single-export result shape — scalar,
+    // byte-rope, fixed-shape compound (value-form), AND variable-length collection (value-encode): all four
+    // cores + the shared list<u8> envelope thread the `TupleArgRebuild`. No result-shape decline remains for a
+    // single-export tuple arg. (multi/mixed/distinct-sig list-result + tuple arg still decline in their own
+    // paths — a later widening; a VARIABLE-LENGTH-FIELD compound arg still declines at detection.)
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
@@ -1846,7 +1839,11 @@ fn emit_closure_resource(
     // the descriptor Bytes, `value-encode(rep, desc)` → the value-form document, copy out). Same `list<u8>`
     // envelope as the bytes/compound paths; cdz-run try-decodes to `(: (list …) (List <e>))` etc.
     if let Some(descriptor) = &ret_descriptor {
-        // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable).
+        // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable). A
+        // fixed-shape tuple ARG is threaded via `tuple_arg`: the value-encode `call` rebuilds the arg cell
+        // from the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
+        let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
+        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
         let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1857,9 +1854,10 @@ fn emit_closure_resource(
             descriptor,
             &layout,
             true,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource_borrow(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
             &main_core,
             &dtor_core,
             &imports,
@@ -1867,6 +1865,7 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
+            tuple_bytes,
         ));
     }
     // DIRECT-CALL COMPOUND ARG: a fixed-shape scalar tuple/record closure argument crosses as a native

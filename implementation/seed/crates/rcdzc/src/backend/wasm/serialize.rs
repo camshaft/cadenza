@@ -2173,6 +2173,7 @@ pub fn closure_value_encode_resource_core_module(
         descriptor,
         layout,
         false,
+        None,
     )
 }
 
@@ -2181,6 +2182,11 @@ pub fn closure_value_encode_resource_core_module(
 /// does NOT drop the cell (repeatable; the `t-dtor` reclaims). The transient collection handle `rep` (and
 /// `desc`/`doc`) are still released after the value-encode — guest-owned scratch, separate from the cell.
 /// `false` = own/self-drop, byte-identical.
+///
+/// `tuple_arg`: `Some(rebuild)` when the closure's single argument is a fixed-shape scalar tuple/record that
+/// crossed FLATTENED — the `call` rebuilds the cell from the flattened fields ([`emit_tuple_rebuild`]) before
+/// `call_indirect` and drops it after ([`emit_tuple_rebuilt_drop`]). `arg_vts` is the flattened field vts.
+/// `None` = the scalar-arg path (byte-identical).
 #[allow(clippy::too_many_arguments)]
 pub fn closure_value_encode_resource_core_module_borrow(
     funcs: &[SelectedFunc],
@@ -2192,6 +2198,7 @@ pub fn closure_value_encode_resource_core_module_borrow(
     descriptor: &[u8],
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2348,7 +2355,8 @@ pub fn closure_value_encode_resource_core_module_borrow(
     // value-encode(rep, desc) → the document, copy it to the retarea, drop rep/desc/doc, return the retptr.
     {
         const OUT: i64 = 8;
-        // Params: 0 = self, 1..1+arity = args. Locals: cell, rep, desc, doc, n, i — 6 × i32.
+        // Params: 0 = self, 1..1+arity = args. Locals: cell, rep, desc, doc, n, i — 6 × i32; plus (for a
+        // flattened tuple arg) tuple(i32 = the rebuilt arg cell) as the 7th.
         let arity = arg_vts.len() as u32;
         let cell = 1 + arity;
         let rep = cell + 1;
@@ -2356,9 +2364,11 @@ pub fn closure_value_encode_resource_core_module_borrow(
         let doc = desc + 1;
         let nlen = doc + 1;
         let iv = nlen + 1;
+        let tuple_local = iv + 1;
+        let n_locals = if tuple_arg.is_some() { 7 } else { 6 };
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(1, &{
-            let mut g = uleb_bytes(6);
+            let mut g = uleb_bytes(n_locals as u64);
             g.push(wasm_abi::CORE_I32);
             g
         }));
@@ -2383,8 +2393,12 @@ pub fn closure_value_encode_resource_core_module_borrow(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        for a in 0..arity {
-            get(1 + a, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner);
+        } else {
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
         }
         get(cell, &mut inner);
         ci32(0, &mut inner);
@@ -2397,6 +2411,11 @@ pub fn closure_value_encode_resource_core_module_borrow(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
+        // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally), before
+        // the value-encode of the result. Separate from the closure cell + the collection result handle.
+        if tuple_arg.is_some() {
+            emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+        }
         // OWN: drop the closure cell now. BORROW: host keeps the cell (repeatable), dtor reclaims — do NOT
         // drop here. The transient collection handle `rep` is separate and released after value-encode.
         if !call_borrow {
