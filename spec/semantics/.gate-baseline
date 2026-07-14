@@ -1789,7 +1789,11 @@ pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	equality across incompatible dimensions is a compile-time error
+pass	equality across types is rejected regardless of operand order
 pass	equality applied to one operand is rejected, not a crash
+pass	equality of an integer and a boolean is a type error
+pass	equality of an integer and a float is rejected, not silently promoted
+pass	equality of an integer and a string is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
