@@ -13105,6 +13105,61 @@ mod tests {
         );
     }
 
+    /// A DAG within ONE value — a single root that reaches the SAME shared child via TWO distinct PATHS
+    /// (the hash-consing / structural-sharing shape a CSE pass produces: `9a35fbac`). The prior test shares
+    /// a child under two SEPARATE root handles dropped one at a time; this shares it inside ONE value and
+    /// drops that ONE root in a single `op_drop`, so the free cascade VISITS the shared child TWICE —
+    /// exercising the "shared (rc>1) → decrement, DON'T recurse" arm on the first visit and the "unique
+    /// (rc==1) → recurse + free" arm on the second (lib.rs `n.rc > 1` at ~3260). A cascade that freed on
+    /// the first visit would UAF the second path; one that never decremented would leak. Shape:
+    /// `root = tuple(inner, tuple(inner, 9))` with `inner = tuple(7)` shared (rc==2, one ref per path).
+    #[test]
+    fn dag_single_root_reaches_a_shared_child_via_two_paths_drops_once() {
+        reset();
+        let before = live_nodes();
+        // `inner` shared by both paths; op_box_int is an immediate (uncounted), so only the 3 arr nodes
+        // (inner, sub, root) are live Nodes.
+        let inner = op_arr_alloc(1);
+        op_arr_set(inner, 0, op_box_int(7));
+        op_dup(inner); // one reference per parent path → rc == 2
+        let sub = op_arr_alloc(2);
+        op_arr_set(sub, 0, inner); // path 2: root → sub → inner
+        op_arr_set(sub, 1, op_box_int(9));
+        let root = op_arr_alloc(2);
+        op_arr_set(root, 0, inner); // path 1: root → inner (the SAME node)
+        op_arr_set(root, 1, sub);
+        assert_eq!(
+            live_nodes(),
+            before + 3,
+            "3 arr nodes (inner, sub, root); ints are immediates"
+        );
+        assert_eq!(
+            node_rc(inner),
+            2,
+            "inner is shared by exactly the two paths"
+        );
+        // Both paths read the shared child correctly (it is genuinely reachable two ways).
+        assert_eq!(
+            op_get_int(op_arr_get(op_arr_get(root, 0), 0)),
+            7,
+            "path 1 (root.0) reaches inner"
+        );
+        assert_eq!(
+            op_get_int(op_arr_get(op_arr_get(op_arr_get(root, 1), 0), 0)),
+            7,
+            "path 2 (root.1.0) reaches the SAME inner"
+        );
+        // Drop the ONE root: the cascade must reclaim ALL three nodes exactly once — the first visit to
+        // `inner` (via root.0) decrements rc 2→1 without recursing; the second (via sub→inner) decrements
+        // 1→0 and frees. No leak, no double-free/UAF.
+        op_drop(root);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "single-root DAG fully reclaimed — shared child freed exactly once across its two paths"
+        );
+    }
+
     #[test]
     fn deep_unique_structure_frees_without_stack_overflow() {
         reset();

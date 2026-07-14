@@ -4108,7 +4108,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             Some(Ty::Nominal {
                 decl: StructId(decl),
                 name,
-                args,
+                args: args.into(),
                 inner: std::rc::Rc::new(inner),
             })
         }

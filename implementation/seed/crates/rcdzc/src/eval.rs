@@ -2803,7 +2803,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             // `(Sum NAME <decl> arg…)` — the type ARGS follow, so a generic instantiation round-trips
             // (a monomorphic sum encodes no args, byte-identical to before).
             let mut items = vec![head, nm, d];
-            for a in args {
+            for a in args.iter() {
                 items.push(encode_ty(db, a));
             }
             db.push_list(items)
@@ -2828,7 +2828,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             });
             let args_head = db.push_name("args");
             let mut args_items = vec![args_head];
-            for a in args {
+            for a in args.iter() {
                 args_items.push(encode_ty(db, a));
             }
             let args_node = db.push_list(args_items);
