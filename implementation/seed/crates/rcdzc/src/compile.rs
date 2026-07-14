@@ -2514,6 +2514,23 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
         r.code == Some(Code::Malformed)
             && r.message.starts_with(crate::diag::MISSING_OP_TYPE_PREFIX)
     });
+    // Likewise: a DUPLICATE OPERATION in an effect (`(effect E (op get …) (op get …))`) is rejected
+    // CDZ0201 "operation `get` is declared more than once in effect `E`" (with a delete fix). PERFORMING
+    // that effect projects its SYNTHESIZED RECORD (whose fields ARE the op names), which re-reports the
+    // SAME duplicate as a "record names field `get` more than once" — a CONSEQUENT that leaks the internal
+    // record representation (the author wrote an effect operation, not a record field). Collect the op
+    // names with a dup-op reject; the record-field-dup consequent for one of those names is dropped below,
+    // keeping the declaration-site op reject (with its actionable delete fix) as the ONE primary.
+    let dup_op_names: std::collections::HashSet<String> = faults
+        .iter()
+        .filter_map(|r| {
+            r.message
+                .strip_prefix("operation `")
+                .and_then(|rest| rest.split('`').next())
+                .filter(|_| r.message.contains("declared more than once in effect"))
+                .map(str::to_string)
+        })
+        .collect();
     // Likewise: a MALFORMED `host` (missing effect-list/body, non-list effects, or too many operands) is
     // rejected CDZ0201 at the form. The malformed host never resolved as a delegation, so its body's
     // perform is seen by the entrypoint no-home walk as un-delegated → a CONSEQUENT CDZ0401 that misdirects
@@ -2838,6 +2855,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             // with no valid home — a consequent CDZ0401. Drop it for the declaration-site reject (the real,
             // fixable defect is the missing type, not a missing handler).
             if has_missing_op_type_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // Performing an effect with a DUPLICATE OPERATION projects its synth record, which re-reports the
+            // same dup as a "record names field `<op>` more than once" — a consequent that leaks the internal
+            // record. Drop it when the declaration-site dup-op reject named that op (the op reject, with its
+            // delete fix, is the primary; the author wrote an operation, not a record field).
+            if !dup_op_names.is_empty()
+                && r.message
+                    .strip_prefix("record names field `")
+                    .and_then(|rest| rest.split('`').next())
+                    .filter(|_| r.message.contains("more than once"))
+                    .is_some_and(|field| dup_op_names.contains(field))
+            {
                 return false;
             }
             // A malformed `host` never resolved as a delegation, so its body's perform looks un-delegated

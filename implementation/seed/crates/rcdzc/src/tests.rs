@@ -35588,6 +35588,37 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a duplicate effect operation must be rejected"
         );
+        // PERFORMING the dup-op effect projects its synth record, which used to re-report the same
+        // duplicate as a misleading "record names field `get` more than once" (leaking the internal
+        // record). Only the declaration-site op reject remains; the record-field consequent is suppressed.
+        let performed = "(do (effect E (op get (-> Unit Int64)) (op get (-> Unit Bool))) \
+                         (def (f) (E.get)) (export f))";
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
+        let errs: Vec<&str> = ds
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            errs.iter()
+                .any(|m| m.contains("declared more than once in effect")),
+            "the declaration-site op reject is present: {errs:?}"
+        );
+        assert!(
+            !errs.iter().any(|m| m.contains("record names field")),
+            "the record-field consequent is suppressed: {errs:?}"
+        );
+        // NO OVER-SUPPRESSION: a GENUINE duplicate record field still reports.
+        let dup_field = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (. (record (a 1) (a 2)) a)) (export f))",
+        )));
+        assert!(
+            dup_field
+                .iter()
+                .any(|d| d.message.contains("record names field `a` more than once")),
+            "a genuine duplicate record field still reports: {:?}",
+            dup_field.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
