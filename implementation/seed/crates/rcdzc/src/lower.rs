@@ -4898,6 +4898,23 @@ fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
     ctor_spine_fueled(db, id, 64)
 }
 
+/// Follow a chain of `Resolved::Ref` (a `let`/`def` binding) and `Resolved::Annot` (`(: expr T)`, a value
+/// annotation transparent to the value's identity) to the underlying value node — so a constructor reached
+/// through a binding or an annotation wrapper (both introduced by `apply_lambda` when it inlines a HOF that
+/// took a constructor as a first-class arg) is found. Bounded by a small fuel so a self-referential ref
+/// cannot cycle. Stops at the first node that is neither a `Ref` nor an `Annot`.
+fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
+    let mut cur = id;
+    for _ in 0..64 {
+        match resolved_of(db, cur) {
+            Resolved::Ref { value } => cur = value,
+            Resolved::Annot { expr, .. } => cur = expr,
+            _ => break,
+        }
+    }
+    cur
+}
+
 fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {
     if fuel == 0 {
         return None;
@@ -4907,10 +4924,11 @@ fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, 
     // same as the inline `((Pair 3) 4)`. Without this, the ref head is neither an `Apply` (so no deeper
     // spine) nor a constructor record (so no bottom), and the partial ctor reaches "not applyable". A ref
     // that cycles back to `id` (a recursive nullary self-call) is caught by the fuel bound above.
-    let node = match resolved_of(db, id) {
-        Resolved::Ref { value } => value,
-        _ => id,
-    };
+    // Also PEEL a value ANNOTATION `(: expr T)`: when a HOF `(def (app (: g (-> Int64 W)) x) (g x))` is
+    // inlined with `g ↦ W.Mk`, `apply_lambda` wraps the substituted arg in the param's annotation, so the
+    // body becomes `((: W.Mk (-> Int64 W)) x)` — the head is an `Annot` hiding the constructor. A value
+    // annotation is transparent to WHAT the value is, so peel it to reach the ctor spine underneath.
+    let node = peel_ref_annot(db, id);
     let Resolved::Apply { head, args } = resolved_of(db, node) else {
         return None;
     };
@@ -4924,9 +4942,12 @@ fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, 
     // through the recursive arm above (the OUTER `Apply`'s head is the inner `Apply`) or directly when a
     // followed ref lands on a half-applied constructor `(Pair 3)`. A genuine FLAT construction never lands
     // here — its own head is the bare `(. Sum V)` record, so `ctor_spine` on it returns `None` at the
-    // `let…else` (a record is not an `Apply`) and the flat `Some(Prim::SumNew)` path builds it.
-    if crate::eval::variant_disc_of(db, head).is_some() {
-        return Some((head, args.to_vec()));
+    // `let…else` (a record is not an `Apply`) and the flat `Some(Prim::SumNew)` path builds it. PEEL a
+    // ref/annotation on the head too, so a `g ↦ W.Mk` (bare ctor) or `(: W.Mk T)` (annotated bare ctor)
+    // head reaches the constructor and builds from this level's args — the inlined-HOF shape above.
+    let ctor_head = peel_ref_annot(db, head);
+    if crate::eval::variant_disc_of(db, ctor_head).is_some() {
+        return Some((ctor_head, args.to_vec()));
     }
     // The head is a LAMBDA (a def / `fn`) applied to this level's args, and that application REDUCES to a
     // constructor — `((mk1 3) 4)` where the head `(mk1 3)` applies the helper `(def (mk1 x) (Pair x))` to

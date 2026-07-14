@@ -4475,6 +4475,50 @@
   (input  (Some 42))
   (output (: (Some 42) (Option Int64))))
 
+(case "a bare user constructor is passed as a first-class function to a higher-order function"
+  (doc    "A sum constructor IS a single-arity function (core-semantics.md §A Sum Type Constructor Is A
+           Single-Arity Function), so it is a first-class value: `(app W.Mk k)` passes the BARE constructor
+           `W.Mk` — unapplied — to a HOF `app` whose parameter is typed `(-> Int64 W)`, and `app` applies it
+           to `k`. This is the constructor analogue of passing a named function `(app add10 k)`. The
+           inlined HOF wraps the substituted constructor in the parameter's annotation `(: W.Mk (-> Int64
+           W))`; the construction path sees THROUGH that wrapper to build `(W.Mk k)` → 5. Pins that a bare
+           payload constructor is a first-class curried function value, not only a syntactic apply-head.")
+  (input  (do
+            (type W (Mk Int64) (N))
+            (def (app (: g (-> Int64 W)) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app W.Mk k) ((W.Mk n) n) ((W.N) -1)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a PARTIALLY-applied multi-payload constructor is a first-class function value"
+  (doc    "A multi-payload constructor applied to SOME of its payloads — `(P.Mk 10)` for `(type P (Mk Int64
+           Int64))` — is a first-class function awaiting the rest. Passed to a HOF `app` typed `(-> Int64
+           P)`, `app` supplies the final payload `k`, completing `(P.Mk 10 k)`. `(f (app (P.Mk 10) k))`
+           reads both fields: 10 + 5 = 15. Pins that a curried constructor partially applied to a prefix of
+           its payloads is a first-class value — the constructor companion of `(add 10)`.")
+  (input  (do
+            (type P (Mk Int64 Int64))
+            (def (app (: g (-> Int64 P)) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app (P.Mk 10) k) ((P.Mk a b) (+ a b))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a bare built-in constructor Some is passed as a first-class function"
+  (doc    "The built-in `Some` is likewise a first-class single-arity function: `(app Some k)` passes it
+           bare to a HOF typed `(-> Int64 (Option Int64))`, which applies it to `k` → `Some k`. `(match …
+           ((Some n) n) …)` = 5. Pins that the first-class-constructor treatment is uniform across a
+           built-in `Option`/`Result` constructor and a user one (both are single-arity functions).")
+  (input  (do
+            (def (app (: g (-> Int64 (Option Int64))) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app Some k) ((Option.Some n) n) ((Option.None) -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "nullary constructor patterns are uniform with unary"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (4th sentence): patterns are uniform `(Ctor binder)`. A nullary variant
