@@ -600,9 +600,17 @@ the component type. The new work:
   `get-bool` for a Bool leaf. `cdz-run` already try-decodes. +5 corpus (two tuple closures both driven, two
   record closures in canonical field order, three capturing closures sharing one call). Record fields render
   in CANONICAL sorted-name order (same as single-export + the escape).
-- **REMAINING (all optional, none blocking):** a compound closure RESULT on the mixed/distinct-sig/
-  round-trip paths (single-export + multi-export tuple/record are done; the remaining shared-`call`/consumer
-  paths would thread the per-result template through their serializers); a VARIABLE-LENGTH list/map/set closure result (needs a
+- **✅ COMPOUND closure RESULT on the MIXED path COMPLETE `@dae1e7e0`.** A compound-returning closure
+  exported ALONGSIDE a plain non-closure export now crosses: the closure's shared `call` returns the value
+  form as `list<u8>` (walking the returned handle into the value-form template), and each plain export rides
+  as an ordinary top-level component func. NO new serializer/envelope — `emit_mixed_closure_resource`
+  consults `runtime_value_form_template` for the shared result: `Some(t)` → `multi_closure_value_resource_
+  core_module` (which already threads plain exports) reusing `assemble_multi_closure_bytes_resource` (the same
+  `list<u8>` envelope with plain slots), `None` → the byte-rope/scalar paths; imports `get-bool`. `cdz-run`
+  already try-decodes. +4 corpus (tuple closure + plain `two`; record closure + parameterized plain `inc`).
+- **REMAINING (all optional, none blocking):** a compound closure RESULT on the distinct-sig/round-trip
+  paths (single/multi/mixed tuple/record are done; the remaining shared-`call`/consumer paths would thread
+  the per-result template through their serializers); a VARIABLE-LENGTH list/map/set closure result (needs a
   runtime looping value-form walker, like the runtime-Bytes escape but recursing over elements); a compound
   closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly
   declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`)
