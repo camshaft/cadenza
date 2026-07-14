@@ -2222,6 +2222,24 @@
 ; resolved as unbound); `t` IS bound by the pattern. These pin the positional destructure computing a
 ; real value, plus the arity check (an over-arity pattern names a nonexistent element → CDZ0201).
 
+(case "a constant multi-payload variant match binds both payloads and folds to a scalar"
+  (doc    "The simplest multi-payload destructure — NON-recursive, CONSTANT scrutinee, folding to a scalar:
+           `(match (V.P 3 4) ((V.P a b) (+ a b)) ((V.Z) 0))` binds `a`/`b` positionally from the constant
+           two-payload variant (boxed as one tuple, `a` at `[Payload, Elem(0)]`, `b` at `[Payload,
+           Elem(1)]`) and sums them → 7. Pins the constant-scrutinee multi-payload fold that BOTH backends
+           must agree on: the wasm backend reads the constant payload tuple via `sum-payload`/`arr-get`, and
+           the Rust backend folds each binder directly to its constant payload NODE (a constant `SumNew`'s
+           payloads indexed) rather than re-matching — the two-compiler agreement over a multi-payload
+           match, distinct from the recursive/runtime cases below.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type V (P Int64 Int64) (Z))
+            (def (f v) (match v ((V.P a b) (+ a b)) ((V.Z) 0)))
+            (def (main) (f (V.P 3 4)))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a multi-payload variant destructures its payloads positionally"
   (doc    "`(type IntList Nil (Cons Int64 IntList))` with `(def (len l) (match l ((IntList.Nil) 0)
            ((IntList.Cons h t) (+ 1 (len t)))))` — the canonical linked-list length. The `Cons` arm binds

@@ -196,6 +196,7 @@ pass	a constant argument out of a narrow parameter's range is rejected, not laun
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
+pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant tuple is returned as a program result
 pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element

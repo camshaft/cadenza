@@ -1364,10 +1364,44 @@ fn emit_sum_payload(
     _id: StructId,
     scrutinee: StructId,
     path: &[crate::core::PathStep],
-    _env: &Env,
+    env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
-    let _ = db;
+    // CONSTANT-SCRUTINEE FOLD: the scrutinee is a compile-time `SumNew { disc, payloads }` (a constant
+    // sum value, e.g. `(match (V.P 3 4) ((V.P a b) …))` where the front-end did NOT fold the match to the
+    // arm body). Then the arm's payload binders read directly off the constant's payload NODES, no runtime
+    // re-match: a `[Payload]` reads the sole payload (a single-payload variant) or the whole tuple (a
+    // multi-payload variant — its payloads ARE the tuple), and a trailing `Elem(i)` reads payload `i`. This
+    // is what lets a CONSTANT multi-payload match `(V.P a b)` render on Rust (the runtime-scrutinee case
+    // already works via `emit_sum_match`'s binding, and a single-payload constant already folds in `lower`
+    // to a bare value; only a constant MULTI-payload match reached here unresolved — the wasm backend emits
+    // runtime `sum-payload`/`arr-get` reads of the constant, the Rust one folds to the payload node).
+    if let Core::SumNew { payloads, .. } = crate::lower::core_of(db, scrutinee) {
+        match path {
+            // `[Payload]` — the whole payload. A single-payload variant IS `payloads[0]`; a multi-payload
+            // variant's payload is the tuple of all payloads (emit as a Rust tuple `(p0, p1, …)`).
+            [crate::core::PathStep::Payload] => {
+                return match payloads.len() {
+                    1 => emit(db, payloads[0], env, ctx),
+                    _ => {
+                        let mut parts = Vec::with_capacity(payloads.len());
+                        for &p in &payloads {
+                            parts.push(emit(db, p, env, ctx)?);
+                        }
+                        Ok(format!("({})", parts.join(", ")))
+                    }
+                };
+            }
+            // `[Payload, Elem(i)]` — the i-th payload of a multi-payload variant (or the i-th tuple element
+            // of a single tuple-typed payload). A constant `SumNew`'s payloads are indexed directly.
+            [crate::core::PathStep::Payload, crate::core::PathStep::Elem(i)] => {
+                if let Some(&p) = payloads.get(*i) {
+                    return emit(db, p, env, ctx);
+                }
+            }
+            _ => {}
+        }
+    }
     // The binding covers the arm's direct payload (path prefix `[Payload]`); any trailing `Elem(i)` steps
     // index into it (a tuple payload). Find a bind whose path is a prefix of `path`.
     for b in ctx.sum_binds.iter().rev() {
