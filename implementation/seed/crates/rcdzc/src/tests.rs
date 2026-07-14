@@ -23960,6 +23960,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_do_block_of_functions_resolves_every_call_in_bounded_time() {
+        // REGRESSION (perf): `resolve`'s do-block scope answered "does an earlier form declare `name`? and
+        // (for mutual recursion) does ANY form declare it as a function?" by SCANNING every do-form per
+        // reference — a reverse scan then an UNCONDITIONAL forward scan for a `Lambda`, both running to
+        // completion on a NEGATIVE lookup (a reference to a prelude/outer name the block doesn't declare).
+        // So a `(do (def (f0 …)) … (def (fN …)) <N calls>)` was O(forms × refs) = O(N²) — likewise a wide
+        // do-local `(module …)` accessed from N sites (`module_sibling_binds`' member scan). The fix indexes
+        // each do-block's / module's declarations by name once at load (`Db::do_binder_index`), so a
+        // reference is an O(1)/O(log N) lookup over only the forms declaring that name. N=200 defs, each
+        // called once from a wide flat sum — well into the old quadratic regime; must resolve + compile in
+        // bounded time and return the right value.
+        let n = 200;
+        let defs: String = (0..n)
+            .map(|i| format!("(def (g{i} (: x Int64)) (+ x {i})) "))
+            .collect();
+        // Sum all N calls: `(+ (g0 0) (+ (g1 0) (+ … 0)))`, nested right — 200 levels, under the parser's
+        // 1024-nesting guard, and it forces resolution of EVERY call (the O(N²)-per-reference path). No List
+        // (a scalar Int64 result runs without the value-heap runtime). Σ g_i(0) = Σ i = 199·200/2 = 19900.
+        let mut body = String::from("0");
+        for i in (0..n).rev() {
+            body = format!("(+ (g{i} 0) {body})");
+        }
+        let src = format!("(do {defs}{body})");
+        // Σ_{i=0}^{199} i = 19900. Resolution of all N calls must stay linear (seconds at N=200 pre-fix on
+        // the O(N²) path); that it runs + returns 19900 is the gate.
+        assert_eq!(run_main(&src), 19900);
+    }
+
+    #[test]
     fn a_do_local_declaration_shadows_last_wins_and_an_outer_binding() {
         // A repeated do-local declaration shadows the earlier one for what follows (last-wins, like a
         // repeated `let` binding): `(def x 5) (def x (+ x 10))` → the second `x` sees the first → 15.

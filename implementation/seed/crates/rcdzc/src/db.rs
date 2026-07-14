@@ -542,6 +542,26 @@ pub struct Db {
     let_binder_index:
         crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>>,
 
+    /// Per-DO-BLOCK / per-MODULE declaration index: `scope_form_occ → (declared_name → the ASCENDING
+    /// positions of the `def`/`module` forms that declare it, each with the declaring FORM's occurrence)`.
+    /// Keyed by a `(do …)` OR a `(module …)` occurrence (both hold a name-resolved declaration sequence).
+    /// The do-block/module analog of [`let_binder_index`] / [`scope_binders`].
+    ///
+    /// `binder_in`'s do-block case answered "does an earlier form declare `name`? and (for mutual
+    /// recursion) does ANY form declare it as a function?" by SCANNING every do-form: a reverse scan for
+    /// the last sequential binding (`do_def_binds`/module per form), then — on any miss — an UNCONDITIONAL
+    /// forward scan of ALL forms for a `Lambda`. Both run to completion on a NEGATIVE lookup (a reference
+    /// to a prelude/outer name — `+`, `unit`, a member access's own head — that the block does not
+    /// declare), so a `(do (def f0 …) … (def fN …) <N uses>)` or a wide do-local `(module …)` accessed
+    /// from N sites was O(forms) per reference × O(refs) = O(N²) (the `let`-binder trap of fix-17, here in
+    /// the do-scope). This index lists ONLY the forms declaring each name, so both scans visit those few
+    /// (usually one) instead of all N — a `partition_point` for the last position < the reference's, and
+    /// an O(1) "is any of them a function def?" for the mutual-recursion fallback. A name the block does
+    /// not declare is absent → an O(1) negative. The value stays the do-form occurrence (not a resolved
+    /// binder) so `do_def_binds` computes the exact same `Ref`/`Lambda` it did before — byte-identical.
+    do_binder_index:
+        crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>>,
+
     /// Per-node LEXICAL-SCOPE SKIP pointer: for each `StructId`, the nearest STRICT ANCESTOR that is a
     /// binding-CANDIDATE (a form `resolve::binder_in` could bind a name in — a `let`/`fn`/`def`, a let
     /// bindings-list, or a match arm), paired with that candidate's DIRECT CHILD on the path down to
@@ -1085,6 +1105,7 @@ impl Db {
         // `last_binder_named`'s per-reference reverse scan is O(log N) rather than an O(N) prefix walk — a
         // wide accumulation `let` was O(N²). Destructuring-pattern lists fall back to the linear scan.
         let let_binder_index = build_let_binder_index(&ast);
+        let do_binder_index = build_do_binder_index(&ast);
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
         // contributes no entry; a body occurrence is unique to one def, so no collision.
@@ -1184,6 +1205,7 @@ impl Db {
             effect_decl_index,
             scope_binders,
             let_binder_index,
+            do_binder_index,
             prelude,
             unit_families: crate::prelude::unit_families(),
             unit_defines,
@@ -1513,6 +1535,25 @@ impl Db {
         };
         let k = positions.partition_point(|&(pos, _)| (pos as usize) < end);
         Some(k.checked_sub(1).map(|last| positions[last].1))
+    }
+
+    /// The do-local `def`/`module` forms declaring `name` in the `(do …)`/`(module …)` at `scope_form`,
+    /// as ascending `(position, form)` pairs. Replaces `binder_in`'s / `module_sibling_binds`' O(forms)
+    /// scans (see [`do_binder_index`]) with a lookup over ONLY the (usually one) declaring forms.
+    ///
+    /// Returns `None` when the scope is NOT INDEXED — a scope form appended AFTER load (a copied do-block
+    /// from inlining a recursive do-local function's body, whose occ is past the load-time arena), which
+    /// the load-time index cannot contain. The caller must then fall back to the live per-form scan. This
+    /// is DISTINCT from an indexed scope that simply does not declare `name`, which returns `Some(&[])` (a
+    /// definitive O(1) negative — no fallback). So: `None` ⇒ fall back; `Some([])` ⇒ absent; `Some(xs)` ⇒
+    /// the declaring forms.
+    pub fn do_forms_declaring(
+        &self,
+        scope_form: StructId,
+        name: &str,
+    ) -> Option<&[(u32, StructId)]> {
+        let by_name = self.do_binder_index.get(&scope_form)?;
+        Some(by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]))
     }
 
     /// EVERY parameter binder a scope form declares — `(name, name-occurrence)` pairs for a `fn`/`def`'s
@@ -2353,6 +2394,75 @@ fn build_let_binder_index(
         if all_bare && !map.is_empty() {
             out.insert(bindings_occ, map);
         }
+    }
+    out
+}
+
+/// Build the per-do-block declaration index (see [`Db::do_binder_index`]): for each `(do …)` form, map
+/// each name a do-local `def`/`module` declares to the ascending positions (in the do's `forms` tail) of
+/// the declaring forms. Scans each do-block's forms ONCE at load — replacing `binder_in`'s per-reference
+/// O(forms) scans with an O(1) name lookup. The value is the declaring FORM's occurrence, so `resolve`
+/// re-derives the exact `Ref`/`Lambda` via `do_def_binds` (no resolved binder is precomputed here).
+fn build_do_binder_index(
+    ast: &Arenas,
+) -> crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>> {
+    let mut out: crate::fxhash::FxHashMap<
+        StructId,
+        crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>,
+    > = crate::fxhash::FxHashMap::default();
+    for i in 0..ast.structure.len() {
+        let form = StructId(i as u32);
+        // The root do binds nothing lexically (`binder_in` returns early for it — a merged multi-file
+        // root is not a do-scope), so it needs no index; skip it to match that early return.
+        if form == ast.root {
+            continue;
+        }
+        // Index the members of a `(do …)` block AND a `(module …)` — both hold a sequence of `def`/`module`
+        // declarations resolved by name, and both were scanned per-reference (`binder_in`'s do-scope and
+        // `module_sibling_binds`). For a `do`, `forms` is the tail after the `do` head (position 0 = the
+        // first form); for a `module`, it is the tail after NAME (`get(1..)`), so member position 0 is the
+        // first member — the positions the respective resolvers use.
+        let forms = if let Some(f) = ast.as_form(form, "do") {
+            f
+        } else if let Some(t) = ast.as_form(form, "module") {
+            match t.get(1..) {
+                Some(members) => members,
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+        let mut map: crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>> =
+            crate::fxhash::FxHashMap::default();
+        for (pos, &f) in forms.iter().enumerate() {
+            // A do-local `(def NAME …)` / `(def (NAME …) …)` declares NAME; a `(module NAME …)` declares
+            // NAME. Record the name → (position, declaring-form). The exact `Ref`/`Lambda`/module-record
+            // the reference resolves to is computed by `do_def_binds` / the module arm on lookup.
+            let declared = ast.as_form(f, "def").and_then(|tail| {
+                let sig = *tail.first()?;
+                match ast.get(sig) {
+                    // `(def x V)` — bare-name value declaration.
+                    Struct::Atom(_) => ast.as_name(sig),
+                    // `(def (NAME param…) …)` — the signature's first child is NAME.
+                    Struct::List(children) => children.first().and_then(|&c| ast.as_name(c)),
+                }
+            });
+            let declared = declared.or_else(|| {
+                ast.as_form(f, "module")
+                    .and_then(|t| t.first())
+                    .and_then(|&n| ast.as_name(n))
+            });
+            if let Some(name) = declared {
+                map.entry(name.to_string())
+                    .or_default()
+                    .push((pos as u32, f));
+            }
+        }
+        // Insert even an EMPTY map: a load-time do/module scope that declares nothing is still INDEXED, so
+        // `do_forms_declaring` gives an O(1) negative (`Some(&[])`) rather than returning `None` and forcing
+        // the caller's live fallback scan. Only a scope appended AFTER load (a copied body) is absent → the
+        // fallback. (The root do is skipped above — it binds nothing lexically.)
+        out.insert(form, map);
     }
     out
 }
