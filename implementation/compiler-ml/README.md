@@ -206,6 +206,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
+- **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
+  `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/
+  `take` and `Set` has `of`/`contains`/`insert`/`remove`/`len`/`union`/`intersection`/`difference` — but
+  NEITHER has `keys`/`values`/`entries`/`to-list`/`fold` (all → CDZ0201 "no member"). A program can BUILD
+  and QUERY a collection but cannot VISIT its contents — so a symbol table can't be walked to emit every
+  binding, a free-var set can't be rendered, etc. `collections-and-text.md` §"Map Iteration Is
+  Deterministic" describes iteration as a capability (constraining its order), and the canonical form
+  already renders the entries, but no PROGRAM op exposes it. 🔑 TRACTABLE: the runtime ALREADY has the
+  cursor ops (`map-iter`/`-next`/`-key`/`-val`, `set-iter`/`-next`/`-elem` in `runtime.wit`) used for
+  rendering/equality — the gap is purely a front-end `to-list` field + scheme + a `lower`/backend cursor
+  loop. No new runtime op needed; a dedicated increment.
+
 - **✅ LEAK FIXED (seed `rcdzc`, 2026-07-14 — landed by THIS loop) → now a clean DECLINE (feature still a
   Todo): a mutually-recursive effectful group where the perform is in a DIFFERENT branch from the mutual
   call.** `repros/decline-mutually-recursive-effectful-split-branch.sexp`. Was: `cdz compile` leaked
