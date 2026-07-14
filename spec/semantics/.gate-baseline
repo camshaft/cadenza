@@ -22,6 +22,7 @@ pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross 
 pass	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
+pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
