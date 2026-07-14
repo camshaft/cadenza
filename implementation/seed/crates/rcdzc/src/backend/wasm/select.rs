@@ -4626,21 +4626,33 @@ fn emit(
             disc_some,
             disc_none,
         } => {
-            // Three scratch slots above `base`: the list handle (i32), the index (i64), and — in the
-            // in-bounds arm — the borrowed element handle (i32). The operand recursions float above all
-            // three so they never clobber a live slot.
-            let list_slot = base;
-            let index_slot = base + 1;
-            let elem_slot = base + 2;
+            // HANDLE SLOT REUSE: the list handle is read TWICE (the bounds-check `vec-len` and the in-bounds
+            // `vec-get`), both BORROWING (no refcount change, never consume). When the list is a reusable
+            // handle already resident in a stable slot (a param / kept `let`-local), read THAT slot directly
+            // at each use instead of copying it into a fresh scratch slot — the heap analogue of the scalar
+            // operand-slot reuse. A computed list is stashed in scratch once, as before.
+            let reuse_list = reusable_handle_slot(db, list, slots);
+            // Scratch above `base`: the list handle (i32, only when NOT reusing an owner slot), the index
+            // (i64), and — in the in-bounds arm — the borrowed element handle (i32). Reusing the list slot
+            // frees one scratch slot (the index/elem shift down), shrinking the high-water. The operand
+            // recursions float above all claimed scratch so they never clobber a live slot.
+            let (list_slot, index_slot, elem_slot, floor) = match reuse_list {
+                Some(s) => (s, base, base + 1, base + 2),
+                None => (base, base + 1, base + 2, base + 3),
+            };
             if elem_slot + 1 > *high {
                 *high = elem_slot + 1;
             }
-            scratch_ty.insert(list_slot, ValType::I32);
+            if reuse_list.is_none() {
+                scratch_ty.insert(list_slot, ValType::I32);
+            }
             scratch_ty.insert(index_slot, ValType::I64);
             scratch_ty.insert(elem_slot, ValType::I32);
-            emit(db, list, slots, base + 3, high, scratch_ty, layout, out)?; // [list]
-            out.push(Lir::LocalSet(list_slot));
-            emit(db, index, slots, base + 3, high, scratch_ty, layout, out)?; // [index:i64]
+            if reuse_list.is_none() {
+                emit(db, list, slots, floor, high, scratch_ty, layout, out)?; // [list]
+                out.push(Lir::LocalSet(list_slot));
+            }
+            emit(db, index, slots, floor, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
             // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION: when the index is
             // provably NON-NEGATIVE (a masked/length/unsigned/refined value), the `index >= 0` half is a
@@ -4937,16 +4949,26 @@ fn emit(
             disc_some,
             disc_none,
         } => {
-            let bytes_slot = base;
-            let index_slot = base + 1;
+            // HANDLE SLOT REUSE (see `ListAt`): the bytes handle is read twice (bounds-check `bytes-len` +
+            // the in-bounds `bytes-get`), both BORROWING. A reusable handle already in a stable slot is read
+            // directly; a computed one is stashed in scratch once.
+            let reuse_bytes = reusable_handle_slot(db, bytes, slots);
+            let (bytes_slot, index_slot, floor) = match reuse_bytes {
+                Some(s) => (s, base, base + 1),
+                None => (base, base + 1, base + 2),
+            };
             if index_slot + 1 > *high {
                 *high = index_slot + 1;
             }
-            scratch_ty.insert(bytes_slot, ValType::I32);
+            if reuse_bytes.is_none() {
+                scratch_ty.insert(bytes_slot, ValType::I32);
+            }
             scratch_ty.insert(index_slot, ValType::I64);
-            emit(db, bytes, slots, base + 2, high, scratch_ty, layout, out)?; // [bytes]
-            out.push(Lir::LocalSet(bytes_slot));
-            emit(db, index, slots, base + 2, high, scratch_ty, layout, out)?; // [index:i64]
+            if reuse_bytes.is_none() {
+                emit(db, bytes, slots, floor, high, scratch_ty, layout, out)?; // [bytes]
+                out.push(Lir::LocalSet(bytes_slot));
+            }
+            emit(db, index, slots, floor, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
             // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION (see `ListAt`): a
             // provably NON-NEGATIVE index (a masked/length/unsigned/refined value) makes `index >= 0` a
@@ -6964,9 +6986,24 @@ fn block_scalar_slot(db: &mut Db, scrutinee: StructId) -> Option<ValType> {
 /// a fresh construction) is NOT reusable: re-emitting it would recompute the value and its scratch would
 /// clash with the arm bodies', so `emit`'s `MatchSum` materializes it into a dedicated slot first.
 fn reusable_handle_src(db: &mut Db, scrutinee: StructId, slots: &HashMap<StructId, u32>) -> bool {
+    reusable_handle_slot(db, scrutinee, slots).is_some()
+}
+
+/// The local SLOT holding a reusable heap-handle expression, or `None`. A `Param` / kept `let`-`LocalRef`
+/// whose binder has a slot IS resident in a stable local for the whole body — a BORROWING read (`vec-len`/
+/// `vec-get`/`bytes-len`/…) can read that slot DIRECTLY at each use site instead of copying the handle into
+/// a fresh scratch slot first (the heap analogue of the scalar `reusable_scalar_src` / `operand_src` reuse).
+/// Sound because the collection reads only borrow (no refcount change, never consume) and the owner keeps
+/// the handle live across them (a param is owned by the caller; a kept `let`-binding is dropped at scope
+/// end, after the read). A computed handle (`None`) still gets stashed in scratch once, as before.
+fn reusable_handle_slot(
+    db: &mut Db,
+    scrutinee: StructId,
+    slots: &HashMap<StructId, u32>,
+) -> Option<u32> {
     match core_of(db, scrutinee) {
-        Core::Param { binder } | Core::LocalRef { binder } => slots.contains_key(&binder),
-        _ => false,
+        Core::Param { binder } | Core::LocalRef { binder } => slots.get(&binder).copied(),
+        _ => None,
     }
 }
 
@@ -11444,6 +11481,86 @@ mod tests {
         );
         // Only $r (slot 1) is declared — the constant operand needs no scratch slot at all.
         assert_eq!(f.declared, vec![ValType::I64; 1]);
+    }
+
+    #[test]
+    fn a_list_at_on_a_param_reads_the_param_slot_directly_no_handle_copy() {
+        // (def (at (: xs (List Int64)) (: i Int64)) (List.at xs i)) — the list is a parameter, already
+        // resident in slot 0 for the whole body. `vec-len` (bounds check) and `vec-get` (element read)
+        // BORROW it, so both read slot 0 DIRECTLY — no copy into a scratch slot first (the heap analogue
+        // of the scalar operand-slot reuse). So the body has NO `LocalSet(0)` (a param slot is never
+        // stored to here), and every `vec-len`/`vec-get` is immediately preceded by `LocalGet(0)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (at (: xs (List Int64)) (: i Int64)) (List.at xs i)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "at");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The list handle is never copied into a scratch slot: no `local.set` targets the param slot 0,
+        // and — since the reuse frees the would-be list scratch slot — no `local.set`/`tee` of the list
+        // handle appears at all before the first `vec-len`. Assert both `vec-len` and `vec-get` read the
+        // list param slot 0 directly.
+        let vec_len_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_LEN))
+            .expect("a bounds-check vec-len");
+        assert_eq!(
+            f.code[vec_len_pos - 1],
+            Lir::LocalGet(0),
+            "the bounds-check vec-len reads the list param slot 0 directly; got {:?}",
+            &f.code[..=vec_len_pos]
+        );
+        let vec_get_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_GET))
+            .expect("an element vec-get");
+        // vec-get takes the wrapped index on top, so the handle is one deeper: `LocalGet(0) ; LocalGet(idx)
+        // ; I32WrapI64 ; vec-get`. Confirm slot 0 is pushed for the handle (three before the call).
+        assert_eq!(
+            f.code[vec_get_pos - 3],
+            Lir::LocalGet(0),
+            "the element vec-get reads the list param slot 0 directly; got {:?}",
+            &f.code[vec_get_pos - 3..=vec_get_pos]
+        );
+        // No instruction stores the list handle into slot 0 (it is a param — read-only here).
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the list param slot 0 is never written (no handle copy); got {:?}",
+            f.code
+        );
+
+        // BYTES.AT shares the same reuse (bytes handle read by `bytes-len` + `bytes-get`): a param bytes
+        // value in slot 0 is read directly, never copied into scratch.
+        let ast = crate::testkit::parse(
+            "(module m (def (at (: bs Bytes) (: i Int64)) (Bytes.at bs i)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "at");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let blen_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_BYTES_LEN))
+            .expect("a bounds-check bytes-len");
+        assert_eq!(
+            f.code[blen_pos - 1],
+            Lir::LocalGet(0),
+            "the bounds-check bytes-len reads the bytes param slot 0 directly; got {:?}",
+            &f.code[..=blen_pos]
+        );
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the bytes param slot 0 is never written (no handle copy); got {:?}",
+            f.code
+        );
     }
 
     #[test]
