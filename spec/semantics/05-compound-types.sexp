@@ -3369,6 +3369,24 @@
   (call   main)
   (output (: (tuple 5 5) Pt)))
 
+(case "a MULTI-payload struct newtype escapes as its payload tuple under the type header"
+  (doc    "The multi-payload STRUCT form: `(type Pt (Mk Int64 Int64))` — a single-variant newtype with TWO
+           separate payloads (constructed `(Pt.Mk 5 5)`, matched `(Pt.Mk x y)`), which box as ONE tuple
+           handle at run time. Its escaped value form is the BARE payload tuple `(: (tuple 5 5) Pt)` — the
+           tag erased into the `Pt` header, exactly as the explicit `(Mk (Tuple Int64 Int64))` case above,
+           since a multi-payload variant's underlying value IS that tuple. Pins that the newtype
+           tag-erasure rule holds for the multi-payload struct spelling too (distinct from a multi-payload
+           variant of a MULTI-variant sum, which spreads FLAT under its load-bearing variant NAME — here
+           there is no name to keep, only the erased tuple).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pt (Mk Int64 Int64))
+            (def (mk (: b Int64)) (Pt.Mk b b))
+            (def (main) (mk 5))
+            (export main)))
+  (call   main)
+  (output (: (tuple 5 5) Pt)))
+
 (case "a user sum's nullary variant escapes with its bare variant name"
   (doc    "The nullary companion: `(Opt.Nn)` (a nullary user variant, its payload the unit value) escapes
            as `(: (Nn unit) Opt)` — the bare variant name `Nn` applied to `unit`, exactly as a built-in

@@ -40,6 +40,7 @@ pass	a HOF callback matching a tuple argument computes through the nested reduct
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
@@ -1294,8 +1295,15 @@ pass	resuming with a wrong-type value for a compound result type is a type error
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
 pass	round-trip: a String-returning consumer of a closure
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
+pass	round-trip: a compound consumer alongside a plain export — the plain
 pass	round-trip: a consumer applies the handed-back closure and returns Bytes
+pass	round-trip: a consumer applies the handed-back closure and returns a tuple
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
+pass	round-trip: a consumer returns a record built from the closure result
+pass	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
+pass	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	runtime float equality compares by canonical byte form
