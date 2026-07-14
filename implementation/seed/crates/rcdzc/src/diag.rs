@@ -128,6 +128,15 @@ pub enum Code {
     /// variant name, a copy-paste, a misordered wildcard). The pattern analogue of the `DeadTrap` /
     /// `UnusedBinding` warnings — dead code the build surfaces rather than silently keeping.
     RedundantArm,
+    /// A CONSTRUCTION or MATCH of a variant of an ABSTRACT type — a type whose HANDLE another module
+    /// exported but whose CONSTRUCTORS it withheld (opaque/abstract types — `modules-and-namespaces.md`
+    /// §Visibility Is Explicit). The importing file can NAME the type (annotate, hold, pass its values)
+    /// but MUST NOT construct or take apart its variants; it builds and reads such a value only through
+    /// the module's exported functions ("smart constructors"). DISTINCT from a plain unbound name
+    /// (CDZ0101): the constructor is not merely absent, it is HIDDEN ON PURPOSE — so the diagnostic names
+    /// the type, notes its handle is exported but its constructors are not, and (when the module exports a
+    /// function returning the type) points at that function as the way in.
+    AbstractCtor,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -309,6 +318,7 @@ impl Code {
             Code::PresentField => "CDZ0211",
             Code::AbsentField => "CDZ0212",
             Code::RedundantArm => "CDZ0213",
+            Code::AbstractCtor => "CDZ0214",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",
@@ -666,9 +676,12 @@ pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 pub const MALFORMED_EXTERN_MESSAGE: &str = "an `(extern …)` names a peer INTERFACE as a string — write `(extern \
      \"cadenza:pkg/iface\" (<op> (-> …))…)` (the interface identifier is a string literal, not a bare name)";
 
-/// The stable PREFIX of [`MALFORMED_EXTERN_MESSAGE`] — `dedup_faults` matches this to detect a
-/// malformed-extern reject without pinning the whole message.
-pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)` names a peer INTERFACE";
+/// The stable PREFIX shared by EVERY malformed-`(extern …)` reject — the interface one
+/// ([`MALFORMED_EXTERN_MESSAGE`]) AND the op-clause ones (a bare-name/non-name op head, a missing/
+/// non-arrow op type). `dedup_faults` matches this to detect that SOME extern is malformed (so its
+/// unbound op names should be collected + their consequent "unbound name" faults dropped) without pinning
+/// which defect. Every such message begins ``an `(extern …)` ``.
+pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)`";
 
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the

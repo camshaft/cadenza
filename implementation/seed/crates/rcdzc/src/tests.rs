@@ -7035,6 +7035,34 @@ mod runtime_ops {
             ),
             42 // 6 + 6*6
         );
+
+        // A TUPLE/RECORD PROJECTION IS TRAP-FREE: `(. p i)` emits `arr-get(compound, const-index)` where
+        // `i` is within the operand's static arity (`type_errors` rejects an out-of-arity index at compile
+        // time — never a runtime OOB trap), so it never traps. A discarding annihilator `(* 0 (. p 0))` → 0
+        // now DROPS the projection (no `arr-get`). (A SumPayload variant-payload read is NOT trap-free — it
+        // could mismatch its discriminant — so it is not covered here.)
+        let getarr = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::CallImport("arr-get")))
+                .count()
+        };
+        assert_eq!(
+            getarr(&lir("(: p (Tuple Int64 Int64))", "(* 0 (. p 0))")),
+            0,
+            "a dead tuple projection is dropped by the annihilator fold (it is trap-free)"
+        );
+        // VALUE PARITY (the whole `(* 0 (. p 0))` folds to 0, projection dropped): a nullary export builds
+        // the tuple + projects, confirming the fold + a LIVE projection both compute correctly.
+        assert_eq!(
+            run::<i64>("", "(let ((p (tuple 42 7))) (* 0 (. p 0)))", &[]),
+            0,
+            "the annihilated projection evaluates to 0"
+        );
+        assert_eq!(
+            run::<i64>("", "(let ((p (tuple 42 7))) (. p 0))", &[]),
+            42,
+            "a live projection reads the field"
+        );
     }
 
     #[test]
@@ -24231,6 +24259,37 @@ mod match_engine {
         }
     }
 
+    /// A MALFORMED `(Unit.define …)` — wrong arity, a non-symbol name, or a non-integer scale — is CDZ0201,
+    /// not silently dropped. `scan_unit_defines`' guard is one `&&` chain, so a deviation registers NO
+    /// family unit and a later use of the unit surfaces only as "unknown unit `furlong`" (naming REAL
+    /// units, never hinting the author's own `Unit.define` was malformed). Now the malformed FORM is named
+    /// — the `Unit.define` scan-and-drop companion of the malformed-extern / -effect checks.
+    #[test]
+    fn a_malformed_unit_define_is_cdz0201() {
+        use crate::testkit::parse;
+        for src in [
+            // wrong arity (3 args), non-symbol name (a string), non-integer scale (a float).
+            "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660) (def (main) 1) (export main))",
+            "(do (Unit.define \"furlong\" (Unit.of #\"foot\") 660 1) (def (main) 1) (export main))",
+            "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660.5 1) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("a `Unit.define` is"))
+                .unwrap_or_else(|| panic!("a malformed Unit.define must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO FALSE POSITIVE: a well-formed `Unit.define` (and its use) is clean.
+        let ok = "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660 1) \
+                   (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.message.contains("a `Unit.define` is")),
+            "a well-formed Unit.define is not flagged"
+        );
+    }
+
     #[test]
     fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
         // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with
@@ -24285,6 +24344,27 @@ mod match_engine {
                 "main"
             ),
             0.0264
+        );
+    }
+
+    #[test]
+    fn a_plural_family_unit_spelling_names_the_same_unit_as_its_singular() {
+        // The ML quantity-literal surface reads for natural language (`4.0 feet`, `1.0 meters`), so a
+        // common English PLURAL spelling resolves to the SAME family unit as its canonical singular:
+        // `feet` = `foot`, `meters` = `meter`. `1.0 meters + 4.0 feet` converts feet to the meter
+        // reference (foot = 381/1250 m) and adds: 1 + 4 * 0.3048 = 2.2192 m. The plural resolves and
+        // converts exactly as the singular would — before the plural aliases it failed as an unknown
+        // unit. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"meters\")) \
+                      ((. Qty of) 4.0 ((. Unit of) #\"feet\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a meters+feet plural family-unit sum compiles and runs"),
+                "main"
+            ),
+            2.2192
         );
     }
 
@@ -26516,6 +26596,67 @@ mod diagnostics {
     }
 
     #[test]
+    fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
+        // REGRESSION (perf): a `(. r k)` on a field `k` the record lacks reports "no field `k` — did you
+        // mean?" via `infer::no_field_reject`, which builds the record's O(fields) name list and
+        // edit-distance-scans it TWICE (`nearest` for the fix + `did_you_mean` for the message). A WIDE
+        // record (N fields) with a typo'd field accessed from N sites re-ran that per access → O(N²)
+        // (cdz check 400/800/1600 = 111/402/1135ms, ~3.4×/doubling). This is the record-field twin of the
+        // variant did-you-mean (fix-26/45), which was memoized but this site was not. FIX: memoize the
+        // (winner, hint) pair per `(reduced-record occ, key)` in `db.no_field_suggestion` — N accesses over
+        // ONE record share its reduced occurrence, so the suggestion computes once.
+        //
+        // Correctness: the enrichment still names the nearest field (`— did you mean` / `— closest
+        // matches:`), just computed once per distinct query.
+        fn wide_record_typos(n: usize) -> String {
+            let rec: String = format!(
+                "(record {})",
+                (0..n)
+                    .map(|i| format!("(k{i} {i})"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let accesses: String = (0..n)
+                .map(|i| format!("(v{i} (. rr k0x))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m (def (main) (let ((rr {rec}) {accesses}) v0)) (export main))")
+        }
+        // The enrichment still suggests the nearest field for the typo'd `k0x` access.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_record_typos(8))));
+        assert!(
+            diags.iter().any(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("no field")
+                    && (d.message.contains("did you mean") || d.message.contains("closest matches"))
+            }),
+            "a typo'd field access is enriched with a suggestion: {diags:?}"
+        );
+        // Growth guard: `cdz check` at N vs 2N typo'd accesses of an N-field record. The per-access
+        // name-list build + double scan drove a 400→800 ratio of ~3.4× (O(N²)); the memo makes it ~1.7×
+        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wide_record_typos(400), wide_record_typos(800));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t400 = check_ms(&narrow);
+            let t800 = check_ms(&wide);
+            best = best.min(t800 / t400.max(0.1));
+        }
+        assert!(
+            best < 2.5,
+            "N typo'd field accesses of a wide record must scale linearly (was O(N²) via a per-access \
+             field-name build + double edit-distance scan in `no_field_reject`; now memoized per \
+             (record occ, key)): width 400→800 grew {best:.1}× (min paired ratio); linear ~2×, was ~3.4×"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
@@ -28672,6 +28813,33 @@ mod stage1 {
     fn member_access_on_a_non_record_is_a_type_error() {
         // 05-compound-types: (. 5 x) — member access requires a record → CDZ0201.
         assert!(expect_decline("(. 5 x)").contains("requires a record"));
+    }
+
+    #[test]
+    fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
+        // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
+        // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
+        // fix is a numeric index. It now names the tuple's arity and spells the index form, so the reader
+        // reaches for `(. t 0)`. A SCALAR operand (no index route) keeps the plain "requires a record".
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (g (: t (Tuple Int64 Int64))) (. t x)) (export g))",
+        )))
+        .expect_err("named access on a tuple must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("a tuple is accessed by position, not by name `x`")
+                && d.message.contains("numeric index `(. <tuple> N)`")
+                && d.message.contains("0..=1")
+                && d.message.contains("has 2 elements"),
+            "names the index form + the tuple's arity range: {}",
+            d.message
+        );
+        // A scalar operand keeps the generic message (no index route exists).
+        assert!(
+            expect_decline("(. 5 x)").contains("requires a record"),
+            "a scalar member access keeps the record message"
+        );
     }
 
     #[test]
@@ -31298,6 +31466,29 @@ mod stage1 {
             .expect_err("duplicate definition must reject")
             .message;
         assert!(msg.contains("more than once"), "got: {msg}");
+        // It carries a DELETE fix removing the WHOLE redundant `(def …)` form — the def analogue of the
+        // duplicate-variant / -type / -export / -operation delete fix (which all delete the redundant
+        // declaration). The `node` the delete targets is the second def's FORM (its parent), not just the
+        // signature, so applying it removes the entire redundant definition.
+        let mut db = crate::db::Db::load(parse("(module m (def (g) 1) (def (g) 2) (export g))"));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.message.contains("defined more than once"))
+            .expect("a duplicate def is reported");
+        let fix = d.fix.as_ref().expect("carries a delete-the-duplicate fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            fix.label.contains("remove the duplicate definition of `g`"),
+            "the fix names the redundant definition: {}",
+            fix.label
+        );
+        // The delete targets the whole `(def (g) 2)` FORM — the parent of the signature `(g)`, not the
+        // signature alone — so applying it leaves the first def and is well-formed. `node` is that form's id.
+        let target = crate::ast::StructId(fix.node);
+        assert!(
+            db.ast.as_form(target, "def").is_some(),
+            "the delete target is the `(def …)` form, not the bare signature"
+        );
         // Two DISTINCT named defs are fine — not a false duplicate.
         assert_eq!(
             run_returns::<i64>(
@@ -31779,6 +31970,84 @@ mod stage1 {
                 .iter()
                 .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
             "the not-reducible decline must not accompany the coded handler reject"
+        );
+    }
+
+    #[test]
+    fn a_perform_in_a_match_guard_declines_honestly_not_no_enclosing_handler() {
+        // A perform inside a match-arm GUARD condition, under a `handle` that discharges it, is a position
+        // the effect-routing/distribution walks do NOT descend (they route the scrutinee + arm bodies, not
+        // the guard conds). It used to reach lowering as a bare perform → the FACTUALLY-WRONG
+        // `NO_HOME_STANDALONE_DECLINE` ("performed with no enclosing handler here") — even though the handle
+        // ENCLOSES it (the same guard-perform runs host-delegated → 100; scrutinee/arm-body/if-cond performs
+        // under the same handle all work). `reduce_handle` now DECLINES cleanly (an honest "not yet
+        // reducible" todo) when a guard cond performs a discharged op, rather than misleading. (Routing a
+        // guard perform through the handler — the ideal →100 fix — is a later increment: a guard runs before
+        // its arm, advancing handler state per arm-test, which the per-branch-sees-the-seed distribution
+        // does not model. The finding sanctions the honest decline as the minimum bar.)
+        let msg = |src: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        // The IRREFUTABLE-guarded shape (a bare-name inner pattern guarded by a performing cond, plus an
+        // irrefutable catch-all) is now ROUTED: `reduce_handle` desugars it to an `if` on the guard, so it
+        // FOLDS (→100) rather than declines. (Updated from the interim honest-decline behavior: the corpus
+        // case "a perform in a match-arm guard is discharged by the enclosing handle" now grades pass →100,
+        // the target the interim decline anticipated.)
+        let guard_src = "(do (effect Ask (op get (-> Int64))) \
+                         (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                           (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))) (export main))";
+        assert!(
+            msg(guard_src).is_empty(),
+            "an irrefutable-guarded performing arm under a handle now folds (desugars to an if): {:?}",
+            msg(guard_src)
+        );
+        // A shape the desugar does NOT cover — a REFUTABLE guarded inner pattern (the literal `9`, not a
+        // bare name) — still DECLINES, and CLEANLY: the honest "not yet reducible" todo, NOT the misleading
+        // "no enclosing handler" (the handle plainly encloses the guard perform).
+        let refutable_guard = "(do (effect Ask (op get (-> Int64))) \
+                         (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                           (match 9 ((guard 9 (> (Ask.get) 3)) 100) (n 200)))) (export main))";
+        let ms = msg(refutable_guard);
+        assert!(
+            !ms.iter()
+                .any(|m| *m == crate::diag::NO_HOME_STANDALONE_DECLINE),
+            "a guard perform UNDER a handle must NOT report 'no enclosing handler' — the handle encloses it: {ms:?}"
+        );
+        assert!(
+            ms.iter()
+                .any(|m| *m == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "expected the honest not-yet-reducible decline for a refutable guarded-pattern perform: {ms:?}"
+        );
+        // NO REGRESSION: a NON-performing guard under the same handle still COMPILES (my detection fires
+        // ONLY on a guard cond that performs a discharged op — a `(guard n (> n 3))` performs nothing).
+        let pure_guard = "(do (effect Ask (op get (-> Int64))) \
+                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                            (match 9 ((guard n (> n 3)) 100) (n 200)))) (export main))";
+        assert!(
+            msg(pure_guard).is_empty(),
+            "a non-performing guard under a handle must still compile clean: {:?}",
+            msg(pure_guard)
+        );
+        // NO REGRESSION: a perform in the ARM BODY (not the guard) under the same handle still folds.
+        let arm_body = "(do (effect Ask (op get (-> Int64))) \
+                        (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                          (match 9 (n (Ask.get))))) (export main))";
+        assert!(
+            msg(arm_body).is_empty(),
+            "an arm-body perform under a handle must still fold: {:?}",
+            msg(arm_body)
         );
     }
 
@@ -33046,6 +33315,58 @@ mod stage1 {
             )))
             .is_ok(),
             "a well-formed effect declaration must compile"
+        );
+    }
+
+    /// A MALFORMED EFFECT CLAUSE — one that is not an `(op …)` operation — is CDZ0201, not silently
+    /// dropped. `scan_effect_decl` skips any clause whose head is not `op` (a bare literal `(effect E 5)`,
+    /// a non-`op`-headed list `(effect E (foo …))`) and an `(op)` with no name, so a garbled operation
+    /// vanished and the effect looked like it had fewer ops than written (a handle/match over it then
+    /// wrongly type-checks as exhaustive — the effect analogue of the malformed-variant scan-drop). A
+    /// leading `(doc "…")` clause is TOLERATED (the doc affordance effects share with defs).
+    #[test]
+    fn a_malformed_effect_clause_is_cdz0201() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (effect E 5) (def (main) 1) (export main))",
+            "(module m (effect E (foo (-> Unit Int64))) (def (main) 1) (export main))",
+            "(module m (effect E (op)) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("an effect clause must be an operation"))
+                .unwrap_or_else(|| panic!("a malformed effect clause must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO FALSE POSITIVE: a well-formed effect, and one carrying a leading `(doc …)` clause, are clean.
+        for ok in [
+            "(module m (effect E (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 s))) (E.get))) (export main))",
+            "(module m (effect E (doc \"the effect\") (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 s))) (E.get))) (export main))",
+        ] {
+            let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| d.message.contains("an effect clause must be an operation"));
+            assert!(
+                bad.is_none(),
+                "a well-formed effect must not be flagged: {ok} -> {bad:?}"
+            );
+        }
+        // A `(op 5 …)` (a well-shaped op clause with a NON-NAME name) keeps its more-specific "must be
+        // named" reject — it IS an `(op …)` clause, so the generic clause check does not fire on it.
+        let named = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op 5 (-> Unit Int64))) (def (main) 1) (export main))",
+        )));
+        assert!(
+            named
+                .iter()
+                .any(|d| d.message.contains("an effect operation must be named"))
+                && !named
+                    .iter()
+                    .any(|d| d.message.contains("an effect clause must be an operation")),
+            "a non-name op keeps the specific 'must be named' reject, not the generic clause one: {:?}",
+            named.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
@@ -46794,7 +47115,7 @@ mod closure_host_resource {
             lifted_type_idx,
             &layout,
             false,
-            Some(&rebuild),
+            std::slice::from_ref(&rebuild),
         )
         .expect("tuple-arg closure-resource core serializes");
 
@@ -49579,6 +49900,65 @@ mod cross_component_oracle {
             .any(|d| d.code.as_deref() == Some("CDZ0101")
                 && d.message.contains("unbound name `frobnicate`")),
             "a genuine unbound name (no extern) is still CDZ0101"
+        );
+    }
+
+    /// A well-formed-INTERFACE extern with a MALFORMED OP CLAUSE — a bare-name op (`neg` instead of
+    /// `(neg (-> …))`), a non-name op head (`(5 (-> …))`), or a missing/non-arrow op type (`(neg)` /
+    /// `(neg Int64)`) — is CDZ0201 at the declaration, not silently dropped. `scan_extern_decl` drops such
+    /// a clause (or records `ty: None`), so the op it would bind goes unbound (the misleading "unbound name
+    /// `neg`"). The op-clause companion of the interface check; the unbound-name consequent for the
+    /// dropped op is deduped (for the shapes that leave it genuinely unbound — a bare name / no type).
+    #[test]
+    fn a_malformed_extern_op_clause_is_cdz0201() {
+        use crate::testkit::parse;
+        // A bare-name op clause + a non-name op head → the "operation is `(<name> (-> …))`" reject, and the
+        // op (when it has a name) is NOT reported unbound.
+        for (src, unbound) in [
+            (
+                "(do (extern \"cadenza:math/api\" neg) (def (main) (neg 5)) (export main))",
+                Some("neg"),
+            ),
+            (
+                "(do (extern \"cadenza:math/api\" (5 (-> Int64 Int64))) (def (main) 1) (export main))",
+                None,
+            ),
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message
+                        .contains("operation is `(<name> (-> Arg… Result))`")),
+                "a malformed extern op clause is CDZ0201: {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            if let Some(name) = unbound {
+                assert!(
+                    !diags
+                        .iter()
+                        .any(|d| d.message.contains(&format!("unbound name `{name}`"))),
+                    "the dropped op `{name}` is not reported unbound: {:?}",
+                    diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+                );
+            }
+        }
+        // A missing/no-type op clause `(neg)` → the "operation's type must be an arrow" reject, and `neg`
+        // is not reported unbound.
+        let no_ty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(do (extern \"cadenza:math/api\" (neg)) (def (main) (neg 5)) (export main))",
+        )));
+        assert!(
+            no_ty.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("operation's type must be an arrow")),
+            "a no-type extern op clause names the arrow requirement: {:?}",
+            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !no_ty
+                .iter()
+                .any(|d| d.message.contains("unbound name `neg`")),
+            "the no-type op `neg` is not reported unbound: {:?}",
+            no_ty.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

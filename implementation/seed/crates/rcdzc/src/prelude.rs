@@ -1314,7 +1314,7 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("megahertz", &[("second", -1)], 1_000_000, 1),
         ("gigahertz", &[("second", -1)], 1_000_000_000, 1),
     ];
-    match register_families(rows.iter().copied()) {
+    let mut m = match register_families(rows.iter().copied()) {
         Ok(m) => m,
         // A conflict in the BUILT-IN table is a compiler invariant violation (a typo/duplicate in the
         // list above), not a user error — fail loudly at construction. When a USER family-declaration
@@ -1323,7 +1323,47 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         Err(name) => {
             panic!("built-in unit family `{name}` registered with conflicting conversions")
         }
+    };
+    // Common ENGLISH PLURAL spellings of the atomic units resolve to the SAME conversion as their
+    // canonical singular — the ML quantity-literal surface is written for natural language (`4 feet`,
+    // `5 meters`, `3 inches`; the parser's own `quantity_literal_desugars` test builds `(Unit.of
+    // #"feet")`), so a plural MUST name the same unit as its singular rather than fail as unknown.
+    // English plurals are IRREGULAR (`foot`→`feet`, `inch`→`inches`; `hertz` is invariant, no alias),
+    // so they are explicit DATA here, not a computed `+s` stemming rule. Each alias REUSES its
+    // canonical row's `UnitConversion` (one source of truth — editing `foot`'s scale flows to `feet`
+    // for free); an alias never collides with a canonical name, so the uniqueness invariant holds.
+    const ALIASES: &[(&str, &str)] = &[
+        // length
+        ("meters", "meter"),
+        ("millimeters", "millimeter"),
+        ("centimeters", "centimeter"),
+        ("kilometers", "kilometer"),
+        ("inches", "inch"),
+        ("feet", "foot"),
+        ("miles", "mile"),
+        // time
+        ("seconds", "second"),
+        ("milliseconds", "millisecond"),
+        ("minutes", "minute"),
+        ("hours", "hour"),
+        // information
+        ("bytes", "byte"),
+        ("bits", "bit"),
+        ("kilobytes", "kilobyte"),
+        ("megabytes", "megabyte"),
+        ("gigabytes", "gigabyte"),
+        ("kibibytes", "kibibyte"),
+        ("mebibytes", "mebibyte"),
+        ("gibibytes", "gibibyte"),
+    ];
+    for (alias, canonical) in ALIASES {
+        let conv = m
+            .get(*canonical)
+            .unwrap_or_else(|| panic!("plural alias `{alias}` names missing unit `{canonical}`"))
+            .clone();
+        m.insert((*alias).to_string(), conv);
     }
+    m
 }
 
 /// Register a set of family units into the name → `(dimension, num, den)` map, ENFORCING that a name

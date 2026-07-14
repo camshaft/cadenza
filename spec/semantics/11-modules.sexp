@@ -611,21 +611,24 @@
   (output (: 5 Int64)))
 
 (case "a recursive user sum built in a lib is folded by the entry over the imported type"
-  (doc    "`lib` declares a cons-list sum `L`, exports the TYPE `L` and `mk` building `(Cons 5 (Cons 6
-           Nil))`; the entry `(import \"lib\" (L mk))` brings the type + its constructors into scope and
-           folds the imported value with `sm`. The recursive sum's spine built in one file is walked
+  (doc    "`lib` declares a cons-list sum `L`, exports it CONCRETELY with the wildcard `(. L *)` (the
+           handle + ALL constructors) plus `mk` building `(Cons 5 (Cons 6 Nil))`; the entry `(import
+           \"lib\" (L mk))` brings the type + its constructors into scope and folds the imported value
+           with `sm`, MATCHING on `L.Nil`/`L.Cons`. The recursive sum's spine built in one file is walked
            variant-by-variant in another, summing to 11. A user sum's identity is its declaration
            (type-system.md #Nominal Is An Orthogonal Modifier Over Any Structural Type — identity is the
            fully-qualified name, so re-declaring a same-shape `L` in the entry yields a DISTINCT type a
            value of the lib's `L` does not satisfy); the composing form is to IMPORT the one type both
-           files share, exactly as `#a sum TYPE and its constructors are imported by name` does for a
-           flat sum. Pins that a RECURSIVE user sum composes across the module boundary through an import
-           — its heap spine and variant discriminants are read by the entry's match over the SAME nominal
+           files share, exactly as `#a sum TYPE and its constructors are imported by a wildcard` does for
+           a flat sum. Because the entry MATCHES `L`'s variants, `lib` exports them (`L.*`) — a bare
+           `(export L)` would export the HANDLE ONLY (abstract), and the entry's match would be CDZ0214.
+           Pins that a RECURSIVE user sum composes across the module boundary through a concrete import —
+           its heap spine and variant discriminants are read by the entry's match over the SAME nominal
            type the lib built.")
   (module "lib"
     (do (type L (Nil) (Cons Int64 L))
         (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil))))
-        (export L mk)))
+        (export (. L *) mk)))
   (input  (do
             (import "lib" (L mk))
             (def (sm (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t)))))
@@ -653,23 +656,98 @@
             (export main)))
   (output (: 42 Int64)))
 
-(case "a sum TYPE and its constructors are imported by name and constructed in the entry"
+(case "a sum TYPE and its constructors are imported by a wildcard and constructed in the entry"
   (doc    "Beyond exporting a sum VALUE (the cases above, where the entry RE-DECLARES a structurally-
-           identical type), here `lib` EXPORTS the nominal sum TYPE `Color` itself plus a consumer `to-int`,
-           and the entry `(import \"lib\" (Color to-int))` brings the TYPE + its constructors into scope and
-           CONSTRUCTS `(Color.Green)` locally. The imported type's identity crosses the link, so a value the
-           entry builds with the imported constructor dispatches correctly in the lib's `to-int` match →
-           `Green` = 2. Pins that a nominal sum type + its constructors compose across an explicit import
-           (not only sum VALUES with a re-declared type) — the value built against the imported type is the
-           SAME nominal type the lib's consumer expects.")
+           identical type), here `lib` EXPORTS the nominal sum TYPE `Color` CONCRETELY with the wildcard
+           `(. Color *)` — the handle + every constructor — plus a consumer `to-int`, and the entry
+           `(import \"lib\" (Color to-int))` brings the TYPE + its constructors into scope and CONSTRUCTS
+           `(Color.Green)` locally. The imported type's identity crosses the link, so a value the entry
+           builds with the imported constructor dispatches correctly in the lib's `to-int` match →
+           `Green` = 2. The wildcard `Color.*` is what makes the constructors importable: a bare
+           `(export Color)` exports the HANDLE ONLY (abstract — the entry could name `Color` and hold its
+           values but not construct one; a `(Color.Green)` there would be CDZ0214). Pins that a nominal
+           sum type + all its constructors compose across an explicit import via the wildcard (not only
+           sum VALUES with a re-declared type) — the value built against the imported type is the SAME
+           nominal type the lib's consumer expects.")
   (module "lib"
     (do
       (type Color (Red) (Green) (Blue))
       (def (to-int (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
-      (export Color)
+      (export (. Color *))
       (export to-int)))
   (input  (do
             (import "lib" (Color to-int))
             (def (main) (to-int (Color.Green)))
+            (export main)))
+  (output (: 2 Int64)))
+
+; --- ABSTRACT (opaque) types: export the type HANDLE, keep the CONSTRUCTOR private -----------------
+; A type declaration's handle and its constructors are INDEPENDENTLY exportable (modules-and-namespaces.md
+; §Visibility Is Explicit — the one per-name export surface, applied to a type's handle vs its variants).
+; Exporting the handle bare `(export Color)` publishes an ABSTRACT type: an importer may NAME `Color`
+; (annotate, hold, pass its values) and use the module's exported functions over it, but MUST NOT
+; construct or match its variants — that is the module's private business. This is the abstract-data-type
+; / smart-constructor discipline: an invariant a type carries is established once, in the module's private
+; constructor, and no importer can forge a value that skips it. Exporting the constructors too — the
+; wildcard `(. Color *)` (all) or a specific `(. Color Green)` — makes the type CONCRETE (the cases above).
+
+(case "an abstract type's constructor is not reachable outside its module"
+  (doc    "`lib` exports the type HANDLE `Color` (bare `(export Color)`) and a smart constructor `mk`, but
+           NOT `Color`'s variant constructors. The entry imports `(Color mk)` and tries to CONSTRUCT
+           `(Color.Green)` directly — reaching a constructor the module kept private. That is rejected
+           CDZ0214: `Color`'s handle is visible here (the entry may name the type and hold its values) but
+           its constructor `Green` is withheld, so a `Color` value is built only through `mk`. Pins that a
+           bare type-handle export is ABSTRACT — the constructor is hidden on purpose, distinct from a
+           plain unbound name (the type IS in scope). The fix is to call the module's exported `mk`, or for
+           the module to export `Color.*`.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (export Color)
+      (export mk)))
+  (input  (do
+            (import "lib" (Color mk))
+            (def (main) (Color.Green))
+            (export main)))
+  (error  CDZ0214))
+
+(case "an abstract type is used through the module's exported constructor and accessor"
+  (doc    "The companion of the reject above: the SAME abstract `lib` (handle `Color` + `mk` + `rank`, no
+           constructor exported) used CORRECTLY. The entry never names a `Color` constructor — it obtains a
+           value through the exported smart constructor `mk` and inspects it through the exported `rank`,
+           the only doors the module opened. `(rank (mk))` → `Green` = 2. Pins that an abstract type is
+           fully usable through its module's exported functions while its representation stays private —
+           the value crosses the link as its underlying structural value (the nominal tag is compile-time
+           only), so opacity costs nothing at runtime.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export mk)
+      (export rank)))
+  (input  (do
+            (import "lib" (Color mk rank))
+            (def (main) (rank (mk)))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a specific constructor export exposes one variant and keeps the rest private"
+  (doc    "Between fully-abstract and fully-concrete: `lib` exports the handle `Color` plus ONE constructor
+           `(. Color Green)`, keeping `Red`/`Blue` private. The entry may construct `(Color.Green)` (the
+           exported constructor) — `rank` reads it → 2 — but constructing `(Color.Red)` would be CDZ0214.
+           Pins that constructor visibility is per-constructor, not all-or-nothing: `(export (. Color G))`
+           publishes exactly the named constructor, the partial point on the abstract↔concrete axis.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export (. Color Green))
+      (export rank)))
+  (input  (do
+            (import "lib" (Color rank))
+            (def (main) (rank (Color.Green)))
             (export main)))
   (output (: 2 Int64)))

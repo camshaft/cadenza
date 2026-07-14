@@ -4588,6 +4588,54 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
+/// Reject a MALFORMED `(Unit.define #"name" base num den)` top-level declaration — one whose shape does
+/// not match what `db::scan_unit_defines` accepts (exactly 4 args, a SYMBOL name, INTEGER num + den). The
+/// scan SILENTLY DROPS a malformed one (its guard is one big `&&` chain), so a `Unit.define` written with
+/// the wrong arity / a string name / a fractional scale registers NO family unit — and a later use of
+/// that unit surfaces only as "unknown unit `furlong`" (naming REAL units, never hinting the author's own
+/// `Unit.define` was malformed), the real defect lost. Reject it here CDZ0201 at the `Unit.define` form so
+/// the fault names the actual shape — the `Unit.define` analogue of the malformed-extern / -effect
+/// scan-and-drop checks. Only fires on a form whose head IS `(. Unit define)` (so a WELL-FORMED define, or
+/// any non-`Unit.define` call, is untouched). Walked over every arena node.
+pub(crate) fn check_malformed_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
+    let node_count = db.ast.structure.len();
+    for id in (0..node_count as u32).map(crate::ast::StructId) {
+        // The form must be a call `((. Unit define) arg…)` — read its head + args off the raw list.
+        let crate::ast::Struct::List(items) = db.ast.get(id) else {
+            continue;
+        };
+        let Some((&head, args)) = items.split_first() else {
+            continue;
+        };
+        // The head must be `(. Unit define)`.
+        let is_unit_define = db.ast.as_form(head, ".").is_some_and(|dot| {
+            dot.len() == 2
+                && db.ast.as_name(dot[0]) == Some("Unit")
+                && db.ast.as_name(dot[1]) == Some("define")
+        });
+        if !is_unit_define {
+            continue;
+        }
+        let args = args.to_vec();
+        // The shape `scan_unit_defines` requires: exactly 4 args, a SYMBOL name (`#"furlong"`), and INTEGER
+        // num + den. Any deviation is what the scan silently dropped.
+        let well_formed = args.len() == 4
+            && db.ast.as_sym(args[0]).is_some()
+            && db.ast.as_int(args[2]).is_some()
+            && db.ast.as_int(args[3]).is_some();
+        if !well_formed {
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `Unit.define` is `(Unit.define #\"name\" <base-unit> <num> <den>)` — a symbol \
+                     name, a base-unit expression, and two integer scale factors",
+                )
+                .at(id),
+            );
+        }
+    }
+}
+
 /// Reject a QUANTITY LITERAL / `Unit.of` naming a unit that is neither a built-in family
 /// (`unit_families`) nor a user `Unit.define` — `5zorks` / `5gram` (a plausible-but-undefined unit). The
 /// unit fails to reduce (`eval::unit_of` → `None`), so `Qty.of`'s type falls through to a non-`Qty` and
@@ -6261,14 +6309,33 @@ fn no_field_reject(
     operand: StructId,
     key: &crate::resolved::Symbol,
 ) -> Reject {
-    let fields = crate::eval::record_field_names(db, operand);
-    // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list
-    // when there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a Some here
+    // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list when
+    // there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a `Some` winner
     // ⟺ the message says "did you mean `field`?" — the fix targets the very field the message names.
-    let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+    //
+    // MEMOIZE per `(reduced-record occ, key)`: building the record's O(fields) name list + edit-distance-
+    // scanning it (twice — `nearest` then `did_you_mean`) per access made a WIDE record with a renamed field
+    // accessed from N sites O(N²). N sites over one record share its reduced occurrence, so the (winner,
+    // hint) pair caches. A type-only operand (no concrete record occ) falls through to a fresh compute — the
+    // rare non-repeating case. (The record-field twin of `variant_suggest_winner`, fix-26/45.)
+    let cache_key =
+        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.clone()));
+    let (suggestion, hint) = if let Some(k) = &cache_key
+        && let Some(hit) = db.no_field_suggestion.get(k)
+    {
+        hit.clone()
+    } else {
+        let fields = crate::eval::record_field_names(db, operand);
+        let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+        let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
+        if let Some(k) = &cache_key {
+            db.no_field_suggestion
+                .insert(k.clone(), (suggestion.clone(), hint.clone()));
+        }
+        (suggestion, hint)
+    };
     // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
     let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
-    let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
     let reject = Reject::coded(
         Code::Malformed,
         format!("{}`{}`{hint}", crate::diag::NO_FIELD_PREFIX, key.name),
@@ -6777,6 +6844,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // in). Rejecting here spuriously fails a well-typed program `(def (get-x r) (. r
                         // x))`, exactly as arithmetic on an `Any` param (`(+ r 1)`) does not fault.
                         Ty::Any => {}
+                        // A TUPLE accessed by NAME — `(. t x)` on a `(Tuple …)`. A tuple IS a member-access
+                        // operand, just by POSITION not name (`type-system.md` §A Tuple Is Accessed By
+                        // Position): the generic "requires a record" reads as a dead end when the real fix
+                        // is a numeric index. Name the tuple's arity + spell the index form, so the reader
+                        // reaches for `(. t 0)` rather than thinking a tuple is unindexable.
+                        Ty::Tuple(elems) => {
+                            trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a tuple (CDZ0201)");
+                            let last = elems.len().saturating_sub(1);
+                            out.push(Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "a tuple is accessed by position, not by name `{}` — use a numeric \
+                                     index `(. <tuple> N)` with N in 0..={last} (this tuple has {} \
+                                     element{})",
+                                    key.name,
+                                    elems.len(),
+                                    if elems.len() == 1 { "" } else { "s" },
+                                ),
+                            ))
+                        }
                         other => {
                             trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
                             out.push(Reject::coded(

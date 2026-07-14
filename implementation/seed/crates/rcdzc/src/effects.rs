@@ -1475,6 +1475,26 @@ pub fn reduce_handle(
     if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
         return None;
     }
+    // GUARD-CONDITION PERFORM. A perform inside a match-arm GUARD condition — `(match k ((guard p (E.op)) b)
+    // …)` — is a position the distribution/fold walks do NOT descend (they route the scrutinee + arm bodies,
+    // not the guard conds). For the SOUND, NARROW shape — a two-arm match whose first arm has an IRREFUTABLE
+    // inner pattern guarded by a performing cond, and an irrefutable catch-all second arm — desugar it to an
+    // `if` on the guard (`desugar_performing_guard_match`): the arm is selected iff the guard holds, so
+    // `(match k ((guard <irrefutable> g) b) (<irrefutable> b2))` ≡ `(if g b b2)` (each binder let-bound to
+    // the scrutinee). The guard becomes an `if` CONDITION — a strict-first position the if-condition fold
+    // already routes through the enclosing handle. A shape this does NOT cover (multiple guarded arms, which
+    // sequence handler state per arm-test — the per-branch-sees-the-seed distribution does not model that; or
+    // a refutable guarded pattern) is left to DECLINE cleanly (the honest "not yet reducible" todo), never
+    // the factually-wrong "no enclosing handler" error.
+    let body = match desugar_performing_guard_match(db, body, &ctx) {
+        Some(rewritten) => rewritten,
+        None => {
+            if body_has_performing_match_guard(db, body, &ctx) {
+                return None;
+            }
+            body
+        }
+    };
     // RESUMPTIVE (tail-resume) NON-TAIL CONDITIONAL HOIST. A `perform` inside an `if`/`match` BRANCH
     // advances the handler state LOCALLY, but the `if` thread arm returns the post-CONDITION state as its
     // out-state — so the state advance is LOST to any CONTINUATION after the conditional (`(do (if c
@@ -1726,6 +1746,131 @@ fn body_contains_nested_handle(db: &mut Db, node: StructId) -> bool {
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| body_contains_nested_handle(db, c)),
         Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the handle body has a MATCH whose arm PATTERN performs a discharged op — i.e. a `(guard
+/// <pattern> <cond>)` whose GUARD CONDITION performs (a plain pattern is a binder/literal that never
+/// performs, so a perform in the PATTERN position is always a guard cond). The effect-routing/distribution
+/// walks (`distribute_handler_over_conditional`, the fold) descend a match's SCRUTINEE and ARM BODIES but
+/// NOT the arm guard conditions, so a perform in a guard is left unrouted and reaches lowering as a bare
+/// perform → the misleading "performed with no enclosing handler here" (a handler DOES enclose it). Routing
+/// a guard perform through the handler is a genuine extension (the guard runs before the arm, advancing
+/// handler state per arm-test — a stateful sequencing the current per-branch-sees-the-seed distribution
+/// does not model), so until it is wired, DECLINE cleanly here (`reduce_handle` → `None` →
+/// `HANDLER_NOT_REDUCIBLE_DECLINE`, an honest "not yet reducible" todo) rather than letting the unrouted
+/// perform surface the factually-wrong "no enclosing handler" error. Recurses under `let`/`if`/`do`/nested
+/// `match` (a guard in any nested match under the handle body is equally unrouted). A NESTED `handle`'s own
+/// body is NOT descended (its guards are its own handler's concern — reduced when that inner handle folds).
+fn body_has_performing_match_guard(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return false; // an inner handle's guards belong to that handle's own reduction
+    }
+    if let Resolved::Match { arms, .. } = resolved_of(db, node)
+        && arms.iter().any(|&(pat, _)| subtree_performs(db, pat, ctx))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_performing_match_guard(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `pat` is an IRREFUTABLE inner pattern — a bare name binder or `_` wildcard — which matches ANY
+/// scrutinee. Used by the guard desugar: a guarded arm whose inner pattern is irrefutable is selected iff
+/// its GUARD holds, so it desugars to an `if` on the guard (the pattern narrows nothing).
+fn is_irrefutable_pattern(db: &mut Db, pat: StructId) -> bool {
+    match db.ast.as_name(pat) {
+        Some("_") => true,
+        Some(_) => true, // a bare name binds the whole scrutinee — irrefutable
+        None => false,   // a literal / compound / annotated pattern refutes
+    }
+}
+
+/// Rewrite a match with a PERFORMING GUARD into an `if` so the existing if-condition fold routes the guard
+/// perform — the SOUND, NARROW case: a two-arm match `(match scrut ((guard <irrefutable> g) b) (<irrefutable>
+/// b2))` where the FIRST arm's inner pattern is irrefutable (so the arm is selected exactly when `g` holds)
+/// and the SECOND is an irrefutable catch-all. Such a match is equivalent to `(if g b b2)` with each arm's
+/// binder let-bound to the scrutinee — the guard becomes an `if` CONDITION, a strict-first position the fold
+/// serves. Returns the rewritten `(if …)` (wrapped in a `let` if the first arm binds a name), or `None` when
+/// the body is not this exact shape (leaving the honest guard-perform decline for the general case: multiple
+/// guarded arms sequence state per arm-test, which this narrow rewrite does not model). Walks structurally
+/// so the match may be nested in the body. Does NOT descend into an inner `handle` (its guards are that
+/// handle's concern).
+fn desugar_performing_guard_match(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return None;
+    }
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node)
+        && arms.len() == 2
+    {
+        let (pat0, body0) = arms[0];
+        let (pat1, body1) = arms[1];
+        // First arm must be `(guard <irrefutable> <cond>)` with a PERFORMING cond; second an irrefutable
+        // catch-all with NO guard.
+        if let Some(g) = db.ast.as_form(pat0, "guard").map(|t| t.to_vec())
+            && g.len() == 2
+            && is_irrefutable_pattern(db, g[0])
+            && subtree_performs(db, g[1], ctx)
+            && db.ast.as_form(pat1, "guard").is_none()
+            && is_irrefutable_pattern(db, pat1)
+        {
+            let cond = g[1];
+            // Bind the scrutinee to each arm's binder (if a name, not `_`) so the arm bodies + guard read it.
+            // Both arms bind the SAME scrutinee value; if either inner pattern is a name, wrap the `if` in a
+            // `let` for that name. (The two arms' binders may differ in name; a name in arm 2's body reads
+            // the same scrutinee, so bind whichever names appear. Here we bind arm 0's name — the guard and
+            // body0 reference it; arm 1's binder, if a distinct name, is handled by binding it too.)
+            let if_head = db.push_name("if");
+            let if_node = db.push_list(vec![if_head, cond, body0, body1]);
+            // Wrap in `let` bindings for any named (non-`_`) inner patterns, so the guard/bodies resolve them
+            // to the scrutinee. A wildcard `_` binds nothing.
+            let mut binders: Vec<StructId> = Vec::new();
+            for &p in &[g[0], pat1] {
+                if let Some(name) = db.ast.as_name(p)
+                    && name != "_"
+                {
+                    let name_atom = db.push_atom(Leaf::Name(name.to_string()));
+                    let scrut_copy = copy_pure(db, scrutinee);
+                    binders.push(db.push_list(vec![name_atom, scrut_copy]));
+                }
+            }
+            if binders.is_empty() {
+                return Some(if_node);
+            }
+            let let_head = db.push_name("let");
+            let bindings = db.push_list(binders);
+            return Some(db.push_list(vec![let_head, bindings, if_node]));
+        }
+    }
+    // Recurse structurally: the match may be nested inside the body.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let mut changed = false;
+            let mut rebuilt = Vec::with_capacity(children.len());
+            for c in children {
+                match desugar_performing_guard_match(db, c, ctx) {
+                    Some(r) => {
+                        rebuilt.push(r);
+                        changed = true;
+                    }
+                    None => rebuilt.push(c),
+                }
+            }
+            if changed {
+                Some(db.push_list(rebuilt))
+            } else {
+                None
+            }
+        }
+        Struct::Atom(_) => None,
     }
 }
 

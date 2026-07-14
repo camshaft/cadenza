@@ -2426,7 +2426,7 @@ fn emit_closure_resource(
             lifted_type_idx,
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -2466,7 +2466,7 @@ fn emit_closure_resource(
             lifted_type_idx,
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -3115,7 +3115,7 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             &layout,
             false,
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3150,7 +3150,7 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             &layout,
             false,
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3699,7 +3699,7 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             &layout,
             false,
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3734,7 +3734,7 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             &layout,
             false,
-            Some(rebuild),
+            std::slice::from_ref(rebuild),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(

@@ -2038,3 +2038,41 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+(case "a perform in a match-arm guard is discharged by the enclosing handle"
+  (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
+           — a perform `(Ask.get)` inside a match-arm GUARD condition, discharged by an intra-program
+           `handle`. A perform in the SCRUTINEE, ARM BODY, or an IF CONDITION under the same handle all fold,
+           and NOW so does a guard condition — for the SOUND, NARROW shape: a guarded arm whose inner pattern
+           is IRREFUTABLE (a bare name / `_`) followed by an irrefutable catch-all. Such a match is selected
+           iff the guard holds, so `reduce_handle` desugars it to `(if <guard> <arm-body> <catch-all-body>)`
+           (each binder let-bound to the scrutinee), where the guard is an `if` CONDITION — a strict-first
+           position the if-condition fold routes through the enclosing handle. The guard reads the seed 5,
+           `5 > 3` holds, so the first arm fires → 100. (A REFUTABLE guarded pattern, or MULTIPLE guarded
+           arms — which sequence handler state per arm-test — is not this narrow shape and still declines
+           cleanly, an honest 'not yet reducible' todo, never the misleading 'no enclosing handler'.)")
+  (input  (do
+            (effect Ask (op get (-> Int64)))
+            (def (main)
+              (handle Ask 5 ((get () s (resume s (- s 1))))
+                (match 9
+                  ((guard n (> (Ask.get) 3)) 100)
+                  (n 200))))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)"
+  (doc    "The wildcard spelling of the guard-desugar above: both the guarded arm's inner pattern and the
+           catch-all are `_` (bind nothing), so the desugar to `(if <guard> <arm-body> <catch-all-body>)`
+           needs NO enclosing `let` — the bare `if` suffices (the `binders.is_empty()` path). `Ask` seeded 5,
+           `(> (Ask.get) 3)` reads 5 → true, so the first arm fires → 100. Pins that the guard-routing
+           desugar handles a wildcard-patterned guarded arm (no scrutinee binder) as well as a named one.")
+  (input  (do
+            (effect Ask (op get (-> Int64)))
+            (def (main)
+              (handle Ask 5 ((get () s (resume s (- s 1))))
+                (match 9
+                  ((guard _ (> (Ask.get) 3)) 100)
+                  (_ 200))))
+            (export main)))
+  (output (: 100 Int64)))

@@ -1659,7 +1659,7 @@ pub fn closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
-        None,
+        &[],
     )
 }
 
@@ -3839,7 +3839,7 @@ pub fn multi_closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
-        None,
+        &[],
     )
 }
 
@@ -3872,7 +3872,7 @@ pub fn multi_closure_resource_core_module_with_host(
         lifted_type_idx,
         layout,
         false,
-        None,
+        &[],
     )
 }
 
@@ -3898,7 +3898,10 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     lifted_type_idx: u32,
     layout: &Layout,
     call_borrow: bool,
-    tuple_arg: Option<&TupleArgRebuild>,
+    // ZERO OR MORE fixed-shape tuple/record args (each a `TupleArgRebuild` at its own `base_param`, ascending).
+    // The scalar `call` rebuilds each cell from its flattened fields, interleaved with scalars in arg order,
+    // and drops each after `call_indirect`. `&[]` = no tuple arg (byte-identical to the scalar path).
+    tuples: &[TupleArgRebuild],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let h = host_fns.len();
@@ -4080,8 +4083,9 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // the rebuilt tuple-cell handle. Params are: 0 = self, 1..1+arity = the closure's args (the FLATTENED
         // tuple fields when `tuple_arg` is set). `arg_vts` is the boundary/core param list either way.
         let cell_local = (1 + arg_vts.len()) as u32;
-        let tuple_local = cell_local + 1; // used only when `tuple_arg` is Some
-        let n_extra_locals = if tuple_arg.is_some() { 2 } else { 1 };
+        // One i32 per tuple arg for its rebuilt cell handle (at `tuple_local + i`), after the cell-rep local.
+        let tuple_local = cell_local + 1;
+        let n_extra_locals = 1 + tuples.len() as u32;
         let mut inner = Vec::new();
         // one local group: n_extra_locals × i32.
         inner.extend_from_slice(&wasm_vec(1, &{
@@ -4104,17 +4108,11 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // push env (the cell) then the closure's argument(s). The lifted fn is `(env, closure-args…) -> R`.
         inner.push(op::LOCAL_GET);
         uleb128(cell_local as u64, &mut inner);
-        // Push the closure args, threading a fixed-shape tuple-arg rebuild among the scalars (or the raw scalar
-        // args when `tuple_arg` is None). See [`emit_closure_call_args`].
+        // Push the closure args, threading each fixed-shape tuple-arg rebuild among the scalars (or the raw
+        // scalar args when `tuples` is empty). See [`emit_closure_call_args`].
         {
             let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
-            emit_closure_call_args(
-                tuple_arg_slice(tuple_arg),
-                tuple_local,
-                arg_vts.len() as u32,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(tuples, tuple_local, arg_vts.len() as u32, &imp, &mut inner);
         }
         // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
         inner.push(op::LOCAL_GET);
@@ -4153,12 +4151,12 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
                 &mut inner,
             );
         }
-        // The REBUILT tuple-arg cell is an owned temporary this `call` fabricated per invocation (NOT owned
-        // by the host across calls, unlike the closure handle) — so it drops UNCONDITIONALLY here (both own
+        // Each REBUILT tuple-arg cell is an owned temporary this `call` fabricated per invocation (NOT owned
+        // by the host across calls, unlike the closure handle) — so each drops UNCONDITIONALLY here (both own
         // and borrow), after the lifted body finished borrowing it, balancing its `arr-alloc`. Leaves R on top.
-        if tuple_arg.is_some() {
+        for ti in 0..tuples.len() as u32 {
             inner.push(op::LOCAL_GET);
-            uleb128(tuple_local as u64, &mut inner);
+            uleb128((tuple_local + ti) as u64, &mut inner);
             inner.push(op::CALL);
             uleb128(
                 *import_index

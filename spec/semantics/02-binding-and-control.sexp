@@ -418,6 +418,61 @@
             (def (main) (if (f 3) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+; --- Boolean connectives SHORT-CIRCUIT at RUN TIME --------------------------------------------------
+; The cases above pin that a short-circuited operand is still SCOPE- and TYPE-checked (a dead operand
+; carries no deferred error). This pins the RUNTIME half of #Boolean Connectives Short-Circuit: when the
+; LEFT operand determines the result — `false` for `and`, `true` for `or` — the RIGHT operand is NOT
+; EVALUATED, so its side effects (here, a runtime trap) do not occur; when the left does NOT determine the
+; result, the right IS evaluated and its trap fires. The right operand is `(< (/ 10 d) 5)` with `d` a
+; boundary parameter, so a `d`=0 divide traps at RUN TIME — a genuinely runtime trap (a CONSTANT `(/ 10 0)`
+; would be the compile-time `CDZ0304`, caught before any short-circuit, so the divisor MUST be a parameter
+; to reach the runtime connective). Each case pairs the two paths: the short-circuit path (left decides →
+; right skipped → `d`=0 does NOT trap, the `if` yields the left-decided branch) and the evaluate path (left
+; does not decide → right runs → `d`=0 TRAPS). A compiler that eagerly evaluated both operands would trap
+; on the skip path; one that never evaluated the right would answer wrong on the evaluate path.
+
+(case "and short-circuits at run time: a false left operand skips the trapping right operand"
+  (doc    "`(and b (< (/ 10 d) 5))` with `b`=false short-circuits — the right operand is NOT evaluated — so
+           the runtime divide `(/ 10 d)` with `d`=0 does NOT trap, and the whole `and` is `false`, taking
+           the `if`'s else branch → 0 (core-semantics.md #Boolean Connectives Short-Circuit). With `b`=true
+           the left does not decide the conjunction, so the right IS evaluated and `(/ 10 0)` TRAPS at run
+           time. Pins the runtime short-circuit of `and`: a `false` left skips the right operand's effects,
+           a `true` left reaches them. The divisor is a parameter so the divide is a RUNTIME trap, not the
+           compile-time CDZ0304 a constant `(/ 10 0)` would raise before the connective runs.")
+  (input  (do (def (main (: b Bool) (: d Int64)) (if (and b (< (/ 10 d) 5)) 1 0)) (export main)))
+  (call   main (: false Bool) (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: true Bool)  (: 0 Int64)) (trap   "division by zero"))
+
+(case "and evaluates the right operand when the left is true"
+  (doc    "The non-short-circuit path of `and` with a SAFE divisor: `b`=true so the right operand runs and
+           the result DEPENDS on it — `d`=5 makes `(/ 10 5)` = 2 < 5 true, so the conjunction is true → 1;
+           `d`=2 makes `(/ 10 2)` = 5, and `5 < 5` is false, so the conjunction is false → 0. Pins that a
+           `true` left operand genuinely evaluates the right (the two divisors give different answers), the
+           value companion of the trap-fires path above — the right operand is reached, not skipped.")
+  (input  (do (def (main (: b Bool) (: d Int64)) (if (and b (< (/ 10 d) 5)) 1 0)) (export main)))
+  (call   main (: true Bool) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: true Bool) (: 2 Int64)) (output (: 0 Int64)))
+
+(case "or short-circuits at run time: a true left operand skips the trapping right operand"
+  (doc    "`(or b (< (/ 10 d) 5))` with `b`=true short-circuits — the right operand is NOT evaluated — so
+           the runtime divide with `d`=0 does NOT trap, and the whole `or` is `true`, taking the `if`'s then
+           branch → 1. With `b`=false the left does not decide the disjunction, so the right IS evaluated and
+           `(/ 10 0)` TRAPS. The `or` mirror of the `and` case: a `true` left skips the right operand's
+           effects, a `false` left reaches them.")
+  (input  (do (def (main (: b Bool) (: d Int64)) (if (or b (< (/ 10 d) 5)) 1 0)) (export main)))
+  (call   main (: true Bool)  (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 0 Int64)) (trap   "division by zero"))
+
+(case "or evaluates the right operand when the left is false"
+  (doc    "The non-short-circuit path of `or` with a SAFE divisor: `b`=false so the right operand runs and
+           the result DEPENDS on it — `d`=5 makes `(/ 10 5)` = 2 < 5 true, so the disjunction is true → 1;
+           `d`=2 makes `(/ 10 2)` = 5, and `5 < 5` is false, so the disjunction is false → 0. Pins that a
+           `false` left operand genuinely evaluates the right (the two divisors give different answers), the
+           value companion of the `or` trap-fires path above.")
+  (input  (do (def (main (: b Bool) (: d Int64)) (if (or b (< (/ 10 d) 5)) 1 0)) (export main)))
+  (call   main (: false Bool) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 2 Int64)) (output (: 0 Int64)))
+
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
            a block evaluates to its last form's value). The earlier forms are pure here, so the block's
