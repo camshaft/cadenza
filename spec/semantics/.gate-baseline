@@ -23,6 +23,8 @@ pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALO
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
 pass	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
 pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
+pass	MIXED: a NESTED tuple + flat tuple arg closure ALONGSIDE a plain export
+pass	MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
 pass	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
@@ -30,20 +32,26 @@ pass	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a pl
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
+pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
 pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
+pass	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
 pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)
 pass	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
+pass	MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
+pass	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
+pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit

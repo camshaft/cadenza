@@ -1136,8 +1136,22 @@ the component type. The new work:
   e2e): 2 tuples→scalar 15, scalar-between→35, 3 tuples→105, nested-alongside-flat→47, capturing→115, 2
   records→15, PLUS 2 tuples→List `(list 5 10)`, 2 tuples→Tuple `(tuple 5 10)`, 2 tuples→Bytes `(5 10)`, 3
   tuples→List `(list 1 4 100)`, scalar-between→List `(list 5 10 20)`, capturing→List `(list 5 10 100)`.
-  **REMAINING within this feature:** the MULTI/MIXED/DISTINCT-SIG export shapes with ≥2 compound args (each emit
-  fn detects one compound today — the shared `call_type_block`/multi cores would take the same slot generalization).
+  brick 6 (THIS increment) — **N compound args × the MULTI-EXPORT + MIXED shapes (SCALAR result).** Threaded
+  `call_arg_slots: Option<&[ArgSlot]>` through `assemble_mixed_closure_resource_borrow_tuple` (the shared
+  multi/mixed scalar-`call` assembler) + `resource_inner_component_multi_closure_borrow_tuple` (its
+  `call_type_block` closure gained a slot arm; the tuple-type mint sits at `3+2*nmk`, `tuple_shift` =
+  `call_arg_tuple_type_count`), reusing `closure_call_functype_slots` + `mint_call_arg_tuple_types`. Both
+  `emit_multi_closure_resource` + `emit_mixed_closure_resource` bind `multi_compound_args` and emit through the
+  shared core `multi_closure_resource_core_module_with_host_borrow` (already `&[TupleArgRebuild]` since brick 3).
+  A LIST result over ≥2 compound args on these shapes DECLINES honestly (the multi list cores/envelope thread a
+  single tuple only — a scalar-guard added before those routings, else an invalid component). Corpus (all e2e):
+  MULTI-EXPORT 2 tuples→8 (+driving the other→12), 3 tuples→105, capturing→115, scalar-between→35; MIXED 2
+  tuples→15 (+driving the plain export→42), nested+flat alongside plain→47.
+  **REMAINING within this feature:** (a) the DISTINCT-SIG export shape with ≥2 compound args (`emit_distinct_sig_resource`
+  detects one compound per group today — its `GroupCompoundArg` + per-group `call-g<n>` envelope would take the
+  same slot generalization); (b) a LIST result over ≥2 compound args on the MULTI/MIXED shapes (the multi list
+  cores thread a single tuple — the same `&[TupleArgRebuild]`/slot widening brick 5 applied to the single-export
+  list cores).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of

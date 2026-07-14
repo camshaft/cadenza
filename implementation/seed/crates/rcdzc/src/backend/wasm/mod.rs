@@ -2357,6 +2357,19 @@ fn emit_closure_resource(
                 });
             }
         }
+        // ≥2 tuple args (N-compound): each rebuilds its own cell — register every tuple's box ops (a Bool/Float
+        // field would otherwise panic in `emit_tuple_rebuild` on `imp(bop)`, exactly as for the single-tuple arg).
+        if let Some((_, _, rebuilds)) = &multi_args {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for rebuild in rebuilds {
+                for f in &rebuild.fields {
+                    f.collect_box_ops(&mut |bop| {
+                        used.insert(bop);
+                    });
+                }
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -2916,8 +2929,24 @@ fn emit_multi_closure_resource(
     } else {
         nested_sole_or_among_scalars(arg_tys.as_slice())
     };
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
+    // N-COMPOUND-ARGS (≥2 fixed-shape tuple/record args) shared by all closure exports: the `ArgSlot` slot
+    // model (each tuple its own native `tuple<…>`, rebuilt in-guest from its `TupleArgRebuild`). Detected only
+    // when neither single-tuple classifier fired. Scoped this increment: SCALAR result on the multi-export
+    // shared `call` (a list result over ≥2 tuples on multi-export is a follow-on).
+    let multi_args: Option<(
+        Vec<crate::backend::wasm::envelope::ArgSlot>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+    )> = if tuple_arg.is_none() && nested_tuple.is_none() {
+        multi_compound_args(arg_tys.as_slice())
+    } else {
+        None
+    };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some()
+        || nested_tuple.is_some()
+        || multi_args.is_some()
+    {
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -2965,14 +2994,16 @@ fn emit_multi_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    // Core call-arg valtypes: the FLATTENED tuple fields when a (flat or nested) tuple arg, else each arg's
-    // own valtype.
+    // Core call-arg valtypes: the FLATTENED tuple fields when a (flat or nested) tuple arg or ≥2 tuple args,
+    // else each arg's own valtype.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
         all_vts.clone()
     } else if let Some((_, leaf_vts, _, _, _, _)) = &nested_tuple {
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
+    } else if let Some((_, all_vts, _)) = &multi_args {
+        all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
     } else {
         arg_tys
             .iter()
@@ -3083,6 +3114,18 @@ fn emit_multi_closure_resource(
                 });
             }
         }
+        // Each of the ≥2 tuple args rebuilds its own cell in the shared `call`; register every tuple's box ops.
+        if let Some((_, _, rebuilds)) = &multi_args {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for rebuild in rebuilds {
+                for f in &rebuild.fields {
+                    f.collect_box_ops(&mut |bop| {
+                        used.insert(bop);
+                    });
+                }
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -3162,6 +3205,17 @@ fn emit_multi_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
+    // N-COMPOUND-ARGS (≥2 tuple args) on the MULTI-EXPORT path scopes a SCALAR result this increment: the
+    // multi list-result cores/envelope thread a SINGLE tuple only (they take `Option<&TupleArgRebuild>` +
+    // `tuple_bytes`/`tuple_shape`, not the slot list). Decline a list result over ≥2 tuples HERE so it doesn't
+    // fall into those single-tuple list routings (which would emit an invalid component). Clean later widening.
+    if multi_args.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a multi-export closure taking two or more fixed-shape compound args AND returning a \
+             byte-rope/compound/collection is not yet emitted (the multi list-result path threads a single \
+             tuple only; the scalar-result multi path handles ≥2 compound args)",
+        ));
+    }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -3264,6 +3318,42 @@ fn emit_multi_closure_resource(
             ),
         );
     }
+    // N-COMPOUND-ARGS (multi-export, SCALAR result): N same-sig closures share one `call` taking ≥2 fixed-shape
+    // tuple/record args. The shared `call` receives every arg's FLATTENED fields (`arg_vts`) and rebuilds each
+    // cell (one `TupleArgRebuild` per tuple); the envelope's shared `call` functype mints N `tuple<…>` types via
+    // the `ArgSlot` slot model. (A list result over ≥2 tuples on multi-export is a follow-on — declines here.)
+    if let Some((slots, _all_vts, rebuilds)) = &multi_args {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &[], // no plain (non-closure) exports on the pure multi-export path
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            rebuilds,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the flattened fields are carried by the slot list
+            result_byte,
+            &[], // no plain exports
+            false,
+            None, // single-tuple flat path unused
+            &[],  // single-tuple prefix unused
+            &[],  // single-tuple suffix unused
+            None, // single-tuple nested shape unused
+            Some(slots),
+        ));
+    }
     // DIRECT-CALL COMPOUND ARG (multi-export): N same-sig closures share one `call` whose single argument is
     // a fixed-shape scalar tuple/record. The shared `call` receives the FLATTENED fields (`arg_vts`) and
     // rebuilds the cell (`TupleArgRebuild`); the envelope's shared `call` functype takes a `tuple<…>` type.
@@ -3297,6 +3387,7 @@ fn emit_multi_closure_resource(
             tpre2, // prefix scalar bytes (empty for a sole-tuple arg)
             tsuf2, // suffix scalar bytes
             None,  // an all-scalar-field tuple — no nested shape
+            None,  // single tuple → not the N-compound slot model
         ));
     }
     // DIRECT-CALL NESTED COMPOUND ARG (multi-export, SCALAR result): N same-sig closures share one `call`
@@ -3332,6 +3423,7 @@ fn emit_multi_closure_resource(
             npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
             nsuf,
             Some(shape),
+            None, // single (nested) tuple → not the N-compound slot model
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
@@ -3451,8 +3543,22 @@ fn emit_mixed_closure_resource(
     } else {
         nested_sole_or_among_scalars(arg_tys.as_slice())
     };
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
+    // N-COMPOUND-ARGS (≥2 fixed-shape tuple/record args) shared by the closure exports, plain exports
+    // alongside. Scoped this increment: SCALAR shared-`call` result (a list result over ≥2 tuples declines).
+    let multi_args: Option<(
+        Vec<crate::backend::wasm::envelope::ArgSlot>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+    )> = if tuple_arg.is_none() && nested_tuple.is_none() {
+        multi_compound_args(arg_tys.as_slice())
+    } else {
+        None
+    };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some()
+        || nested_tuple.is_some()
+        || multi_args.is_some()
+    {
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -3508,6 +3614,8 @@ fn emit_mixed_closure_resource(
         all_vts.clone()
     } else if let Some((_, leaf_vts, _, _, _, _)) = &nested_tuple {
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
+    } else if let Some((_, all_vts, _)) = &multi_args {
+        all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
     } else {
         arg_tys
             .iter()
@@ -3650,6 +3758,18 @@ fn emit_mixed_closure_resource(
                 });
             }
         }
+        // ≥2 tuple args (N-compound, mixed): each rebuilds its own cell — register every tuple's box ops.
+        if let Some((_, _, rebuilds)) = &multi_args {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for rebuild in rebuilds {
+                for f in &rebuild.fields {
+                    f.collect_box_ops(&mut |bop| {
+                        used.insert(bop);
+                    });
+                }
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -3746,6 +3866,16 @@ fn emit_mixed_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
+    // N-COMPOUND-ARGS (≥2 tuple args) on the MIXED path scopes a SCALAR result this increment (the mixed
+    // list-result cores/envelope thread a single tuple only). Decline a list result over ≥2 tuples HERE so it
+    // doesn't fall into the single-tuple list routings below (which would emit an invalid component).
+    if multi_args.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a mixed closure taking two or more fixed-shape compound args AND returning a \
+             byte-rope/compound/collection is not yet emitted (the mixed list-result path threads a single \
+             tuple only; the scalar-result mixed path handles ≥2 compound args)",
+        ));
+    }
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
@@ -3848,6 +3978,41 @@ fn emit_mixed_closure_resource(
             ),
         );
     }
+    // N-COMPOUND-ARGS (mixed, SCALAR result): the shared `call` takes ≥2 fixed-shape tuple/record args, plain
+    // exports alongside. The shared `call` rebuilds each cell (one `TupleArgRebuild` per tuple); the envelope's
+    // shared `call` functype mints N `tuple<…>` types via the `ArgSlot` slot model.
+    if let Some((slots, _all_vts, rebuilds)) = &multi_args {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            rebuilds,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the flattened fields are carried by the slot list
+            result_byte,
+            &abi_plain,
+            false,
+            None, // single-tuple flat path unused
+            &[],  // single-tuple prefix unused
+            &[],  // single-tuple suffix unused
+            None, // single-tuple nested shape unused
+            Some(slots),
+        ));
+    }
     // DIRECT-CALL COMPOUND ARG (mixed): the shared `call`'s single arg is a fixed-shape scalar tuple/record.
     // The shared `call` receives the FLATTENED fields (`arg_vts`) + rebuilds the cell (`TupleArgRebuild`); the
     // envelope's shared `call` functype takes a `tuple<…>` type, and the plain exports ride alongside as
@@ -3881,6 +4046,7 @@ fn emit_mixed_closure_resource(
             tpre2,
             tsuf2,
             None, // an all-scalar-field tuple — no nested shape
+            None, // single tuple → not the N-compound slot model
         ));
     }
     // DIRECT-CALL NESTED COMPOUND ARG (mixed, SCALAR result): a SOLE nested fixed-shape compound arg shared by
@@ -3916,6 +4082,7 @@ fn emit_mixed_closure_resource(
             npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
             nsuf,
             Some(shape),
+            None, // single (nested) tuple → not the N-compound slot model
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across

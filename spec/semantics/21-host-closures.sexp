@@ -3808,6 +3808,108 @@
   (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (list 5 10 100) (List Int64))))
 
+; N-COMPOUND-ARGS × MULTI-EXPORT + MIXED: the ≥2-fixed-shape-compound-arg path (SCALAR result) now composes
+; with the MULTI-EXPORT shape (N same-sig closures share ONE `call`) and the MIXED shape (a compound-arg closure
+; ALONGSIDE a plain non-closure export). The shared `call` rebuilds every tuple arg cell (a slice of
+; `TupleArgRebuild`), dispatches through the guest funcref table by the handle's resource rep, and the shared
+; envelope mints N `tuple<…>` arg types via the SAME `ArgSlot` slot model the single-export path uses. (A LIST
+; result over ≥2 compound args on these shapes remains a follow-on — declines honestly; the distinct-signature
+; shape is likewise not yet wired.)
+
+(case "MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`"
+  (doc    "`mk-sum`/`mk-diff : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` — two same-signature closures
+           each taking two tuple args, crossing as two `make-<name>`s sharing ONE `call` whose two arguments are
+           native `tuple<s64,s64>`s (four flattened core params, both rebuilt in-guest). Driving `mk-diff`:
+           `make-diff()` → a handle, `call(handle, (10,3), (1,2))` → `p.0 - q.1` = `10 - 2` = 8.")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-diff) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (- (. p 0) (. q 1))))
+              (export mk-sum) (export mk-diff)))
+  (call   mk-diff (: (tuple 10 3) (Tuple Int64 Int64)) (: (tuple 1 2) (Tuple Int64 Int64)))
+  (output (: 8 Int64)))
+
+(case "MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)"
+  (doc    "The SAME multi-export component, driving `mk-sum`: `call(handle, (10,3), (1,2))` → `p.0 + q.1` = `10
+           + 2` = 12. Confirms both same-sig two-tuple-arg closures share the one shared `call` (dispatched by
+           the handle's resource rep).")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-diff) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (- (. p 0) (. q 1))))
+              (export mk-sum) (export mk-diff)))
+  (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)) (: (tuple 1 2) (Tuple Int64 Int64)))
+  (output (: 12 Int64)))
+
+(case "MULTI-EXPORT: two same-sig closures each taking THREE Tuple args"
+  (doc    "N=3 tuple args on the multi-export shared `call`: `mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64
+           Int64) (Tuple Int64 Int64) Int64)`. Six flattened core params, three rebuilt cells, one shared
+           `call`. Driving `mk-a`: `call(handle, (1,2), (3,4), (100,200))` → `p.0 + q.1 + r.0` = `1 + 4 + 100` =
+           105.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
+                (+ (+ (. p 0) (. q 1)) (. r 0))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
+                (- (. p 0) (. r 1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
+             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (output (: 105 Int64)))
+
+(case "MULTI-EXPORT: two capturing closures each taking TWO Tuple args"
+  (doc    "Multi-export ≥2-compound-args composes with capture: `mk-a`/`mk-b : (-> Int64 …)` each close over `k`
+           AND take two tuple args. `make-a(100)` → a handle closing over k=100; `call(handle, (5,5), (5,10))`
+           → `p.0 + q.1 + k` = `5 + 10 + 100` = 115. The forwarded capture cell + both rebuilt arg cells
+           coexist in the one shared `call`.")
+  (input  (do (def (mk-a (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (+ (+ (. p 0) (. q 1)) k)))
+              (def (mk-b (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (- (. p 0) k)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 115 Int64)))
+
+(case "MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`"
+  (doc    "The interleaved-scalar `ArgSlot` model on the multi-export shared `call`: `mk-a`/`mk-b : (-> (Tuple
+           Int64 Int64) Int64 (Tuple Int64 Int64) Int64)`. The shared `call` rebuilds the first tuple, pushes
+           the scalar, rebuilds the second, dispatches. Driving `mk-a`: `call(handle, (5,5), 10, (1,20))` →
+           `p.0 + n + q.1` = 35.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
+                (+ (+ (. p 0) n) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
+                (- (. p 0) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
+  (output (: 35 Int64)))
+
+(case "MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export"
+  (doc    "The ≥2-compound-args path composes with the MIXED shape: a two-tuple-arg closure factory `mk : (->
+           (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` crosses via the resource envelope's `make` + shared
+           `call` (rebuilding both native `tuple<s64,s64>`s) WHILE a plain export `twice` rides alongside as an
+           ordinary top-level func. Driving the CLOSURE: `make()` → handle, `call(handle, (5,5), (5,10))` → 15.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 15 Int64)))
+
+(case "MIXED: driving the PLAIN export alongside a two-Tuple-arg closure"
+  (doc    "The SAME mixed component, but the trial drives the PLAIN export `twice` — proving it coexists with
+           the two-tuple-arg closure interface and is reachable by name. `twice(21)` → 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
+(case "MIXED: a NESTED tuple + flat tuple arg closure ALONGSIDE a plain export"
+  (doc    "The mixed ≥2-compound-args path composes with a NESTED compound arg: `mk : (-> (Tuple Int64 (Tuple
+           Int64 Int64)) (Tuple Int64 Int64) Int64)` reads `p.1.0 + q.1`, the nested arg flattening recursively
+           (its own inner `tuple<…>` type), alongside a plain `twice`. `call(handle, (1,(7,8)), (3,40))` → `7 +
+           40` = 47.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))) (: q (Tuple Int64 Int64)))
+                (+ (. (. p 1) 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 1 (tuple 7 8)) (Tuple Int64 (Tuple Int64 Int64)))
+             (: (tuple 3 40) (Tuple Int64 Int64)))
+  (output (: 47 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
