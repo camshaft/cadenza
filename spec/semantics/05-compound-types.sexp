@@ -1289,6 +1289,22 @@
   (call   main)
   (output (: (V 3/4) W)))
 
+(case "arithmetic on a bound Rational payload computes and escapes exactly"
+  (doc    "The payload binder flows into an EXACT-RATIONAL operation: `(match w ((W.V r) (+ r r)) …)` binds
+           the Rational payload as `r` and doubles it — `(+ (3/4) (3/4))` = `3/2` (exact, no rounding), and
+           the computed Rational escapes as `3/2` in lowest terms. Pins that a sum-bound Rational payload is
+           a full-fledged operand of the leaf's own arithmetic (not merely stored/discriminated) and the
+           result crosses the boundary in canonical normalized form — the payload participates in
+           computation, then re-escapes.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Rational) (Z))
+            (def (f (: w W)) (match w ((W.V r) (+ r r)) ((W.Z) (Rational.of 0 1))))
+            (def (main) (f (W.V (Rational.of 3 4))))
+            (export main)))
+  (call   main)
+  (output (: 3/2 Rational)))
+
 ; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
 ; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
 ; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type
