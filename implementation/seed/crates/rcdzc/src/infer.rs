@@ -4600,27 +4600,54 @@ fn check_application(
                         }
                         _ => None,
                     };
-                    let message = match (&type_name, mono_type_params) {
+                    // A monomorphic type applied to arguments carries the concrete fix the message names:
+                    // REPLACE the whole `(T …)` application with the bare type `T` (strip the spurious
+                    // arguments). `app` is the application node; the head's source name is the replacement.
+                    // Only for the `Some(0)` case — a type given args where it takes none, whose repair is
+                    // unambiguous ("write `T`"). The generic call-position case (`(T 5)`) has no single edit
+                    // (delete args? annotate? — the author's intent is unclear), so it stays message-only.
+                    let (message, mono_fix) = match (&type_name, mono_type_params) {
                         // A monomorphic type (0 declared params) applied to arguments — most often the
                         // sum-annotation slip `(: t (T Int64))` where `T` takes no parameters. Name the
                         // exact fix (`T`, not `(T …)`) without asserting a context, since the same
                         // over-application can appear in value call position (`(T 5)`) too.
-                        (Some(name), Some(0)) => format!(
-                            "`{name}` is a type that takes no type parameters — write `{name}`, not \
-                             `({name} …)` (a type belongs in an annotation `(: value {name})`, not \
-                             applied to arguments)"
+                        (Some(name), Some(0)) => (
+                            format!(
+                                "`{name}` is a type that takes no type parameters — write `{name}`, not \
+                                 `({name} …)` (a type belongs in an annotation `(: value {name})`, not \
+                                 applied to arguments)"
+                            ),
+                            // HEURISTIC (not verified): replacing `(T …)` with the bare type `T` clears the
+                            // fault in the COMMON case — an ANNOTATION slip `(: t (T Int64))`, where `T` is
+                            // exactly what belongs. But the SAME over-application can appear in VALUE call
+                            // position (`(Color 5)`), where a bare type name is still not a value → the
+                            // replace trades this error for a clearer "a type is not a value" one (no
+                            // miscompile). Since `check_application` runs on the reduced value graph and
+                            // cannot cheaply tell annotation from value position here, the fix stays
+                            // heuristic — right in the common case, harmless (error→clearer-error) otherwise.
+                            Some(crate::diag::Fix::replace_heuristic(app, name.clone())),
                         ),
-                        (Some(name), _) => format!(
-                            "`{name}` is a type, not a function — a type appears in an annotation \
-                             `(: value {name})`, not in call position"
+                        (Some(name), _) => (
+                            format!(
+                                "`{name}` is a type, not a function — a type appears in an annotation \
+                                 `(: value {name})`, not in call position"
+                            ),
+                            None,
                         ),
-                        (None, _) => format!(
-                            "{} {}",
-                            crate::diag::NOT_A_FUNCTION_PREFIX,
-                            other.render_name()
+                        (None, _) => (
+                            format!(
+                                "{} {}",
+                                crate::diag::NOT_A_FUNCTION_PREFIX,
+                                other.render_name()
+                            ),
+                            None,
                         ),
                     };
-                    out.push(Reject::coded(Code::TypeMismatch, message));
+                    let mut reject = Reject::coded(Code::TypeMismatch, message);
+                    if let Some(fix) = mono_fix {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 return;
             }

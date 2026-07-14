@@ -14369,6 +14369,23 @@ mod match_engine {
                 "names the no-type-parameters fix for {name}: {}",
                 d.message
             );
+            // The named fix is now APPLYABLE: a replace of the whole `(T …)` application with the bare type
+            // `T` (strip the spurious args). Heuristic — it clears the fault in the common ANNOTATION slip
+            // (`(: t (T Int64))`); in value call position it trades this error for a clearer one, so it is
+            // not asserted verified.
+            let fix = d
+                .fix
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} carries the write-`{name}` fix"));
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement, *name,
+                "replaces `({name} …)` with the bare `{name}`"
+            );
+            assert!(
+                !fix.verified,
+                "heuristic — right in annotation position, not asserted for value position"
+            );
         }
     }
 
