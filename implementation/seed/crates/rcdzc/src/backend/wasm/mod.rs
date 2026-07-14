@@ -1547,6 +1547,16 @@ type CompoundArgBoundary = (
     crate::backend::wasm::serialize::TupleArgRebuild,
 );
 
+/// A per-GROUP direct-call compound-arg boundary (distinct-sig): the tuple's per-field component bytes +
+/// prefix scalar bytes + suffix scalar bytes + the `TupleArgRebuild`. Like [`CompoundArgBoundary`] but without
+/// the full flattened core vts (a group carries those in `arg_vts` directly).
+type GroupCompoundArg = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    crate::backend::wasm::serialize::TupleArgRebuild,
+);
+
 /// EXACTLY ONE fixed-shape scalar tuple/record argument AMONG scalar args (the compound-arg-alongside-scalars
 /// direct-call path). Given the closure's `arg_tys`, if precisely one is a fixed-shape scalar tuple/record and
 /// every OTHER arg is an aliased-width scalar, returns the flattened `call` boundary (prefix scalar bytes +
@@ -3246,9 +3256,10 @@ fn emit_distinct_sig_resource(
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
         ret_descriptor: Option<Vec<u8>>,
-        /// The direct-call compound ARG for this group (a single fixed-shape scalar tuple/record): the tuple's
-        /// per-field component bytes + the `TupleArgRebuild`. `None` = scalar args. Scalar-result group only.
-        tuple_arg: Option<(Vec<u8>, serialize::TupleArgRebuild)>,
+        /// The direct-call compound ARG for this group (a single fixed-shape scalar tuple/record, SOLE or among
+        /// scalar args): the tuple's per-field component bytes + prefix scalar bytes + suffix scalar bytes + the
+        /// `TupleArgRebuild` (with `base_param`). `None` = scalar args. Composes with EVERY result shape.
+        tuple_arg: Option<GroupCompoundArg>,
         /// The LIFTED lambda's OWN param valtypes for this group — used to match a representative lifted slot.
         /// For a scalar-arg group this equals `arg_vts`; for a TUPLE-arg group `arg_vts` is the FLATTENED
         /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
@@ -3264,15 +3275,17 @@ fn emit_distinct_sig_resource(
             cur = *rng;
         }
         let ret_ty = cur;
-        // DIRECT-CALL COMPOUND ARG (distinct-sig): a single fixed-shape scalar tuple/record arg crosses as a
-        // native component `tuple<…>` the shared `call-<g>` rebuilds. Detected per group so the scalar
-        // `arg_bytes` decline doesn't reject it. SCOPE: exactly one such arg, scalar result.
-        let group_tuple_arg: Option<(Vec<u8>, Vec<ValType>, serialize::TupleArgRebuild)> =
-            if arg_tys.len() == 1 {
-                fixed_shape_scalar_tuple_arg(&arg_tys[0])
-            } else {
-                None
-            };
+        // DIRECT-CALL COMPOUND ARG (distinct-sig): a single fixed-shape scalar tuple/record arg — the SOLE arg
+        // OR among aliased-width scalars — crosses as a native component `tuple<…>` the shared `call-<g>`
+        // rebuilds (interleaving prefix/suffix scalars via `emit_closure_call_args`). Detected per group so the
+        // scalar `arg_bytes` decline doesn't reject it. 5-tuple = (field bytes, full flattened vts, prefix,
+        // suffix, rebuild).
+        let group_tuple_arg: Option<CompoundArgBoundary> = if arg_tys.len() == 1 {
+            fixed_shape_scalar_tuple_arg(&arg_tys[0])
+                .map(|(fb, fv, rb)| (fb, fv, Vec::new(), Vec::new(), rb))
+        } else {
+            single_compound_among_scalars(arg_tys.as_slice())
+        };
         let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() {
             Vec::new() // the flattened tuple fields are carried by `tuple_arg`
         } else {
@@ -3313,9 +3326,10 @@ fn emit_distinct_sig_resource(
             closure_boundary_byte(&ret_ty)
                 .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
         };
-        // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
-        let arg_vts: Vec<ValType> = if let Some((_, field_vts, _)) = &group_tuple_arg {
-            field_vts.clone()
+        // Core call-arg valtypes: the FULL flattened core param list when a tuple arg (prefix scalars, tuple
+        // fields, suffix scalars), else each arg's own valtype.
+        let arg_vts: Vec<ValType> = if let Some((_, all_vts, _, _, _)) = &group_tuple_arg {
+            all_vts.clone()
         } else {
             arg_tys
                 .iter()
@@ -3330,14 +3344,27 @@ fn emit_distinct_sig_resource(
         // A tuple arg now composes with EVERY result shape per group — scalar, byte-rope, fixed-compound, and
         // collection: the per-group `call-<g>` bodies (all four branches) + the per-group envelope functypes
         // thread the `TupleArgRebuild`. No result-shape decline remains for a distinct-sig tuple arg.
-        // The lifted lambda's own param shape: for a tuple-arg group it takes ONE i32 tuple-cell handle (the
-        // `call-<g>` wrapper rebuilds it from the flattened fields), NOT the flattened field vts.
+        // The lifted lambda's own param shape: it takes each ARG's OWN valtype — a tuple arg is ONE i32
+        // tuple-cell handle (the `call-<g>` wrapper rebuilds it from the flattened fields), scalars are
+        // themselves. So `match_vts` is per-arg (NOT the flattened boundary fields in `arg_vts`).
         let match_vts: Vec<ValType> = if group_tuple_arg.is_some() {
-            vec![ValType::I32]
+            arg_tys
+                .iter()
+                .map(|t| {
+                    // A fixed-shape tuple/record arg → the ONE i32 cell handle the lambda takes; a scalar → its
+                    // own valtype.
+                    if tuple_field_abi(t).is_some() {
+                        Some(ValType::I32)
+                    } else {
+                        valtype_of(t)
+                    }
+                    .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+                })
+                .collect::<Result<_, _>>()?
         } else {
             arg_vts.clone()
         };
-        let tuple_arg = group_tuple_arg.map(|(fb, _, rb)| (fb, rb));
+        let tuple_arg = group_tuple_arg.map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -3466,7 +3493,7 @@ fn emit_distinct_sig_resource(
     let tuple_box_ops: std::collections::BTreeSet<&'static str> = ginfos
         .iter()
         .filter_map(|gi| gi.tuple_arg.as_ref())
-        .flat_map(|(_, rb)| rb.field_box_ops.iter().filter_map(|o| *o))
+        .flat_map(|(_, _, _, rb)| rb.field_box_ops.iter().filter_map(|o| *o))
         .collect();
     let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
@@ -3566,7 +3593,10 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes,
             ret_template: ginfos[gi].ret_template.clone(),
             ret_descriptor: ginfos[gi].ret_descriptor.clone(),
-            tuple_arg: ginfos[gi].tuple_arg.as_ref().map(|(_, rb)| rb.clone()),
+            tuple_arg: ginfos[gi]
+                .tuple_arg
+                .as_ref()
+                .map(|(_, _, _, rb)| rb.clone()),
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
@@ -3577,7 +3607,20 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes
                 || ginfos[gi].ret_template.is_some()
                 || ginfos[gi].ret_descriptor.is_some(),
-            tuple_arg_bytes: ginfos[gi].tuple_arg.as_ref().map(|(fb, _)| fb.clone()),
+            tuple_arg_bytes: ginfos[gi]
+                .tuple_arg
+                .as_ref()
+                .map(|(fb, _, _, _)| fb.clone()),
+            tuple_prefix_bytes: ginfos[gi]
+                .tuple_arg
+                .as_ref()
+                .map(|(_, pre, _, _)| pre.clone())
+                .unwrap_or_default(),
+            tuple_suffix_bytes: ginfos[gi]
+                .tuple_arg
+                .as_ref()
+                .map(|(_, _, suf, _)| suf.clone())
+                .unwrap_or_default(),
         });
     }
 

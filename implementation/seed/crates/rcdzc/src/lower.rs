@@ -1125,7 +1125,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
-                    lower_arith(db, prim, &args)
+                    lower_arith(db, id, prim, &args)
                 }
                 // A FLOAT arithmetic prim (`+.`/`-.`/`*.`/`/.`) — fold two constant floats, else decline
                 // (runtime float operands emit the machine op in F4).
@@ -5268,11 +5268,22 @@ fn lower_recursive_call_or_decline(
     //# A generic definition MUST NOT appear in a component's interface.
     if !scheme.ty_vars.is_empty() {
         return match type_specialize(db, callee, args) {
-            Some(spec) => {
+            Some((spec, type_arg_positions)) => {
                 trace!(target: "rcdzc::lower", head = head.0, callee, spec, "recursive-generic call → monomorphized Core::Call");
+                // DROP the TYPE-VALUED arguments from the runtime call: a `(: t Type)` argument is
+                // compile-time-only (consumed by the specialization, which substituted its concrete
+                // type-value into the copy's body), so it carries no runtime slot and is not passed. The
+                // remaining args are the runtime ones, in order — matching the specialized def's erased
+                // signature (`type_specialize` omits the type-valued params).
+                let runtime_args: Vec<StructId> = args
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !type_arg_positions.contains(i))
+                    .map(|(_, &a)| a)
+                    .collect();
                 Core::Call {
                     callee: spec,
-                    args: args.to_vec(),
+                    args: runtime_args,
                 }
             }
             None => Core::Poison(Reject::decline(
@@ -5298,39 +5309,66 @@ fn lower_recursive_call_or_decline(
 /// reuses ONE function (byte-identical copies dedup by construction — same key). Returns `None` if an
 /// argument type is undetermined (`Any`/a free `Var`) — the call declines rather than baking a loose
 /// annotation. Modeled on `effects::specialize_recursive` (minus the trailing state params).
-fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usize> {
+fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usize, Vec<usize>)> {
     let orig_body = db.defs[callee].body?;
-    // The concrete argument type at each position — the instantiation. Every one must be DETERMINED (a
-    // loose `Any`/`Var` annotation would mistype the copied body). `type_of` on the arg occurrence reads
-    // the caller-side type the argument was solved to.
-    let mut arg_tys: Vec<crate::ty::Ty> = Vec::with_capacity(args.len());
-    for &a in args {
-        let t = crate::infer::type_of(db, a);
-        if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
-            return None;
-        }
-        arg_tys.push(t);
+    let orig_params = db.defs[callee].params.clone();
+    if orig_params.len() != args.len() {
+        return None; // a partial/over-application never reaches a recursive-generic Core::Call
     }
-    // MEMO KEY: the def's body occurrence + the rendered concrete signature. Two calls at the same types
-    // share ONE specialization; two byte-identical instantiations (e.g. the same type twice) collapse.
-    let key: String = arg_tys
+    // Classify each argument. A TYPE-VALUED argument (its `type_of` is `Ty::Type` — the caller passed a
+    // TYPE, e.g. `(len Int64 …)`) is compile-time-only: it is CONSUMED here (its concrete type-value is
+    // substituted into the copy's body and it is dropped from both the specialized signature and the
+    // runtime call). Every OTHER argument's concrete TYPE re-annotates its (kept) parameter. Both the
+    // type-VALUE (for a type arg) and the type (for a value arg) must be DETERMINED — a loose `Any`/free
+    // `Var` would mistype the copied body.
+    enum ArgKind {
+        // A runtime value param, kept, re-annotated with this concrete type.
+        Value(crate::ty::Ty),
+        // A type-valued param: its concrete type-VALUE, substituted into the copy's body (the param is
+        // ERASED from the signature).
+        TypeArg(crate::ty::Ty),
+    }
+    let mut kinds: Vec<ArgKind> = Vec::with_capacity(args.len());
+    for &a in args {
+        if matches!(crate::infer::type_of(db, a), crate::ty::Ty::Type) {
+            // A type-valued argument — reduce it to the concrete type it names (`Int64` → `Ty::Int`).
+            let tv = crate::eval::typeval_of(db, a)?;
+            if matches!(tv, crate::ty::Ty::Any) || tv.has_free_var() {
+                return None; // an undetermined type-value cannot monomorphize
+            }
+            kinds.push(ArgKind::TypeArg(tv));
+        } else {
+            let t = crate::infer::type_of(db, a);
+            if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
+                return None;
+            }
+            kinds.push(ArgKind::Value(t));
+        }
+    }
+    let type_arg_positions: Vec<usize> = kinds
         .iter()
-        .map(|t| t.render_name())
+        .enumerate()
+        .filter(|(_, k)| matches!(k, ArgKind::TypeArg(..)))
+        .map(|(i, _)| i)
+        .collect();
+
+    // MEMO KEY: the def's body occurrence + the rendered concrete signature (EVERY arg's type-value or
+    // type contributes — so `len` at `Lst Int64` and `Lst String` are distinct, and a type arg's VALUE
+    // `Int64` distinguishes it from `String`). Two calls at the same instantiation share ONE specialization.
+    let key: String = kinds
+        .iter()
+        .map(|k| match k {
+            ArgKind::Value(t) => t.render_name(),
+            ArgKind::TypeArg(tv) => format!("@{}", tv.render_name()), // `@` marks a type ARG slot
+        })
         .collect::<Vec<_>>()
         .join(",");
     let memo_key = (orig_body, key);
     if let Some(&idx) = db.type_specializations.get(&memo_key) {
-        return Some(idx);
+        return Some((idx, type_arg_positions));
     }
 
-    // The original parameter binders — each a bare name `p` or an annotated `(: p T)`. Extract each NAME,
-    // and re-annotate it with the concrete arg type at that position. An annotated param keeps its
-    // (concrete) annotation via the arg type, which must AGREE (the call already type-checked against the
-    // scheme). A non-name binder is unsupported (declines).
-    let orig_params = db.defs[callee].params.clone();
-    if orig_params.len() != arg_tys.len() {
-        return None; // a partial/over-application never reaches a recursive-generic Core::Call
-    }
+    // Each parameter's NAME (a bare name `p` or the inner name of `(: p T)`). A non-name binder declines.
     let mut param_names: Vec<String> = Vec::with_capacity(orig_params.len());
     for &p in &orig_params {
         let name = match db.ast.as_name(p) {
@@ -5348,15 +5386,32 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usiz
     let base = db.defs[callee].name.clone();
     let spec_name = format!("{base}#mono{}", db.defs.len());
 
-    // Build the specialized signature `(spec (: p0 T0) (: p1 T1) …)` — EVERY param annotated with its
-    // concrete instantiation type, so the copied body types + emits with real machine valtypes.
+    // Build the specialized signature `(spec (: p T)…)` — a VALUE param is kept and annotated with its
+    // concrete type; a TYPE-VALUED param is OMITTED entirely (compile-time-only, no runtime slot). The
+    // type-valued param's references in the body are substituted with its concrete type expression below,
+    // so the omitted param needs no binder. `arg_of` collects those substitutions (keyed on the original
+    // param's NAME occurrence, the identity a body reference resolves to).
     let spec_name_atom = db.push_name(&spec_name);
     let mut sig_children = vec![spec_name_atom];
-    for (name, ty) in param_names.iter().zip(arg_tys.iter()) {
-        let name_atom = db.push_name(name);
-        let ty_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_name(":");
-        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+    let mut arg_of: crate::fxhash::FxHashMap<StructId, StructId> =
+        crate::fxhash::FxHashMap::default();
+    for ((name, kind), &orig_p) in param_names.iter().zip(kinds.iter()).zip(orig_params.iter()) {
+        match kind {
+            ArgKind::Value(ty) => {
+                let name_atom = db.push_name(name);
+                let ty_expr = crate::eval::encode_typeval(db, ty);
+                let colon = db.push_name(":");
+                sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+            }
+            ArgKind::TypeArg(tv) => {
+                // Substitute the CONCRETE type expression for the type param's references (`(Lst t)` →
+                // `(Lst Int64)`): map the param's NAME occurrence → an `encode_typeval` node of its
+                // type-value. The param itself is dropped from the signature (erased).
+                let name_occ = crate::eval::param_name_occ(db, orig_p);
+                let ty_expr = crate::eval::encode_typeval(db, tv);
+                arg_of.insert(name_occ, ty_expr);
+            }
+        }
     }
     let sig = db.push_list(sig_children.clone());
     let spec_params: Vec<StructId> = sig_children[1..].to_vec();
@@ -5375,17 +5430,17 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usiz
     db.type_specializations.insert(memo_key, spec_index);
 
     // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
-    // reference to a param re-resolves by name to the new annotated binder; a self-call `(callee …)`
+    // reference to a VALUE param re-resolves by name to the new annotated binder; a TYPE-VALUED param's
+    // references are SUBSTITUTED with its concrete type expression (`arg_of`); a self-call `(callee …)`
     // re-resolves by name to the ORIGINAL def and, lowered with the same-typed args, re-enters here → memo.
-    // Pass the ORIGINAL def's param name occurrences as `own_params` so those references copy + re-resolve
-    // against the specialized sig, while every OTHER free reference (a self-call, or — for a DO-LOCAL
-    // generic — a sibling whose lexical do-scope the copy escapes) is pinned and SHARED. Without the pin a
-    // do-local generic's self-call re-resolved unbound in the orphan copy (CDZ0101).
+    // `own_params` (the original params' name occurrences) copy + re-resolve against the specialized sig;
+    // every OTHER free reference (a self-call, or a do-local sibling whose lexical scope the copy escapes)
+    // is pinned + SHARED (without the pin a do-local generic's self-call re-resolved unbound, CDZ0101).
     let own_params: Vec<StructId> = orig_params
         .iter()
         .map(|&p| crate::eval::param_name_occ(db, p))
         .collect();
-    let spec_body = crate::eval::copy_structural_pub(db, orig_body, &own_params);
+    let spec_body = crate::eval::copy_structural_pub(db, orig_body, &own_params, &arg_of);
 
     // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def
     // (`is_param_occurrence` walks that chain; `binder_in` resolves a body reference against the sig).
@@ -5396,7 +5451,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usiz
     // Register any do-local recursive functions the copy introduced (the copy-time twin of load-time
     // registration), so a nested recursive call in the copied body lowers to a `Core::Call`.
     db.register_reduced_callables(spec_body);
-    Some(spec_index)
+    Some((spec_index, type_arg_positions))
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — following a `Ref` to a
@@ -8042,14 +8097,40 @@ fn lower_bigint_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core
     }
 }
 
-fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
+fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
-        (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
+        (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
+            // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
+            // (`255 + 1 = 256` over UInt8, `100 * 2 = 200` over Int8) folds to a valid `ConstInt` and
+            // would otherwise slip through to a backend CDZ0302 ("a literal that doesn't fit"). But this
+            // is a constant OPERATION whose defined outcome is a TRAP (the value overflows the type),
+            // NOT an out-of-range literal — so it is CDZ0304 (`ConstTrap`), the SAME code the wide
+            // `(+ Int64.max 1)` gets and the reject-don't-miscompile discipline the const-overflow /
+            // List.update-OOB path already follows. (A direct out-of-range LITERAL `(: 256 UInt8)` is
+            // still CDZ0302 at its own annotation — it is a literal, not an operation result.)
+            match fold_arith(op, a, b) {
+                Core::ConstInt(r) => match crate::infer::type_of(db, id) {
+                    crate::ty::Ty::Int(it)
+                        if !r.fits_width(it.ground_signed(), it.ground_width()) =>
+                    {
+                        trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "constant arithmetic result overflows the narrow width → CDZ0304");
+                        Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "this constant arithmetic operation overflows its integer type (a \
+                             compile-provable overflow traps)",
+                        ))
+                    }
+                    _ => Core::ConstInt(r),
+                },
+                other => other,
+            }
+        }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         // ALGEBRAIC IDENTITY: one operand is a constant whose value makes the op a NO-OP or a constant
         // result — the whole checked operation (and its overflow guard) is eliminated at lowering. Only

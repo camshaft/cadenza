@@ -2703,6 +2703,55 @@
   (call   mk-eq (: (tuple 5 5) (Tuple Int64 Int64)))
   (output (: true Bool)))
 
+; The tuple-AMONG-scalars arg shape now works on the DISTINCT-SIGNATURE path too — the LAST direct-call
+; arg-position gap — for EVERY result shape. `emit_distinct_sig_resource` detects each group's arg via
+; `single_compound_among_scalars`; every per-group `call-g<n>` body pushes prefix scalars, the rebuilt tuple,
+; and suffix scalars (via the shared `emit_closure_call_args`); the per-group envelope functypes interleave the
+; scalar boundary bytes around the `tuple<…>` type. Groups of DIFFERENT signatures (incl. a narrow Bool field)
+; each keep their own resource type.
+
+(case "DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs — driving the Int64 group"
+  (doc    "`mk-a : (-> Int64 (Tuple Int64 Int64) Int64)` and `mk-b : (-> Int64 (Tuple Int64 Bool) Int64)` — a
+           scalar `n` then a tuple, of DIFFERENT signatures (Int64-pair vs Int64/Bool tuple), each its own
+           resource type + `call-g<n>` interleaving `n` around the rebuilt tuple. `make-a()` → handle,
+           `call(handle, 100, (10, 3))` → `n + p.0 + p.1` = 113.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (. q 0)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)"
+  (doc    "The SAME distinct-sig component, driving `mk-b : (-> Int64 (Tuple Int64 Bool) Int64)` — its arg
+           tuple has a NARROW Bool field (boxed via `box-bool` in the rebuild), the scalar `n` a prefix.
+           `make-b()` → handle, `call(handle, 5, (7, true))` → `(. q 0)` = 7.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (. q 0)))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 5 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
+  (output (: 7 Int64)))
+
+(case "DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST"
+  (doc    "`mk-a : (-> Int64 (Tuple Int64 Int64) (List Int64))` and `mk-b : (-> Int64 (Tuple Int64 Bool) (List
+           Int64))` — a scalar then a tuple, DIFFERENT sigs, each its own resource type + list-returning
+           `call-g<n>` that interleaves the scalar around the rebuilt tuple then value-encodes the returned
+           List. `make-a()` → handle, `call(handle, 100, (10, 3))` → `(list 100 10 3)`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (list (. q 0) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)"
+  (doc    "The SAME distinct-sig List component, driving `mk-b` — the tuple field FIRST then the suffix scalar
+           `n`: `call(handle, 100, (7, true))` → `(list (. q 0) n)` = `(list 7 100)`. Confirms the interleaving
+           handles a Bool field + a suffix scalar per distinct-sig group's list-`call-g`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: q (Tuple Int64 Bool))) (list (. q 0) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 100 Int64) (: (tuple 7 true) (Tuple Int64 Bool)))
+  (output (: (list 7 100) (List Int64))))
+
 ; A fixed-shape compound ARGUMENT now composes with a BYTE-ROPE (`Bytes`/`String`) result: the bytes-result
 ; core serializer + its envelope thread the `TupleArgRebuild`, so the `call` rebuilds the flattened tuple cell
 ; then copies its byte-rope result out as `list<u8>`. (A COMPOUND value-form or a variable-length COLLECTION
@@ -2983,9 +3032,9 @@
 
 ; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
 ; closures share one `call` that interleaves the prefix scalar with the rebuilt tuple, then produces a scalar,
-; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (An among-scalars tuple
-; with a LIST result on the MIXED/distinct-sig paths still declines — those emit fns don't yet interleave
-; prefix/suffix; the SINGLE + MULTI-export list-result paths are covered here + above.)
+; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (The among-scalars tuple
+; arg is now supported on ALL FOUR export shapes — single, multi, mixed, and distinct-sig — for every result
+; shape; the shared `emit_closure_call_args` + interleaved functypes thread it uniformly.)
 
 (case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across

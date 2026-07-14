@@ -1022,6 +1022,8 @@ todo	a recursive byte walk threading a Bytes parameter through a helper infers w
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function folds a linked list of runtime-determined length
+pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
+pass	a lowercase-named type cross-references another lowercase-named type in a field
 todo	a recursive function folds a runtime linked list to a scalar
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive function that threads a tuple accumulator returns it

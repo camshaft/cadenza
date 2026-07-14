@@ -502,6 +502,8 @@ pass	a recursive do-local function survives two inlinings of its helper
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function folds a linked list of runtime-determined length
+pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
+pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive function in a nested module runs through the projection chain
 pass	a recursive function sums a range it walks by performing a fresh-index effect
