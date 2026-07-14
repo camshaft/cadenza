@@ -466,7 +466,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // A call CONSUMES its arguments; a host call OR a cross-component call likewise consumes its
         // arguments across the boundary.
-        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
         // A sequencing block: the binding escapes if it escapes any statement or the tail.
@@ -1310,14 +1310,6 @@ pub fn collect_used_ops(
                     Ty::String | Ty::Unit => {}
                     _ => collect_used_ops(db, arg, out),
                 }
-            }
-        }
-        // A CROSS-COMPONENT call: its arguments are evaluated before crossing the boundary, so recurse
-        // to collect any runtime op an argument's construction needs (the call itself is a peer import,
-        // not a runtime op). X2 declines the emit; this keeps the used-op walk complete for later.
-        Core::ExternCall { args, .. } => {
-            for arg in args {
-                collect_used_ops(db, arg, out);
             }
         }
         Core::Seq { stmts, tail } => {
@@ -5875,31 +5867,9 @@ fn emit(
             out.push(Lir::CallHostImport(index));
             Ok(())
         }
-        // A CROSS-COMPONENT call (X4b) — push each scalar argument, then `call` the peer op by its
-        // position in the program's extern-import set (`layout.extern_order`). Structurally the host-call
-        // emit, but resolves against the extern set (bound under module `"peer"`). X4b-3 scope: scalar
-        // args (a `Unit` arg carries no boundary slot; a compound/`value` arg is X5 and declined upstream
-        // by the undelegable-op check).
-        Core::ExternCall {
-            interface,
-            op,
-            args,
-            ..
-        } => {
-            let index = layout.extern_index(&interface, &op).ok_or_else(|| {
-                Reject::decline(
-                    "a cross-component call's operation is not in the extern-import set",
-                )
-            })?;
-            for &arg in &args {
-                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
-                    continue;
-                }
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            }
-            out.push(Lir::CallExternImport(index));
-            Ok(())
-        }
+        // (The `Core::ExternCall` emit arm was REMOVED in U4 — a peer op is now a peer-bound effect's
+        // escaping `Core::HostCall`, which the `Core::HostCall` arm above emits as a `CallExternImport`
+        // when the effect is peer-bound.)
         // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
         // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
         // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced

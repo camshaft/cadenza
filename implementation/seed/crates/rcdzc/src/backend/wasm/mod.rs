@@ -461,13 +461,11 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    // The CROSS-COMPONENT extern-import set (X4b) — the peer ops a `Core::ExternCall` names, collected
-    // over `layout.order` like the host set.
+    // The CROSS-COMPONENT extern-import set — a PEER-BOUND effect's escaping ops (U2). It is populated
+    // ENTIRELY by the effect-binding conversion just below (a peer op is an escaping effect bound to a
+    // peer contract, `db.effect_bindings`); there is no separate `(extern …)` surface any more (removed in
+    // U4 — cross-component interop is unified with effects).
     let mut extern_imports: Vec<host::ExternImport> = Vec::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        host::collect_extern_imports(db, body, &mut extern_imports);
-    }
     // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract (`(bind Math "cadenza:math/api")`
     // → `db.effect_bindings`) is a PEER call, not a host call. Move each such host import into the extern
     // set, retargeted to its bound interface — so `Math.add` reaching the boundary emits through the peer

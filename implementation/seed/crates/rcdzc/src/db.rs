@@ -402,37 +402,6 @@ pub struct EffectDecl {
     pub synth: Option<StructId>,
 }
 
-/// One operation a cross-component `(extern "iface" (op (-> …)) …)` form binds: the operation NAME (the
-/// func the peer interface exports and this component imports) and its declared MONOMORPHIC type
-/// occurrence. The declared type IS the contract — a peer whose export does not match declines at
-/// composition (cross-component-interop.md §The Exchanged Value Is Structurally The Same On Both Sides;
-/// component-abi.md §Cross-Component Value Exchange).
-#[derive(Clone, PartialEq, Debug)]
-pub struct ExternOp {
-    /// The operation name (`add` in `(extern "…" (add (-> …)))`) — the name it binds into scope AND the
-    /// component extern name it aliases out of the imported peer interface (kebab-normalized at emit).
-    pub name: String,
-    /// The name occurrence — the binder identity a reference resolves against.
-    pub name_occ: StructId,
-    /// The declared type occurrence (`(-> A B)`), or `None` for a malformed clause with no type.
-    pub ty: Option<StructId>,
-}
-
-/// A cross-component `(extern "cadenza:pkg/iface" (op (-> …)) …)` declaration — a CONSUMER binding a PEER
-/// Cadenza component's exported interface, distinct from an intra-package `(import "path" …)` (which
-/// splices a sibling source file). Each op resolves to a `Resolved::Extern` and, applied, lowers to a
-/// `Core::ExternCall` the backend imports across the live component boundary (X4b). Its identity is the
-/// declaration occurrence, like [`EffectDecl`].
-#[derive(Clone, PartialEq, Debug)]
-pub struct ExternDecl {
-    /// The peer interface name the ops are imported from (`cadenza:pkg/iface`).
-    pub interface: String,
-    /// The declaration occurrence — the anchor for a declaration-level diagnostic.
-    pub occ: StructId,
-    /// The bound operations in declaration order.
-    pub ops: Vec<ExternOp>,
-}
-
 /// A `(module NAME def…)` declaration reachable in a `do`-block — a namespace binding `NAME` to a record
 /// of its exported definitions (`core-semantics.md` §A Module Groups Definitions Under A Name). Its
 /// members are reached by member access `(. NAME field)`, exactly like a sum's variants or an effect's
@@ -568,11 +537,6 @@ pub struct Db {
     /// well-formedness time — a duplicate operation name is CDZ0201). The effect analogue of
     /// `type_decls`; identity is the declaration occurrence.
     pub effect_decls: Vec<EffectDecl>,
-    /// The top-level `(extern "iface" (op (-> …)) …)` cross-component declarations, from the scan (X4b).
-    /// Each binds a peer Cadenza component's operations; an op resolves to a `Resolved::Extern` and,
-    /// applied, lowers to a `Core::ExternCall`. Populated at load; empty for a program that binds no peer
-    /// (byte-neutral — the common case).
-    pub extern_decls: Vec<ExternDecl>,
     /// The interface name this component publishes its exports under, when compiled AS A PROVIDER (X4b) —
     /// from the `component-name` compile-request artifact. `Some("cadenza:pkg/iface")` → `emit` wraps the
     /// boundary exports as that named interface instance so a peer's `(extern …)` binds. `None` (the
@@ -1411,8 +1375,7 @@ impl Db {
         // snapshot, not the polluted map, is what keeps the two cases distinct.
         let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
             prelude.keys().cloned().collect();
-        let (defs, exports, mut type_decls, effect_decls, mut modules, extern_decls) =
-            scan_top_level(&ast);
+        let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -1665,7 +1628,6 @@ impl Db {
             exports,
             type_decls,
             effect_decls,
-            extern_decls,
             component_name: None,
             effect_bindings,
             modules,
@@ -2605,23 +2567,6 @@ impl Db {
         self.effect_decl_index.get(name).copied()
     }
 
-    /// A CROSS-COMPONENT extern operation bound by name (X4b) — `(interface, op-name, declared-type-occ)`
-    /// for the first `(extern "iface" (name (-> …)) …)` clause binding `name`, or `None`. An op with no
-    /// declared type (a malformed clause) is skipped (it binds nothing resolvable). Linear over
-    /// `extern_decls` (a program binds few peer interfaces); first-wins on a duplicate name.
-    pub fn extern_op_by_name(&self, name: &str) -> Option<(String, String, StructId)> {
-        for d in &self.extern_decls {
-            for o in &d.ops {
-                if o.name == name
-                    && let Some(ty) = o.ty
-                {
-                    return Some((d.interface.clone(), o.name.clone(), ty));
-                }
-            }
-        }
-        None
-    }
-
     /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
     /// operation's `(meta effect-op)` channel carries, so a later pass recovers an effect's operation set
     /// from a projected op value. `None` if `occ` names no effect declaration.
@@ -3134,7 +3079,6 @@ type TopScan = (
     Vec<TypeDecl>,
     Vec<EffectDecl>,
     Vec<ModuleDecl>,
-    Vec<ExternDecl>,
 );
 
 /// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE, and RETURN the doc text
@@ -3368,7 +3312,6 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
     let mut types: Vec<TypeDecl> = Vec::new();
     let mut effects: Vec<EffectDecl> = Vec::new();
     let mut modules: Vec<ModuleDecl> = Vec::new();
-    let mut externs: Vec<ExternDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -3424,10 +3367,6 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
             && let Some(decl) = scan_effect_decl(ast, item)
         {
             effects.push(decl);
-        } else if ast.as_form(item, "extern").is_some()
-            && let Some(decl) = scan_extern_decl(ast, item)
-        {
-            externs.push(decl);
         }
     }
 
@@ -3490,7 +3429,7 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
         e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
-    (defs, exports, types, effects, modules, externs)
+    (defs, exports, types, effects, modules)
 }
 
 /// Scan an `(effect NAME (op f (-> A B)) …)` declaration at `item` into an [`EffectDecl`] — the effect
@@ -3527,42 +3466,6 @@ pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDec
         occ: item,
         ops,
         synth: None,
-    })
-}
-
-/// Scan an `(extern "iface" (op (-> A B)) …)` cross-component declaration at `item` into an
-/// [`ExternDecl`] — the peer interface name (a string literal) and each bound operation (its name
-/// occurrence + declared monomorphic type). The X4b analogue of `scan_effect_decl`, but each clause is
-/// `(NAME TYPE)` directly (no `op` keyword — an extern binds NAMES to signatures, it declares no effect).
-/// Returns `None` if `item` is not an `(extern …)` form or its interface is not a string literal. A
-/// malformed clause (not `(NAME TYPE)`) is skipped.
-pub(crate) fn scan_extern_decl(ast: &Arenas, item: StructId) -> Option<ExternDecl> {
-    let tail = ast.as_form(item, "extern")?;
-    // The first tail element is the peer interface — a STRING literal (`cadenza:pkg/iface`), never a
-    // name (a dotted interface name is not a valid bare atom; it is inert data the linker reads).
-    let interface = ast.as_str(*tail.first()?)?.to_string();
-    let mut ops = Vec::new();
-    for &clause in tail.iter().skip(1) {
-        // Each op is `(NAME TYPE)` — a list whose first element is the op name, second its type.
-        let Struct::List(parts) = ast.get(clause) else {
-            continue;
-        };
-        let Some(&name_occ) = parts.first() else {
-            continue;
-        };
-        let Some(op_name) = ast.as_name(name_occ) else {
-            continue;
-        };
-        ops.push(ExternOp {
-            name: op_name.to_string(),
-            name_occ,
-            ty: parts.get(1).copied(),
-        });
-    }
-    Some(ExternDecl {
-        interface,
-        occ: item,
-        ops,
     })
 }
 
@@ -3988,7 +3891,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", "bind"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -3997,7 +3900,7 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", 
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
 pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "def", "export", "type", "effect", "extern", "bind", "module", "pragma",
+    "def", "export", "type", "effect", "bind", "module", "pragma",
 ];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`

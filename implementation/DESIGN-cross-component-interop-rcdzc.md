@@ -78,6 +78,24 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   25, not 10.** Realizes the FULL precedence ladder the operator asked for: **in-source default <
   compile-request override < in-program `(handle …)`** (the handler discharges before escape, free from
   U2). Byte-neutral (the artifact only affects a program that supplies it — gate 2046/0/0).
+- **U4 — REMOVE the `extern` surface + `Core::ExternCall`. ✅ DONE (`spec`).** Removed: the resolve step
+  producing `Resolved::Extern`, the lower Apply arm producing `Core::ExternCall`, the `Resolved::Extern` and
+  `Core::ExternCall` variants + all their match arms, the `(extern …)` SCAN (`db::ExternDecl`/`ExternOp`/
+  `scan_extern_decl`/`extern_op_by_name`/`extern_decls`, `extern` from `TOP_LEVEL_FORMS`), the compile.rs
+  extern well-formedness diagnostic + `MALFORMED_EXTERN_PREFIX`, and `collect_extern_imports`. SURVIVE
+  (surface-agnostic, reached from a peer-bound effect via U2): `assemble_extern`/`_runtime`,
+  `assemble_provider`/`_runtime` + `--component-name`, `layout.extern_order`/`extern_index`,
+  `Lir::CallExternImport`, `serialize::core_module_with_extern*`, `host::ExternImport`/`extern_abi_val_type`,
+  `run_with_peers`. Tests: the extern-SOURCE + removed-variant tests removed; the hand-built TRANSPORT
+  oracles (x1a/x1b/x3/x4a/x5a) + the effects-surface e2e (u2/u3) remain (7 cross-component tests). Gate
+  2049/0/0, suite 1407, clippy clean. ⚠ FOLLOW-UP: source-level COMPOUND-value coverage over the effects
+  surface (old x5b/c/d proved it over `extern`; x5a still proves the compound TRANSPORT hand-built, U2/U3
+  prove the effects surface at scalar); a `(bind …)` / `(effect …)` well-formedness diagnostic.
+
+🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
+`(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
+`(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
+both host effects and peer dependencies. `extern` is gone.
 
 ⚠ The X0–X5d/X4b-4 work below LANDED as the `extern` surface — it is the low-level mechanism the effects
 surface now sits on. The transport/envelope/runner/provider stay; the `extern` front-end is removed in U4.
