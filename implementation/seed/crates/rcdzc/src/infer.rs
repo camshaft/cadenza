@@ -5783,17 +5783,20 @@ fn check_application(
             (Some(ka), Some(kb)) => ka != kb,
             _ => false,
         };
-        // ARITHMETIC on TWO operands of the SAME TEXT-or-COMPOUND type — `(+ s t)` on two Strings/Bytes,
-        // `(+ xs ys)` on two Lists, `(+ r q)` on two Records/Tuples/Maps/Sets. Comparison (`= < >`) on two
-        // same-typed values is VALID (equality / lexical-or-structural order), so this fires ONLY for the
-        // arithmetic prims (Add/Sub/Mul/Div). Because the two operands are the SAME type, the earlier
-        // cross-kind guard (which needs DIFFERENT kinds) never catches them — instead the generic
-        // scheme-unify defaults the operator's `∀a.(Int a)→…` first parameter to `Int64` and reports the
-        // second operand as "type mismatch: Int64 and <T> must be the same type here" — a PHANTOM `Int64`
-        // the author never wrote, reading as an internal clash. Name the real situation: arithmetic is not
-        // defined on <T>. For `+` on a type with a total CONCATENATION op (String/Bytes/List — the Python/JS
-        // reflex), rewrite the operator head to that `.concat` (`(+ a b)` → `((. List concat) a b)`), the
-        // actionable repair; other compound types / other ops get the honest message with no (forced) fix.
+        // ARITHMETIC on TWO TEXT-or-COMPOUND operands — `(+ s t)` on two Strings/Bytes, `(+ xs ys)` on two
+        // Lists, `(+ r q)` on two Records/Tuples/Maps/Sets — whether or not the two operand types match.
+        // Comparison (`= < >`) on two texts / two same-kind compounds is VALID or gets its own structural
+        // message, so this fires ONLY for the arithmetic prims (Add/Sub/Mul/Div). The earlier cross-kind
+        // guard catches a text/compound held against a SCALAR, and two DIFFERENT-kind compounds; what leaks
+        // past it is arithmetic on two SAME-framing operands — two texts (String vs Bytes), two same-kind
+        // compounds (two records of different fields, two lists of different element types), or two of the
+        // identical type. For all of those the generic scheme-unify defaults the operator's `∀a.(Int a)→…`
+        // first parameter to `Int64` and reports the other operand as "type mismatch: Int64 and <T> must be
+        // the same type here" — a PHANTOM `Int64` the author never wrote, reading as an internal clash.
+        // Name the real situation: arithmetic is not defined on text/compound. For `+` on a MATCHED type
+        // with a total CONCATENATION op (String/Bytes/List — the Python/JS reflex), rewrite the operator
+        // head to that `.concat` (`(+ a b)` → `((. List concat) a b)`), the actionable repair; a mismatched
+        // pair or a non-concatenable / non-`+` op gets the honest message with no (forced) fix.
         //
         // SCOPED to text + compound (not the scalar-ish LEAVES Bool/Unit/Symbol): the corpus pins a
         // Bool-in-integer-addition — a body-inferred `(+ true true)` — at CDZ0203 (an argument checked
@@ -5823,24 +5826,37 @@ fn check_application(
                     | Ty::Set(_)
             )
         };
-        if is_arith && text_or_compound_ty(&a) && a == b {
-            // A total-concatenation `.concat` exists on these modules → `+` is concatenation intent.
-            let concat_module = match a {
+        if is_arith && text_or_compound_ty(&a) && text_or_compound_ty(&b) {
+            // A total-concatenation `.concat` exists on these modules → `+` on a MATCHED pair is
+            // concatenation intent. A mismatched pair (String vs Bytes, two differing records) gets no fix.
+            let concat_module = match &a {
                 Ty::String => Some("String"),
                 Ty::Bytes => Some("Bytes"),
                 Ty::List(_) => Some("List"),
                 _ => None,
             };
-            trace!(target: "rcdzc::infer", head = head.0, "fault: arithmetic on two same-typed non-numeric operands — not defined (CDZ0201)");
+            trace!(target: "rcdzc::infer", head = head.0, "fault: arithmetic on two text/compound operands — not defined (CDZ0201)");
+            // Name the real type(s): one when they match, both when they differ (so a String-vs-Bytes / a
+            // records-of-different-fields pair reads honestly, not as a phantom `Int64` clash).
+            let subject = if a == b {
+                format!(
+                    "{} — Cadenza never coerces this to a number",
+                    a.render_name()
+                )
+            } else {
+                format!(
+                    "{} and {} — Cadenza never coerces these to numbers",
+                    a.render_name(),
+                    b.render_name()
+                )
+            };
             let mut reject = Reject::coded(
                 Code::Malformed,
-                format!(
-                    "arithmetic is not defined on {} — Cadenza never coerces this to a number",
-                    a.render_name()
-                ),
+                format!("arithmetic is not defined on {subject}"),
             );
-            // `+` on a concatenable type → rewrite the operator to that module's `concat`.
-            if let Some(module) = concat_module
+            // `+` on a MATCHED concatenable type → rewrite the operator to that module's `concat`.
+            if a == b
+                && let Some(module) = concat_module
                 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Add)
             {
                 reject =

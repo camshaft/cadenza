@@ -17820,6 +17820,41 @@ mod match_engine {
             );
         }
 
+        // MISMATCHED text/compound pairs — arithmetic is not defined regardless of shape, so a String-vs-
+        // Bytes pair, two records of different fields, two lists of different element types all get the
+        // honest message naming BOTH types (no phantom `Int64`), and NO fix (concat needs a matched pair).
+        for (ta, tb, what) in [
+            ("String", "Bytes", "String/Bytes"),
+            (
+                "(Record (x Int64))",
+                "(Record (y Int64))",
+                "records of different fields",
+            ),
+            (
+                "(List Int64)",
+                "(List Bool)",
+                "lists of different element types",
+            ),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: a {ta}) (: b {tb})) (+ a b)) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("(+ {what}) must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{what}: {}", d.message);
+            assert!(
+                d.message.contains("arithmetic is not defined on")
+                    && !d.message.contains("Int64 and")
+                    && d.message.contains(" and "),
+                "{what} names BOTH real types, no phantom `Int64`: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "{what}: a mismatched pair carries no concat fix: {:?}",
+                d.fix
+            );
+        }
+
         // SCOPED OUT (corpus-pinned): a Bool in integer addition stays CDZ0203 — an argument checked
         // against a body-inferred parameter type (`09-functions.sexp`, `(def (f x) (+ x x)) (f true)`), NOT
         // relabeled to the CDZ0201 text/compound message. The scalar-ish leaves keep their existing path.
