@@ -914,6 +914,14 @@ fn op_get_float32(h: Handle) -> f32 {
 
 /// Box a `Big` as a BigInt heap leaf — its canonical sign-magnitude bytes in `raw`, zero handles.
 fn box_bigint(b: &bigint::Big) -> Handle {
+    // Fast path — a small BigInt (single/few limbs → ≤`INLINE_RAW_CAP` sign-magnitude bytes, the common
+    // case) serializes DIRECTLY into an inline `Raw` with NO transient heap Vec (the `to_sign_magnitude_
+    // bytes` + `Raw::from` path would allocate that Vec then free it once inlined — the transient-small-Vec
+    // smell). A larger value falls back to the heap serialization. Byte-identical either way.
+    let mut buf = [0u8; INLINE_RAW_CAP];
+    if let Some(n) = b.to_sign_magnitude_bytes_into(&mut buf) {
+        return alloc_raw(Vec::new(), Raw::inline(&buf[..n]));
+    }
     alloc_raw(Vec::new(), Raw::from(b.to_sign_magnitude_bytes()))
 }
 /// Read a BigInt leaf back to a `Big`. Total: a null/mismatched node reads as zero (deterministic bits,
@@ -8691,6 +8699,31 @@ mod tests {
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+
+        // (K4) `bigint-add` — a runtime BigInt op (B3b/B3c emit these for runtime-valued BigInt arithmetic),
+        // now on the hot path of any bignum loop. Each op UNBOXES both operands to a `Big` (a limb `Vec`
+        // each), computes, and BOXES the normalized result (its sign-magnitude bytes + a node). So a single
+        // op over SMALL (single-limb) operands allocates several small Vecs — untracked until now. Build
+        // the two operands ONCE outside the loop (their construction is not the op's cost); measure only
+        // the add + the drop of each result. Guards against a regression that adds per-op churn (e.g. a
+        // wider intermediate, a lost small-Raw inline) on the runtime bignum path.
+        let (bi_a, bi_b) = (op_bigint_of_i64(12345), op_bigint_of_i64(67890));
+        let bigadd = measure(&mut || {
+            for _ in 0..N {
+                let r = op_bigint_add(bi_a, bi_b); // borrows both operands
+                op_drop(r);
+            }
+        });
+        op_drop(bi_a);
+        op_drop(bi_b);
+        println!("ALLOC bigint_add x{N}: {bigadd}");
+        // Per op: unbox a (limb Vec) + unbox b (limb Vec) + the result's sign-magnitude Vec + the result
+        // node = a small constant, N-independent per op. The ceiling catches a regression toward per-op
+        // extra churn; the exact figure is measured + baselined.
+        assert!(
+            bigadd <= 8000,
+            "bigint_add x{N} allocs {bigadd} exceeds ceiling 8000 (unbox 2 limb Vecs + box the result Vec+node per op; a per-op churn regression would climb)"
+        );
 
         // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
         // `arr-alloc(n)` + n×`arr-set` then ONE `vec-of-arr` (NOT `vec-empty` + n×`vec-push`), so this op is
