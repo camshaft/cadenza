@@ -23,6 +23,27 @@ export default function PatternMatching() {
   (_ 0))`} />
       <P>Change the <C>2</C> being matched to <C>1</C> or <C>7</C> and Run to see a different arm fire.</P>
 
+      <P>
+        Literals aren't just numbers — you can match a <C>String</C> the same way, and this is the everyday
+        shape for dispatching on a keyword or command name. Here <C>op</C> turns an operation name into a
+        code, falling back to <C>0</C> for anything it doesn't recognise:
+      </P>
+      <Runnable
+        source={`(def (op name)
+  (match name
+    ("add" 1)
+    ("sub" 2)
+    (_ 0)))
+(def (main) (op "sub"))`}
+      />
+      <P>
+        <C>"sub"</C> takes the second arm, <C>2</C>. Change it to <C>"add"</C> or something unknown like{" "}
+        <C>"mul"</C> and Run again. The <C>_</C> arm isn't optional here: <C>String</C> (like <C>Int64</C>)
+        has infinitely many values, so the compiler can't see that you've covered them all — leave the
+        wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with
+        sums below.
+      </P>
+
       <H2>Sum types</H2>
       <P>
         A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one
