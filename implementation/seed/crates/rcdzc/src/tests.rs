@@ -51045,4 +51045,98 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("compound-over-effects run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // U6 — BOTH SIDES FROM SOURCE over the effects surface. The full payoff of the unification: no
+    // hand-built peer at all. A source PROVIDER `(def (pair (: x Int64)) (tuple x x)) (export pair)`
+    // compiled with component-name `cadenza:pairs/api` publishes a compound-returning interface (routes to
+    // `assemble_provider_runtime`); a source CONSUMER performs `(host (P) (. (P.pair x) 0))` on a peer-bound
+    // effect (routes to `assemble_extern_runtime`). Composed via run_with_peers over ONE shared runtime →
+    // the tuple crosses as a handle, both sides Cadenza source. The provider path never used `extern` (just
+    // `--component-name` + normal exports), so it survived U4; U6 wires it to the effects-surface consumer.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a Cadenza SOURCE `src` (s-expr) as a PROVIDER publishing its exports under `iface` — the
+    /// `component-name` request artifact (X4b), the same path `cdz compile --component-name` drives.
+    fn compile_provider(src: &str, iface: &str) -> Vec<u8> {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        use crate::testkit::parse;
+        let ast = crate::codec::encode(&parse(src));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "provider", ast),
+                    crate::cli::component_name_artifact(iface),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        out.artifact(Target::Wasm.artifact_kind())
+            .unwrap_or_else(|| {
+                panic!("provider compiles: {:?}", out.diagnostics);
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn u6_both_sides_from_source_a_compound_crosses_the_effects_surface() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): builds the runtime tuple `(x, x)` and publishes it as `cadenza:pairs/api`.
+        let provider = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider).expect("source provider validates");
+        }
+        // CONSUMER (source): the U5 consumer — a peer-bound effect P returning a Tuple, performed + projected.
+        let src = "(do \
+            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:pairs/api\") \
+            (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U6] runtime wasm not found; skipping");
+            return;
+        };
+        // The provider imports the SAME runtime the consumer does — `run_with_peers` binds one instance into
+        // both (X5a), so the handle the provider mints is meaningful in the consumer. A component's import
+        // names are embedded as UTF-8, so the runtime import name appears verbatim in the bytes.
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the source provider imports the value-heap runtime (it builds a compound)"
+        );
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("both-sides-from-source compound crossing")
+        {
+            // The SOURCE provider's `pair(9)` built (9,9) on the shared heap; the SOURCE consumer read
+            // element 0 → 9. Two Cadenza source files exchange a COMPOUND over the effects surface.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "9",
+                "both sides from source exchange a compound over the effects surface"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("both-sides-from-source run trapped: {t}"),
+        }
+    }
 }

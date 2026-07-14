@@ -106,6 +106,15 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   0 read back). Routes through `assemble_extern_runtime`. Gate 2076/0/0, clippy clean, byte-neutral (no
   corpus program is peer-bound). 9 cross-component tests.
 
+- **U6 — BOTH SIDES FROM SOURCE over the effects surface. ✅ DONE (`spec`, test-only).** The full payoff:
+  no hand-built peer at all. A source PROVIDER `(def (pair (: x Int64)) (tuple x x)) (export pair)` compiled
+  with component-name `cadenza:pairs/api` (the `--component-name` path → `assemble_provider_runtime`, which
+  survived U4 — the provider side never used `extern`, just a named export) is consumed by the U5 effects
+  consumer `(effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api") … (host (P) (.
+  (P.pair x) 0))`. Composed via `run_with_peers` over ONE shared runtime → main(9)=9, two Cadenza source
+  files exchanging a compound. Test `u6_*` + a `compile_provider` helper (compiles source with a
+  `component_name_artifact`). No compiler change (byte-neutral); gate 2088/0/0, 10 cross-component tests.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
