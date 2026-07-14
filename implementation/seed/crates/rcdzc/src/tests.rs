@@ -10880,7 +10880,13 @@ mod match_engine {
         let src = format!("(module m (def (main) (match {val} ({pat} x) (_ -1))) (export main))");
         // The pattern matches the value exactly (60 `Some` layers around `0`), binding `x` to the innermost
         // `0` — so the result is `0`, NOT the `-1` fallback. Diagnostics must be clean and return quickly.
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        // Through the host-stack guard the bin uses (`host.rs`): the decision-tree/fold walk recurses ~per
+        // nesting level (60 deep), which SIGABRTs a default `cargo test` worker's ≈2 MB stack (EXIT=101,
+        // 0 FAILED) even though it TERMINATES — deep-but-finite, not a loop (`RUST_MIN_STACK=64M` passes).
+        // `&src` is borrowed (the scoped-thread guard permits it); `src` is still used by the run below.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
         assert!(
             diags
                 .iter()
