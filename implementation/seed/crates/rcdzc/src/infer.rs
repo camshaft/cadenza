@@ -3105,6 +3105,18 @@ fn member_op_head_name(db: &Db, head: StructId) -> Option<(String, String)> {
     Some((module, member))
 }
 
+/// The source NAME of an application head that is a bare VARIANT CONSTRUCTOR — `(Mk 1 2)` → `"Mk"`. Used
+/// to name the constructor in an OVER-APPLICATION diagnostic ("`Mk` takes 2 arguments, but 3 were given")
+/// so a bare ctor reads as well as the member-access spelling `(. P Mk)` does (which `member_op_head_name`
+/// already covers). `None` when the head is not a bare-name variant constructor — an ordinary function, an
+/// operator, or a member-access head (that path names itself). Reads the head's source name first, then
+/// confirms it constructs a variant via `variant_disc_of` (the same predicate the wrong-type-payload
+/// branch uses) — GENERIC, no hard-coded ctor list (`no-keys-outside-the-prelude`).
+fn variant_ctor_head_name(db: &mut Db, head: StructId) -> Option<String> {
+    let name = db.ast.as_name(head)?.to_string();
+    crate::eval::variant_disc_of(db, head).map(|_| name)
+}
+
 fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     if let Ty::Sum { name, args, .. } = actual
         && name == "Option"
@@ -5381,9 +5393,18 @@ fn check_application(
                     // NAME the operation when the head is a `(. Module member)` — `(List.push xs 1 2)` reads
                     // "`List.push` takes 2 arguments, but 3 were given" instead of the anonymous "a function
                     // of arity 2", the over-application companion of the M95 wrong-type-arg member-op message.
-                    let message = match member_op_head_name(db, head) {
-                        Some((module, member)) => format!(
-                            "`{module}.{member}` takes {arg_index} argument{}, but {} {} given",
+                    // A bare VARIANT CONSTRUCTOR (`(Mk 1 2 3)`) reads as well as the member-access spelling
+                    // `(. P Mk)` (handled by `member_op_head_name`) — name it too. `name_of` prefers the
+                    // dotted member spelling, then falls back to a bare ctor name; either yields the "`X`
+                    // takes N arguments, but M were given" phrasing (so `MEMBER_OVER_APPLICATION_MARKER`
+                    // still deduplicates the emit-path decline). An ordinary over-applied function/operator
+                    // keeps the anonymous "function of arity N".
+                    let name_of = member_op_head_name(db, head)
+                        .map(|(m, k)| format!("{m}.{k}"))
+                        .or_else(|| variant_ctor_head_name(db, head));
+                    let message = match name_of {
+                        Some(name) => format!(
+                            "`{name}` takes {arg_index} argument{}, but {} {} given",
                             if arg_index == 1 { "" } else { "s" },
                             args.len(),
                             if args.len() == 1 { "was" } else { "were" },
