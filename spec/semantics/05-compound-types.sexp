@@ -2209,6 +2209,23 @@
             (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a leading nested-list element dispatches on the inner list's length"
+  (doc    "A nested list element with LEADING positions `(list (list a .. r1) .. r2)` dispatches on the
+           INNER list's length — `(list a .. r1)` matches only a NON-empty inner list (it binds the inner
+           head `a`), so it is length-REFUTABLE (unlike the zero-leading `(list .. r1)`). The outer
+           length-dispatch matcher tests only the OUTER length, so this desugars to a fresh binder + an
+           INNER-length guard `(>= (List.len __ne) 1)` + a body re-match binding `a`: an inner list too
+           short FAILS the guard and FALLS THROUGH to the next arm (never a trap). Like any guarded arm it
+           is excluded from length-coverage, so a `_` catch-all stays required. `head-of-first (list (list
+           7 9) (list 8))` → the first sublist is non-empty → binds its head `a`=7.")
+  (input  (do
+            (def (head-of-first (: xss (List (List Int64))))
+              (match xss
+                ((list (list a .. r1) .. r2) a)
+                (_                           -1)))
+            (def (main) (head-of-first (list (list 7 9) (list 8)))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's

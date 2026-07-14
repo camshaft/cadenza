@@ -605,6 +605,7 @@ pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
 pass	a later let binding sees an earlier pattern's binders
 pass	a le pattern segment reads a fixed-width integer little-endian
+pass	a leading nested-list element dispatches on the inner list's length
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication

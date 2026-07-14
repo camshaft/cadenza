@@ -3361,6 +3361,183 @@ fn desugar_refutable_ctor_list_elements(
     Some(core_of(db, rewritten))
 }
 
+/// If `elem_pat` is a REFUTABLE nested LIST leading element — a `(list …)` with ≥1 leading element before a
+/// `..` (`(list a .. r1)`), or a fixed-arity `(list a b)` — return `Some((inner_lead, inner_is_fixed))`:
+/// `inner_lead` = the number of leading element sub-patterns, `inner_is_fixed` = it has NO `..` (so it
+/// matches an EXACT inner length). Such an element is length-refutable (a `(list a .. r1)` misses the empty
+/// inner list, a `(list a b)` matches only inner length 2), so it needs an INNER-LENGTH guard — see
+/// `desugar_refutable_nested_list_elements`. The ZERO-LEADING rest form `(list .. r)` matches every inner
+/// list (irrefutable, handled inline by `list_element_irrefutable_or_decline`) → `None`.
+fn refutable_nested_list_element(db: &Db, elem_pat: StructId) -> Option<(usize, bool)> {
+    let es = db
+        .ast
+        .as_form(elem_pat, "list")
+        .or_else(|| db.ast.as_ctor_form(elem_pat, "list"))?;
+    match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+        // A rest form: refutable iff ≥1 leading element (misses the empty inner list); zero-leading is
+        // irrefutable (returns None). `inner_lead` = the count before `..`, not fixed.
+        Some(k) if k > 0 => Some((k, false)),
+        Some(_) => None,
+        // No `..` → fixed-arity: refutable iff non-empty (matches only that exact inner length). The empty
+        // fixed pattern `(list)` matches only the empty inner list — also refutable (inner_lead 0, fixed).
+        None => Some((es.len(), true)),
+    }
+}
+
+/// PRE-PASS for `lower_match_list` (the NESTED-LIST twin of `desugar_refutable_ctor_list_elements`):
+/// rewrite an arm whose list pattern has a refutable nested LIST leading element into an equivalent guarded
+/// arm the length-dispatch matcher handles. A nested list element `(list p… .. r1)` at a leading position
+/// dispatches on the INNER list's length, which the outer length-dispatch matcher cannot express — so it
+/// desugars to a fresh binder + an INNER-LENGTH guard + a body RE-MATCH binding the inner sub-patterns, the
+/// list-element analogue of the ctor desugar:
+///   `((list (list p… .. r1) rest… .. r2) body)`  ≡
+///   `((guard (list __ne rest… .. r2) (>= ((. List len) __ne) k))
+///       (match __ne ((list p… .. r1) body) (_ (trap …))))`
+/// where `k` = the inner leading count and the guard is `(= … k)` for a FIXED-arity inner list (exact
+/// length) or `(>= … k)` for a rest inner list (length ≥ k). The guard gates the arm (an inner list too
+/// short → false → FALL THROUGH, not a trap); the body re-matches the SAME binder to bind the inner
+/// elements — and there the inner `(list p… .. r1)` IS irrefutable given the length guard held, so the sum
+/// matcher's own length dispatch is satisfied (the `_ → trap` arm is dead). A guarded arm is EXCLUDED from
+/// length-coverage exhaustiveness, so the outer match still needs a `_`/rest catch-all. Scope: ONE
+/// refutable nested-list element per arm (the common shape); ≥2 declines honestly. NO new IR.
+fn desugar_refutable_nested_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)?;
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    let mut any = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat) {
+            for e in leading {
+                if refutable_nested_list_element(db, e).is_some() {
+                    any = true;
+                }
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        let nested_positions: Vec<usize> = (0..lead)
+            .filter(|&p| refutable_nested_list_element(db, es[p]).is_some())
+            .collect();
+        if nested_positions.is_empty() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if nested_positions.len() > 1 {
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one refutable nested-list element is not yet supported \
+                 (match one nested list per arm)",
+            )));
+        }
+        let npos = nested_positions[0];
+        let nested_pat = es[npos]; // the original `(list p… .. r1)` inner pattern
+        let (inner_lead, inner_fixed) = refutable_nested_list_element(db, nested_pat).unwrap();
+        let head = db.ast.get(inner);
+        let list_head = match head {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__ne{ai}");
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == npos {
+                new_es.push(db.push_name(&name)); // the inert pattern-position element binder
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The INNER-LENGTH guard: `((op) ((. List len) __ne) k)` — `>=` for a rest inner list (length ≥ k),
+        // `=` for a fixed-arity inner list (exact length). Fresh `__ne` occurrence for the `List.len` arg.
+        let len_scrut = db.push_name(&name);
+        let dot = db.push_name(".");
+        let list_mod = db.push_name("List");
+        let len_key = db.push_name("len");
+        let len_member = db.push_list(vec![dot, list_mod, len_key]);
+        let len_call = db.push_list(vec![len_member, len_scrut]);
+        let k_lit = db.push_atom(crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_u128(inner_lead as u128),
+            radix: crate::ast::Radix::Dec,
+        });
+        let cmp_op = db.push_name(if inner_fixed { "=" } else { ">=" });
+        let len_test = db.push_list(vec![cmp_op, len_call, k_lit]);
+        let guard_cond = match existing_guard {
+            None => len_test,
+            Some(g) => {
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, g, len_test])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __ne (<original nested list pattern> body) (_ (trap …)))` — binds the
+        // inner list's sub-patterns for the body; the inner pattern is irrefutable GIVEN the length guard, so
+        // the `_ → trap` arm is dead but keeps the inner match well-formed.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![nested_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg =
+            db.push_str("unreachable: nested-list-element length already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable nested-list element → fresh-binder + inner-length guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
 /// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) with
 /// every PAYLOAD argument replaced by a wildcard `_` — the discriminant-only test pattern for the guard.
 /// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, so it is reused
@@ -3388,6 +3565,13 @@ fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> Struc
 }
 
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS (nested list): a refutable nested LIST leading element (`(list (list a .. r1) .. r2)`)
+    // dispatches on the INNER list's length — desugar to a fresh binder + an inner-length guard + a body
+    // re-match binding the inner sub-patterns. Run FIRST (a nested-list element is neither a ctor nor a
+    // literal, so the other passes skip it); it rebuilds the match and recurses through `core_of`.
+    if let Some(core) = desugar_refutable_nested_list_elements(db, scrutinee, arms) {
+        return core;
+    }
     // PRE-PASS (ctor): a refutable MULTI-VARIANT CONSTRUCTOR leading element (`(list (Op.Add x) .. r)`) —
     // the tree-walk-tagged-nodes idiom — desugars to a fresh binder + a discriminant-test guard + a body
     // re-match binding the payload. Run BEFORE the literal pass: it rebuilds the match and recurses through
