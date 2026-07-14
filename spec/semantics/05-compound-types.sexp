@@ -3512,6 +3512,24 @@
             (def (main)    (depth (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: 1 Int64)))
 
+(case "a bare prelude-colliding variant name matches as the local variant"
+  (doc    "`(type T (Int Int64))` declares a variant named `Int`, colliding with the prelude `Int` type
+           constructor. In a MATCH the scrutinee's type is known, so a bare `((Int n) …)` pattern head
+           resolves against T's variant set FIRST — reaching T's `Int` variant, not the prelude `Int` —
+           exactly as a non-colliding name (`Foo`) and the qualified form (`T.Int`) already do. Without
+           this, the bare pattern head resolved (scope→def→prelude) to the prelude `Int` and the ctor
+           check rejected CDZ0203 'this constructor pattern is not the constructor of the matched type T',
+           breaking bare pattern-matching on an AST sum whose variants (`Int`/`Name`/`List`) collide with
+           prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The construct position still writes
+           the qualified `T.Int`: a bare `(Int 42)` in value position has no scrutinee to disambiguate it
+           and stays the prelude type constructor, per the deliberate variant-shadows-prelude design.)")
+  (input  (do
+            (type T (Int Int64))
+            (def (f (: t T)) (match t ((Int n) n)))
+            (def (main) (f (T.Int 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a bare nullary constructor is the nullary sum value"
   (doc    "A nullary variant used as a VALUE may be written BARE — `NNil`, not `(Node.NNil unit)`. A
            bare nullary constructor IS the nullary sum value (core-semantics.md #A Sum Type Constructor

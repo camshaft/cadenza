@@ -16296,6 +16296,32 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_prelude_colliding_variant_matches_as_the_local_variant() {
+        // In a MATCH the scrutinee's type is known, so a BARE variant-name pattern head that COLLIDES with
+        // a prelude entry (`(Int n)` on `(type T (Int Int64))`, `(Some n)` on a user `(type … (Some …))`)
+        // resolves against the SCRUTINEE sum's variant set FIRST — reaching the LOCAL variant, not the
+        // prelude `Int`/`Some`. Without this, the bare head resolved (scope→def→prelude) to the prelude
+        // entry and the ctor check rejected CDZ0203, so an AST sum with prelude-colliding variant names
+        // could only be matched QUALIFIED. `pattern_constraints` remaps a bare head to the scrutinee decl's
+        // cached ctor for that name. (Construct position stays qualified — no scrutinee to disambiguate,
+        // the deliberate variant-shadows-prelude design.)
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Single-variant nominal newtype, bare `Int` pattern (qualified construct).
+        ok("(module m (type T (Int Int64)) (def (f (: t T)) (match t ((Int n) n))) (def (main) (f (T.Int 42))) (export main))");
+        // Multi-variant sum, bare `Int` pattern beside a nullary arm.
+        ok("(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((Int n) n) ((Nil) 0))) (def (main) (f (T.Int 42))) (export main))");
+        // `Some`-colliding variant, bare pattern.
+        ok("(module m (type T (Some Int64) (Nada)) (def (f (: t T)) (match t ((Some n) n) ((Nada) 0))) (def (main) (f (T.Some 42))) (export main))");
+        // NO OVER-ACCEPTANCE: a bare variant of a DIFFERENT sum (`Bar` of `U`) over a `T` scrutinee still
+        // rejects CDZ0203 (the remap only reaches T's OWN variants; a foreign name is left to the check).
+        assert_eq!(
+            reject_code("(module m (type T (Int Int64)) (type U (Bar Int64)) (def (f (: t T)) (match t ((Bar n) n))) (def (main) (f (T.Int 42))) (export main))").as_deref(),
+            Some("CDZ0203"),
+            "a foreign variant name in a pattern still rejects"
+        );
+    }
+
+    #[test]
     fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
         // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
         // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List

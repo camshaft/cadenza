@@ -3005,6 +3005,42 @@ fn pattern_constraints(
             return Err(Reject::decline("a malformed sum match pattern"));
         }
     };
+    // A BARE variant-name head that COLLIDES with a prelude entry (`(Int n)` on `(type T (Int Int64))`,
+    // `(Some n)` on a user `(type T (Some …))`) resolves — via scope→def→PRELUDE — to the prelude `Int`
+    // type constructor / Option `Some`, NOT this sum's variant, so the ctor check below would reject a
+    // well-formed pattern (CDZ0203). The SCRUTINEE's type is known here, so its variant set disambiguates:
+    // if the bare head names a variant of THIS sum/nominal, resolve it to that variant's CACHED ctor
+    // occurrence (the same node the qualified `T.Int` form uses, which already carries the right `(meta t)`
+    // scheme + `(meta variant)` disc) and use THAT as the head. This gives the bare form the same
+    // local-variant precedence the qualified form has — the residual of the variant-shadows-prelude fix
+    // (`9f326a2d` repaired TYPE/MODULE positions; this repairs the CONSTRUCT/PATTERN head). A NON-colliding
+    // bare name already resolves to its own variant, so `variant_disc_by_name` finding it and re-reading
+    // the SAME cached ctor is a harmless no-op; a bare name that is NOT a variant (a typo) is left for the
+    // existing ctor check to reject.
+    let head = 'remap: {
+        let Some(name) = db.ast.as_name(head).map(str::to_string) else {
+            break 'remap head;
+        };
+        if name == "." {
+            break 'remap head;
+        }
+        // The scrutinee's declaration — a boxed `Ty::Sum` OR a single-variant `Ty::Nominal` newtype (a
+        // `(type T (Int Int64))` erases to a nominal, whose sole variant is still reached by name).
+        let decl = match ty {
+            crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+            _ => break 'remap head,
+        };
+        // The cached ctor of the variant of THIS declaration named `name` (if any). Resolving to it gives
+        // the bare form the local-variant precedence the qualified `T.<name>` already has.
+        match db
+            .type_decl_by_occ(decl)
+            .and_then(|t| t.variants.iter().find(|v| v.name == name))
+            .and_then(|v| v.ctor)
+        {
+            Some(ctor) => ctor,
+            None => head,
+        }
+    };
     // A NOMINAL NEWTYPE scrutinee — the sole constructor `(Mk arg…)` imposes NO discriminant constraint
     // (a newtype has no runtime disc; its one variant always matches), but its payload binders DO
     // destructure. The ctor must belong to THIS newtype's declaration (a `(Other x)` pattern over a
