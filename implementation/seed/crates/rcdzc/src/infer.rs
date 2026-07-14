@@ -1043,10 +1043,31 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         out.push(Reject::coded(Code::TypeMismatch, msg).at(ty_expr));
         return;
     }
-    // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
-    // collect the operand's OWN faults (an unbound name → CDZ0101), and if none surfaced (a well-formed
-    // non-type: a literal, a compound, `(Int64 Int64)`), add an "expected a type" TypeMismatch (CDZ0203).
+    // The operand denotes a type → fine. Otherwise reject. A `(Record (name Type)…)` (or a container
+    // bearing one) needs the RECORD-AWARE type-position split: a field's NAME is a LABEL, not a value
+    // reference, so `collect`-ing the whole `(Record (x Nonesuch))` as a value mis-resolves the label `x`
+    // as an unbound NAME (a misleading "unbound name `x`") on top of the real "unbound name `Nonesuch`".
+    // `push_payload_type_positions` splits out each field's TYPE (skipping labels); `validate_type_position`
+    // checks each, keeping only a genuinely-unknown type name. This is the same machinery the variant-
+    // payload / effect-op type checks use — so a record-type annotation validates its field TYPES exactly
+    // as a variant payload's do, without a spurious label fault.
     if crate::eval::typeval_of(db, ty_expr).is_none() {
+        if crate::compile::is_record_bearing(db, ty_expr)
+            || db.ast.head_name(ty_expr) == Some("Record")
+        {
+            let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
+            crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
+            for (pos, params) in &positions {
+                crate::compile::validate_type_position(
+                    db,
+                    *pos,
+                    params,
+                    "a parameter's annotation",
+                    out,
+                );
+            }
+            return;
+        }
         let before = out.len();
         collect(db, ty_expr, out);
         if out.len() == before {

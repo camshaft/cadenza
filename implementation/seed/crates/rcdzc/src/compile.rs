@@ -579,7 +579,7 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
 /// position validated whole — its inner unknown names surface via the ordinary resolver descent. This is
 /// the validation-position twin of `db::collect_type_params`'s record-aware descent (which collects the
 /// PARAMS from the same positions), so records are handled WITHOUT the field-name false positive.
-fn push_payload_type_positions(
+pub(crate) fn push_payload_type_positions(
     db: &Db,
     occ: StructId,
     params: &[String],
@@ -622,7 +622,7 @@ fn push_payload_type_positions(
 
 /// Whether the type-expression subtree at `id` contains a `(Record …)` form at any depth — the guard the
 /// payload-position collector uses to decide whether a container element needs record-splitting descent.
-fn is_record_bearing(db: &Db, id: StructId) -> bool {
+pub(crate) fn is_record_bearing(db: &Db, id: StructId) -> bool {
     if db.ast.head_name(id) == Some("Record") {
         return true;
     }
@@ -641,7 +641,7 @@ fn is_record_bearing(db: &Db, id: StructId) -> bool {
 /// (`(Option a)`) fails `typeval_of` out-of-context but is valid, so ONLY a real unknown Capitalized name
 /// (not a param) survives the filter — every other artifact of out-of-context resolution (`cannot apply`,
 /// a nested-param `unbound name`) is dropped. `what` names the position for the non-type message.
-fn validate_type_position(
+pub(crate) fn validate_type_position(
     db: &mut Db,
     pos: StructId,
     params: &[String],
