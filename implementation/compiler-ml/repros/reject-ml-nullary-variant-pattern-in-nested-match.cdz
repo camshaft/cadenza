@@ -1,0 +1,30 @@
+// GAP (2026-07-14, seed rcdzc — ML FRONT-END): a NULLARY variant DOTTED pattern (`Ty.TInt`, no payload
+// parens) in a NESTED match is mis-read as a member-ACCESS expression, not a variant pattern:
+//   error [CDZ0201]: member access requires a record — closest matches: `TInt`
+// `cdz check` FAILS. The equivalent S-EXPR surface (`((. Ty TInt))`) COMPILES + RUNS correctly, so this
+// is specifically the ML reader/desugar, not the core matcher.
+//
+// SHARP BISECTION (2026-07-14):
+//   - A nullary dotted pattern in the OUTERMOST match works: `(match x | Ty.TInt => 1 | Ty.TBool => 2)`.
+//   - A nullary dotted pattern in a NESTED match (an arm body that is itself a `match`) FAILS — with OR
+//     without parens around the inner match.
+//   - The NON-nullary form nested works: `Ty.TInt(_)` (payload parens present) in a nested match is fine.
+//   - The S-EXPR form of the SAME nested-nullary program compiles + runs (returns 9) — so the matcher and
+//     the type are fine; only the ML reader mis-lexes a bare `Ty.TInt` PATTERN (no `(…)`) as a `(. Ty
+//     TInt)` member access when it is not the first match's arm.
+// So the trigger is precisely: ML surface + nullary variant + DOTTED (`Ty.Ctor`) + PATTERN position +
+// inside a nested match. The workaround is to write the inner nullary pattern WITHOUT the type prefix
+// where unambiguous, or to keep nullary matches at the top level, or author via `cdz convert` from sexpr.
+//
+// This program should return 9 (x is TInt → inner match on x → TInt arm → 9).
+type Ty =
+  | TInt
+  | TBool
+
+def g(x: Ty) = match x with
+  | Ty.TBool => 0
+  | Ty.TInt => (match x with
+    | Ty.TBool => 8
+    | Ty.TInt => 9)
+
+export { g }

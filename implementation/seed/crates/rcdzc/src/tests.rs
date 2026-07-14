@@ -14069,6 +14069,78 @@ mod match_engine {
     }
 
     #[test]
+    fn an_annotated_let_binder_mismatch_does_not_cascade_a_contradictory_body_diagnostic() {
+        // CASCADE SUPPRESSION (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix —
+        // the fix must resolve in ONE shot, not spawn a contradictory follow-on). An annotated let-binder
+        // whose initializer disagrees with its annotation reports ONCE at the binder (CDZ0203). A body use
+        // types against the DECLARED type (annotation-wins, like an annotated PARAMETER), so it does NOT
+        // emit a SECOND diagnostic whose fix undoes the first — exactly as rustc binds `let x: T = e` at `T`
+        // for the body.
+
+        // A RECORD field typo: the binder fix says "keep the annotation `foo`, rename the value's `fooo`".
+        // The body read `(. r foo)` used to ALSO fault ("record has no field `foo` — did you mean `fooo`?"),
+        // a fix that would UNDO the binder fix. Now it is a single diagnostic: the binder mismatch, carrying
+        // the value-side rename.
+        let rec = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) \
+                   (let (((: r (Record (foo Int64))) (record (fooo 1)))) (. r foo))) (export main))",
+            )))
+        });
+        let errs: Vec<_> = rec
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "exactly one diagnostic (the binder mismatch), no contradictory body cascade: {rec:?}"
+        );
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "got: {rec:?}");
+        assert!(
+            errs[0].message.contains("binder annotated"),
+            "the sole diagnostic is the binder mismatch: {}",
+            errs[0].message
+        );
+
+        // A SCALAR mismatch: `(: n Int64)` bound to `true`, body `(+ n 1)`. The body used to fault a second
+        // time ("a Bool and an Int64 are different types"); now it types `n` as the declared `Int64`.
+        let scalar = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (let (((: n Int64) true)) (+ n 1))) (export main))",
+            )))
+        });
+        let serrs: Vec<_> = scalar
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            serrs.len(),
+            1,
+            "a scalar binder mismatch reports once, no arithmetic cascade in the body: {scalar:?}"
+        );
+        assert!(
+            serrs[0].message.contains("binder annotated"),
+            "the sole diagnostic is the binder mismatch: {}",
+            serrs[0].message
+        );
+
+        // NO false suppression: a GENUINE bad field on a WELL-TYPED annotated binder STILL faults (the
+        // annotation and value agree; the body simply names a field neither has).
+        let genuine = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) \
+                   (let (((: r (Record (foo Int64))) (record (foo 1)))) (. r bar))) (export main))",
+            )))
+        });
+        assert!(
+            genuine.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("has no field `bar`")),
+            "a genuine absent field on a well-typed binder still faults: {genuine:?}"
+        );
+    }
+
+    #[test]
     fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
         // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
         // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
@@ -39292,6 +39364,36 @@ mod stage1 {
             "a value keeps its own message: {:?}",
             val.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // An APPLIED malformed generic — `(: x (Box Int64))` where `(type Box (W a) (W b))` has a dup
+        // variant — likewise defers: only the dup-variant reject, no "found a non-type" consequent.
+        let applied = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type Box (W a) (W b)) (def (f (: x (Box Int64))) x) (export f))",
+        )));
+        let aerrs: Vec<&str> = applied
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            aerrs
+                .iter()
+                .any(|m| m.contains("more than once in sum `Box`"))
+                && !aerrs.iter().any(|m| m.contains("found a non-type")),
+            "an applied malformed generic defers to the dup-variant reject: {aerrs:?}"
+        );
+        // NO OVER-SUPPRESSION on a WELL-FORMED generic MISAPPLIED: `(Box 5)` (a non-type argument) and
+        // `(Box Int64 Bool)` (wrong arity) still report — the type is fine, the USE is wrong.
+        for bad_use in [
+            "(module m (type Box (W a)) (def (f (: x (Box 5))) x) (export f))",
+            "(module m (type Box (W a)) (def (f (: x (Box Int64 Bool))) x) (export f))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad_use)));
+            assert!(
+                d.iter().any(|x| x.severity == crate::abi::Severity::Error),
+                "a well-formed generic misapplied still reports: {bad_use} -> {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
@@ -40285,6 +40387,59 @@ mod stage1 {
              elements, not O(N²) (the per-reference `find_leading_binder_in_list_pattern` scan needs the \
              per-pattern `Db::simple_list_binders` index): width 200→400 grew scanned elements {ratio:.1}× \
              (n200={n200}, n400={n400}); linear is ~2×, the re-scan was ~4×"
+        );
+    }
+
+    #[test]
+    fn a_wide_refutable_literal_list_arm_resolves_its_guard_chain_in_bounded_time() {
+        // REGRESSION (perf): `lower::desugar_refutable_literal_list_elements` rewrites a list arm with N
+        // literal LEADING elements `(list 0 1 … N .. r)` into `(guard (list __le0 … __leN .. r) (and (and
+        // (= __le0 0) (= __le1 1)) …))` — an O(N)-DEEP left-nested `and`-chain guard cond (`and` is strictly
+        // binary). Those synth nodes are appended AFTER load, so without scope-skip coverage each `__leK`
+        // guard reference (and each prelude `=`/`and`) walked O(depth) `and` forms to reach the enclosing
+        // `(guard …)` → O(N²) `binder_in` calls. FIX: `Db::extend_scope_skip_into_subtree` — the CANDIDATE-
+        // AWARE scope-skip extension (the `and`-spine is non-binding, the one `(guard …)` node is a
+        // candidate its children skip TO) makes each such resolution hop O(1). (A SEPARATE O(N²) — the
+        // `node_contains(g[1], id)` re-descent in `is_variant_pattern_binder_occurrence` classifying each
+        // pattern binder — was fixed in the same change by tracking the ascent's `prev` child; the timing
+        // sweep confirms both, this counter pins the scope-walk one.)
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N literal-element arms should resolve its synth guard-chain names in O(N) `binder_in`
+        // calls, not O(N²). Correctness (the arm matches the right prefix) is pinned by the run-value tests.
+        fn wide_literal_list_src(n: usize) -> String {
+            let elems: String = (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+            format!(
+                "(module m (def (f (: xs (List Int64))) (match xs ((list {elems} .. r) 1) (_ 0))) \
+                   (def (main) (f (list))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid refutable-literal-element arm).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_literal_list_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide refutable-literal list arm compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× arm; linear `binder_in` growth ⇒ ~2×, the O(N²) deep-walk was ~4×. Require
+        // < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_literal_list_src(200));
+        let n400 = binder_in_calls(&wide_literal_list_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a wide refutable-literal list arm must resolve its synthesized `and`-chain guard names in \
+             O(N) `binder_in` calls, not O(N²) (the desugar's O(depth)-nested `and`-chain cond needs \
+             candidate-aware scope-skip coverage — `extend_scope_skip_into_subtree`): width 200→400 grew \
+             binder_in calls {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
         );
     }
 

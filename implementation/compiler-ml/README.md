@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 169 tests total across 19 modules):
+top. Current `src/` modules (each with same-file `@test`s — 180 tests total across 20 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -135,6 +135,11 @@ top. Current `src/` modules (each with same-file `@test`s — 169 tests total ac
   grown in PARALLEL across the recursion, then each projected. 8 `@test`s incl. a partition invariant
   (`good-count + error-count = length`) and order preservation. Confirmed WORKING (no new bug): both
   lists' values survive the recursion exactly.
+- `src/apply-ty.cdz` — the function-application step of a type checker: `apply-fun(TFun(a,b), arg)` →
+  `Some b` if `arg` structurally equals `a` (recursive `ty-eq` over `TFun`), else `None`; `chain2` threads
+  the `Option` across two applications (short-circuit on `None`). Exercises recursive structural type
+  equality + Option-chained fallible application. 11 `@test`s. Uses a top-level `tag` helper for nullary
+  comparison (working around the ML nested-nullary-match bug above).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -211,6 +216,16 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — ML FRONT-END): a NULLARY variant DOTTED pattern (`Ty.TInt`) in a NESTED match
+  is mis-read as member ACCESS.** `repros/reject-ml-nullary-variant-pattern-in-nested-match.cdz`. `(match
+  x | Ty.TInt => (match y | Ty.TInt => …))` → CDZ0201 "member access requires a record". The OUTERMOST
+  match's nullary dotted patterns parse fine; only a nullary dotted pattern inside a NESTED match fails.
+  Bisected: the NON-nullary form `Ty.TInt(_)` nested works, and the S-EXPR surface (`((. Ty TInt))`) of
+  the same nested-nullary program compiles + runs — so it is specifically the ML reader mis-lexing a
+  bare `Ty.Ctor` PATTERN (no payload parens) as a `(. Ty Ctor)` member access when it is not the first
+  match's arm. WORKAROUND (used by `src/apply-ty.cdz`): a top-level `tag`-helper maps each nullary
+  variant to a scalar, so nullary comparison is `tag(x) == tag(y)` and no nested nullary match is needed.
 
 - **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
   `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/

@@ -1327,6 +1327,21 @@
             (_ 999)))
   (output (: 7 Int64)))
 
+(case "a guard reads a binding from the enclosing scope, not only its pattern's"
+  (doc    "A guard is an ordinary expression evaluated in the arm's full scope, so it reads names from the
+           ENCLOSING scope too, not only the ones its pattern binds: `classify` guards `v if v < limit`
+           where `v` is the pattern binder but `limit` is a FUNCTION PARAMETER. The arm fires when the
+           scrutinee is below the dynamic threshold — the common real-world guard (compare a matched value
+           against a runtime bound, not a literal). For x below `limit` it returns 0, at or above it falls
+           through to 1. Every other guard case compares a binder to a LITERAL; this pins that a guard also
+           closes over the enclosing bindings. Both operands runtime (call args), so nothing folds.")
+  (input  (do
+            (def (classify (: x Int64) (: limit Int64))
+              (match x ((guard v (< v limit)) 0) (_ 1)))
+            (def (main (: x Int64) (: limit Int64)) (classify x limit)) (export main)))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 8 Int64) (: 5 Int64)) (output (: 1 Int64)))
+
 (case "a match whose only arm is guarded is non-exhaustive"
   (doc    "A guard does not count toward exhaustiveness: a guarded arm might not fire (its guard may be
            false), so it cannot be the coverage for any value. A match on an Int64 whose sole arm is
@@ -1383,6 +1398,21 @@
             (def (main (: n Int64)) (f (Some n))) (export main)))
   (call   main (: -3 Int64))
   (output (: 3 Int64)))
+
+(case "a variant guard reads the payload binder AND an enclosing binding"
+  (doc    "A guard over a variant reads both its payload binder and the enclosing scope: `pick` guards
+           `(Some v) if v < limit` where `v` is the payload binder and `limit` is a FUNCTION PARAMETER.
+           When the payload is below the dynamic threshold the arm returns it; otherwise it falls through
+           to the plain `(Some y)` arm (0). For `(Some 3)` with limit 5 the guard `3 < 5` holds → 3; for
+           `(Some 9)` it fails → 0. The variant-guard companion of the scalar enclosing-scope case: a
+           guarded variant arm's condition closes over the enclosing bindings, not only the payload it
+           binds. Both operands runtime, so nothing folds.")
+  (input  (do
+            (def (pick (: o (Option Int64)) (: limit Int64))
+              (match o ((guard (Some v) (< v limit)) v) ((Some y) 0) ((None) (- 0 1))))
+            (def (main (: n Int64) (: limit Int64)) (pick (Some n) limit)) (export main)))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: 9 Int64) (: 5 Int64)) (output (: 0 Int64)))
 
 (case "chained guards of the same variant are tried in order"
   (doc    "Two guarded `Some` arms then a plain `(Some z)`: `(guard (Some x) (> x 10))`, `(guard (Some y)
