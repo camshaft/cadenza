@@ -1725,6 +1725,12 @@ impl Db {
     /// `None` if that definition carried no doc. The read behind the `DocOf`/`DocAt` queries: a definition
     /// keeps its documentation reachable even though `strip_def_docs` removes the doc form from its body.
     /// Key by `Def::sig_occ` — the same node a name lookup and a body lookup both resolve to.
+    ///
+    /// This is how the compiler EXPOSES a definition's documentation in a machine-readable form — the
+    /// `cdz doc`/`doc-at` queries read this column, returning the text as data rather than re-scanning
+    /// source, so an agent gets a definition's documentation as a first-class query result.
+    //= spec/capabilities/agent-authoring.md#documentation-is-machine-readable
+    //# The compiler MUST expose the documentation attached to a definition in a machine-readable form.
     pub fn doc_of_def(&self, sig_occ: StructId) -> Option<&str> {
         self.doc_by_sig.get(&sig_occ).map(String::as_str)
     }
@@ -2548,6 +2554,18 @@ type TopScan = (
 /// Conservative: only a `(doc …)`-HEADED form BETWEEN the signature and the LAST tail element is dropped
 /// (the body is always last). A def with ≤1 tail element, or whose only post-sig element is the body, is
 /// untouched — byte-identical to before for every doc-less program.
+///
+/// The captured doc is carried in the canonical representation (this column, keyed off the AST node),
+/// NOT discarded as lexical trivia — and because it is stripped from the body it never lowers to Core, so
+/// it cannot change the program's runtime meaning. Every def KIND can carry a `(doc …)` (the affordance
+/// does not depend on whether the def is a value, function, or type), so every part of a program is
+/// documentable.
+//= spec/capabilities/agent-authoring.md#documentation-is-part-of-the-representation
+//# Documentation attached to a definition MUST be carried in the canonical representation rather than discarded as lexical trivia.
+//= spec/capabilities/agent-authoring.md#documentation-is-part-of-the-representation
+//# Any definition MUST be able to carry documentation, so that every part of a program can be documented.
+//= spec/capabilities/agent-authoring.md#documentation-is-machine-readable
+//# Documentation MUST NOT change the runtime meaning of a program.
 fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
     let mut docs: crate::fxhash::FxHashMap<StructId, String> = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
