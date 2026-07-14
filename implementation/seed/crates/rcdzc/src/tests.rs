@@ -39165,6 +39165,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
+        // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
+        // `typeval_of` of its name fails — and using it as an annotation `(: c C)` used to CASCADE into a
+        // misleading "`C` is a value, not a type" (it IS a type, just broken, and the phrasing blames the
+        // annotation, not the real defect). The duplicate-variant CDZ0201 is the ONE primary; the
+        // consequent "is a value" is suppressed (the annotation name resolves to a declared type).
+        let src = "(module m (type C (Red) (Red)) (def (f (: c C)) 1) (export f))";
+        let errs: Vec<crate::abi::Diagnostic> =
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+        assert!(
+            errs.iter()
+                .any(|d| d.message.contains("more than once in sum `C`")),
+            "the duplicate-variant reject is present: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|d| d.message.contains("is a value, not a type")),
+            "no misleading 'C is a value, not a type' consequent: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVER-SUPPRESSION: a genuine VALUE misused as a type still says "is a value, not a type".
+        let val = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper 5) (def (f (: x helper)) x) (export helper))",
+        )));
+        assert!(
+            val.iter()
+                .any(|d| d.message.contains("`helper` is a value, not a type")),
+            "a value keeps its own message: {:?}",
+            val.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_sum_type_name_resolves_to_its_sum_type_in_type_position() {
         // The records-everywhere realization: `(type Option (Some Int64) None)` binds `Option` to a
         // synthesized RECORD whose `(meta t)` is the sum type-value. So `Option` used in a type
