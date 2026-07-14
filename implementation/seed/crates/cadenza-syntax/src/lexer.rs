@@ -172,6 +172,18 @@ impl<'a> Lexer<'a> {
                     span: a.span.merge(str_tok.span),
                 });
             }
+            // `b[` opens a binary literal `b[<segment>, …]` (the structured sibling of the `b"…"` byte
+            // string), NOT the identifier `b` followed by a list `[…]`. Glued only when `[` immediately
+            // follows `b` (no whitespace), exactly like `b"`; `b [0]` stays the name `b` then a list.
+            // Must precede the ident arm since `b` is an ident-start. `]` closes it (an ordinary
+            // `RBracket`); the parser desugars the segment list to `(bin …)`.
+            'b' if self.peek() == Some('[') => {
+                let bracket = self.bump().unwrap(); // the `[`
+                return Some(Token {
+                    kind: Kind::BinOpen,
+                    span: a.span.merge(bracket.span),
+                });
+            }
             c if is_ident_start(c) => return Some(self.ident(a)),
             _ => Kind::Error,
         };
@@ -753,6 +765,34 @@ mod tests {
     fn unterminated_string_is_error_not_panic() {
         assert_eq!(Lexer::new("\"oops").next().unwrap().kind, Kind::Error);
         assert_eq!(Lexer::new("`oops").next().unwrap().kind, Kind::Error);
+    }
+
+    #[test]
+    fn bin_open_glues_only_without_whitespace() {
+        // `b[` glued (no space) opens a binary literal — one `BinOpen` token, like `b"…"` beats `b` + string.
+        assert_eq!(
+            kinds("b[u8(1)]"),
+            vec![
+                Kind::BinOpen,
+                Kind::Ident,
+                Kind::LParen,
+                Kind::Int,
+                Kind::RParen,
+                Kind::RBracket
+            ]
+        );
+        assert_eq!(spanned_text("b[")[0], ("b[", Kind::BinOpen));
+        // `b []` with a space is the ordinary name `b` then a list `[…]` — the glue does not cross space.
+        assert_eq!(
+            kinds("b [0]"),
+            vec![Kind::Ident, Kind::LBracket, Kind::Int, Kind::RBracket]
+        );
+        // Only the identifier `b` triggers it: `ab[` is one ident then a bare `[`, and `b"` stays a byte str.
+        assert_eq!(
+            kinds("ab[0]"),
+            vec![Kind::Ident, Kind::LBracket, Kind::Int, Kind::RBracket]
+        );
+        assert_eq!(kinds("b\"x\"")[0], Kind::ByteStr);
     }
 
     #[test]

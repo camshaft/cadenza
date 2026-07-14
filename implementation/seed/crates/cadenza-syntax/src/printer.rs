@@ -387,6 +387,11 @@ impl<'a> Printer<'a> {
                 "comment" if args.len() == 2 && self.is_string(args[0]) => {
                     return self.print_comment(args[0], args[1]);
                 }
+                // A binary literal `(bin <segment> …)` renders as `b[<segment>, …]` — the inverse of the
+                // parser's `bin_literal`/`bin_pattern`. `bin` is a reserved grammar form (structurally
+                // dispatched like `match`, never a shadowable value), so this always sugars, in both
+                // expression and pattern position; the empty form `(bin)` prints as `b[]`.
+                "bin" => return self.print_bin(args),
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -1556,6 +1561,15 @@ impl<'a> Printer<'a> {
             .any(|&e| self.head_name(e).as_deref() == Some(".."))
     }
 
+    /// `b[<segment>, …]` — a binary literal, the surface for the `(bin <segment> …)` grammar form (the
+    /// inverse of the parser's `bin_literal`/`bin_pattern`). Each segment is an ordinary call-shaped
+    /// expression/pattern (`u16(258)`, `bits(1, 1)`, `bytes(rest)`), printed at `0`; the empty form
+    /// `(bin)` prints as `b[]`. The `[` is glued to `b` (the lexer emits one `BinOpen` token), so the
+    /// open delimiter is the literal string `b[`.
+    fn print_bin(&mut self, segs: &[StructId]) {
+        self.bracketed("b[", "]", false, segs, |p, s| p.expr(s, 0));
+    }
+
     /// `[e, …]`, with an optional `.. rest` spread (`[1, 2, .. rest]`).
     fn print_list_literal(&mut self, elems: &[StructId]) {
         if self.has_rest_marker(elems) {
@@ -1754,6 +1768,13 @@ impl<'a> Printer<'a> {
                             p.pattern(sub);
                         }
                     });
+                    return;
+                }
+                // binary pattern `(bin <segment> …)` -> `b[<segment>, …]`, the pattern-position twin of
+                // the construction literal (unconditional — `bin` is a reserved grammar form, not a
+                // shadowable ctor). Each segment is a sub-pattern (`u16(n)` binds `n`); `(bin)` -> `b[]`.
+                if self.head_name(items[0]).as_deref() == Some("bin") {
+                    self.print_pattern_seq("b[", "]", &items[1..], |p, s| p.pattern(s));
                     return;
                 }
                 // dotted constructor `(. A B)` prints as A.B
@@ -2763,6 +2784,37 @@ mod tests {
         assert_eq!(
             assert_roundtrip("Set.of([1, .. rest])", 80),
             "Set.of([1, .. rest])"
+        );
+    }
+
+    #[test]
+    fn bin_literal_round_trips() {
+        // `b[…]` is the surface for the `(bin …)` grammar form — the structured sibling of `b"…"`. It
+        // round-trips in both construction and pattern position, and the s-expr oracle sugars `(bin …)`
+        // back to `b[…]`.
+        assert_eq!(
+            assert_roundtrip("b[u16(258), u8(1)]", 80),
+            "b[u16(258), u8(1)]"
+        );
+        assert_eq!(
+            assert_roundtrip("b[bits(1, 1), bits(2, 3)]", 80),
+            "b[bits(1, 1), bits(2, 3)]"
+        );
+        assert_eq!(assert_roundtrip("b[]", 80), "b[]");
+        // The oracle: a hand-authored `(bin …)` prints as the `b[…]` surface.
+        assert_eq!(
+            print(&sexpr::read("(bin (u16 258) (u8 1))").unwrap(), 80),
+            "b[u16(258), u8(1)]"
+        );
+        assert_eq!(print(&sexpr::read("(bin)").unwrap(), 80), "b[]");
+        // Pattern position: `b[…]` segments are sub-patterns (`u16(n)` binds `n`), and it round-trips.
+        assert_eq!(
+            assert_roundtrip("match x with | b[u16(n), bytes(rest)] => n", 80),
+            "match x with\n  | b[u16(n), bytes(rest)] => n"
+        );
+        assert_eq!(
+            print(&sexpr::read("(match x ((bin (u16 n)) n))").unwrap(), 80),
+            "match x with\n  | b[u16(n)] => n"
         );
     }
 

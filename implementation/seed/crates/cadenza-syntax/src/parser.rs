@@ -733,6 +733,10 @@ impl<'a> Parser<'a> {
                 self.bracketed_bars(Self::set_literal)
             }
             Kind::Hash => self.bracketed_bars(Self::hash_list),
+            // `b[ <segment>, … ]` — a binary literal, sugar for `(bin <segment> …)`. Each segment is an
+            // ordinary call-shaped expression (`u16(258)`, `bits(1, 1)`, `bytes(payload)`), so it parses
+            // like a list literal's elements and wraps under the `bin` grammar head.
+            Kind::BinOpen => self.bracketed_bars(Self::bin_literal),
             // A lexer ERROR token — an unterminated literal (`"…` / `b"…` / `#"…` / `` `… `` / `#\`) run
             // to end-of-input, or an otherwise-unrecognized character. The generic "expected an
             // expression" here misdirects (the token IS where an expression should start; the real defect
@@ -1736,6 +1740,13 @@ impl<'a> Parser<'a> {
                 let mspan = span.merge(self.prev_span());
                 self.list(items, mspan)
             }
+            Kind::BinOpen => {
+                // `b[ <segment>, … ]` — a binary PATTERN, destructuring a Bytes scrutinee (the dual of
+                // the construction literal). Head is the `bin` NAME, and each segment is a sub-PATTERN
+                // (`u16(n)` binds `n`, `bytes(rest)` binds the tail), so the compiler's `(bin …)`
+                // pattern lowering matches it exactly — the same form the s-expr surface writes.
+                self.bin_form(Self::pattern)
+            }
             _ => {
                 self.error("expected a pattern");
                 // Skip the offending token to make progress, but leave a `=>`, `|`, closer, or other
@@ -1960,6 +1971,47 @@ impl<'a> Parser<'a> {
         let list = self.list(elems, span);
         let set_of = self.member_head("Set", "of", span);
         self.list(vec![set_of, list], span)
+    }
+
+    /// `b[ <segment>, … ]`  ->  `(bin <segment> …)` — a binary literal, the structured sibling of the
+    /// `b"…"` byte string. In EXPRESSION position it CONSTRUCTS a Bytes value; in PATTERN position (via
+    /// [`Self::bin_pattern`]) it DESTRUCTURES a Bytes scrutinee — the same dual `bin` grammar form the
+    /// s-expr surface writes. Each segment is an ordinary call-shaped form (`u16(258)`, `bits(1, 1)`,
+    /// `bytes(payload)`); here they are single EXPRESSIONS (`PREC_SEQ + 1`, comma-separated, a sequence
+    /// element parenthesizes). `b[]` is the zero-length Bytes value `(bin)`. The head is the `bin` NAME
+    /// (a reserved grammar form, structurally dispatched like `match` — never a value a binding shadows).
+    fn bin_literal(&mut self) -> StructId {
+        self.bin_form(Self::bin_segment_expr)
+    }
+
+    /// A single construction-position bin segment: an ordinary expression, like a list element.
+    fn bin_segment_expr(&mut self) -> StructId {
+        self.expr(crate::token::PREC_SEQ + 1)
+    }
+
+    /// The shared `b[ … ]` skeleton for both construction ([`Self::bin_literal`]) and matching
+    /// ([`Self::bin_pattern`]): consume the `BinOpen`, read `segment`-parsed items separated by `,`
+    /// until `]`, and wrap them under the `bin` head. The cursor is on the `BinOpen` token (`b[`).
+    fn bin_form(&mut self, segment: fn(&mut Self) -> StructId) -> StructId {
+        let start = self.cur_span();
+        self.bump(); // `b[`
+        let head = self.name("bin", start);
+        let mut items = vec![head];
+        if !self.at(Kind::RBracket) {
+            loop {
+                let before = self.pos;
+                items.push(segment(self));
+                if !self.sep_continue(Kind::RBracket) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // segment didn't consume — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RBracket, "`]`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
     }
 
     // ---- misc helpers ----
@@ -2435,6 +2487,54 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("contains(#(1, 2), 1)")),
             r#"(contains ((. Set of) ("list" 1 2)) 1)"#
+        );
+    }
+
+    #[test]
+    fn bin_literal_desugars() {
+        use crate::sexpr;
+        // `b[u16(258), u8(1)]` desugars to the `(bin …)` grammar form — each segment is an ordinary
+        // call-shaped expression wrapped under the `bin` head.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(258), u8(1)]")),
+            "(bin (u16 258) (u8 1))"
+        );
+        // `b[]` is the zero-length Bytes value `(bin)`.
+        assert_eq!(sexpr::print(&parse_ok("b[]")), "(bin)");
+        // The `le` modifier and a `bits(v, k)` field carry through as ordinary call args.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(258, le), bits(1, 1)]")),
+            "(bin (u16 258 le) (bits 1 1))"
+        );
+        // A dependent-size `bytes(payload)` segment and a computed size expression parse fully.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(Bytes.len(payload)), bytes(payload)]")),
+            "(bin (u16 ((. Bytes len) payload)) (bytes payload))"
+        );
+        // It composes as an ordinary operand: a call argument and an equality operand.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u8(1)] == other")),
+            "(= (bin (u8 1)) other)"
+        );
+    }
+
+    #[test]
+    fn bin_pattern_desugars() {
+        use crate::sexpr;
+        // In pattern position `b[u16(n), bytes(rest)]` desugars to the same `(bin …)` head, but its
+        // segments are sub-PATTERNS: `u16(n)` binds `n`, `bytes(rest)` binds the tail.
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[u16(n), bytes(rest)] => n")),
+            "(match x ((bin (u16 n) (bytes rest)) n))"
+        );
+        // The empty binary pattern and a `le` modifier in a pattern segment.
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[] => 0")),
+            "(match x ((bin) 0))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[u16(n, le)] => n")),
+            "(match x ((bin (u16 n le)) n))"
         );
     }
 
