@@ -37942,7 +37942,7 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
+        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
         KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
@@ -38619,6 +38619,162 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_doc_of_query_reads_a_definitions_docstring() {
+        // A `DocOf` request answers with a definition's `(doc "…")` text — captured off the def body at
+        // load (`strip_def_docs`) and read from the doc column, for both a value and a function def.
+        let src = "(module m \
+                   (def answer (doc \"the answer\") 42) \
+                   (def (dbl (: x Int64)) (doc \"doubles x\") (* x 2)) \
+                   (def (main) answer) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "answer".into(),
+                    }),
+                    Request::Query(Query::DocOf { name: "dbl".into() }),
+                ],
+            ),
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        // The FIRST DocOf artifact is `answer`'s doc, the SECOND is `dbl`'s (request order preserved).
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            docs,
+            vec!["the answer".to_string(), "doubles x".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_doc_of_query_for_an_undocumented_or_unknown_name_is_total() {
+        // A def with no doc, and a name that names nothing, each yield a DEFINED "no documentation" line —
+        // never an error (the oracle contract: a query is total over every input).
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "main".into(),
+                    }),
+                    Request::Query(Query::DocOf {
+                        name: "ghost".into(),
+                    }),
+                ],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            docs,
+            vec![
+                "no documentation for `main`".to_string(),
+                "no documentation for `ghost`".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_doc_of_query_falls_back_to_a_builtin_meta_doc_channel() {
+        // A built-in module is just a record, so its documentation is a `(meta doc)` channel on it, read
+        // GENERICALLY — the query resolves `List` to its prelude record, then reads the channel (never a
+        // name match). A grammar KEYWORD (`if`), not a binding, gets its doc from the keyword table.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "List".into(),
+                    }),
+                    Request::Query(Query::DocOf { name: "if".into() }),
+                ],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert!(
+            docs[0].contains("persistent") && docs[0].contains("sequence"),
+            "List's built-in doc: {:?}",
+            docs[0]
+        );
+        assert!(
+            docs[1].starts_with("Conditional"),
+            "if's keyword doc: {:?}",
+            docs[1]
+        );
+    }
+
+    #[test]
+    fn a_doc_at_query_reads_the_doc_at_a_reference_and_at_the_definition() {
+        // `DocAt` is node-id-keyed: a USE of a documented def, and the def's OWN name occurrence, both
+        // surface its doc (the hover). Resolve the two spellings to node ids through the arena.
+        let src =
+            "(module m (def helper (doc \"a helper value\") 7) (def (main) helper) (export main))";
+        let arenas = parse(src);
+        // The def's NAME occurrence (`helper` in the def signature) and its later USE (`helper` in main).
+        let helper_ids: Vec<u32> = (0..arenas.structure.len() as u32)
+            .filter(|&i| arenas.as_name(crate::ast::StructId(i)) == Some("helper"))
+            .collect();
+        assert_eq!(helper_ids.len(), 2, "one def-name occurrence + one use");
+        for &node in &helper_ids {
+            let out = compile(&inputs(src, &[Request::Query(Query::DocAt { node })]), &[]);
+            assert!(!out.has_error(), "{:?}", out.diagnostics);
+            assert_eq!(
+                artifact_text(&out, KIND_DOC).as_deref(),
+                Some("a helper value"),
+                "node {node} should surface the doc"
+            );
+        }
+    }
+
+    #[test]
+    fn a_doc_at_query_for_an_undocumented_node_is_empty() {
+        // A node that reaches no documented definition (a literal, an undocumented def's use) yields the
+        // EMPTY result — total, not an error.
+        let src = "(module m (def (main) 42) (export main))";
+        let arenas = parse(src);
+        // The `42` literal — not a reference to any documented def.
+        let lit = (0..arenas.structure.len() as u32)
+            .find(|&i| {
+                matches!(
+                    arenas.get(crate::ast::StructId(i)),
+                    crate::ast::Struct::Atom(l) if matches!(arenas.leaf(*l), crate::ast::Leaf::Int { .. })
+                )
+            })
+            .expect("a literal node");
+        let out = compile(
+            &inputs(src, &[Request::Query(Query::DocAt { node: lit })]),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_DOC).as_deref(), Some(""));
     }
 
     /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf

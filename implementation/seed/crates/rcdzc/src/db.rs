@@ -426,6 +426,14 @@ pub struct Db {
     /// [`defs`]: Db::defs
     def_by_body: crate::fxhash::FxHashMap<StructId, usize>,
 
+    /// `def signature occurrence → its stripped `(doc "…")` text` — the DOCUMENTATION column the
+    /// `DocOf`/`DocAt` queries read. Filled once at load by [`strip_def_docs`], which removes the doc form
+    /// from a def's body (so every body reader stays `tail.get(1)`) but records its text here keyed by the
+    /// def's signature occurrence. That key is the node both a name lookup (`def_by_name` → `Def::sig_occ`)
+    /// and a body lookup (`def_index_by_body` → `sig_occ`) resolve to, so a doc is reachable from either a
+    /// definition NAME or a cursor OFFSET. A def with no doc has no entry (`doc_of_def` returns `None`).
+    doc_by_sig: crate::fxhash::FxHashMap<StructId, String>,
+
     /// `def signature occurrence → its index in [`defs`]` — the O(1) reverse of a def's `sig_occ`, backing
     /// `infer::def_of_param`'s "which def owns this parameter?". That was a linear
     /// `defs.iter().position(|d| d.sig_occ == sig)`; the transitive-inference feature (`989e8c7c`) calls
@@ -1008,8 +1016,10 @@ impl Db {
         // Normalize away a leading `(doc …)` on every `(def …)` BEFORE anything reads a def body: a
         // documentation form after the signature is metadata, not the value, and every body reader takes
         // `tail.get(1)` — so an un-stripped doc would be mis-read as the body. Done once here, in place
-        // (no new nodes, ids unchanged), so every def kind is fixed uniformly (`strip_def_docs`).
-        strip_def_docs(&mut ast);
+        // (no new nodes, ids unchanged), so every def kind is fixed uniformly (`strip_def_docs`). The
+        // stripped text is CAPTURED (keyed by each def's signature occurrence) so the `DocOf`/`DocAt`
+        // queries can still surface a definition's documentation after it leaves the body.
+        let doc_by_sig = strip_def_docs(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1216,6 +1226,7 @@ impl Db {
             child_ix,
             scope_skip,
             def_by_body,
+            doc_by_sig,
             def_by_sig: None,
             def_by_ident: None,
             def_name_index: def_by_name,
@@ -1708,6 +1719,14 @@ impl Db {
     /// name reference, so a linear scan here made resolution O(N²) on a many-def program.
     pub fn def_by_name(&self, name: &str) -> Option<usize> {
         self.def_name_index.get(name).copied()
+    }
+
+    /// The `(doc "…")` text captured off the definition whose SIGNATURE occurrence is `sig_occ`, or
+    /// `None` if that definition carried no doc. The read behind the `DocOf`/`DocAt` queries: a definition
+    /// keeps its documentation reachable even though `strip_def_docs` removes the doc form from its body.
+    /// Key by `Def::sig_occ` — the same node a name lookup and a body lookup both resolve to.
+    pub fn doc_of_def(&self, sig_occ: StructId) -> Option<&str> {
+        self.doc_by_sig.get(&sig_occ).map(String::as_str)
     }
 
     /// Push a SYNTHESIZED def (an effect specialization `f#ctx`, `crate::effects` E3) and index it by
@@ -2512,20 +2531,25 @@ type TopScan = (
     Vec<ModuleDecl>,
 );
 
-/// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE. A definition — value,
-/// function, or nullary — may carry a documentation form immediately after its name/signature that
-/// documents it and is NOT part of the value (`glossary`: a definition is "a value, function, type", so
-/// the doc affordance cannot depend on which — `(def (f) (doc "…") body)` AND `(def answer (doc "…")
-/// 42)` both bind ignoring the doc). Every consumer reads a def's body as `tail.get(1)` (the element right
-/// after the signature), so an un-stripped `(doc …)` would be mis-read AS the body ("unbound name doc").
-/// This normalizes every `(def sig (doc …)… body)` to `(def sig body)` at load — one place, so every def
-/// KIND (top-level, do-local, module member) is fixed uniformly. The def keeps its `StructId` (only its
-/// child list shrinks); the orphaned doc node stays in the arena, unreferenced.
+/// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE, and RETURN the doc text
+/// captured off each def — keyed by the def's SIGNATURE occurrence (`children[1]`), the stable node id
+/// both name lookup (`def_by_name` → `Def::sig_occ`) and body lookup (`def_index_by_body` → `sig_occ`)
+/// converge on, so a doc query can reach the string from either the def NAME or a cursor OFFSET.
+///
+/// A definition — value, function, or nullary — may carry a documentation form immediately after its
+/// name/signature that documents it and is NOT part of the value (`glossary`: a definition is "a value,
+/// function, type", so the doc affordance cannot depend on which — `(def (f) (doc "…") body)` AND `(def
+/// answer (doc "…") 42)` both bind ignoring the doc). Every consumer reads a def's body as `tail.get(1)`
+/// (the element right after the signature), so an un-stripped `(doc …)` would be mis-read AS the body
+/// ("unbound name doc"). This normalizes every `(def sig (doc …)… body)` to `(def sig body)` at load —
+/// one place, so every def KIND (top-level, do-local, module member) is fixed uniformly. The def keeps
+/// its `StructId` (only its child list shrinks); the orphaned doc node stays in the arena, unreferenced.
 ///
 /// Conservative: only a `(doc …)`-HEADED form BETWEEN the signature and the LAST tail element is dropped
 /// (the body is always last). A def with ≤1 tail element, or whose only post-sig element is the body, is
 /// untouched — byte-identical to before for every doc-less program.
-fn strip_def_docs(ast: &mut Arenas) {
+fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
+    let mut docs: crate::fxhash::FxHashMap<StructId, String> = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         if ast.as_form(id, "def").is_none() {
@@ -2542,23 +2566,40 @@ fn strip_def_docs(ast: &mut Arenas) {
         // Keep the head + signature and the body (last); drop any `(doc …)`-headed form between them. A
         // non-doc middle element is left in place (defensive — a malformed multi-body def is diagnosed
         // elsewhere, not silently reshaped here).
+        let n = children.len();
         let head = children[0];
         let sig = children[1];
-        let body = children[children.len() - 1];
-        let middle = &children[2..children.len() - 1];
-        let middle_kept: Vec<StructId> = middle
-            .iter()
-            .copied()
-            .filter(|&m| ast.head_name(m) != Some("doc"))
-            .collect();
-        if middle_kept.len() == middle.len() {
-            continue; // no doc form found — leave the def untouched
+        let body = children[n - 1];
+        let middle = children[2..n - 1].to_vec();
+        let mut middle_kept: Vec<StructId> = Vec::with_capacity(middle.len());
+        let mut doc_text: Option<String> = None;
+        for m in middle {
+            // A `(doc "text")` form — capture its FIRST string operand (keyed by the def's signature), then
+            // drop it from the def body. A malformed doc (no string operand) captures nothing but is still
+            // stripped, so the body reader is unaffected. First doc wins if a def somehow carries several.
+            if let Some(tail) = ast.as_form(m, "doc") {
+                if doc_text.is_none() {
+                    doc_text = tail
+                        .first()
+                        .and_then(|&t| ast.as_str(t))
+                        .map(str::to_string);
+                }
+                continue;
+            }
+            middle_kept.push(m);
+        }
+        if let Some(text) = doc_text {
+            docs.insert(sig, text);
+        }
+        if middle_kept.len() + 3 == n {
+            continue; // no doc form found — leave the def untouched (the body stayed last)
         }
         let mut kept = vec![head, sig];
         kept.extend(middle_kept);
         kept.push(body);
         ast.structure[i] = Struct::List(kept);
     }
+    docs
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
