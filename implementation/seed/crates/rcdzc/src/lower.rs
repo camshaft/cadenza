@@ -2676,20 +2676,31 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
     // wildcard, or such a guarded pattern declines the whole match (a compound needs a heap walk).
     let mut probes: Vec<(crate::core::Probe, Option<StructId>, StructId)> = Vec::new();
+    // The inner-pattern node for each probe, index-aligned with `probes` — kept alongside (rather than
+    // widening the probe tuple, which several destructures below rely on) so the pattern-type check can
+    // anchor its CDZ0201 at the offending PATTERN, not the enclosing match.
+    let mut probe_pats: Vec<StructId> = Vec::new();
     for &(pat, body) in arms {
         let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
             // `(guard <inner-pat> <cond>)` — a guarded pattern.
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             Some(_) => {
-                return Core::Poison(Reject::coded(
-                    Code::Malformed,
-                    "a guarded pattern must be (guard <pattern> <cond>)",
-                ));
+                // Anchor at the offending arm PATTERN, not the enclosing match.
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a guarded pattern must be (guard <pattern> <cond>)",
+                    )
+                    .at(pat),
+                );
             }
             None => (pat, None),
         };
         match classify_probe(db, inner_pat) {
-            Some(p) => probes.push((p, guard, body)),
+            Some(p) => {
+                probes.push((p, guard, body));
+                probe_pats.push(inner_pat);
+            }
             None => {
                 return Core::Poison(Reject::decline(
                     "a match pattern that is not a scalar literal or `_` is not yet supported",
@@ -2703,7 +2714,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     let scrut_ty = crate::infer::type_of(db, scrutinee);
     //  (1) each LITERAL pattern's type must agree with the scrutinee's — a bool pattern against an
     //      integer scrutinee (or vice-versa) is a shape/type error (CDZ0201), not a never-matching arm.
-    for (probe, _, _) in &probes {
+    for (i, (probe, _, _)) in probes.iter().enumerate() {
         let pat_ty = match probe {
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
@@ -2716,14 +2727,18 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         if let Some(pt) = pat_ty
             && !pt.agrees_with(&scrut_ty)
         {
-            return Core::Poison(Reject::coded(
-                Code::Malformed,
-                format!(
-                    "match pattern type {} does not match scrutinee type {}",
-                    pt.render_name(),
-                    scrut_ty.render_name()
-                ),
-            ));
+            // Anchor at the offending literal PATTERN (`probe_pats[i]`), not the enclosing match.
+            return Core::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "match pattern type {} does not match scrutinee type {}",
+                        pt.render_name(),
+                        scrut_ty.render_name()
+                    ),
+                )
+                .at(probe_pats[i]),
+            );
         }
     }
     //  (2) exhaustiveness: a scalar match must cover every value of the scrutinee's type. A wildcard
@@ -3409,10 +3424,14 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         let (pat, guard) = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             Some(_) => {
-                return Core::Poison(Reject::coded(
-                    Code::Malformed,
-                    "a guarded pattern must be (guard <pattern> <cond>)",
-                ));
+                // Anchor at the offending arm PATTERN, not the enclosing match.
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a guarded pattern must be (guard <pattern> <cond>)",
+                    )
+                    .at(pat),
+                );
             }
             None => (pat, None),
         };

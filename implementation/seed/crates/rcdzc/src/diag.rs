@@ -26,6 +26,13 @@
 ///
 //= constitution.md#xi-diagnostics-are-machine-actionable
 //# Every diagnostic the compiler emits MUST carry a stable machine-readable code.
+///
+/// Each variant names exactly ONE rule/rejection — its own docstring cites the spec section it enforces,
+/// and `code()` maps it to a stable `CDZ####` that IS the pinned code set's "the rejection each code
+/// names". So the code a diagnostic carries names the rule it enforces, machine-readably: an agent
+/// branches on the `CDZ####` to know which requirement was violated and act on it programmatically.
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# Every diagnostic the compiler emits MUST name the rule or requirement it enforces so that an agent can act on it programmatically.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
@@ -344,6 +351,13 @@ impl Code {
 ///
 /// The default is `Heuristic`: a producer must positively PROVE a fix correct (by recompiling with it
 /// applied) to mark it `Verified`, so an unproven fix never masquerades as machine-applicable.
+///
+/// The two variants together are the constitution's machine-actionable-diagnostics obligation: a
+/// confirmed route is marked `Verified`, and a route the compiler cannot confirm carries the `Heuristic`
+/// marker — so an agent distinguishes a guaranteed repair from a suggested one (the diagnostics.md pair
+/// below is this same rule, stated per-variant, in the capability spec).
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# A route whose application the compiler has confirmed recompiles the program clean and clears the diagnostic MUST be marked verified, and a route the compiler cannot so confirm MUST carry an applicability marker declaring it a heuristic, so that an agent can distinguish a guaranteed repair from a suggested one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Applicability {
     /// The compiler confirmed applying this fix recompiles the program clean and clears the diagnostic
