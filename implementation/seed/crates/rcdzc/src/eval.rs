@@ -1454,6 +1454,10 @@ pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::Struc
 /// operator application, and every inline re-projects `(meta apply)` — on a deep inline chain that
 /// `Symbol` alloc/free was a top allocation source in the profile. Behaviour-identical (same fields,
 /// same match); only the transient key object is gone.
+// `_depth` is a `#[cfg(test)]`-only scan-depth probe (feeds `PROJECT_META_FIELDS_VISITED` for the
+// zero-user-field-scan perf test); folding it into the loop iterator (clippy's `explicit_counter_loop`
+// suggestion) would put the counter on the release path too, so keep the manual test-gated counter.
+#[allow(clippy::explicit_counter_loop)]
 pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
     let rec = reduce_to_record_id(db, id)?;
     // `reduce_to_record_id` has already resolved `rec` (it dispatches on its `resolved_of`), so the
