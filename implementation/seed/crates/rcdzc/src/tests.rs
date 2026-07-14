@@ -12452,6 +12452,68 @@ mod match_engine {
     }
 
     #[test]
+    fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
+        // The over-application companion of the wrong-type-arg member-op message: `(List.push xs 1 2)`
+        // (push takes 2) named the operation + its arity ("`List.push` takes 2 arguments, but 3 were
+        // given") instead of the anonymous "applied 3 arguments to a function of arity 2". Carries the
+        // delete-surplus fix, and reports ONCE (the emit-path wrong-arity decline is deduped away).
+        let d = reject_full(
+            "(module m (def (g (: xs (List Int64))) ((. List push) xs 1 2)) (export g))",
+        )
+        .expect("over-applying List.push rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("`List.push` takes 2 arguments, but 3 were given"),
+            "names the op + arity: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries the delete-surplus fix: {:?}",
+            d.fix
+        );
+        // Arity-1 op → SINGULAR "argument"; and the emit-path decline is deduped (ONE error).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. Map size) (map (1 2)) 99)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errs: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "one error, decline deduped: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            errs[0]
+                .message
+                .contains("`Map.size` takes 1 argument, but 2 were given"),
+            "singular 'argument' for an arity-1 op: {}",
+            errs[0].message
+        );
+        // NO regression: a bare operator over-application keeps its own message (not a `.`-member phrasing).
+        let bare =
+            reject_full("(module m (def (g) (+ 1 2 3)) (export g))").expect("(+ 1 2 3) rejects");
+        assert!(
+            !bare.message.contains("were given"),
+            "a bare operator over-application keeps its own message: {}",
+            bare.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the

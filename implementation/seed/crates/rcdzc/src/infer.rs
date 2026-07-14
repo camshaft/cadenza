@@ -5120,15 +5120,24 @@ fn check_application(
                     trace!(target: "rcdzc::infer", head = head.0, arity = arg_index, args = args.len(), "apply: over-applied a scheme-typed head (CDZ0203)");
                     // `arg_index` args were consumed before the arrow ran out, so `args[arg_index]` is the
                     // FIRST surplus — DELETE it (the fixpoint removes each extra in turn). Anchor + fix there.
-                    let mut reject = Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
+                    // NAME the operation when the head is a `(. Module member)` — `(List.push xs 1 2)` reads
+                    // "`List.push` takes 2 arguments, but 3 were given" instead of the anonymous "a function
+                    // of arity 2", the over-application companion of the M95 wrong-type-arg member-op message.
+                    let message = match member_op_head_name(db, head) {
+                        Some((module, member)) => format!(
+                            "`{module}.{member}` takes {arg_index} argument{}, but {} {} given",
+                            if arg_index == 1 { "" } else { "s" },
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" },
+                        ),
+                        None => format!(
                             "applied {} arguments to a function of arity {} — it is not a function after \
                              its arguments are consumed",
                             args.len(),
                             arg_index
                         ),
-                    );
+                    };
+                    let mut reject = Reject::coded(Code::TypeMismatch, message);
                     if let Some(&surplus) = args.get(arg_index) {
                         reject = reject
                             .at(surplus)

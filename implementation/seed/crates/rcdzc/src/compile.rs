@@ -1741,9 +1741,12 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     // Likewise: the evaluator's uncoded "applied more arguments than the function accepts" DECLINE is
     // redundant when `infer` proved the over-application (the coded CDZ0203 `applied N arguments to a
     // function of arity M …` reject). Drop the weaker decline so over-application is ONE primary error.
-    let has_over_application_reject = faults
-        .iter()
-        .any(|r| r.code.is_some() && r.message.contains(crate::diag::OVER_APPLICATION_MARKER));
+    let has_over_application_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && (r.message.contains(crate::diag::OVER_APPLICATION_MARKER)
+                || r.message
+                    .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER))
+    });
     // Likewise: a MALFORMED handler (an arm naming an undeclared op — CDZ0403 — or one not discharging
     // every operation — CDZ0405) cannot fold, so `lower` returns the uncoded "not yet reducible by the
     // tail-resumptive fold" DECLINE alongside the coded reject. The decline is a CONSEQUENCE of the very
