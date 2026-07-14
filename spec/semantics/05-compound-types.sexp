@@ -4758,6 +4758,25 @@
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
 
+(case "a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches"
+  (doc    "A sum `W` has a variant `Bad` whose payload is the EMPTY sum `V` (zero variants, uninhabited) —
+           `(type V) (type W (Ok Int64) (Bad V))`. `V` is uninhabited so `Bad` can never be built, but the
+           enum must still LAY OUT its payload cell, and the `Bad v` arm's body `(match v)` is a zero-arm
+           match on the uninhabited `v` (vacuously exhaustive, unreachable). Only `Ok` is ever built, so
+           `(f (Ok 5))` = 5; the `Bad` arm never runs. Pins that an empty sum is a valid PAYLOAD type in a
+           live sum (its cell lays out though no value flows) and that the dead arm's zero-arm match over
+           the uninhabited payload is well-formed — the payload-position companion of the empty-sum
+           parameter case.")
+  (input  (do
+            (type V)
+            (type W (Ok Int64) (Bad V))
+            (def (f (: w W)) (match w ((W.Ok n) n) ((W.Bad v) (match v))))
+            (def (main (: k Int64)) (f (W.Ok k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
