@@ -223,7 +223,15 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         // element). A non-recursive variant is unboxed as before.
         let recursive = variant_payloads_mention(db, variant, &decl);
         let field = |ty: String| {
-            if recursive { format!("Box<{ty}>") } else { ty }
+            // Fully-qualify the indirection `Box` (`::std::boxed::Box`, not the prelude's) so a USER sum
+            // NAMED `Box` — `(type Box (W a) (E))` → `enum Box<T0>` — cannot shadow the heap pointer the
+            // recursion depends on. A bare `Box<…>` here would resolve to the user enum, making a recursive
+            // `Tree` infinitely sized (E0072); the qualified path is immune to any sum-name collision.
+            if recursive {
+                format!("::std::boxed::Box<{ty}>")
+            } else {
+                ty
+            }
         };
         match payloads.len() {
             // A nullary variant is a unit variant (`None`).

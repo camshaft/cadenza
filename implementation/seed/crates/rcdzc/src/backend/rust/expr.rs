@@ -701,7 +701,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 } else {
                     format!("env, {}", rendered.join(", "))
                 };
-                Ok(format!("Box::pin({ident}({args})).await"))
+                // Fully-qualify `::std::boxed::Box::pin` so a user sum named `Box` cannot shadow it.
+                Ok(format!("::std::boxed::Box::pin({ident}({args})).await"))
             } else {
                 Ok(format!("{ident}({})", rendered.join(", ")))
             }
@@ -761,8 +762,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let ty = type_of(db, id);
             let boxed = super::enums::variant_is_recursive(db, &ty, disc);
             let wrap = |payload: String| {
+                // Fully-qualify `::std::boxed::Box::new` (not the prelude `Box`) — the deref twin of the
+                // enum field's `::std::boxed::Box<…>` — so a user sum NAMED `Box` cannot shadow it.
                 if boxed {
-                    format!("Box::new({payload})")
+                    format!("::std::boxed::Box::new({payload})")
                 } else {
                     payload
                 }
