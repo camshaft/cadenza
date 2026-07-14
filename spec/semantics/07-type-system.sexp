@@ -392,6 +392,57 @@
             (def (main) (f (Set.of (list 1)) (Set.of (list 2)))) (export main)))
   (error  CDZ0201))
 
+(case "addition of two symbols is rejected — a symbol is not a number"
+  (doc    "`(+ (Symbol.of \"a\") (Symbol.of \"b\"))` adds two Symbols; a Symbol is an interned name, not a
+           number, so arithmetic is not defined on it (CDZ0201). The two operands share the type `Symbol`,
+           so this is the same-type path, not a cross-kind mismatch — and a Symbol has no concatenation, so
+           the honest message stands with no fix. Pins that the nominal name type is excluded from
+           arithmetic exactly as the collections are.")
+  (input  (+ (Symbol.of "a") (Symbol.of "b")))
+  (error  CDZ0201))
+
+(case "subtraction of two symbols is rejected"
+  (doc    "`(- (Symbol.of \"a\") (Symbol.of \"b\"))` — the non-`+` arithmetic operator on two Symbols is
+           rejected the same way (CDZ0201). Pins that the whole arithmetic family, not only `+`, refuses a
+           Symbol operand (the Symbol companion of the two-strings pair above).")
+  (input  (- (Symbol.of "a") (Symbol.of "b")))
+  (error  CDZ0201))
+
+; --- Arithmetic on a MISMATCHED non-numeric pair names BOTH real types -----------------------
+; The cases above add two operands of the SAME non-numeric type. When the two operands are DIFFERENT
+; non-numeric types — `(+ "ab" (list 1 2))`, a String and a List — the diagnostic names BOTH real types
+; ("arithmetic is not defined on String and (List Int64)"), not a phantom `Int64` misattributed to one
+; side. This is a THIRD path, distinct both from the same-type case (which names one type) and from the
+; cross-KIND mismatch `(+ 1 "two")` above (which has a NUMERIC operand and reports "different types
+; across that kind boundary"): here NEITHER operand is numeric, so the fault is squarely the operator's
+; numeric requirement over an unrelated pair. The message is order-sensitive (it lists the operands as
+; written), so both orders are pinned.
+
+(case "addition of a string and a list names both non-numeric types"
+  (doc    "`(+ \"ab\" (list 1 2))` adds a String and a List — two DIFFERENT non-numeric types. The
+           compiler rejects it (CDZ0201) and names both real types rather than inventing a phantom
+           `Int64` for one side; neither operand is a number, so the operator's numeric requirement is
+           what fails. Pins the mismatched-pair diagnostic (distinct from the same-type cases and from the
+           `(+ 1 \"two\")` cross-kind case, which has a numeric side).")
+  (input  (+ "ab" (list 1 2)))
+  (error  CDZ0201))
+
+(case "the mismatched-pair rejection is order-independent"
+  (doc    "`(+ (list 1 2) \"ab\")` — the operands of the case above flipped — is the same rejection
+           (CDZ0201). The diagnostic lists the operands as written (List then String), but the fault does
+           not depend on which non-numeric type is on which side. Pins that the mismatched-non-numeric-pair
+           check is symmetric.")
+  (input  (+ (list 1 2) "ab"))
+  (error  CDZ0201))
+
+(case "addition of a string and a byte sequence names both text types"
+  (doc    "`(+ \"ab\" (Bytes.of (list 1)))` adds a String and a Bytes — two different text-ish types,
+           both non-numeric, rejected (CDZ0201) naming both. Pins that the mismatched-pair diagnostic
+           covers a text/text pair (String vs Bytes) as well as a text/collection pair, so no non-numeric
+           combination is silently treated as arithmetic.")
+  (input  (+ "ab" (Bytes.of (list 1))))
+  (error  CDZ0201))
+
 ; --- Equality type-checks its operands: no cross-type comparison ---------------------------
 ; `=` offers structural equality over ONE type's values (type-system.md #Structural Values Are
 ; Comparable Only When Their Shapes Match), so comparing two DIFFERENT types is a type error — the

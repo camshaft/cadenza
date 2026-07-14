@@ -1431,10 +1431,13 @@ pass	adding rational-magnitude quantities of incompatible dimension is still a c
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two units of one dimension converts to the reference unit exactly
+pass	addition of a string and a byte sequence names both text types
+pass	addition of a string and a list names both non-numeric types
 pass	addition of two lists is rejected — a list is not a number
 pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
+pass	addition of two symbols is rejected — a symbol is not a number
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -2004,6 +2007,7 @@ pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	record reshaping is subset comparison as explicit projection
 pass	recursive factorial with a match base case
+pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
@@ -2110,6 +2114,7 @@ pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
 pass	subtraction of two strings is rejected
+pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal
@@ -2163,6 +2168,7 @@ pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum signed 8-bit value is its per-width bound
+pass	the mismatched-pair rejection is order-independent
 pass	the module entrypoint is the def named main regardless of its position
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
