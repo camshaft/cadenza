@@ -3109,6 +3109,66 @@
   (call   mk-b (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
   (output (: 7 Int64)))
 
+; A NESTED fixed-shape compound ARG — a tuple/record whose FIELD is itself a tuple/record — crosses the
+; direct-call boundary (single-export, scalar result): the canonical ABI flattens the nested `tuple<…,
+; tuple<…>>` RECURSIVELY to its leaf scalar core params (depth-first), the core `call` rebuilds the nested cell
+; recursively (`emit_cell_rebuild` threads a leaf cursor; a nested field builds its own sub-cell + the parent
+; `arr-set`s the sub-handle), and the envelope mints the INNER `tuple<…>` type by index. Proven by the
+; `a_nested_fixed_shape_tuple_closure_arg_crosses_by_recursive_flattening` oracle. (A nested arg alongside
+; scalars, or with a list<u8>-crossing result, or on multi/mixed/distinct-sig, is a later widening.)
+
+(case "a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) Int64)` — the arg's SECOND field is itself a tuple. It
+           crosses as a nested `tuple<s64, tuple<s64,s64>>` flattened to THREE leaf core params; the `call`
+           rebuilds the inner cell then the outer. `call(handle, (100, (10, 3)))` → `p.0 + p.1.0 + p.1.1` = 113.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: 113 Int64)))
+
+(case "a NESTED Record ARG (a record containing a record) crosses the direct-call boundary"
+  (doc    "`mk : (-> (Record (n Int64) (inner (Record (x Int64) (y Int64)))) Int64)` — a record with a record
+           field. Each level flattens to its sorted-key leaves + rebuilds recursively. `call(handle, (record
+           (n 100) (inner (record (x 10) (y 3)))))` → `r.n + r.inner.x + r.inner.y` = 113.")
+  (input  (do (def (mk) (fn ((: r (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+                         (+ (. r n) (+ (. (. r inner) x) (. (. r inner) y)))))
+              (export mk)))
+  (call   mk (: (record (n 100) (inner (record (x 10) (y 3))))
+                (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+  (output (: 113 Int64)))
+
+(case "a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Record (x Int64) (y Int64))) Int64)` — a tuple whose second field is a
+           RECORD. The nested-compound rebuild is kind-agnostic (tuple or record at any level). `call(handle,
+           (100, (record (x 10) (y 3))))` → `p.0 + p.1.x + p.1.y` = 113.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Record (x Int64) (y Int64)))))
+                         (+ (. p 0) (+ (. (. p 1) x) (. (. p 1) y)))))
+              (export mk)))
+  (call   mk (: (tuple 100 (record (x 10) (y 3))) (Tuple Int64 (Record (x Int64) (y Int64)))))
+  (output (: 113 Int64)))
+
+(case "a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64))) Int64)` — three tuple levels. The
+           recursive mint emits the innermost `tuple<s64,s64>` first, then the middle, then the outer; the
+           rebuild recurses to match. `call(handle, (1000, (100, (10, 3))))` → 1000+100+10+3 = 1113.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
+                         (+ (. p 0) (+ (. (. p 1) 0) (+ (. (. (. p 1) 1) 0) (. (. (. p 1) 1) 1))))))
+              (export mk)))
+  (call   mk (: (tuple 1000 (tuple 100 (tuple 10 3)))
+                (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: 1113 Int64)))
+
+(case "a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Bool)) Int64)` — the inner tuple has a Bool leaf (boxed via
+           `box-bool` in the recursive rebuild). `call(handle, (100, (10, true)))` → `if p.1.1 then p.0 + p.1.0
+           else p.0` = 110. Confirms the recursive rebuild handles a narrow leaf at depth.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Bool))))
+                         (if (. (. p 1) 1) (+ (. p 0) (. (. p 1) 0)) (. p 0))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
+  (output (: 110 Int64)))
+
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
 

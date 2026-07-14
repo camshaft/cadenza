@@ -1790,6 +1790,7 @@ pub fn assemble_closure_resource_borrow(
         None,
         &[],
         &[],
+        None,
     )
 }
 
@@ -1815,6 +1816,10 @@ pub fn assemble_closure_resource_borrow_tuple(
     // tuple sits AMONG scalar args; both empty when the tuple is the SOLE arg (or `tuple_arg_bytes` is None).
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
+    // When the tuple arg has a NESTED fixed-shape compound field, its recursive field shape (so the envelope
+    // mints the inner `tuple<…>` types by index). `None` = an all-scalar tuple (the flat `tuple_arg_bytes`
+    // path, byte-identical). Only the single-export scalar-result path threads this; other paths pass `None`.
+    tuple_shape: Option<&[TupleFieldShape]>,
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1948,7 +1953,21 @@ pub fn assemble_closure_resource_borrow_tuple(
             own_item(1)
         };
         let n_items: usize;
-        if let Some(fields) = tuple_arg_bytes {
+        if let Some(shape) = tuple_shape {
+            // NESTED tuple arg: mint the (possibly multi-level) tuple types starting at type 5; the OUTERMOST
+            // tuple index is what the `call` functype references. `nested_tuple_type_count` types precede it.
+            let mut next_type = 5u32;
+            let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                4,
+                tuple_prefix_bytes,
+                outer_tup,
+                tuple_suffix_bytes,
+                result_byte,
+            ));
+            call_ft_idx = next_type; // the functype sits right after all the tuple types
+            n_items = 1 + nested_tuple_type_count(shape) as usize + 1; // handle + tuple types + functype
+        } else if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 5
             items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 4,
@@ -1984,6 +2003,7 @@ pub fn assemble_closure_resource_borrow_tuple(
             tuple_arg_bytes,
             tuple_prefix_bytes,
             tuple_suffix_bytes,
+            tuple_shape,
         ),
     ));
     out.extend_from_slice(&section(
@@ -4465,6 +4485,7 @@ fn resource_inner_component_closure_borrow(
         None,
         &[],
         &[],
+        None,
     )
 }
 
@@ -4474,6 +4495,7 @@ fn resource_inner_component_closure_borrow(
 /// is minted just before the `call` functype on BOTH the import and export sides, shifting the `call`
 /// functype's own index by 1 (import: 4→5; export: 9→11, since the re-exported resource + make types also
 /// sit between). `None` reproduces the scalar path byte-for-byte. `arg_bytes` is ignored when `Some`.
+#[allow(clippy::too_many_arguments)]
 fn resource_inner_component_closure_borrow_tuple(
     make_param_bytes: &[u8],
     arg_bytes: &[u8],
@@ -4482,6 +4504,7 @@ fn resource_inner_component_closure_borrow_tuple(
     tuple_arg_bytes: Option<&[u8]>,
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
+    tuple_shape: Option<&[TupleFieldShape]>,
 ) -> Vec<u8> {
     // `call`'s self handle type: a `borrow<idx>` (repeatable) or `own<idx>` (single-use) defined-type item.
     let call_handle = |idx: u32| -> Vec<u8> {
@@ -4513,11 +4536,28 @@ fn resource_inner_component_closure_borrow_tuple(
     // sec 7: `own<0>`/`borrow<0>` (type 3) then — for a tuple arg — the `tuple<…>` defined type (type 4),
     // then the imported `call` functype `(self: <handle<3>>, <args>) -> R`. With a tuple arg the call
     // functype's own index shifts to 5 (the tuple sits between); the scalar path keeps it at 4.
+    // The EXTRA component types a NESTED tuple mints beyond the ONE a flat tuple mints (0 for a flat/scalar
+    // tuple or no tuple): each side's post-tuple indices shift up by this. `nested_tuple_type_count`-1.
+    let nested_extra: u32 = tuple_shape.map_or(0, |s| nested_tuple_type_count(s) - 1);
     let call_import_ty_idx: u32;
     let call_import_types = {
         let mut items = call_handle(0);
         let n_items: usize;
-        if let Some(fields) = tuple_arg_bytes {
+        if let Some(shape) = tuple_shape {
+            // NESTED tuple arg: mint the tuple types starting at type 4 (after handle 3); the OUTERMOST tuple
+            // index is what the `call` functype references, and the functype sits right after all of them.
+            let mut next_type = 4u32;
+            let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                3,
+                tuple_prefix_bytes,
+                outer_tup,
+                tuple_suffix_bytes,
+                result_byte,
+            ));
+            call_import_ty_idx = next_type;
+            n_items = 1 + nested_tuple_type_count(shape) as usize + 1;
+        } else if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 4
             items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 3,
@@ -4542,8 +4582,12 @@ fn resource_inner_component_closure_borrow_tuple(
         &wasm_vec(1, &import_func_item("import-func-call", call_import_ty_idx)),
     ));
     // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t`. Its exported type index is the next
-    // free component type: 5 (scalar) or 6 (tuple, which minted one extra import-side type).
-    let exp_res_ty: u32 = if tuple_arg_bytes.is_some() { 6 } else { 5 };
+    // free component type: 5 (scalar) or 6 (tuple) + `nested_extra` for a nested tuple's inner types.
+    let exp_res_ty: u32 = (if tuple_arg_bytes.is_some() || tuple_shape.is_some() {
+        6
+    } else {
+        5
+    }) + nested_extra;
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
@@ -4570,12 +4614,24 @@ fn resource_inner_component_closure_borrow_tuple(
     ));
     // sec 7: `own/borrow<exp_res_ty>` then — for a tuple arg — the `tuple<…>` defined type, then the `call`
     // functype re-typed against the exported resource.
-    let call_handle_ty = make_export_ft + 1; // 8 (scalar) / 9 (tuple)
+    let call_handle_ty = make_export_ft + 1; // 8 (scalar) / 9 (tuple) [+ nested_extra via make_export_ft]
     let call_export_ty_idx: u32;
     let call_export_types = {
         let mut items = call_handle(exp_res_ty);
         let n_items: usize;
-        if let Some(fields) = tuple_arg_bytes {
+        if let Some(shape) = tuple_shape {
+            let mut next_type = call_handle_ty + 1;
+            let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                call_handle_ty,
+                tuple_prefix_bytes,
+                outer_tup,
+                tuple_suffix_bytes,
+                result_byte,
+            ));
+            call_export_ty_idx = next_type;
+            n_items = 1 + nested_tuple_type_count(shape) as usize + 1;
+        } else if let Some(fields) = tuple_arg_bytes {
             let tup_ty = call_handle_ty + 1; // 10
             items.extend_from_slice(&tuple_defined_type(fields));
             items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
@@ -6449,6 +6505,73 @@ fn tuple_defined_type(field_bytes: &[u8]) -> Vec<u8> {
     let mut item = vec![0x6f];
     item.extend_from_slice(&wasm_vec(field_bytes.len(), field_bytes));
     item
+}
+
+/// The boundary component-TYPE shape of a fixed-shape compound closure argument, recursively: each field is
+/// either a PRIMITIVE valtype byte (an aliased-width scalar leaf) or a NESTED tuple (its own field shapes).
+/// A `Scalar` field is one flattened core param; a `Nested` field is its own `tuple<…>` DEFINED type the
+/// canonical ABI flattens recursively. `TupleFieldShape::Scalar`-only tuples reduce to the flat
+/// `tuple_defined_type(field_bytes)` case; a `Nested` field forces the recursive minting below.
+#[derive(Clone)]
+pub enum TupleFieldShape {
+    /// A scalar leaf field carrying its component primitive valtype byte (`COMP_S64`, …).
+    Scalar(u8),
+    /// A nested fixed-shape tuple/record field, its own fields in cell order.
+    Nested(Vec<TupleFieldShape>),
+}
+
+/// Mint the `tuple<…>` DEFINED TYPE for a (possibly NESTED) fixed-shape compound argument into `items`,
+/// emitting every INNER nested tuple type FIRST (bottom-up) so the outer tuple can reference them by index.
+/// `next_type` is the component-type index the FIRST minted type will occupy; it is advanced past every type
+/// this mints. Returns the type index of the OUTERMOST tuple (the one a `call` functype references as the
+/// argument). A field shape of all `Scalar`s mints exactly ONE type (byte-identical to `tuple_defined_type`);
+/// each `Nested` field mints its own sub-tuple first (recursively). Used by the single-export scalar-result
+/// `call` path; other paths (flat `tuple_defined_type`) still assume all-scalar fields.
+fn mint_tuple_type_nested(
+    fields: &[TupleFieldShape],
+    next_type: &mut u32,
+    items: &mut Vec<u8>,
+) -> u32 {
+    // Mint each nested field's sub-tuple first, recording the valtype byte(s) each field contributes to the
+    // outer tuple (a scalar → its primitive byte; a nested → an sleb128 type-index reference).
+    let mut field_valtypes: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
+    for f in fields {
+        match f {
+            TupleFieldShape::Scalar(b) => field_valtypes.push(vec![*b]),
+            TupleFieldShape::Nested(sub) => {
+                let sub_idx = mint_tuple_type_nested(sub, next_type, items);
+                // A defined-type reference in a `tuple` field is the type index as a SIGNED LEB128 (matching
+                // `wasm_encoder`'s `ComponentValType::Type(i) => (i as i64).encode`); a small positive index
+                // is one byte ≥ 0 and < 0x64, distinct from the primitive-byte range (0x64..=0x7f).
+                let mut enc = Vec::new();
+                crate::backend::wasm::encode::sleb128(sub_idx as i64, &mut enc);
+                field_valtypes.push(enc);
+            }
+        }
+    }
+    // Now emit the OUTER tuple type: `0x6f <count> <field-valtype-encoding>*`.
+    let mut tup = vec![0x6f];
+    let mut body = Vec::new();
+    for fv in &field_valtypes {
+        body.extend_from_slice(fv);
+    }
+    tup.extend_from_slice(&wasm_vec(field_valtypes.len(), &body));
+    items.extend_from_slice(&tup);
+    let outer_idx = *next_type;
+    *next_type += 1;
+    outer_idx
+}
+
+/// The number of component TYPES [`mint_tuple_type_nested`] emits for `fields`: 1 for the outer tuple + the
+/// recursive count for every nested field. A flat all-scalar shape is 1 (byte-identical to the flat path).
+fn nested_tuple_type_count(fields: &[TupleFieldShape]) -> u32 {
+    1 + fields
+        .iter()
+        .map(|f| match f {
+            TupleFieldShape::Scalar(_) => 0,
+            TupleFieldShape::Nested(sub) => nested_tuple_type_count(sub),
+        })
+        .sum::<u32>()
 }
 
 /// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args: `(self:
