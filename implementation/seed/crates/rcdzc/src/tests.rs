@@ -32768,6 +32768,30 @@ mod stage1 {
                 "a type constructor is NOT called a value: {m}"
             );
         }
+        // A USER GENERIC sum used bare — `(: b Box)` for `(type Box (W a))` — is likewise rejected with the
+        // constructor message (naming the sum's own parameter, `(Box a)`), NOT silently accepted. (A bare
+        // generic used to reduce to a `Ty::Sum` with a fresh var and slip through, then produce a confusing
+        // "a Box is not a Box" mismatch at each use.) A 2-param generic echoes both parameters.
+        let box_msg = msg("(module m (type Box (W a)) (def (f (: b Box)) b) (export f))");
+        assert!(
+            box_msg.contains("`Box` is a type constructor") && box_msg.contains("`(Box a)`"),
+            "a bare user generic names its parameter: {box_msg}"
+        );
+        let pair_msg = msg("(module m (type Pair (P a b)) (def (f (: x Pair)) x) (export f))");
+        assert!(
+            pair_msg.contains("`Pair` is a type constructor") && pair_msg.contains("`(Pair a b)`"),
+            "a bare 2-param generic echoes both parameters: {pair_msg}"
+        );
+        // NO REGRESSION: a MONOMORPHIC user sum stands alone (0 type params) — `(: c C)` is CLEAN, not a
+        // "needs an argument" reject.
+        let mono =
+            "(module m (type C (R) (G)) (def (f (: c C)) (match c ((R) 1) ((G) 2))) (export f))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(mono)))
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a monomorphic sum used bare is accepted"
+        );
         // NO REGRESSION: a genuine value misused as a type still gets "is a value, not a type".
         let val = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
         assert!(

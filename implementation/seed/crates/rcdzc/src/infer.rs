@@ -1307,6 +1307,25 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         out.push(Reject::coded(Code::TypeMismatch, msg).at(ty_expr));
         return;
     }
+    // A BARE type-CONSTRUCTOR name used with NO argument — `(: b Box)` for `(type Box (W a))`, `(: xs
+    // List)`. A prelude ctor (`List`/`Set`/`Map`/`Qty`) fails to reduce (caught by the "not a type" branch
+    // below, but with the clearer constructor message), and a USER GENERIC sum's bare name REDUCES to a
+    // `Ty::Sum` with a fresh var (so `typeval_of` succeeds and the "not a type" branch never fires) —
+    // silently accepting an under-applied generic, which then produces a downstream "a Box is not a Box"
+    // confusion at each use. Reject it here, consistent with the applied wrong-arity case (`(Box)` /
+    // `(Box a b)`), naming the missing argument. `bare_type_ctor_needs_argument` returns `None` for a
+    // monomorphic type / a genuine value, so those are unaffected.
+    if bare_type_ctor_needs_argument(db, ty_expr).is_some() {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: bare type constructor missing its argument (CDZ0203)");
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
+            )
+            .at(ty_expr),
+        );
+        return;
+    }
     // The operand denotes a type → fine. Otherwise reject. A `(Record (name Type)…)` (or a container
     // bearing one) needs the RECORD-AWARE type-position split: a field's NAME is a LABEL, not a value
     // reference, so `collect`-ing the whole `(Record (x Nonesuch))` as a value mis-resolves the label `x`
