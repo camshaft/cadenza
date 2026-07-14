@@ -4000,6 +4000,68 @@ fn record_value_nodes(
     }
 }
 
+/// A one-shot RENAME fix for a MISSPELLED record-literal field: when the `actual` record value carries a
+/// field whose name is a plausible typo of a field the `expected` record type requires but the value is
+/// MISSING, rewrite that field's KEY to the expected name (`(record … (yy 2))` where `(y Int64)` was
+/// wanted → replace the key `yy` with `y`). The record-literal twin of the member-access
+/// `no_field_reject` typo fix — a wrong field NAME in a CONSTRUCTED record is exactly the same slip as a
+/// wrong field name in a projection, so it earns the same mechanical repair. `None` unless both are
+/// records, the value literal is written inline (its key nodes are editable), and there is a confident
+/// single typo pairing (a missing expected field that is `suggest::nearest` to an extra supplied one).
+fn record_field_typo_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
+        return None;
+    };
+    // The fields the value SUPPLIES that the type has no place for (candidate typos) and the fields the
+    // type REQUIRES that the value is missing (candidate intended names).
+    let extra: Vec<&str> = got
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    let missing: Vec<&str> = want
+        .keys()
+        .filter(|k| !got.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    // A CONFIDENT single pairing only: exactly one extra field, and it is the nearest typo of some missing
+    // one. (More than one extra/missing is not a single mechanical rename — the field-set-diff message
+    // still guides the reader; we just don't auto-fix an ambiguous multi-field slip.)
+    let [typo] = extra.as_slice() else {
+        return None;
+    };
+    let intended = crate::diag::suggest::nearest(typo, missing.iter().copied())?;
+    // Find the KEY occurrence of the typo'd field in the WRITTEN record literal — the `k` in a `(k v)`
+    // entry — so the fix rewrites exactly that token. `None` if the value is not an inline literal (a
+    // name-bound record has no editable key node), matching the honest-no-fix rule.
+    let key_occ = record_field_key_occ(db, arg, typo)?;
+    Some(Fix::replace_heuristic(key_occ, intended))
+}
+
+/// The KEY occurrence (`k` in a `(k v)` entry) of the field named `field` in a WRITTEN record literal
+/// `expr` — `(record (a 1) (b 2))`. `None` if `expr` is not an inline record literal (in the RAW AST) or
+/// has no such field. Reads the RAW `db.ast` structure of `expr` (NOT `resolved_of`, whose `RecordNew`
+/// args are RE-NODED entries that do not map back to the source key tokens the fix must edit) — the same
+/// raw-AST discipline `no_field_reject` uses to target the exact `(. operand key)` key token.
+fn record_field_key_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
+    // The `(key value)` entry list is the tail of a `(record …)` form (both the reserved-symbol head and a
+    // bare `record` name-alias spell the same shape here).
+    let entries = db
+        .ast
+        .as_ctor_form(expr, "record")
+        .or_else(|| db.ast.as_form(expr, "record"))?;
+    for &entry in entries {
+        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
+            && kv.len() == 2
+            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+            && sym.name == field
+        {
+            return Some(kv[0]);
+        }
+    }
+    None
+}
+
 /// The ordered element value-nodes of a directly-written TUPLE (`prim = TupleNew`) or LIST (`ListNew`)
 /// literal `expr` — both the `Resolved::Tuple`/`List` primitive form and the `tuple`/`list` NAME-alias
 /// application (`Resolved::Apply` of the matching `(meta apply)` prim, whose `args` ARE the elements).
@@ -6478,18 +6540,27 @@ fn check_application(
                         // argument position does (the D33 lesson: the same repair wherever the same mismatch
                         // surfaces). No coercion (e.g. Bool payload) → the bare reject.
                         // Anchor at the offending ARGUMENT (the wrong-type payload value), not the whole
-                        // ctor application — the squiggle lands on `"x"` in `(T.Mk "x")`.
+                        // ctor application — the squiggle lands on `"x"` in `(T.Mk "x")`. When the payload
+                        // is a RECORD whose field-set differs, add the structural field-diff tail (which
+                        // fields are missing/extra, or which field's type clashes) so the reader is not left
+                        // to diff two whole record renders.
+                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::Malformed,
                             format!(
                                 "a variant constructor's payload has declared type {}, but a value of \
-                                 type {} was applied",
+                                 type {} was applied{delta}",
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
                         )
                         .at(arg);
-                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                        // Prefer a numeric/text coercion fix; else a record-field RENAME (a misspelled
+                        // field key in the supplied record literal — the construction twin of the
+                        // member-access typo fix).
+                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg)
+                            .or_else(|| record_field_typo_fix(db, &sparam, &sat, arg))
+                        {
                             reject = reject.with_fix(fix);
                         }
                         out.push(reject);

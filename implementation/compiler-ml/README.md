@@ -55,7 +55,7 @@ test cannot yet construct a type whose variant shadows a prelude name — see
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
+top. Current `src/` modules (each with same-file `@test`s — 73 tests total across 9 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -73,6 +73,11 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
   `op`'s declared arity in a `Map String Int64` arity table (recursing into every child).
 - `src/eval.cdz` — an evaluator: reduces an arithmetic `Ast` (`+`/`-`/`*` over `Int` leaves) to a
   `BigInt` result, recursively (so `1e9 * 1e9` doesn't overflow — it uses arbitrary precision).
+- `src/unify.cdz` — the core of Hindley-Milner inference: unification with a substitution over a
+  recursive `Ty` (`Var Int64` / `Con String` / `Arrow Ty Ty`). `unify` returns
+  `Result (Map Int64 Ty) String` — the Ok carries the UPDATED substitution (a compound `Map` Ok payload
+  threaded through the recursion). Exercises occurs-check recursion, transitive var-chain `resolve`,
+  arrow decomposition, and an Int64-keyed compound-valued `Map`.
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
@@ -99,15 +104,20 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   last-arm absorption, so a hand-written inner `match` easily mis-attaches its catch-all to the outer
   match (CDZ0210 non-exhaustive + CDZ0213 unreachable). The printer's own output round-trips correctly.
 
-- **OPEN (seed `rcdzc` — a leading `//`/`///` comment HIDES the following top-level form).** The reader
-  wraps a leading line comment / doc as `(comment "…" <form>)` / `(doc "…" <form>)` around the next
-  top-level form, and the compiler's top-level SCAN does not see through it — so a commented top-level
-  `def`/`effect`/`@test def` becomes invisible (`cdz check Project.cdz` → "unbound name `comment`"; a
-  commented `@test` silently does not run). A `def`/`type`/`module` consumes a leading `///` doc fine
-  (that path strips it); the gap is a leading comment on OTHER top-level forms + on an annotated
-  (`@test`) def. Worked around in the manifest reader (`parse_manifest` peels `(comment/doc …)` — so
-  `cdz test` reads a commented `Project.cdz`), but `cdz check` on the same file still errors, so it is a
-  real top-level-scan gap. Keep a top-level comment OFF an `effect`/`@test def` for now.
+- **OPEN (seed `rcdzc` — a plain `//` LINE COMMENT HIDES the following top-level form).**
+  `repros/reject-line-comment-hides-toplevel-form.cdz`. The reader wraps a leading line comment as
+  `(comment "…" <next-form>)` and the compiler's top-level SCAN does not see through the wrapper — so
+  the wrapped `def`/`type`/`export`/`@test`/`effect` becomes invisible (`cdz check` → "unbound name
+  `comment`" per form + the def's own name unbound). **SHARP BOUNDARY (probed 2026-07-14 — broader than
+  first logged, which wrongly said only `@test`/`effect` were hit):** a plain `//` leading ANY top-level
+  form breaks; `//` BETWEEN two defs, TRAILING-INLINE on a def, or with a blank line after it all still
+  break (the wrapper attaches to the next top-level form regardless). What WORKS: a `///` DOC comment on
+  a `def`/`type` (that scan strips the leading `(doc …)`), and a `//` INSIDE a body (not top-level). So
+  the gap is precise: the top-level scan strips a leading `(doc …)` but NOT a leading `(comment …)` —
+  the fix mirrors the doc-strip (peel a leading `(comment …)` in the same db.rs scan). Impact: every
+  top-level comment in a port module must be `///` or live inside a body. The manifest reader peels
+  `(comment …)` as a workaround (so `cdz test` reads a commented `Project.cdz`), but `cdz check` on any
+  commented module still errors — a real top-level-scan gap.
 
 - **✅ FIXED (seed `rcdzc`@`b2bf850d`): a `br_table`-lowered match (≥4 arms) in OPERAND position dropped
   a RECURSIVE-CALL sibling operand.** Reported by this loop, fixed by a sibling within one iteration
