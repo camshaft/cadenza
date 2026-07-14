@@ -924,6 +924,23 @@ pub fn emit(
 /// arg is ignored; the walk descends every child so a host call nested anywhere is found. Mirrors
 /// `host::collect_host_imports`' descent but gathers the arg strings rather than the op signatures.
 fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
+    // WALK-DEPTH GUARD — like the other core walks (`collect_host_imports`, `collect_closure_codes`): this
+    // drives `core_of` at every node, so a non-normalizing self-application would overflow the stack.
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    collect_host_arg_strings_at(db, id, out);
+    db.walk_depth -= 1;
+}
+
+/// The CORE walk of [`collect_host_arg_strings`] — the sibling of `host::collect_host_imports`, laying the
+/// same discipline: descend the LOWERED core (NOT the AST), so a constant string argument of a `HostCall`
+/// reached through an INLINED helper — a `report/Test.fail("msg")` where the message became a `ConstStr`
+/// on β-substitution of the helper's param — is laid in the data segment. Was AST-walked, so an inlined
+/// helper's host-arg string was missed ("a host-arg string was not laid in the data segment"). Exhaustive
+/// (no wildcard) so a new `Core` variant is a compile error, not a silently-unlaid string.
+fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
     use crate::core::Core;
     match crate::lower::core_of(db, id) {
         Core::HostCall { args, .. } => {
@@ -936,11 +953,208 @@ fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec
                 collect_host_arg_strings(db, a, out);
             }
         }
-        _ => {
-            if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
-                for c in children {
-                    collect_host_arg_strings(db, c, out);
+        Core::Call { args, .. } => {
+            for a in args {
+                collect_host_arg_strings(db, a, out);
+            }
+        }
+        Core::CallClosure { closure, args } => {
+            collect_host_arg_strings(db, closure, out);
+            for a in args {
+                collect_host_arg_strings(db, a, out);
+            }
+        }
+        // A closure's CAPTURES may include a host-call result carrying a string arg — walk them (the body
+        // is walked as its own lifted function). Mirrors `collect_host_imports`'s `Core::Closure` arm.
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_host_arg_strings(db, c, out);
+            }
+        }
+        Core::If { cond, then_, else_ } => {
+            collect_host_arg_strings(db, cond, out);
+            collect_host_arg_strings(db, then_, out);
+            collect_host_arg_strings(db, else_, out);
+        }
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_host_arg_strings(db, value, out);
+            }
+            collect_host_arg_strings(db, body, out);
+        }
+        Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_host_arg_strings(db, s, out);
+            }
+            collect_host_arg_strings(db, tail, out);
+        }
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs }
+        | Core::And { lhs, rhs, .. }
+        | Core::ListConcat { lhs, rhs }
+        | Core::BytesConcat { lhs, rhs }
+        | Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalOfInts { num: lhs, den: rhs }
+        | Core::RationalBinOp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => {
+            collect_host_arg_strings(db, lhs, out);
+            collect_host_arg_strings(db, rhs, out);
+        }
+        Core::BigIntOfI64 { value } => collect_host_arg_strings(db, value, out),
+        Core::BigIntToI64 { operand } => collect_host_arg_strings(db, operand, out),
+        Core::RationalOfIntWiden { value } => collect_host_arg_strings(db, value, out),
+        Core::ListPush { list, elem } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::ListUpdate { list, index, elem } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, index, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::ListAt { list, index, .. } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_host_arg_strings(db, k, out);
+                collect_host_arg_strings(db, v, out);
+            }
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            collect_host_arg_strings(db, map, out);
+            collect_host_arg_strings(db, key, out);
+            collect_host_arg_strings(db, val, out);
+        }
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_host_arg_strings(db, map, out);
+            collect_host_arg_strings(db, key, out);
+        }
+        Core::MapSize { map } => collect_host_arg_strings(db, map, out),
+        Core::SetOf { elems, .. } => {
+            for e in elems {
+                collect_host_arg_strings(db, e, out);
+            }
+        }
+        Core::SetContains { set, elem, .. }
+        | Core::SetInsert { set, elem, .. }
+        | Core::SetRemove { set, elem, .. } => {
+            collect_host_arg_strings(db, set, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::SetLen { set } => collect_host_arg_strings(db, set, out),
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_host_arg_strings(db, lhs, out);
+            collect_host_arg_strings(db, rhs, out);
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            collect_host_arg_strings(db, bytes, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::StrAt { string, index, .. } => {
+            collect_host_arg_strings(db, string, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_host_arg_strings(db, bytes, out);
+            collect_host_arg_strings(db, start, out);
+            collect_host_arg_strings(db, len, out);
+        }
+        Core::BytesCompact { operand }
+        | Core::Convert { operand, .. }
+        | Core::Not { operand }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand } => collect_host_arg_strings(db, operand, out),
+        Core::Match { scrutinee, arms } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_host_arg_strings(db, g, out);
                 }
+                collect_host_arg_strings(db, arm.body, out);
+            }
+        }
+        Core::Record { fields } => {
+            for value in fields.values() {
+                collect_host_arg_strings(db, *value, out);
+            }
+        }
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            for e in elems {
+                collect_host_arg_strings(db, e, out);
+            }
+        }
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_host_arg_strings(db, s.value, out);
+            }
+        }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_host_arg_strings(db, f.value, out);
+            }
+        }
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            collect_host_arg_strings(db, bytes, out)
+        }
+        Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),
+        Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_host_arg_strings(db, p, out);
+            }
+        }
+        Core::MatchSum { scrutinee, root } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            collect_cont_host_arg_strings(db, &root, out);
+        }
+        Core::MatchList { scrutinee, arms } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            for arm in &arms {
+                collect_host_arg_strings(db, arm.body, out);
+            }
+        }
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            collect_host_arg_strings(db, scrutinee, out)
+        }
+        // Leaves / references carry no host-arg string.
+        Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::Unit
+        | Core::Trap
+        | Core::Param { .. }
+        | Core::Captured { .. }
+        | Core::LocalRef { .. }
+        | Core::Poison(_) => {}
+    }
+}
+
+/// Walk a sum-match continuation for the host-arg strings its arm bodies carry — the analogue of
+/// `collect_cont_host_imports` for the data-segment string pass.
+fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<String>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_host_arg_strings(db, *body, out),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_host_arg_strings(db, *cond, out);
+            collect_host_arg_strings(db, *body, out);
+            collect_cont_host_arg_strings(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_host_arg_strings(db, then_, out);
+            collect_cont_host_arg_strings(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                collect_cont_host_arg_strings(db, &arm.cont, out);
             }
         }
     }

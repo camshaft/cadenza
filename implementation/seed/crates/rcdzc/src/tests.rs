@@ -32844,6 +32844,25 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_performed_via_an_inlined_helper_reaches_the_import_set() {
+        // A HELPER that performs a host op, delegated at the entrypoint and INLINED into it, must
+        // contribute its op to the component's host-import set. `collect_host_imports` / the host-arg-string
+        // pass walk the LOWERED CORE (not the AST), so a `HostCall` β-spliced into the caller by inlining
+        // the helper is found — before, they AST-walked and saw only the un-inlined `(emit-msg …)`
+        // application, missing the performed op ("a host call's operation is not in the host-import set" /
+        // "a host-arg string was not laid in the data segment"). This is the fix that lets a reusable
+        // assertion helper (`assert-eq` performing `Test.fail`) work. The helper carries the whole
+        // self-contained `host … (perform; trap)`, the working idiom `cdz test` uses. It EMITS (the guest
+        // performs the op then traps) — the diverging-body → unit-entry path.
+        let src = "(do (effect Test (op fail (-> String Unit))) \
+                    (def (emit-msg (: m String)) (host (Test) (do ((. Test fail) m) (trap \"x\")))) \
+                    (def (main) (if (= (+ 1 1) 3) unit (emit-msg \"1+1 should be 3\"))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a host op performed via an inlined helper must reach the import set + emit");
+        assert!(!bytes.is_empty(), "the emitted component has bytes");
+    }
+
+    #[test]
     fn a_cross_function_no_home_effect_wraps_the_entrypoint_not_the_callee() {
         // A perform in a CALLED function still delegates at the ENTRYPOINT — the wrap must target the
         // exported body, not the callee where the perform (and the error anchor) live.

@@ -6,29 +6,49 @@ component a plain `cdz compile` produces.
 
 ## Writing a test
 
-A `@test` marks a **nullary** definition as a test (`tests-example.cdz` is a complete example):
+A `@test` marks a **nullary** definition as a test. Write assertions with the `assert` / `assert_eq` /
+`assert_ne` helpers, each taking an explicit failure message (`tests-example.cdz` is a complete example):
 
 ```
 @test def arithmetic_holds() =
-  if 1 + 1 == 2 then
-    unit
-  else
-    host report in (
-      report.fail("1 + 1 should be 2");
-      trap("assertion failed")
-    )
+  assert_eq(1 + 1, 2, "1 + 1 should be 2")
+
+@test def comparison_holds() =
+  assert(3 > 2, "3 should be greater than 2")
+
+@test def values_differ() =
+  assert_ne(1, 2, "1 and 2 should differ")
 ```
 
 - A test that **returns** (yields `unit`) **PASSES**.
-- A test that **traps** **FAILS**. To carry a failure message, the test performs a `report` host effect
-  with the message *before* trapping; `cdz test` surfaces it as `FAIL <name>: <message>`.
+- A test that **traps** **FAILS**. Each assertion, on failure, performs the well-known `Test` effect with
+  the message *before* trapping, so `cdz test` surfaces it as `FAIL <name>: <message>`.
 
-The `report` effect is any effect with a `String -> Unit` operation the test delegates to the host:
+## The `Test` effect and the assertion helpers
+
+Assertions delegate to a well-known `Test` effect whose `fail` operation carries the failure message to
+the runner. Declare it and the helpers once per test file (a future revision will provide them
+prelude-wide so no boilerplate is needed — see "Follow-ups"):
 
 ```
-effect report =
+effect Test =
   | fail : String -> Unit
+
+def assert(cond, msg: String) =
+  if cond then unit
+  else host Test in (Test.fail(msg); trap("assertion failed"))
+
+def assert_eq(a, b, msg: String) =
+  if a == b then unit
+  else host Test in (Test.fail(msg); trap("assertion failed"))
+
+def assert_ne(a, b, msg: String) =
+  if a == b then host Test in (Test.fail(msg); trap("assertion failed"))
+  else unit
 ```
+
+`assert_eq` / `assert_ne` are **generic** — their `a`/`b` are unannotated, so one helper works over any
+equatable type (`Int64`, `String`, a sum, …) via monomorphization.
 
 ## Running
 
@@ -42,9 +62,10 @@ Output:
 ```
 PASS arithmetic_holds
 PASS comparison_holds
+PASS values_differ
 FAIL a_failing_example: expected 2 + 2 to be 5 (it is not — this test fails on purpose)
 
-2 passed, 1 failed
+3 passed, 1 failed
 ```
 
 `cdz test` compiles the test component in-process and shells out to the sibling `cdz-run` binary to
@@ -61,19 +82,28 @@ execute each test (both are built together under `target/<profile>/`).
 
 ## The single-artifact / no-host-burden guarantee
 
-A normal `cdz compile` of a program that ALSO contains `@test` defs does **not** carry the `report`
-import: the test defs are unexported there, so they are dead and dropped, and the effect they perform is
-never reached. The report effect is compiled in **only** for the `cdz test` artifact.
+A normal `cdz compile` of a program that ALSO contains `@test` defs does **not** carry the `Test` import:
+the test defs are unexported there, so they are dead and dropped, and the effect they perform is never
+reached. The `Test` effect is compiled in **only** for the `cdz test` artifact.
+
+## Follow-ups (not yet built)
+
+- **Prelude `assert` + `Test`.** Today each test file declares the `Test` effect and the `assert*` helpers
+  inline (cross-module `import` is not yet modeled, so a shared support module can't be imported). Once a
+  prelude function with an emittable body + a well-known prelude `Test` effect land, these become built-in
+  and the boilerplate disappears.
+- **Value & expression printing.** `assert_eq`/`assert_ne` currently print only the author's message. A
+  richer form (`FAIL: left = 2, right = 3`, and the operand source text) needs a `show : a -> String`
+  value renderer (the compiler has one internally, not yet exposed in-guest) and a `stringify`
+  metaprogramming primitive (none yet). Deferred.
+- **Property testing.** The `Test` effect is designed to extend — a property runner adds operations
+  (generation seed, shrink reporting) to `Test` rather than a new mechanism.
 
 ## Known rough edges (stress-test findings)
 
-The port-to-Cadenza workstream treats friction as a deliverable. These are pre-existing limitations this
-example steers around (not specific to `@test`):
+The port-to-Cadenza workstream treats friction as a deliverable:
 
-- A leading `//` line comment or `///` doc comment before a top-level `effect` or a `@test def` is
-  wrapped as `(comment …)` / `(doc …)` around the following form, which the compiler's top-level scan
-  does not see through — so the def is hidden. Keep top-level comments off an `effect` / annotated def
-  for now (a `def`/`type`/`module` consumes a leading `///` fine).
-- A `host` delegation factored into a **helper** that is inlined into an entrypoint does not add its op
-  to the component's host-import set ("a host call's operation is not in the host-import set"). Put the
-  `host report in (…)` directly in each test body (as the example does) rather than in a shared helper.
+- A leading `//` line comment or `///` doc comment before a top-level `effect` or a `@test def` is wrapped
+  as `(comment …)` / `(doc …)` around the following form, which the compiler's top-level scan does not see
+  through — so the def is hidden. Keep top-level comments off an `effect` / annotated def for now (a
+  `def`/`type`/`module` consumes a leading `///` fine).
