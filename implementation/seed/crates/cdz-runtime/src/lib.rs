@@ -15034,6 +15034,57 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// The runtime half of the `String.at` content-equality fix (`spec@a2c75cc0` root-caused the
+    /// compiler-side miscompile). The contract test above uses a CONCAT rope; a `String.at` result is a
+    /// distinct rope shape — a `bytes-SLICE` (`raw = [off, len]`, arity 1 — the parent). `champ_eq`
+    /// physical-byte-compares that `[off,len]` header, so two slices of the same char at DIFFERENT offsets
+    /// (or into different parents) are champ_eq-DISTINCT despite equal content — EXACTLY the miscompile
+    /// (`String.at "banana" 1` ≠ `String.at "banana" 3` though both are "a", so `count-a` returns 0). The
+    /// compiler's fix compacts the `String.at` result before `=`; that fix RELIES on the runtime's
+    /// `bytes-compact` flattening a SLICE (not just a concat) to a champ_eq-canonical flat leaf. Pin that
+    /// runtime half here — the SLICE arm of `bytes_flatten` (read parent's `off+j`), not the concat arm.
+    #[test]
+    fn compact_makes_a_slice_rope_canonical_the_string_at_shape() {
+        reset();
+        let before = live_nodes();
+        // Two 1-byte slices of "a" at DIFFERENT offsets into DIFFERENT parents (the `String.at` shape).
+        let p1 = bytes_leaf(b"banana");
+        let sl1 = op_bytes_slice(p1, 1, 1); // "a" at index 1
+        let p2 = bytes_leaf(b"banana");
+        let sl2 = op_bytes_slice(p2, 3, 1); // "a" at index 3 — same content, different offset
+        let flat_a = bytes_leaf(b"a");
+        // (1) TRIPWIRE — raw slices are champ_eq-DISTINCT from each other AND the flat "a" (physical `[off,
+        // len]` compare, NOT content). This IS the miscompile the compiler must compact away.
+        assert!(
+            !champ_eq(sl1, sl2),
+            "two slices of the same char at different offsets are champ_eq-distinct (physical [off,len])"
+        );
+        assert!(
+            !champ_eq(sl1, flat_a),
+            "a raw slice is champ_eq-distinct from a flat leaf of the same content"
+        );
+        // (2) THE GUARANTEE — compact each slice → all champ_eq + hash-identical to the flat twin.
+        let c1 = op_bytes_compact(sl1);
+        let c2 = op_bytes_compact(sl2);
+        assert!(
+            champ_eq(c1, flat_a),
+            "a compacted slice == the flat char (the String.at fix's runtime half)"
+        );
+        assert!(
+            champ_eq(c1, c2),
+            "two compacted slices of the same content are champ_eq (count-a now works)"
+        );
+        assert_eq!(
+            champ_hash(c1),
+            champ_hash(flat_a),
+            "…and hashes identically"
+        );
+        op_drop(c1);
+        op_drop(c2);
+        op_drop(flat_a);
+        assert_eq!(live_nodes(), before, "no leak across the slice-compact");
+    }
+
     /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-
     /// byte compare, BY CONTRACT (fast, shared with the map-key path). So a ROPE Bytes/String value is
     /// value-eq-DISTINCT from its flat twin even with equal CONTENT — the COMPILER must canonicalize
