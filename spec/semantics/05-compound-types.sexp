@@ -1920,6 +1920,25 @@
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
 
+(case "a literal list element dispatches a runtime list by its value"
+  (doc    "A list element position MAY be a refutable SCALAR/STRING LITERAL — `((list 0 a .. rest) …)` matches
+           only a list whose FIRST element is 0, binding the SECOND to `a`. This is the opcode/keyword
+           list-dispatch idiom a compiler leans on: `(match instr ((list \"add\" x y) …) ((list \"neg\" x)
+           …) (_ …))`. The length-dispatch matcher cannot test an element VALUE directly, so a literal
+           element DESUGARS to a fresh binder at that position plus a `(= binder <literal>)` value test
+           conjoined into the arm's guard — reusing the guard machinery, no new runtime form. Since a literal
+           test may fail, the arm is EXCLUDED from length-coverage exhaustiveness, so a `_`/rest catch-all
+           stays required. Here `classify (list 0 5 9)` → the head is 0 → the first arm binds `a`=5; a
+           different head falls through to the wildcard-head arm (× 10). `classify (list 3 5 9)` → 50.")
+  (input  (do
+            (def (classify (: xs (List Int64)))
+              (match xs
+                ((list 0 a .. rest) a)
+                ((list _ a .. rest) (* a 10))
+                (_                  -1)))
+            (def (main) (classify (list 0 5 9))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's

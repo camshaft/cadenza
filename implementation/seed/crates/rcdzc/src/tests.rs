@@ -16949,15 +16949,31 @@ mod match_engine {
             "a tuple element pattern against a scalar list element is a shape error"
         );
 
-        // A REFUTABLE element (a literal, a multi-variant ctor) is NOT ill-formed — it needs element-value
-        // refinement the length-dispatch matcher does not yet do, so it DECLINES (codeless), never a false
-        // reject. `reject_code` returns None (no CODE) but compilation still fails (a decline blocks emit).
+        // A refutable SCALAR/STRING LITERAL element NO LONGER declines — it now DISPATCHES by element value
+        // (desugars to a fresh binder + a `(= binder <lit>)` guard; see
+        // `a_refutable_literal_list_element_dispatches_by_element_value`). So `(list 0 .. r)` with a `_`
+        // catch-all COMPILES (no code, no decline). A refutable MULTI-VARIANT CONSTRUCTOR element still
+        // declines (it needs discriminant refinement, a different mechanism, not this literal desugar).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Int64))) (match xs ((list 0 .. r) 1) (_ 0))) \
+                                    (def (main) (f (list 0 1))) (export main))"
+            ),
+            None,
+            "a refutable scalar-literal list element now compiles (dispatches by value)"
+        );
+        // A multi-variant-constructor element still declines (codeless) — the length-dispatch matcher
+        // cannot refine on a variant discriminant, and the literal desugar does not cover a ctor.
         let decline = reject_full(
-            "(module m (def (f xs) (match xs ((list 0 .. r) 1) (_ 0))) \
-                                    (def (main) (f (list 0 1))) (export main))",
+            "(module m (type C (A Int64) (B Int64)) \
+               (def (f (: xs (List C))) (match xs ((list (C.A n) .. r) n) (_ 0))) \
+               (def (main) (f (list (C.A 1)))) (export main))",
         )
-        .expect("a refutable element blocks compilation");
-        assert_eq!(decline.code, None, "a refutable element declines (no code)");
+        .expect("a multi-variant-ctor element blocks compilation");
+        assert_eq!(
+            decline.code, None,
+            "a multi-variant-ctor element declines (no code)"
+        );
         assert!(
             decline.message.contains("refutable list element"),
             "the decline names the refutable element: {}",
@@ -20478,6 +20494,123 @@ mod match_engine {
             code("(match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))"),
             None,
             "a guarded arm plus an unguarded catch-all is exhaustive"
+        );
+    }
+
+    #[test]
+    fn a_refutable_literal_list_element_dispatches_by_element_value() {
+        // A REFUTABLE SCALAR/STRING LITERAL leading list element — `(list 0 a .. r)`, `(list "add" x)` —
+        // is an element-VALUE refinement the length-dispatch matcher cannot express directly. It DESUGARS
+        // to a fresh binder at that position + a `(= binder <lit>)` value test conjoined into the arm's
+        // guard, reusing the Inc-5 guard machinery: `(list 0 a .. r)` ≡ `(guard (list __le a .. r) (= __le
+        // 0))`. Before, such an element DECLINED "a refutable list element … needs element-value
+        // refinement". This is the compiler's opcode/keyword list-dispatch idiom `(match instr ((list "add"
+        // x y) …) ((list "neg" x) …) (_ …))`.
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // A literal head selects the arm; the binder reads the following element.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((list 0 a .. r) a) (_ -1))) \
+              (def (main) (f (list 0 5))) (export main))",
+        );
+        // A STRING literal head — the keyword-dispatch shape.
+        ok(
+            "(module m (def (f (: xs (List String))) (match xs ((list \"add\" x) x) (_ \"none\"))) \
+              (def (main) (f (list \"add\" \"y\"))) (export main))",
+        );
+
+        // RUN, RUNTIME scrutinee: the literal head matches → the arm's binder is returned; a different head
+        // → falls through to the next arm (the literal test was excluded from length coverage, so a `_` is
+        // present). `(match xs ((list 0 a .. r) a) ((list _ a .. r) (* a 10)) (_ -1))` over `[0,5,9]` → 5,
+        // over `[3,5,9]` → 50 (head ≠ 0 falls to the wildcard-head arm), over `[]` → -1.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List Int64))) \
+               (match xs ((list 0 a .. r) a) ((list _ a .. r) (* a 10)) (_ -1))) \
+             (def (main (: n Int64)) (f (list n 5 9))) (export main))",
+            vec!["0".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping refutable-literal-list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the literal-head arm fires when the first element is 0"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((list 0 a .. r) a) ((list _ a .. r) (* a 10)) (_ -1))) \
+                 (def (main (: n Int64)) (f (list n 5 9))) (export main))",
+                vec!["3".to_string()],
+            )
+            .unwrap(),
+            "50",
+            "a non-matching literal head falls through to the wildcard-head arm"
+        );
+        // MULTIPLE literal elements in one arm conjoin: `(list 0 1 a .. r)` matches only when the first two
+        // elements are 0 then 1. `[0,1,7]` → 7; `[0,2,7]` → falls to catch-all → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((list 0 1 a .. r) a) (_ -1))) \
+                 (def (main (: b Int64)) (f (list 0 b 7))) (export main))",
+                vec!["1".to_string()],
+            )
+            .unwrap(),
+            "7",
+            "two literal elements conjoin — both must match"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((list 0 1 a .. r) a) (_ -1))) \
+                 (def (main (: b Int64)) (f (list 0 b 7))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a second literal element that does not match falls through"
+        );
+        // An AUTHOR guard conjoins with the literal test: `(guard (list 0 a .. r) (> a 3))` fires only when
+        // the head is 0 AND a > 3. `[0,5]` → 5; `[0,2]` → guard fails → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((guard (list 0 a .. r) (> a 3)) a) (_ -1))) \
+                 (def (main (: v Int64)) (f (list 0 v))) (export main))",
+                vec!["5".to_string()],
+            )
+            .unwrap(),
+            "5",
+            "the literal test AND the author guard both hold"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((guard (list 0 a .. r) (> a 3)) a) (_ -1))) \
+                 (def (main (: v Int64)) (f (list 0 v))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "the literal matches but the author guard fails → fall through"
+        );
+    }
+
+    #[test]
+    fn a_refutable_literal_list_element_still_requires_a_catch_all() {
+        // A literal element is a value TEST that may not match, so — like any guarded arm — it does NOT
+        // count toward length-coverage exhaustiveness. `(match xs ((list 0 .. r) 1) ((list _ .. r) 2))`
+        // leaves the empty list uncovered AND the `(list 0 .. r)` arm's non-zero-head case relies on the
+        // second arm, but there is no arm covering length 0 → CDZ0210 (a `_`/`(list)` arm is required).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Int64))) \
+                   (match xs ((list 0 .. r) 1) ((list _ .. r) 2))) \
+                 (def (main) (f (list 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a refutable-literal-element match still needs a catch-all covering every length"
         );
     }
 

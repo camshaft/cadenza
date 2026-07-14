@@ -2718,7 +2718,192 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 // scrutinee (infer.rs `RestFrom`), so a recursive function may match it again.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
+/// If `elem_pat` is a REFUTABLE SCALAR/STRING LITERAL leading list-element sub-pattern (an `Int`/`Bool`/
+/// `Str`/`Float`/`Bytes` — matches one value, not every value of its type), `true`. Such an element cannot
+/// be handled by the length-dispatch matcher directly (it dispatches only on length), but it desugars to a
+/// fresh binder at that position plus a `(= binder <lit>)` value test conjoined into the arm's guard — see
+/// `desugar_refutable_literal_list_elements`. A multi-variant CONSTRUCTOR element is ALSO refutable but
+/// needs discriminant refinement (a different mechanism), so it is NOT rewritten here and still declines.
+fn is_refutable_literal_element(db: &mut Db, elem_pat: StructId) -> bool {
+    matches!(
+        crate::resolve::resolved_of(db, elem_pat),
+        crate::resolved::Resolved::Int(_)
+            | crate::resolved::Resolved::Bool(_)
+            | crate::resolved::Resolved::Str(_)
+            | crate::resolved::Resolved::Float(_)
+            | crate::resolved::Resolved::Bytes(_)
+    )
+}
+
+/// A FRESH copy of the literal-atom node `e` (an `Int`/`Bool`/`Str`/`Float`/`Bytes`/`Sym`/`Char` leaf) — a
+/// new `StructId` carrying an identical `Leaf`, with its OWN empty parent/resolve/type memos. Used to move
+/// a pattern-position literal into an expression position (the `=` RHS of a synthesized value test): the
+/// original node's resolve memo classifies it as a PATTERN literal, which would mis-resolve as an operand;
+/// a fresh atom re-resolves cleanly as a value. Falls back to reusing `e` for a non-atom (never happens for
+/// a literal element, but keeps the helper total).
+fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
+    match db.ast.get(e) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        _ => e,
+    }
+}
+
+/// PRE-PASS for `lower_match_list`: rewrite every arm whose list pattern has a refutable SCALAR/STRING
+/// LITERAL leading element into an equivalent guarded arm the length-dispatch matcher already handles.
+///
+/// A literal leading element `(list 0 a .. r)` is an element-VALUE refinement `Core::MatchList` cannot
+/// express (it dispatches only on LENGTH). But it is exactly a fresh binder at that position PLUS a guard
+/// testing that binder equals the literal: `(list 0 a .. r)` ≡ `(guard (list __le0 a .. r) (= __le0 0))`.
+/// This reuses the ENTIRE Inc-5 guard pipeline (resolve Case 6l/6lg binds `__le0`→`Elem(0)`; `ListArm.guard`
+/// gates the arm; a false guard falls through; a guarded arm is EXCLUDED from length-coverage
+/// exhaustiveness — correct, since a literal test may not match, so a `_`/rest catch-all stays required) —
+/// NO new IR, NO backend change. Multiple literal elements in one arm conjoin with `and`; an existing arm
+/// guard is conjoined too (the literal tests AND the author's guard). This is the list-element analogue of
+/// the Inc-8 runtime-string desugar and the case-of-match rewrite — synthesize the AST, re-resolve the new
+/// subtree, and lower it. Returns `Some(Core)` iff at least one arm had a literal element (so the rewrite
+/// fired); `None` leaves the existing path untouched (no cost when no arm needs it).
+fn desugar_refutable_literal_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Detect whether ANY arm's list pattern has a refutable literal LEADING element. Scan the arm patterns
+    // (peeling a `(guard …)` wrapper), find each `(list …)`'s leading positions (before a `..` marker), and
+    // check each for a scalar/string literal. Bail early if none — the common case pays only this scan.
+    let arm_pats: Vec<StructId> = arms.iter().map(|&(pat, _)| pat).collect();
+    let mut any_literal = false;
+    for &pat in &arm_pats {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let Some(es) = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)
+        else {
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        for &e in &es[..lead] {
+            if is_refutable_literal_element(db, e) {
+                any_literal = true;
+            }
+        }
+    }
+    if !any_literal {
+        return None;
+    }
+    // Rewrite each arm. For a list pattern with literal leading elements, replace each such element with a
+    // fresh binder `__le{arm}_{pos}` (unique per arm+position so distinct arms never collide, and it is
+    // unspellable so it cannot shadow a user name) and collect a `(= __le{arm}_{pos} <lit>)` test. The
+    // arm's new guard is the conjunction of those tests AND any pre-existing guard.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            // Not a list pattern (a bare binder / `_` catch-all) — reuse the arm verbatim.
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let head = db.ast.get(inner);
+        // The `(list …)` head token (a `Name` "list" or the reserved `Str` "list") — preserve it so the
+        // rewritten pattern re-resolves as a list pattern exactly as the original did.
+        let list_head = match head {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        let mut tests: Vec<StructId> = Vec::new();
+        for (pos, &e) in es.iter().enumerate() {
+            if pos < lead && is_refutable_literal_element(db, e) {
+                let name = format!("__le{ai}_{pos}");
+                // TWO DISTINCT occurrences of the fresh binder: one in the PATTERN position (the element
+                // binder) and a SEPARATE reference in the guard-cond. A single node cannot have two parents
+                // — `push_list` reparents — so reusing one node would leave the guard reference parented to
+                // the LIST, where `is_list_pattern_element_occurrence` classifies it as an inert pattern
+                // binder (`Resolved::Unit`), and its type would be `Unit` not the element type (so `=` would
+                // wrongly route to a heap `value-eq`). The pattern binder is inert; the guard reference
+                // resolves via Case 6lg to the element's `SumPayload` read.
+                let binder = db.push_name(&name);
+                let binder_ref = db.push_name(&name);
+                let eq_head = db.push_name("=");
+                // `(= __le{pos} <lit>)`. The literal RHS is a FRESH copy of the element node (not the
+                // original `e` reused): the original `e` sits at a pattern ELEMENT position (its resolve
+                // memo classifies it as a pattern literal); reusing it as an EXPRESSION operand would carry
+                // that stale pattern-context resolution. A fresh literal atom re-resolves cleanly as a value.
+                let lit = clone_literal_atom(db, e);
+                let eq = db.push_list(vec![eq_head, binder_ref, lit]);
+                tests.push(eq);
+                new_es.push(binder);
+            } else {
+                new_es.push(e);
+            }
+        }
+        // Reassemble the list pattern with the literal elements replaced by fresh binders.
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // Combine the value tests (left-to-right `and`) with any existing guard into the arm's new guard.
+        let mut guard: Option<StructId> = existing_guard;
+        for test in tests {
+            guard = Some(match guard {
+                None => test,
+                Some(g) => {
+                    let and_head = db.push_name("and");
+                    db.push_list(vec![and_head, g, test])
+                }
+            });
+        }
+        let new_pat = match guard {
+            Some(g) => {
+                let guard_head = db.push_name("guard");
+                db.push_list(vec![guard_head, new_list, g])
+            }
+            None => new_list,
+        };
+        new_arms.push(db.push_list(vec![new_pat, body]));
+    }
+    // Rebuild `(match scrutinee arm…)`, re-resolve the synthesized subtree (so each fresh binder's Elem read
+    // and each `(= __le <lit>)` guard resolve against their new positions — exactly as the case-of-match
+    // rewrite re-resolves), and lower it through the ordinary path (which routes back to `lower_match_list`,
+    // now with no literal elements → the guarded-arm path handles them).
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
+    Some(core_of(db, rewritten))
+}
+
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS: a refutable SCALAR/STRING LITERAL leading element (`(list 0 a .. r)`, `(list "add" x)`) is
+    // an element-VALUE refinement the length-dispatch matcher cannot express directly. Desugar it to a
+    // fresh binder + a `(= binder <lit>)` guard (the Inc-5 guard machinery handles the rest), then this
+    // function re-runs with no literal elements. Fires only when some arm actually has a literal element.
+    if let Some(core) = desugar_refutable_literal_list_elements(db, scrutinee, arms) {
+        return core;
+    }
     // Each arm's length condition + an optional GUARD (a boolean the arm's binders are in scope for). A
     // guarded arm fires only when its length holds AND the guard is true; on a false guard it FALLS THROUGH
     // to the next arm, and it does NOT count toward length-coverage exhaustiveness (its guard may fail) —

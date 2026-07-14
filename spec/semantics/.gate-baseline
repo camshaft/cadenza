@@ -634,6 +634,7 @@ pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
+pass	a literal list element dispatches a runtime list by its value
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
