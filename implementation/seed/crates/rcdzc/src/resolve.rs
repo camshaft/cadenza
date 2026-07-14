@@ -3842,10 +3842,16 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
     let body = match tail.get(1) {
         Some(&b) => b,
         None => {
-            return Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!("this host has no body — {SHAPE}"),
-            ));
+            // The effect list is present but the trailing BODY is missing. Append an `(trap "TODO")` body
+            // placeholder — the `host` twin of the `let`/`fn`-no-body add-fix (`trap` inhabits any type).
+            return Resolved::Poison(
+                Reject::coded(Code::Malformed, format!("this host has no body — {SHAPE}"))
+                    .at(id)
+                    .with_fix(crate::diag::Fix::insert_arms_heuristic(
+                        id,
+                        vec!["(trap \"TODO\")".to_string()],
+                    )),
+            );
         }
     };
     let effects = match db.ast.get(effects_occ) {
@@ -3890,10 +3896,18 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     let body = match tail.get(1) {
         Some(&b) => b,
         None => {
-            return Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!("this let has no body — {SHAPE}"),
-            ));
+            // The bindings are present but the trailing BODY is missing — `(let ((x 5)))`. The actionable
+            // repair is to ADD a body; append an `(trap "TODO")` placeholder (`trap : ∀a. String → a`
+            // inhabits any type, so it type-checks in the body position whatever the `let` is used at) — the
+            // `let` twin of the missing-`if`-else add-fix. `cdz fix` fills the `(let (…) <here>)` slot.
+            return Resolved::Poison(
+                Reject::coded(Code::Malformed, format!("this let has no body — {SHAPE}"))
+                    .at(id)
+                    .with_fix(crate::diag::Fix::insert_arms_heuristic(
+                        id,
+                        vec!["(trap \"TODO\")".to_string()],
+                    )),
+            );
         }
     };
     let pairs = binding_pairs(db, bindings_occ);
@@ -4290,10 +4304,18 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
     let body = match tail.get(1) {
         Some(&b) => b,
         None => {
-            return Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!("this fn has no body — {SHAPE}"),
-            ));
+            // The parameter list is present but the trailing BODY is missing — `(fn (x))`. Append an
+            // `(trap "TODO")` body placeholder (the `fn` twin of the `let`-no-body / missing-`if`-else
+            // add-fix): `trap : ∀a. String → a` inhabits any result type, so the completed `(fn (x) (trap
+            // "TODO"))` type-checks wherever the lambda is used. `cdz fix` fills the `(fn (…) <here>)` slot.
+            return Resolved::Poison(
+                Reject::coded(Code::Malformed, format!("this fn has no body — {SHAPE}"))
+                    .at(id)
+                    .with_fix(crate::diag::Fix::insert_arms_heuristic(
+                        id,
+                        vec!["(trap \"TODO\")".to_string()],
+                    )),
+            );
         }
     };
     // The parameter occurrences (each a bare name). Collected into the `Rc<[StructId]>` the variant

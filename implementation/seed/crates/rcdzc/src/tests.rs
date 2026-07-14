@@ -16931,6 +16931,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_let_or_fn_missing_its_body_offers_to_add_one() {
+        // `(let ((x 5)))` / `(fn (x))` — the bindings/params are present but the trailing BODY is missing.
+        // The message already named the shape; now it carries the actionable repair: append an
+        // `(trap "TODO")` body. `trap : ∀a. String → a` inhabits any type, so the completed form
+        // type-checks wherever it is used — the `let`/`fn` twin of the missing-`if`-else add-fix.
+        let cases = [
+            ("(module m (def (f) (let ((x 5)))) (export f))", "let"),
+            ("(module m (def (f) ((fn (x)) 5)) (export f))", "fn"),
+        ];
+        for (src, form) in cases {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no body"))
+                .unwrap_or_else(|| panic!("a {form} with no body reports"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{form}: {}", d.message);
+            let fix = d
+                .fix
+                .as_ref()
+                .unwrap_or_else(|| panic!("{form} no-body carries an add-body fix: {}", d.message));
+            assert_eq!(
+                fix.kind,
+                crate::abi::FixKind::InsertInto,
+                "{form}: {:?}",
+                fix
+            );
+            assert!(
+                fix.replacement.contains("(trap \"TODO\")"),
+                "{form} appends a placeholder body: {:?}",
+                fix.replacement
+            );
+        }
+        // The completed forms compile (the placeholder inhabits the body position's type).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f) (let ((x 5)) (trap \"TODO\"))) (export f))"
+            )))
+            .is_ok(),
+            "the let with an added body compiles"
+        );
+        // NO fix for the DEGENERATE `(let)` (no bindings AND no body) — appending only a body still leaves a
+        // malformed bindings-list, so it is not a one-shot add; keeps the message, no fix.
+        let empty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (let)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("no bindings and no body"))
+        .expect("an empty let reports");
+        assert!(
+            empty.fix.is_none(),
+            "a bindings-and-body-less let has no one-shot add: {:?}",
+            empty.fix
+        );
+    }
+
+    #[test]
     fn a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form() {
         // Member access `(. operand key)` is a fixed-arity form (want 2), so it routes through the SHARED
         // `fixed_arity_reject` the other fixed-arity forms use — bringing it to fix-parity with the family
