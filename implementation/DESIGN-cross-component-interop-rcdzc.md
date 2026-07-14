@@ -190,6 +190,14 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   wasmtime (the inner tuple stays live across the outer's drop — no use-after-free). The `u13_*` unit test
   also asserts the nested case emits both `dup` and `drop`. Full rcdzc 1453/0, gate 2157/0/0.
 
+- **U15 — a LET-BOUND peer-returned compound read twice then reclaimed. ✅ DONE (`spec`, test-only).**
+  Confirms the general Perceus `let`-drop machinery (`Core::Let` emit: a dead heap binding is `drop`'d at
+  scope end unless `binding_escapes`) already reclaims a peer-RESULT binding — no origin special-case needed.
+  Test `u15_*`: `(let ((t (P.pair x))) (+ (. t 0) (. t 1)))` binds the owned peer tuple, reads BOTH fields
+  via borrowing `arr-get`s off the `LocalRef` (so U13/U14 add no drop — a borrowed operand), both reads see
+  a LIVE tuple (no premature drop between them), and the dead binding is reclaimed once at scope end →
+  `main(9)=18` under wasmtime. Locks the corner as a regression test. 17 cross-component tests, gate 2169/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
