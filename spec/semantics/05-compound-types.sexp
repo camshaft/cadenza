@@ -4437,6 +4437,25 @@
             (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
+  (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
+           scrutinee is neither a compile-time-constant `(tuple …)` nor a bound name. `(g k)` returns
+           `(tuple k 0)` or `(tuple 0 k)` by `k`'s sign, and the caller destructures it, binding both
+           elements. `f(5)` = `(5, 0)` → 5 + 0 = 5. Pins that a top-level tuple destructure reads its
+           elements off a runtime tuple VALUE directly (the tuple analogue of a variant match on a runtime
+           sum): each binder reads element `i` of the scrutinee, whether the tuple is a constant, a
+           parameter, or — as here — the result of a conditional. A backend that only handled a constant or
+           bound tuple scrutinee declined this (the elements had no compile-time source and no match-arm
+           binding); it now indexes the scrutinee value.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (def (g (: k Int64)) (if (> k 0) (tuple k 0) (tuple 0 k)))
+            (def (f (: k Int64)) (match (g k) ((tuple a b) (+ a b))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 ; --- A pattern is LINEAR: it binds each name at most once ------------------------------------
 ; core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch: "A pattern MUST bind
 ; each name at most once; a pattern that binds the same name more than once MUST be a compile-time
