@@ -84,21 +84,24 @@ export default function Symbols() {
         id="symbols:1"
         prompt={
           <>
-            Write the comparison inside <C>is-stop</C> so it returns <C>1</C> when the light is red and{" "}
-            <C>0</C> otherwise. With <C>(is-stop #"red")</C> the answer is <C>1</C>.
+            <C>score</C> dispatches on a medal from the fixed set <C>#"gold"</C> / <C>#"silver"</C> /{" "}
+            <C>#"bronze"</C>: gold scores <C>3</C>, silver <C>2</C>, anything else <C>1</C>. The gold and
+            fallback arms are done — fill the middle comparison so <C>(score #"silver")</C> gives <C>2</C>.
           </>
         }
-        starter={`(def (is-stop light)
-  (if (= light ?) 1 0))
-(def (main) (is-stop #"red"))`}
-        solution={`(def (is-stop light)
-  (if (= light #"red") 1 0))
-(def (main) (is-stop #"red"))`}
-        expected="1"
+        starter={`(def (score m)
+  (if (= m #"gold") 3
+    (if (= m ?) 2 1)))
+(def (main) (score #"silver"))`}
+        solution={`(def (score m)
+  (if (= m #"gold") 3
+    (if (= m #"silver") 2 1)))
+(def (main) (score #"silver"))`}
+        expected="2"
         hint={
           <>
-            A symbol's one operation is equality — compare <C>light</C> against the symbol{" "}
-            <C>#"red"</C>: <C>(= light #"red")</C>.
+            The middle arm handles silver, so compare <C>m</C> against <C>#"silver"</C>. Each symbol is
+            checked by equality; <C>#"bronze"</C> matches neither and falls through to <C>1</C>.
           </>
         }
       />
