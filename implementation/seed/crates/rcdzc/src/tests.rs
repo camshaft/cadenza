@@ -36299,6 +36299,138 @@ mod closure_host_resource {
             .expect("host-composed closure-resource core module validates");
     }
 
+    /// BRICK (c): the HOST+runtime closure-resource ENVELOPE (`envelope::assemble_closure_host_runtime_resource`)
+    /// wraps the brick-(b) core into a VALID component that wasmtime parses. The component imports BOTH the
+    /// host effect interface (as `host`) AND the value-heap runtime (as `heap`), aliases+lowers both op
+    /// sets, threads them into the program instance, and re-exports the `make`/`call` closure interface —
+    /// the fusion of `assemble_closure_resource` (closure machinery) + `assemble_host_runtime` (dual import).
+    /// This pins the component-index arithmetic (host instance-type 0, runtime 1, resource type 2, own/make/
+    /// call types 3..6, make/call comp funcs h+k/h+k+1, core instances host 0 / heap 3 / program 4). The
+    /// `emit_closure_resource` wiring that drives real programs through it is the next brick.
+    #[test]
+    fn closure_host_runtime_resource_envelope_is_a_valid_component() {
+        use crate::backend::wasm::host::{HostImport, HostParam};
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let host_fns_imp = vec![HostImport {
+            effect: "log".to_string(),
+            op: "emit".to_string(),
+            params: Vec::<HostParam>::new(),
+            result: None, // () -> () — leaves nothing on the stack
+        }];
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let h = host_fns_imp.len();
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::CallHostImport(0), // log.emit() (host func 0)
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = (h + imports.len() + 2) as u32;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::multi_closure_resource_core_module_with_host(
+            &funcs,
+            &imports,
+            &host_fns_imp,
+            &[crate::backend::wasm::serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("host-composed closure core serializes");
+
+        // The envelope needs `HostFn` (with the op's COMPONENT functype). A nullary Unit-result op's
+        // comp functype item is `COMP_FUNCTYPE_FORM, 0 params, 0x01 0x00 (no result)`.
+        let comp_ft = {
+            use crate::backend::wasm::wasm_abi;
+            let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+            item.extend_from_slice(&[0x00]); // 0 params
+            item.extend_from_slice(&[0x01, 0x00]); // no result
+            item
+        };
+        let host_fns = vec![crate::backend::wasm::envelope::HostFn {
+            op: "emit".to_string(),
+            comp_functype: comp_ft,
+            core_functype: Vec::new(),
+        }];
+        let dtor = crate::backend::wasm::serialize::resource_dtor_module_with_drop();
+        let s64_comp = crate::backend::wasm::runtime_abi::AbiValType::S64.comp_byte();
+        let component = crate::backend::wasm::envelope::assemble_closure_host_runtime_resource(
+            &core,
+            &dtor,
+            &imports,
+            "cadenza:runtime/heap@0.0.0",
+            "log",
+            &host_fns,
+            &[],         // nullary make (no export params)
+            &[s64_comp], // one s64 closure arg (component primitive byte)
+            s64_comp,    // s64 result (component primitive byte)
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &component)
+            .expect("the host+runtime closure-resource component must be valid");
+    }
+
     /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production
     /// core a closure whose result is a runtime `Bytes` emits — is structurally valid. The closure body
     /// `(env, x) -> Bytes` builds a 2-byte `[x, x+1]` (`bytes-alloc`/`bytes-set`); `call` dispatches it via
