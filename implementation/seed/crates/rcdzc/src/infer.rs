@@ -4921,8 +4921,8 @@ fn check_application(
         // stays hidden and only the operations the module publishes are available. Fires on either
         // operand (a value of the abstract type on one side is enough); within the declaring module (or
         // a concrete importer) the type is not abstract, so ordinary comparison is unaffected.
-        //= spec/capabilities/type-system.md#an-abstract-types-representation-is-not-observable-across-its-boundary
-        //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
+        //= spec/capabilities/type-system.md#an-abstract-type-s-representation-is-not-observable-across-its-boundary
+        //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible ([modules-and-namespaces.md](modules-and-namespaces.md) §A Type's Handle And Its Constructors Are Independently Visible) — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
         let abstract_operand = |ty: &Ty, node: StructId| {
             nominal_or_sum_decl(ty).is_some_and(|decl| db.is_abstract_type_at(node, decl))
         };
