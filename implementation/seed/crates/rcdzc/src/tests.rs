@@ -21180,6 +21180,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_do_local_function_survives_inlining_of_its_helper() {
+        // 02-binding-and-control "a recursive do-local function nested in an inlined helper recurses": a
+        // do-local recursive `fac` inside `helper`'s body must still recurse when `(helper 5)` INLINES
+        // `helper` — β-reduction COPIES the body, so the copied `(fac (- n 1))` self-call resolves to the
+        // COPY's lambda, whose body is registered as an emittable function at reduction time
+        // (`Db::register_reduced_callables`, the copy-time twin of the load-time do-local registration) so
+        // the call lowers to a `Core::Call`. Without it the copied call declined "needs runtime
+        // specialization". fac(5) = 120.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
+                   (def (main) (helper 5)) (export main))"
+            ),
+            120
+        );
+        // The helper inlined TWICE — each β-copy registers its OWN copy of `fac` (one call site's copy is
+        // not confused for another's, and neither is a spurious "defined more than once"). 120 + 6 = 126.
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
+                   (def (main) (+ (helper 5) (helper 3))) (export main))"
+            ),
+            126
+        );
+        // MUTUAL recursion nested in an inlined helper — both copied functions lower and call each other.
+        assert_eq!(
+            run(
+                "(module m (def (helper x) (do (def (ev n) (if (= n 0) true (od (- n 1)))) \
+                     (def (od n) (if (= n 0) false (ev (- n 1)))) (if (ev x) 1 0))) \
+                   (def (main) (helper 10)) (export main))"
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`

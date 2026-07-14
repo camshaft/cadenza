@@ -1638,6 +1638,82 @@ impl Db {
         self.def_by_body.get(&body).copied()
     }
 
+    /// Register a recursive DO-LOCAL function found in a β-REDUCED (copied) body as an INTERNAL callable
+    /// def, so its recursive call lowers to a `Core::Call` — the copy-time counterpart of the load-time
+    /// `modules::register_do_local_callables`. When a HELPER whose body carries a do-local `(def (fac n)
+    /// …)` is inlined at its call site, `beta_reduce` COPIES the def (fresh `StructId`s), so the copied
+    /// recursive self-call resolves (via `do_local_binds`, forward-inclusive for functions) to the COPY's
+    /// lambda — whose body is NOT in `def_by_body`, so `callee_def_index` misses it and the call declines
+    /// "needs runtime specialization". Walking the reduced `root` for do-block FUNCTION defs and
+    /// registering each (keyed by its fresh body) closes the gap: the load-time registration is by the
+    /// ORIGINAL body, this one by the COPY, and a reference resolves to whichever body is in scope.
+    ///
+    /// Idempotent + bounded: `apply_lambda` memoizes each call site's reduction, so a given copy's defs
+    /// register once; a def whose body is already in `def_by_body` (a re-walk, or a top-level def) is
+    /// skipped. INTERNAL discipline (like the load-time path): kept OUT of `def_name_index` (the name
+    /// resolves by lexical scope) and not an export / unused-warning target.
+    pub fn register_reduced_callables(&mut self, root: StructId) {
+        // A `(do …)` block's DIRECT `(def (f p…) BODY)` children with ≥1 param are the recursive-lowering
+        // candidates. Walk the subtree at `root` (a shallow β-copy) collecting them first (an immutable
+        // read), then register — so the mutation does not disturb the walk.
+        let mut pending: Vec<(StructId, Vec<StructId>, StructId)> = Vec::new();
+        self.collect_reduced_callables(root, &mut pending);
+        for (sig, params, body) in pending {
+            if self.def_by_body.contains_key(&body) {
+                continue; // already registered (a re-walk, or a shared/uncopied body)
+            }
+            let name = match self.ast.get(sig) {
+                Struct::List(kids) => kids
+                    .first()
+                    .and_then(|&c| self.ast.as_name(c))
+                    .unwrap_or("")
+                    .to_string(),
+                _ => continue,
+            };
+            let idx = self.defs.len();
+            self.def_by_body.insert(body, idx);
+            self.defs.push(Def {
+                name,
+                sig_occ: sig,
+                params,
+                body: Some(body),
+                internal: true,
+            });
+        }
+    }
+
+    /// Gather the do-block FUNCTION defs `(def (f p…) BODY)` (≥1 param) reachable under `node` as
+    /// `(sig-occ, param-occs, body-occ)` — the recursive-descent helper of [`register_reduced_callables`].
+    /// A def is a candidate only when its PARENT is a `(do …)` block (a genuine do-local declaration, the
+    /// same shape the load-time scan registers), so a `(def …)` in any other position is not mistaken for
+    /// one. Descends every child to reach a do-block nested at any depth in the copied body.
+    fn collect_reduced_callables(
+        &self,
+        node: StructId,
+        out: &mut Vec<(StructId, Vec<StructId>, StructId)>,
+    ) {
+        // Is `node` a do-block? If so, register each direct `(def (f p…) BODY)` child with params.
+        if let Some(forms) = self.ast.as_form(node, "do") {
+            for &form in forms {
+                if let Some(tail) = self.ast.as_form(form, "def")
+                    && let (Some(&sig), Some(&body)) = (tail.first(), tail.get(1))
+                    && let Struct::List(children) = self.ast.get(sig)
+                    && children.len() >= 2
+                {
+                    let params: Vec<StructId> = children[1..].to_vec();
+                    out.push((sig, params, body));
+                }
+            }
+        }
+        // Descend every child (a do-block may be nested inside an if-branch, a let body, a def body copied
+        // into this reduced term, etc.).
+        if let Struct::List(children) = self.ast.get(node) {
+            for c in children.clone() {
+                self.collect_reduced_callables(c, out);
+            }
+        }
+    }
+
     /// Normalize a decoded sum `(decl, name, args)` into its `Ty` — the ONE place the `Sum`↔`Nominal`
     /// decision + generic template substitution lives, so BOTH decode paths agree: `resolve::decode_ty`
     /// (a `(Sum …)` wire node) and `eval::reduce_sum_ctor` (a generic ctor `(Box Int64)` type

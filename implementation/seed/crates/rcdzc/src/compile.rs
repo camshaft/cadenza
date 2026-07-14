@@ -606,11 +606,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // which the scan does not yet name) is SKIPPED here: it does not register a name, so it cannot
     // collide. Only genuinely NAMED definitions participate in the fixed-name-set check, so two
     // distinct un-named defs are not mistaken for a duplicate of the empty name.
+    // An INTERNAL def (`Def::internal`) is compiler bookkeeping — a module-member / do-local FUNCTION
+    // registered so a recursive call can lower to a `Core::Call`, keyed by its (possibly β-COPIED) body.
+    // It does NOT declare a user name (its name resolves by lexical scope, not the fixed export set), and
+    // the SAME source function may be registered more than once (once at load by its original body, again
+    // per β-copy of an enclosing inlined helper). So it must NOT participate in the duplicate-name check —
+    // else a legitimately-once-declared recursive function inlined at a call site would spuriously report
+    // "defined more than once". Only genuine (non-internal) user definitions form the fixed name set.
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let dups: Vec<(String, StructId)> = db
         .defs
         .iter()
-        .filter(|d| !d.name.is_empty() && !seen.insert(d.name.as_str()))
+        .filter(|d| !d.internal && !d.name.is_empty() && !seen.insert(d.name.as_str()))
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {

@@ -784,6 +784,14 @@ fn apply_lambda_uncached(
     let own_params: Vec<StructId> = params.iter().map(|&p| param_name_occ(db, p)).collect();
     pin_free_vars(db, body, body, &own_params);
     let reduced = beta_reduce(db, body, &arg_of);
+    // A do-local RECURSIVE function inside `body` was COPIED by the reduction (fresh occurrences); its
+    // recursive self-call now resolves to the COPY's lambda, whose body is not yet in `def_by_body`. So a
+    // helper `(def (helper x) (do (def (fac n) …) (fac x)))` inlined at its call site would decline "needs
+    // runtime specialization". Register the reduced copy's do-local function defs so the copied recursive
+    // call lowers to a `Core::Call` (the copy-time counterpart of `modules::register_do_local_callables`).
+    // Idempotent + bounded: this application memoizes (`apply_lambda`), and an already-registered body is
+    // skipped — so a non-recursive or already-seen copy adds nothing.
+    db.register_reduced_callables(reduced);
     let rest = &args[params.len()..];
     if rest.is_empty() {
         Ok(Some(reduced))

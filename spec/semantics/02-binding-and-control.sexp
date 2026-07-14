@@ -520,6 +520,35 @@
               (if (ev 10) 1 0)))
   (output (: 1 Int64)))
 
+; A recursive do-local function nested INSIDE a HELPER that is itself INLINED at its call site still
+; recurses: β-reduction COPIES the helper's body (fresh occurrences), so the copied recursive self-call
+; must still lower to a runtime call — the copy's do-local function is registered as an emittable function
+; exactly as the original is. A compiler that registers only the LOAD-TIME occurrence declines the copied
+; call "needs runtime specialization"; one that registers the reduced copy's do-local functions runs it.
+
+(case "a recursive do-local function nested in an inlined helper recurses"
+  (doc    "`helper` carries a do-local recursive `fac`; `(helper 5)` inlines `helper`, COPYING its body —
+           so the copied `(fac (- n 1))` self-call must still resolve to an emittable function and lower to
+           a runtime call. fac(5) = 120, and `helper` folds away. Pins that recursion survives β-copy of an
+           enclosing function: the reduced copy's do-local function is registered like the original, not
+           left as an un-lowerable copy.")
+  (input  (do (def (helper x)
+                (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))
+                    (fac x)))
+              (def (main) (helper 5)) (export main)))
+  (output (: 120 Int64)))
+
+(case "a recursive do-local function survives two inlinings of its helper"
+  (doc    "The helper is called TWICE — `(helper 5)` and `(helper 3)` — so its body (with the do-local
+           recursive `fac`) is copied twice, each copy's `fac` its own emittable function. fac(5)+fac(3) =
+           120 + 6 = 126. Pins that EACH β-copy of the enclosing helper registers its own copy of the
+           recursive function (one call site's copy is not confused for another's).")
+  (input  (do (def (helper x)
+                (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))
+                    (fac x)))
+              (def (main) (+ (helper 5) (helper 3))) (export main)))
+  (output (: 126 Int64)))
+
 ; An ARGUMENT to a user-function call is an expression evaluated in the CALL SITE's scope, and its
 ; names bind there — a compiler that reduces a call by substituting the argument into the callee's
 ; body must not thereby resolve the argument's names in the callee's scope. The witnesses below pin
