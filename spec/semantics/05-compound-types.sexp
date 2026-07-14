@@ -1152,6 +1152,50 @@
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
 
+; A MAP / SUM / SET chosen by a runtime `if` joins its two branches into ONE value-heap handle exactly as a
+; list does (each is an i32 handle slot), so consuming the joined handle must emit VALID wasm — the same
+; branch-join-slot concern the runtime-if list cases above pin, carried onto the other heap kinds. (The
+; `if`-join slot for a heap-handle result being mis-typed is a real fault surface — see the failures queue,
+; where a let-bound if-tuple/record READ AT TWO POSITIONS emits invalid wasm; these single-consumption
+; cases pin the working boundary the fix must keep green.)
+
+(case "a map chosen by a runtime if is size-measured with valid wasm"
+  (doc    "`(Map.size (if (> b 0) {1↦10} {1↦10,2↦20}))` selects one of two maps by the runtime Bool and reads
+           its size — b=5 → the one-entry map → 1, b=0 → the two-entry map → 2. The `if` unifies two
+           `(Map Int64 Int64)` branches into one heap handle that `Map.size` reads; pins that the join emits
+           valid wasm for a MAP handle, the map analogue of the runtime-if list.")
+  (input  (do (def (main (: b Int64)) (Map.size (if (> b 0) (Map.insert Map.empty 1 10) (Map.insert (Map.insert Map.empty 1 10) 2 20)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a let-bound runtime-if map is looked up with valid wasm"
+  (doc    "The `let`-bound map companion: `(let ((m (if (> b 0) {1↦10} {1↦99}))) (Map.lookup m 1))` binds the
+           if-joined map handle and looks a key up — b=5 → 10, b=0 → 99. Pins that the branch-joined map
+           handle survives a `let` binding and a lookup on the bound reference emits valid wasm.")
+  (input  (do (def (main (: b Int64)) (let ((m (if (> b 0) (Map.insert Map.empty 1 10) (Map.insert Map.empty 1 99)))) (match (Map.lookup m 1) ((Some v) v) (None -1)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 99 Int64)))
+
+(case "a sum chosen by a runtime if is matched with valid wasm"
+  (doc    "`(match (if (> b 0) (W.A b) (W.B b)) …)` selects one of two sum constructors by the runtime Bool,
+           then matches the joined value — b=5 → `(W.A 5)` → 5, b=0 → `(W.B 0)` → 0+100 = 100. The `if`
+           unifies two `W` branches into one sum handle the match deconstructs; pins that the join emits valid
+           wasm for a user-SUM handle carrying a runtime payload.")
+  (input  (do (type W (A Int64) (B Int64))
+              (def (main (: b Int64)) (match (if (> b 0) ((. W A) b) ((. W B) b)) (((. W A) v) v) (((. W B) v) (+ v 100)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "a set chosen by a runtime if is membership-tested with valid wasm"
+  (doc    "`(Set.contains (if (> b 0) {1,2} {3,4}) e)` selects one of two sets by the runtime Bool and tests
+           membership — b=5 selects {1,2} (e=1 → in, e=3 → out), b=0 selects {3,4} (e=3 → in). The `if` joins
+           two `(Set Int64)` branches into one set handle `Set.contains` queries; pins that the join emits
+           valid wasm for a SET handle, completing the heap-kinds (list/map/sum/set) chosen-by-if coverage.")
+  (input  (do (def (main (: b Int64) (: e Int64)) (if (Set.contains (if (> b 0) (Set.of (list 1 2)) (Set.of (list 3 4))) e) 1 0)) (export main)))
+  (call   main (: 5 Int64) (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64) (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64) (: 3 Int64)) (output (: 1 Int64)))
+
 (case "an element read across a concatenation boundary is the right value"
   (doc    "`(Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) …)` = 40 — index 3 of
            the concatenation is the FIRST element of the second operand, so the join places the second
