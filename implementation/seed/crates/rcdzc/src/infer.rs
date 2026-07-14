@@ -2056,14 +2056,33 @@ pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if db.solving_params.contains(&def) {
         return None;
     }
-    // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
-    // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
-    // re-entrant call reads `None` (a self-call types as `Any`, absorbed by the base case — the same
-    // behavior as the β-reduction recursion guard) rather than looping forever. The real scheme
-    // overwrites the sentinel once the body solve completes.
-    db.def_schemes.insert(def, None);
+    // RE-ENTRY GUARD (self- AND mutual recursion). Computing a def's scheme demands `type_of` of its
+    // body, whose recursive call — to THIS def or a mutually-recursive sibling — demands a scheme not yet
+    // computed. Track in-progress solves in `solving_schemes`: a demand for a def already on the stack
+    // returns `None` (the call types as `Any`, absorbed by the base case — the same behavior as the
+    // β-reduction recursion guard) rather than looping forever. Kept in a SEPARATE set from the
+    // `def_schemes` memo so an in-progress solve is not indistinguishable from a determined-`None`
+    // scheme (the old `None`-sentinel-in-`def_schemes` conflated the two and poisoned mutual dispatchers,
+    // below).
+    if db.solving_schemes.contains(&def) {
+        return None;
+    }
+    let reentrant_solve = !db.solving_schemes.is_empty();
+    db.solving_schemes.insert(def);
     let scheme = compute_def_scheme(db, def);
-    db.def_schemes.insert(def, scheme.clone());
+    db.solving_schemes.remove(&def);
+    // CACHE, EXCEPT a spurious mutual-recursion `None`. A `None` computed while ANOTHER scheme solve was
+    // still on the stack may have read that sibling's in-progress (as-yet-`None`) signature as `Any` — as
+    // a mutually-recursive PURE DISPATCHER does, whose body is ENTIRELY the sibling call (e.g.
+    // `(def (od (: n Int64)) (ev (- n 1)))` where the sibling `ev` performs an effect and is the entry
+    // demanded first). Caching that `None` would poison the dispatcher permanently, even once `ev` is
+    // determined. Leave it uncached so the next demand — once the sibling's real scheme is memoized —
+    // recomputes the true signature. A `Some` scheme, or a `None` reached at the TOP of the stack (a
+    // genuinely undetermined signature), caches exactly as before (the common non-mutual case is
+    // byte-identical: a top-level demand has an empty stack, so `reentrant_solve` is false).
+    if scheme.is_some() || !reentrant_solve {
+        db.def_schemes.insert(def, scheme.clone());
+    }
     scheme
 }
 

@@ -817,6 +817,16 @@ pub struct Db {
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
+
+    /// The def indices whose SCHEME solve is currently on the stack — the re-entry backstop for
+    /// `def_scheme` (a self-call demanding the scheme mid-compute reads `None`, typing as `Any`, the
+    /// same behavior the base case absorbs). Distinct from a cached `None` in `def_schemes`: a genuine
+    /// undetermined scheme and an in-progress one both look like `None` in the map, so re-entry can't be
+    /// read from there. It ALSO gates caching — a `None` computed while a SIBLING scheme solve is still
+    /// on this stack may be spurious (it read the sibling's provisional in-progress signature as `Any`,
+    /// as a mutually-recursive pure dispatcher does), so it is NOT cached and a later demand recomputes
+    /// it once the sibling is determined.
+    pub(crate) solving_schemes: crate::fxhash::FxHashSet<usize>,
     pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
 
     /// CALL-SITE index for `infer::call_site_arg_types`: `callee def index → the argument-occurrence lists
@@ -1253,6 +1263,7 @@ impl Db {
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
+            solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),
             call_sites_by_callee: None,
             resolved: Column::new(),

@@ -1046,6 +1046,27 @@
               (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
   (output (: 13 Int64)))
 
+(case "a mutually-recursive group performs in its entry def while its partner only dispatches"
+  (doc    "The MIRROR of the case above, and the one that pins the mutual-group scheme fixpoint. Here the
+           ENTRY def `ev` (the one the handle body calls, so its scheme is demanded FIRST) is the one that
+           PERFORMS — it recurses through its partner `od`, which is a PURE DISPATCHER whose body is
+           ENTIRELY the sibling call `(ev (- n 1))`. Computing `ev`'s scheme demands `od`'s mid-flight,
+           while `ev`'s own signature is still provisional; `od`'s body — being only `(ev …)` — then reads
+           that provisional `ev` and would type as an undetermined `Any`. The mutual-group scheme solve
+           must NOT cache that provisional `None` for `od` (else the dispatcher is poisoned permanently and
+           the whole group declines); once `ev` resolves via its base case, a re-demand computes `od`'s
+           true `Int64 -> Int64`. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)` =
+           `(Ctr.tick) + od(3)` = `7 + ev(2)` = `7 + ((Ctr.tick) + od(1))` = `7 + (6 + ev(0))` =
+           `7 + 6 + 0` = 13. Recursive-while-performing, so it needs effect-context specialization
+           (`DESIGN-effects-rcdzc.md` §4.2, §4.3).")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (Ctr.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (ev (- n 1)))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads
