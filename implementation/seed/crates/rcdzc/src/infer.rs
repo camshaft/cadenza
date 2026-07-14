@@ -2414,6 +2414,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
+                    | crate::resolved::Prim::Rem
             ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
             {
                 return Ty::BigInt;
@@ -3755,6 +3756,10 @@ fn check_application(
             prim,
             Some(crate::resolved::Prim::Mul | crate::resolved::Prim::Div)
         );
+        // `%` (remainder) is BigInt-valid arithmetic like `/`, but it is NOT `is_multiplicative` — the
+        // quantity `*`/`/` dimensional skip above must exclude it (a `%` on a quantity has its own rules),
+        // so it rides ONLY the BigInt-skip condition below.
+        let is_rem = matches!(prim, Some(crate::resolved::Prim::Rem));
         let a0 = type_of(db, args[0]);
         let b0 = type_of(db, args[1]);
         let any_qty = matches!(a0, Ty::Qty { .. }) || matches!(b0, Ty::Qty { .. });
@@ -3774,7 +3779,7 @@ fn check_application(
         // case; `lower` routes to the runtime bigint op), descend for operand faults, and return. A
         // genuine `BigInt`/fixed MIX still faults: `agrees_with` is false, so `type_of` gave one operand
         // BigInt and the other a fixed Int — the mismatch is caught by the operand check here.
-        if (is_additive || is_multiplicative)
+        if (is_additive || is_multiplicative || is_rem)
             && (matches!(a0, Ty::BigInt) || matches!(b0, Ty::BigInt))
         {
             // A mix (one BigInt, one non-BigInt-non-Any) is the no-promotion error CDZ0301.
@@ -3890,17 +3895,38 @@ fn check_application(
         let val_ty = type_of(db, args[2]);
         if !kt.agrees_with(&key_ty) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert key type disagrees with the map's key type (CDZ0201)");
-            out.push(Reject::coded(
+            // Name the map's KEY type and the inserted key's type (like the map-literal heterogeneity
+            // message), and offer the int-literal→float retype when that bridges the clash — the
+            // Map.insert twin of the map-literal check (M75).
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a map associates keys of one type (the inserted key's type differs from the map's)",
-            ));
+                format!(
+                    "a map associates keys of one type, but this key's type differs: the map's keys are \
+                     {}, this key is {}",
+                    kt.render_name(),
+                    key_ty.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, args[1], &key_ty, &kt) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
         }
         if !vt.agrees_with(&val_ty) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert value type disagrees with the map's value type (CDZ0201)");
-            out.push(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a map associates values of one type (the inserted value's type differs from the map's)",
-            ));
+                format!(
+                    "a map associates values of one type, but this value's type differs: the map's \
+                     values are {}, this value is {}",
+                    vt.render_name(),
+                    val_ty.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, args[2], &val_ty, &vt) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
         }
         if !kt.agrees_with(&key_ty) || !vt.agrees_with(&val_ty) {
             // Descend into the operands for their own faults, then stop (do NOT run the generic

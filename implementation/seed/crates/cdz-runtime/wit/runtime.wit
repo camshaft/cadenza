@@ -339,6 +339,12 @@ interface heap {
   //    → `v` unchanged; `index >= len` → the empty vector. APPENDED after the bigint ops (frozen-contract
   //    APPEND-only rule — a new op goes at the end so no existing op's index shifts).
   vec-drop: func(v: u32, index: u32) -> u32;           // 72 — tail [index, len) (consumes v)
+
+  // ── BigInt remainder (index 73) — `bigint-rem(a, b)` = `a % b`, the remainder of truncating division
+  //    (sign of the DIVIDEND, the companion of `bigint-div`'s quotient). Traps on a zero divisor. Backed
+  //    by the SAME `divmod` as `bigint-div` (it returns both quotient and remainder). APPENDED at the end
+  //    (frozen-contract APPEND-only rule — a new op goes last so no existing op's index shifts).
+  bigint-rem: func(a: u32, b: u32) -> u32;             // 73 — a % b (remainder, dividend's sign; traps on /0)
 }
 
 world runtime {

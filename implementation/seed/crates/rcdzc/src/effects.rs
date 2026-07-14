@@ -1309,6 +1309,23 @@ pub fn reduce_handle(
     {
         return Some(distributed);
     }
+    // NESTED-HANDLE PRE-REDUCTION (for a NON-tail-resumptive outer handler). The inside-out `thread` path
+    // reduces a nested inner `handle` only while THREADING — which requires this (outer) handler's arms to
+    // be tail-resumptive. When they are NOT, a body like `(handle B tail (+ (A.a) (B.b)))` reaches the E5
+    // pure-one-hole check with the raw inner `handle` node still present (`pure_hole` sees a nested handle →
+    // Impure → declines). Reduce the inner handle(s) FIRST so the body becomes `(+ (A.a) 20)` — a single
+    // outer-effect perform in a pure one-hole context the E5 fold below serves (→ `(+ 1 (+ 20 10))` = 31).
+    // GATED to the non-tail-resumptive, non-abortive regime (the tail path already reduces inner handles via
+    // `thread`, and the merge path handles a recursive callee spanning both effects); only run it when the
+    // body actually contains a nested handle, so the common no-nested-handle body is untouched.
+    let body = if ctx.abortive.is_empty()
+        && ctx.arms.values().all(|a| tail_resume(db, a.body).is_none())
+        && body_contains_nested_handle(db, body)
+    {
+        reduce_inner_handles(db, body)
+    } else {
+        body
+    };
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -1391,6 +1408,54 @@ pub fn reduce_handle(
         return Some(abort);
     }
     Some(rewritten)
+}
+
+/// Reduce every NESTED inner `handle` found in `node` to its folded form, IN PLACE (returning a rewritten
+/// copy). An inner handle that reduces (`reduce_handle`) is replaced by its result; one that does not is
+/// left untouched. This runs in `reduce_handle` BEFORE the E5 pure-one-hole check so an OUTER handler whose
+/// arm is NON-tail-resumptive can serve a body that contains a reducible inner handle of a DIFFERENT
+/// effect: the inside-out `thread` path reduces an inner handle only while threading (which needs the OUTER
+/// arm tail-resumptive), so `(handle A non-tail (handle B tail (+ (A.a) (B.b))))` used to decline — B never
+/// got reduced before A's E5 fold ran and saw the raw inner `handle` node (a non-uniform continuation).
+/// Reducing B FIRST turns the body into `(+ (A.a) 20)`, a single A-perform in a pure one-hole context the
+/// outer E5 fold folds to `(+ 1 (+ 20 10))` = 31. SOUND + frame-free: reducing the inner handle is the
+/// same already-proven-safe reduction the threading path performs, only sequenced earlier. Only the
+/// SHALLOWEST inner handles are reduced (`reduce_handle` recurses into its own body), and a handle that is
+/// itself the whole `node` is NOT reduced here (the caller is mid-reducing it). Bounded by `reduce_handle`'s
+/// own re-entry guard.
+fn reduce_inner_handles(db: &mut Db, node: StructId) -> StructId {
+    // A `handle` node: reduce IT (its body's own nested handles are reduced by that call recursing here),
+    // and use the result. If it declines, fall through to a structural copy so the node is unchanged.
+    if let Resolved::Handle { init, arms, body } = resolved_of(db, node)
+        && let Some(reduced) = reduce_handle(db, init, &arms, body)
+    {
+        return reduced;
+    }
+    // Otherwise descend structurally, reducing any inner handle in a child.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| reduce_inner_handles(db, c))
+                .collect();
+            db.push_list(rebuilt)
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// Whether `node` IS or CONTAINS a nested `handle` (of an inner effect). The gate for the nested-handle
+/// pre-reduction — a cheap syntactic check so a body with no inner handle skips the pre-reduction pass. The
+/// handle body may BE the inner handle directly (`(handle A … (handle B …))`) or contain it inside an
+/// operator (`(+ (handle B …) x)`), so both `node` itself and its descendants count.
+fn body_contains_nested_handle(db: &mut Db, node: StructId) -> bool {
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().any(|&c| body_contains_nested_handle(db, c)),
+        Struct::Atom(_) => false,
+    }
 }
 
 /// Graft the synthesized `folded` body into the lexical slot the (post-hoist) handle `body` occupies, so a

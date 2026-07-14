@@ -914,6 +914,14 @@ fn op_get_float32(h: Handle) -> f32 {
 
 /// Box a `Big` as a BigInt heap leaf — its canonical sign-magnitude bytes in `raw`, zero handles.
 fn box_bigint(b: &bigint::Big) -> Handle {
+    // Fast path — a small BigInt (single/few limbs → ≤`INLINE_RAW_CAP` sign-magnitude bytes, the common
+    // case) serializes DIRECTLY into an inline `Raw` with NO transient heap Vec (the `to_sign_magnitude_
+    // bytes` + `Raw::from` path would allocate that Vec then free it once inlined — the transient-small-Vec
+    // smell). A larger value falls back to the heap serialization. Byte-identical either way.
+    let mut buf = [0u8; INLINE_RAW_CAP];
+    if let Some(n) = b.to_sign_magnitude_bytes_into(&mut buf) {
+        return alloc_raw(Vec::new(), Raw::inline(&buf[..n]));
+    }
     alloc_raw(Vec::new(), Raw::from(b.to_sign_magnitude_bytes()))
 }
 /// Read a BigInt leaf back to a `Big`. Total: a null/mismatched node reads as zero (deterministic bits,
@@ -963,6 +971,16 @@ fn op_bigint_div(a: Handle, b: Handle) -> Handle {
 #[inline(never)]
 fn trap_bigint_div_zero() -> ! {
     panic!("cdz-runtime: BigInt division by zero")
+}
+/// `bigint-rem` — the REMAINDER of truncating division (`%`): `a - (a / b) * b`, so its sign is the
+/// DIVIDEND's (numeric-model.md — `%` takes the dividend's sign, the companion of `bigint-div`'s
+/// truncate-toward-zero). TRAPS on a zero divisor (same as `bigint-div`). `divmod` returns `(q, r)` with
+/// exactly this remainder, so this is the `r` half — the whole reason `divmod` computes both at once.
+fn op_bigint_rem(a: Handle, b: Handle) -> Handle {
+    match unbox_bigint(a).divmod(&unbox_bigint(b)) {
+        Some((_q, r)) => box_bigint(&r),
+        None => trap_bigint_div_zero(),
+    }
 }
 /// `bigint-cmp` — three-way compare: `-1`/`0`/`1` for `a < b`/`a = b`/`a > b` (the primitive the
 /// comparison operators `<`/`>`/`=`/… lower to + a fixed compare).
@@ -3978,6 +3996,9 @@ impl Guest for Component {
         let (l, r) = op_vec_split(Handle::from_u32(v), index);
         op_drop(l); // reclaim the dropped prefix
         r.to_u32()
+    }
+    fn bigint_rem(a: u32, b: u32) -> u32 {
+        op_bigint_rem(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
     }
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
@@ -8679,6 +8700,31 @@ mod tests {
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
 
+        // (K4) `bigint-add` — a runtime BigInt op (B3b/B3c emit these for runtime-valued BigInt arithmetic),
+        // now on the hot path of any bignum loop. Each op UNBOXES both operands to a `Big` (a limb `Vec`
+        // each), computes, and BOXES the normalized result (its sign-magnitude bytes + a node). So a single
+        // op over SMALL (single-limb) operands allocates several small Vecs — untracked until now. Build
+        // the two operands ONCE outside the loop (their construction is not the op's cost); measure only
+        // the add + the drop of each result. Guards against a regression that adds per-op churn (e.g. a
+        // wider intermediate, a lost small-Raw inline) on the runtime bignum path.
+        let (bi_a, bi_b) = (op_bigint_of_i64(12345), op_bigint_of_i64(67890));
+        let bigadd = measure(&mut || {
+            for _ in 0..N {
+                let r = op_bigint_add(bi_a, bi_b); // borrows both operands
+                op_drop(r);
+            }
+        });
+        op_drop(bi_a);
+        op_drop(bi_b);
+        println!("ALLOC bigint_add x{N}: {bigadd}");
+        // Per op: unbox a (limb Vec) + unbox b (limb Vec) + the result's sign-magnitude Vec + the result
+        // node = a small constant, N-independent per op. The ceiling catches a regression toward per-op
+        // extra churn; the exact figure is measured + baselined.
+        assert!(
+            bigadd <= 8000,
+            "bigint_add x{N} allocs {bigadd} exceeds ceiling 8000 (unbox 2 limb Vecs + box the result Vec+node per op; a per-op churn regression would climb)"
+        );
+
         // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
         // `arr-alloc(n)` + n×`arr-set` then ONE `vec-of-arr` (NOT `vec-empty` + n×`vec-push`), so this op is
         // on the hot path of every list construction yet was previously un-benched. Two shapes:
@@ -9724,6 +9770,43 @@ mod tests {
         assert_eq!(cmp(-3, -3), 0, "-3 == -3");
         assert_eq!(cmp(0, -1), 1, "0 > -1");
         assert_eq!(cmp(-1, 0), -1, "-1 < 0");
+        assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
+    /// `bigint-rem` (op 73, the `%` the compiler now emits for a runtime BigInt) — the remainder of
+    /// TRUNCATING division, so its sign is the DIVIDEND's, matching Rust `%` on i64 across the full sign
+    /// matrix. Backed by the same `divmod` as `bigint-div` (the `r` half), so `a == (a/b)*b + (a%b)`.
+    #[test]
+    fn bigint_rem_takes_dividend_sign_all_combos() {
+        reset();
+        let before = live_object_count();
+        let rem = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hr = op_bigint_rem(ha, hb);
+            let r = op_bigint_to_i64_checked(hr);
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+            r
+        };
+        // Remainder matches Rust i64 `%` (dividend's sign) across all four sign combos + exact/zero cases.
+        for &(a, b) in &[(17, 5), (-17, 5), (17, -5), (-17, -5), (6, 3), (-6, 3), (2, 5), (-2, 5), (0, 7)] {
+            assert_eq!(rem(a, b), a % b, "bigint-rem {a} % {b} == i64 %");
+            // And the division identity: a == (a/b)*b + (a%b). The bigint ops BORROW their operands, so
+            // each intermediate handle must be dropped explicitly (no consuming chain).
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hq = op_bigint_div(ha, hb);
+            let hr = op_bigint_rem(ha, hb);
+            let qb = op_bigint_mul(hq, hb);
+            let sum = op_bigint_add(qb, hr);
+            assert_eq!(op_bigint_to_i64_checked(sum), a, "a == (a/b)*b + (a%b) for {a},{b}");
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hq);
+            op_drop(hr);
+            op_drop(qb);
+            op_drop(sum);
+        }
         assert_eq!(live_object_count(), before, "no BigInt leak");
     }
 

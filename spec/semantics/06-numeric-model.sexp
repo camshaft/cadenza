@@ -312,6 +312,28 @@
   (call   main (: 40 Int64) (: 2 Int64))
   (output (: 42 Int64)))
 
+(case "runtime BigInt remainder runs on the arbitrary-precision runtime"
+  (doc    "`(Int64.of (% (BigInt.of a) (BigInt.of b)))` with runtime a,b takes the remainder on the runtime
+           limb library (the `bigint-rem` op, backed by the same `divmod` as `bigint-div`): a=17,b=5 → 2.
+           Pins that `%` — not just `/` — routes to the runtime BigInt path.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (% (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: 17 Int64) (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "a runtime BigInt remainder takes the dividend's sign"
+  (doc    "`(% (BigInt.of a) (BigInt.of b))` is the remainder of TRUNCATING division, so it takes the
+           DIVIDEND's sign (the companion of `bigint-div`'s truncate-toward-zero): a=-17,b=5 → -2 (not the
+           floored +3). Matches fixed-width `%` semantics.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (% (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: -17 Int64) (: 5 Int64))
+  (output (: -2 Int64)))
+
 (case "a runtime BigInt intermediate that overflows Int64 does not trap"
   (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
            2.5e19 OVERFLOWS Int64 (max ~9.2e18), but BigInt's representation grows rather than trapping —
@@ -361,20 +383,31 @@
   (call   main (: 5000000000 Int64))
   (output (: 1 Int64)))
 
-(case "runtime BigInt equality holds for values reached by different arithmetic"
-  (doc    "`(= (+ big big) (* big two))` with `big = BigInt.of a`, `two = BigInt.of t` (t=2): `big+big` and
-           `big*2` are the SAME value reached two ways; `bigint-cmp` returns 0 → `=` (`i64.eqz`) true → 1.
-           Confirms BigInt `=` compares by value (each op returns a normalized leaf, so equal values are
-           byte-identical) rather than by handle identity. (`two` is a runtime widening `BigInt.of t`
-           rather than a constant `BigInt.of 2` — a CONSTANT BigInt used as a runtime arithmetic operand
-           does not yet materialize as a heap leaf, a B4 boundary/const-heap concern; here both operands
-           are runtime, exercising the comparison itself.)")
+(case "a constant BigInt operand of a runtime BigInt op materializes as a heap value"
+  (doc    "`(* big (BigInt.of 2))` with `big = BigInt.of a` runtime: the constant `(BigInt.of 2)` operand
+           has no heap leaf of its own (it folded to a constant), so it MATERIALIZES inline as a BigInt
+           leaf via `bigint-of-i64` at the use site (it fits i64) and the runtime `bigint-mul` runs: a=21
+           → 42. Pins that a literal BigInt beside a runtime BigInt operand is accepted, not declined
+           (the compiler boxes the constant rather than requiring both operands to be runtime).")
   (input  (do
-            (def (main (: a Int64) (: t Int64))
-              (let ((big (BigInt.of a)) (two (BigInt.of t)))
-                (if (= (+ big big) (* big two)) 1 0)))
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (Int64.of (* big (BigInt.of 2)))))
             (export main)))
-  (call   main (: 123456789 Int64) (: 2 Int64))
+  (call   main (: 21 Int64))
+  (output (: 42 Int64)))
+
+(case "runtime BigInt equality holds for values reached by different arithmetic"
+  (doc    "`(= (+ big big) (* big (BigInt.of 2)))` with `big = BigInt.of a`: `big+big` and `big*2` are the
+           SAME value reached two ways; `bigint-cmp` returns 0 → `=` (`i64.eqz`) true → 1. Confirms BigInt
+           `=` compares by value (each op returns a normalized leaf, so equal values are byte-identical)
+           rather than by handle identity — and that a constant `(BigInt.of 2)` operand materializes.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (if (= (+ big big) (* big (BigInt.of 2))) 1 0)))
+            (export main)))
+  (call   main (: 123456789 Int64))
   (output (: 1 Int64)))
 
 ; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------

@@ -2974,23 +2974,27 @@ fn emit_distinct_sig_resource(
             result_byte: p.result_byte,
         })
         .collect();
+    // C-HOST-6: each group's per-signature `call-g<n>` takes `borrow<t_g>` (repeatable — the host keeps each
+    // handle across calls; the `t-dtor` reclaims). Same borrow posture as the shared single/multi `call`s.
     let main_core = serialize::distinct_sig_resource_core_module(
         &funcs,
         &imports,
         &ser_groups,
         &ser_plain,
         &layout,
+        true,
     )
     .map_err(Reject::decline)?;
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_distinct_sig_resource_mixed(
+    Ok(envelope::assemble_distinct_sig_resource_mixed_borrow(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
         &abi_groups,
         &abi_plain,
+        true,
     ))
 }
 

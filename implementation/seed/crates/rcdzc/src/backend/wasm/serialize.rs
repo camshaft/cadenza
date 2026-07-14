@@ -3800,6 +3800,7 @@ pub fn distinct_sig_resource_core_module(
     groups: &[SigGroup],
     plain: &[PlainExport],
     layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -4078,9 +4079,12 @@ pub fn distinct_sig_resource_core_module(
                 out.push(op::I32_CONST);
                 crate::backend::wasm::encode::sleb128(v, out);
             };
+            // cell = self (borrow: rep passed directly) or resource.rep-g(self) (own).
             get(0, &mut inner);
-            inner.push(op::CALL);
-            uleb128(rrep_fn[gi] as u64, &mut inner);
+            if !call_borrow {
+                inner.push(op::CALL);
+                uleb128(rrep_fn[gi] as u64, &mut inner);
+            }
             set(cell, &mut inner);
             get(cell, &mut inner);
             for a in 0..arity {
@@ -4097,9 +4101,13 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            get(cell, &mut inner);
-            inner.push(op::CALL);
-            uleb128(imp("drop"), &mut inner);
+            // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+            // transient collection handle `rep` is separate and released after value-encode.
+            if !call_borrow {
+                get(cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
             // desc = bytes-alloc(len); bytes-set each constant descriptor byte.
             ci32(descriptor.len() as i64, &mut inner);
             inner.push(op::CALL);
@@ -4197,9 +4205,12 @@ pub fn distinct_sig_resource_core_module(
                 out.push(op::LOCAL_SET);
                 uleb128(l as u64, out);
             };
+            // cell = self (borrow: rep passed directly) or resource.rep-g(self) (own).
             get(0, &mut inner);
-            inner.push(op::CALL);
-            uleb128(rrep_fn[gi] as u64, &mut inner);
+            if !call_borrow {
+                inner.push(op::CALL);
+                uleb128(rrep_fn[gi] as u64, &mut inner);
+            }
             set(cell, &mut inner);
             get(cell, &mut inner);
             for a in 0..arity {
@@ -4217,9 +4228,13 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            get(cell, &mut inner);
-            inner.push(op::CALL);
-            uleb128(imp("drop"), &mut inner);
+            // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+            // transient compound handle `rep` is separate and dropped after the walk.
+            if !call_borrow {
+                get(cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
             for hole in &template.leaves {
                 emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
             }
@@ -4252,9 +4267,12 @@ pub fn distinct_sig_resource_core_module(
                 out.push(op::I32_CONST);
                 crate::backend::wasm::encode::sleb128(v, out);
             };
+            // cell = self (borrow: rep passed directly) or resource.rep-g(self) (own).
             get(0, &mut inner);
-            inner.push(op::CALL);
-            uleb128(rrep_fn[gi] as u64, &mut inner);
+            if !call_borrow {
+                inner.push(op::CALL);
+                uleb128(rrep_fn[gi] as u64, &mut inner);
+            }
             set(cell, &mut inner);
             get(cell, &mut inner);
             for a in 0..arity {
@@ -4271,9 +4289,13 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(bh, &mut inner);
-            get(cell, &mut inner);
-            inner.push(op::CALL);
-            uleb128(imp("drop"), &mut inner);
+            // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+            // transient Bytes handle `bh` is separate and dropped after the copy.
+            if !call_borrow {
+                get(cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
             get(bh, &mut inner);
             inner.push(op::CALL);
             uleb128(imp("bytes-len"), &mut inner);
@@ -4329,10 +4351,13 @@ pub fn distinct_sig_resource_core_module(
                 gl.push(wasm_abi::CORE_I32);
                 gl
             }));
+            // cell = self (borrow: rep passed directly) or resource.rep-g(self) (own).
             inner.push(op::LOCAL_GET);
             uleb128(0, &mut inner);
-            inner.push(op::CALL);
-            uleb128(rrep_fn[gi] as u64, &mut inner);
+            if !call_borrow {
+                inner.push(op::CALL);
+                uleb128(rrep_fn[gi] as u64, &mut inner);
+            }
             inner.push(op::LOCAL_SET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::LOCAL_GET);
@@ -4357,11 +4382,14 @@ pub fn distinct_sig_resource_core_module(
             // multi-export `import_base`; the distinct-sig core has a different type layout).
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner); // table 0
-            // C-HOST-5 release (own<t> consumed → drop the cell after dispatch).
-            inner.push(op::LOCAL_GET);
-            uleb128(cell_local as u64, &mut inner);
-            inner.push(op::CALL);
-            uleb128(imp("drop"), &mut inner);
+            // OWN: drop the cell after dispatch (own<t> consumed). BORROW: host keeps it (repeatable), the
+            // dtor reclaims — do NOT drop.
+            if !call_borrow {
+                inner.push(op::LOCAL_GET);
+                uleb128(cell_local as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
             inner.push(op::END);
         }
         let mut e = uleb_bytes(inner.len() as u64);

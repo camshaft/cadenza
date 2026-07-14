@@ -84,6 +84,8 @@ pub enum BigIntOp {
     Sub,
     Mul,
     Div,
+    /// `%` — remainder of truncating division (sign of the dividend). The runtime `bigint-rem` op.
+    Rem,
 }
 
 /// One arm of a [`Core::MatchList`] — a LENGTH condition on the list scrutinee plus a body. The backend

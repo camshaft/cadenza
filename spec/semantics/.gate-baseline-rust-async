@@ -10,6 +10,7 @@ pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Sign match missing two of three variants is non-exhaustive
@@ -423,6 +424,7 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller

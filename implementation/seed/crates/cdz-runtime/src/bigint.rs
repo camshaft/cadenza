@@ -275,6 +275,29 @@ impl Big {
         out
     }
 
+    /// Serialize the sign-magnitude bytes DIRECTLY into `buf` (no heap Vec), returning the byte length —
+    /// or `None` if they don't fit (`buf` too small). The SMALL-value fast path for `box_bigint`: a
+    /// single-limb BigInt is `[sign] + ≤4 magnitude bytes` = ≤5 bytes, so it inlines into a node's `Raw`
+    /// without the transient `Vec` `to_sign_magnitude_bytes` + `Raw::from` would allocate-then-free.
+    /// Byte-IDENTICAL to `to_sign_magnitude_bytes` (same `[sign][LE mag, trailing-zeros-stripped]` form).
+    pub fn to_sign_magnitude_bytes_into(&self, buf: &mut [u8]) -> Option<usize> {
+        let need = 1 + self.mag.len() * 4; // upper bound before the trailing-zero strip
+        if need > buf.len() {
+            return None; // caller falls back to the heap `to_sign_magnitude_bytes`
+        }
+        buf[0] = self.neg as u8;
+        let mut n = 1;
+        for &limb in &self.mag {
+            buf[n..n + 4].copy_from_slice(&limb.to_le_bytes());
+            n += 4;
+        }
+        // Strip trailing zero bytes (keep at least the sign byte), matching the canonical form.
+        while n > 1 && buf[n - 1] == 0 {
+            n -= 1;
+        }
+        Some(n)
+    }
+
     /// Parse from the sign-magnitude heap-leaf bytes (the inverse of `to_sign_magnitude_bytes`). A
     /// malformed/empty input decodes as zero (total — the compiler only ever bakes a well-formed leaf).
     pub fn from_sign_magnitude_bytes(bytes: &[u8]) -> Big {

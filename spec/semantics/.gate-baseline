@@ -209,6 +209,7 @@ pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant BigInt crosses the host boundary as its value form
+pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
@@ -316,6 +317,7 @@ pass	a generic recursive sum with a bare self-reference nested in a list paramet
 pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
+pass	a generic sum with a type parameter nested inside another sum payload matches through both
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
@@ -465,7 +467,9 @@ pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow sp
 pass	a multi-argument closure round-trips through a consumer
 pass	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
 pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
+pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export set of parameterized capturing closures is driven per export
+pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
@@ -551,6 +555,7 @@ pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
+pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a single-arity function taking unit
 pass	a nullary do-local def followed by a use of it computes over its result
@@ -694,6 +699,7 @@ pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
+pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
@@ -1442,8 +1448,10 @@ pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
+pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
+pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
@@ -1455,6 +1463,7 @@ pass	slicing past the end of a byte sequence yields None
 pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
+pass	splice flattens where unquote nests
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing an integer literal directly is a type error
 pass	splitting a tuple at a position yields a prefix and a suffix
@@ -1618,6 +1627,7 @@ pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
+pass	unquote-splicing splices list elements into parent
 pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
@@ -1686,10 +1696,8 @@ todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
-todo	splice flattens where unquote nests
 todo	the default-integer pragma is definition-site scoped, not use-site
 todo	two rationals denoting the same number are equal regardless of how they were written
-todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	wrapping arithmetic uses the distinct wrapping type
