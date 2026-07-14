@@ -289,6 +289,23 @@
   (host-calls (call calc.dbl))
   (output (: 13 Int64)))
 
+(case "a Float64 closure captures a Float64 build-time host effect result"
+  (doc    "The build-time host-capture is not Int64-specific: a `Float64` host op result crosses the
+           boundary as `f64`, is captured as a plain value, and the returned closure is a `Float64 ->
+           Float64`. With `ask.ask` responding 2.5 and the call argument 1.5, the result is 1.5 + 2.5 = 4.0.
+           Exercises the f64 boundary primitive on BOTH the host op and the closure arg/result composing
+           with the closure-capture path (a scalar-result shape, just a non-Int scalar).")
+  (input  (do
+            (effect ask (op ask (-> Unit Float64)))
+            (def (main)
+              (host (ask)
+                (let ((v (ask.ask)))
+                  (fn ((: x Float64)) (+. x v))))) (export main)))
+  (call   main (: 1.5 Float64))
+  (host-responses (respond ask.ask (: 2.5 Float64)))
+  (host-calls (call ask.ask))
+  (output (: 4.0 Float64)))
+
 ; MULTI-EXPORT closures — a program that exports SEVERAL closures of the same signature crosses as ONE
 ; resource type with a `make-<name>` per export (`make-inc`, `make-triple`) sharing ONE `call` method. The
 ; shared `call` is the load-bearing realization: the closure's code slot rides in the resource rep, so

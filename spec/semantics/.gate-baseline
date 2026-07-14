@@ -37,6 +37,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a Char-payload sum value escapes across the boundary in its canonical form
+pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
