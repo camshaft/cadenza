@@ -16,6 +16,8 @@ pass	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — drivi
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	Int64.min crosses the parameter boundary and back unchanged
+pass	Int64.min crossing the boundary is still negative
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
@@ -69,6 +71,8 @@ pass	Type.eq is true for two values of the same type
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
+pass	UInt64.max crosses the parameter boundary and back unchanged
+pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
@@ -556,6 +560,7 @@ pass	a lambda applied in the scope of the binding it captures observes that bind
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
+pass	a large whole float crosses the boundary preserving its full value
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
@@ -1735,6 +1740,7 @@ pass	negating a runtime narrow integer just above its min is exact
 pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
+pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
