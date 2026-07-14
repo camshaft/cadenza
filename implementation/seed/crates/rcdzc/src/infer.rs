@@ -7620,6 +7620,34 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 } else {
                     collect(db, arm.op, out);
+                    // A HANDLER ARM BINDS ITS OPERATION'S PARAMETERS (CDZ0201). A declared op has a fixed
+                    // parameter arity (its `(-> P… R)` arrow); an arm that binds the WRONG number of
+                    // parameter binders is ill-formed the way a function applied at the wrong arity is.
+                    // Before this: too FEW binders was SILENTLY ACCEPTED (the fold substituted a
+                    // defaulted/absent binder), too MANY surfaced only the leaky "not yet reducible by the
+                    // tail-resumptive fold" feature-decline — neither named the real defect. Name the
+                    // operation and the expected/actual counts (the arm analogue of the over/under-
+                    // application arity message). The helper honors the ELIDED-UNIT convention (`(-> Unit R)`
+                    // accepts a 0- OR 1-binder arm) and returns `None` for an undeclared op (its CDZ0403
+                    // above is the fault) or a malformed op with no type. Anchored at the op-key occurrence
+                    // (the arm's op-name span), like the CDZ0403 report.
+                    if let Some((op_name, expected, actual)) =
+                        crate::effects::arm_param_arity_mismatch(db, arm)
+                    {
+                        let anchor = crate::effects::arm_op_key_occ(db, arm.op).unwrap_or(arm.op);
+                        out.push(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "handler arm for operation `{op_name}` binds {actual} \
+                                     parameter{} but the operation declares {expected} \
+                                     (an arm binds exactly its operation's parameters)",
+                                    if actual == 1 { "" } else { "s" },
+                                ),
+                            )
+                            .at(anchor),
+                        );
+                    }
                 }
                 // RESUME-VALUE / RESULT-TYPE CHECK. The value a handler resumes with — `(resume value
                 // state)` — is returned to the perform site, so it MUST have the operation's declared

@@ -655,6 +655,14 @@ pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be appl
 /// coercion fix when applicable).
 pub const RESUME_RESULT_MISMATCH_MARKER: &str = "a handler resumes with a value of type";
 
+/// A stable SUBSTRING unique to the coded CDZ0201 handler-arm parameter-arity mismatch (`handler arm for
+/// operation X binds N parameters but the operation declares M`). An arm that binds the wrong number of
+/// parameter binders ALSO makes the handler unfoldable, so `lower` emits the uncoded
+/// [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a CONSEQUENCE of the arity defect, not an independent
+/// limit. `dedup_faults` matches this to drop that decline, exactly as it does for a malformed handler
+/// (CDZ0403/0405) or a mistyped resume, so a wrong-arity arm is ONE primary error naming the real defect.
+pub const HANDLER_ARM_ARITY_MARKER: &str = "an arm binds exactly its operation's parameters";
+
 /// The stable PREFIX of the coded CDZ0201 "this handle is not in canonical form" reject — a source
 /// `handle` still headed `handle` after `effects::desugar_handles` (the retired effect-name-less shape,
 /// or a too-short handle). Shared as a const so `compile::dedup_faults` can recognize it and drop the

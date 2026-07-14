@@ -29585,6 +29585,69 @@ mod stage1 {
         );
     }
 
+    /// A handler arm that binds the WRONG NUMBER of parameter binders is CDZ0201 — the arm analogue of a
+    /// function applied at the wrong arity. Before the fix a wrong-arity arm was either SILENTLY ACCEPTED
+    /// (too few binders — the fold substituted a defaulted/absent binder) or surfaced ONLY the leaky "not
+    /// yet reducible by the tail-resumptive fold" feature-decline (too many) — neither said the parameter
+    /// count is wrong. `arm_param_arity_mismatch` names the operation and the expected/actual counts, and
+    /// its `HANDLER_ARM_ARITY_MARKER` makes `dedup_faults` drop the consequent fold-decline so it is ONE
+    /// primary error. ⚠ The ELIDED-UNIT convention is honored: a `(-> Unit R)` op accepts BOTH a 0-binder
+    /// (`(op () s …)`) and a 1-binder (`(op (u) s …)`) arm — the corpus uses both — so only an arm outside
+    /// `{0, 1}` for a unit op is a mismatch; a genuine N-parameter op requires exactly N.
+    #[test]
+    fn a_handler_arm_with_the_wrong_parameter_count_is_cdz0201() {
+        use crate::testkit::parse;
+        // (a) TOO MANY binders for a unit op — 2 where `{0, 1}` are accepted. Was the leaky fold-decline.
+        let too_many = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle E 0 ((get (u v) s (resume 5 s))) (+ (E.get) 1))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(too_many)))
+            .expect_err("a handler arm binding too many parameters must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+        assert!(
+            err.message
+                .contains("handler arm for operation `get` binds 2 parameters")
+                && err.message.contains("declares 0 or 1"),
+            "names the op + expected/actual counts (unit op accepts 0 or 1): {}",
+            err.message
+        );
+        // The consequent fold-decline is DROPPED — the wrong-arity CDZ0201 is the ONE primary error.
+        assert!(
+            !err.message.contains("not yet reducible"),
+            "the fold-decline is suppressed in favor of the coded reject: {}",
+            err.message
+        );
+        // (b) TOO FEW binders for a genuine 1-parameter op — 0 where exactly 1 is required. Was SILENT.
+        let too_few = "(module m (effect E (op set (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((set () s (resume unit s))) (E.set 3))) (export main))";
+        let dfew = crate::diagnostics(&mut crate::db::Db::load(parse(too_few)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a handler arm binding too few parameters must be reported at check");
+        assert!(
+            dfew.message
+                .contains("handler arm for operation `set` binds 0 parameters")
+                && dfew.message.contains("declares 1"),
+            "a genuine 1-param op requires exactly 1: {}",
+            dfew.message
+        );
+        // (c) NO FALSE REJECT: the elided-unit spellings the corpus uses are BOTH clean. A `(-> Unit R)`
+        // op handled with either 0 or 1 binders must produce no arity fault.
+        for arm in ["(get () s (resume 5 s))", "(get (u) s (resume 5 s))"] {
+            let ok = format!(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ({arm}) (+ (E.get) 1))) (export main))"
+            );
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&ok)));
+            assert!(
+                !diags.iter().any(|d| d
+                    .message
+                    .contains("an arm binds exactly its operation's parameters")),
+                "the elided-unit spelling `{arm}` must not be flagged: {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn a_far_handler_op_access_typo_reports_the_absent_field_exactly_once() {
         // A FAR-typo op ACCESS in a handle body — `((. E zzzzz))` where `zzzzz` matches no op — surfaces

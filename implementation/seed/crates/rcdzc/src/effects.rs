@@ -855,6 +855,57 @@ fn op_arm_arity(db: &Db, ty: StructId) -> usize {
     params.len()
 }
 
+/// For a handler arm whose op names a DECLARED operation, whether the arm binds the WRONG number of
+/// parameter binders — the arm-arity mismatch. Returns `(op_name, expected_description, actual)` when
+/// `arm.params`'s length is not an accepted binder count for the operation's declared `(-> P… R)` type,
+/// else `None`. An arm that binds too few parameters was SILENTLY ACCEPTED (the fold substituted an
+/// unbound-or-defaulted binder); one that binds too many surfaced only the leaky "not yet reducible by
+/// the tail-resumptive fold" decline — neither said the arm's parameter count is wrong. This is the
+/// handler-arm analogue of a function applied at the wrong arity.
+///
+/// ⚠ The ELIDED-UNIT convention: a `(-> Unit R)` operation accepts BOTH a 0-binder arm (`(op () s …)`,
+/// unit elided) AND a 1-binder arm (`(op (u) s …)`, unit bound explicitly) — the corpus uses both — so a
+/// unit op's accepted set is `{0, 1}`, and only an arm outside it (2+ binders) is a mismatch. A genuine
+/// N-parameter op (`N ≥ 1`, no elided unit) requires EXACTLY N. `op_arm_arity` gives the elided count
+/// (0 for a unit op); the raw parameter count (1 for a unit op) is the other accepted value.
+///
+/// Returns `None` for an UNDECLARED op (its own CDZ0403 is the fault to report) or a malformed op with no
+/// declared type.
+pub fn arm_param_arity_mismatch(db: &mut Db, arm: &HandleArm) -> Option<(String, String, usize)> {
+    let (decl, index) = crate::eval::effect_op_of(db, arm.op)?;
+    let op_name = match resolved_of(db, arm.op) {
+        Resolved::Member { key, .. } => key.name.clone(),
+        _ => return None,
+    };
+    let eff = db.effect_decl_by_occ(decl)?;
+    let ty = eff.ops.get(index as usize)?.ty?;
+    let elided = op_arm_arity(db, ty); // 0 for a `(-> Unit R)` op, else the parameter count.
+    let raw = raw_param_count(db, ty); // 1 for a `(-> Unit R)` op — the unit-bound-explicitly spelling.
+    let actual = arm.params.len();
+    // A unit op (`elided == 0 && raw == 1`) accepts both spellings; every other op requires exactly its
+    // parameter count (`elided == raw`).
+    if actual == elided || actual == raw {
+        return None;
+    }
+    // The message describes the accepted count(s): "0 or 1" for a unit op, otherwise the single count.
+    let expected = if elided == raw {
+        elided.to_string()
+    } else {
+        format!("{elided} or {raw}")
+    };
+    Some((op_name, expected, actual))
+}
+
+/// The RAW parameter count of an operation's arrow `(-> P… R)` — the number of parameter positions
+/// before the result, WITHOUT the elided-unit collapse `op_arm_arity` applies. For `(-> Unit R)` this is
+/// 1 (the explicit `Unit` position), for `(-> R)` it is 0, for `(-> A B R)` it is 2.
+fn raw_param_count(db: &Db, ty: StructId) -> usize {
+    let Some(tail) = db.ast.as_form(ty, "->") else {
+        return 0;
+    };
+    if tail.len() <= 1 { 0 } else { tail.len() - 1 }
+}
+
 /// The effect-declaration occurrence the value at `id` denotes, if it resolves to an EFFECT record — its
 /// `(meta t)` is an `(effect NAME <decl>)` node. `None` for any value that is not an effect record.
 fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
