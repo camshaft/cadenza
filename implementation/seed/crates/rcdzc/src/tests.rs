@@ -27547,9 +27547,17 @@ mod stage1 {
         // argument is caught first.
         let src = "(do (effect E (op op (-> Int64 Int64))) \
                    (def (main) ((. E op) true)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a wrong-type perform argument must be rejected");
+        // The message NAMES the operation + its declared argument type — the perform-site analogue of the
+        // variant-ctor payload message — not the generic "Int64 and Bool must be the same type here"
+        // (which reads like an internal clash, not "you performed `op` with the wrong argument").
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a wrong-type perform argument must be rejected"
+            err.message.contains("operation `op`")
+                && err.message.contains("Int64")
+                && err.message.contains("Bool"),
+            "names the operation + expected/actual types: {}",
+            err.message
         );
     }
 

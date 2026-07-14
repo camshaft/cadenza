@@ -4890,6 +4890,35 @@ fn check_application(
                             message: format!("{}{hint}", reject.message),
                             ..reject
                         });
+                    } else if crate::eval::effect_op_of(db, head).is_some() {
+                        // A wrong-type argument PERFORMED to an effect operation — `(E.put true)` where
+                        // `put`'s declared type is `(-> Int64 Unit)`. The head is the op VALUE (a `(. E put)`
+                        // member access), so the generic unify mismatch ("Int64 and Bool must be the same
+                        // type here") does not say WHAT the author got wrong — it reads like an internal
+                        // clash, not "you performed `put` with the wrong argument". Name the operation and
+                        // its declared argument type, the perform-site analogue of the variant-ctor payload
+                        // message above (which does the same for `(T.Mk "x")`). The op name is the head's
+                        // member key `(. E put)` → `put`; fall back to "this operation" if unreadable.
+                        let op = db
+                            .ast
+                            .as_form(head, ".")
+                            .and_then(|t| t.get(1).copied())
+                            .and_then(|k| db.ast.as_name(k))
+                            .map(|n| format!("`{n}`"))
+                            .unwrap_or_else(|| "this operation".to_string());
+                        let mut reject = Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "operation {op} expects an argument of type {}, but a value of type {} \
+                                 was performed",
+                                sparam.render_name(),
+                                sat.render_name()
+                            ),
+                        );
+                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     } else {
                         out.push(reject);
                     }
