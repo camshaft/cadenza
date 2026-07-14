@@ -2105,6 +2105,67 @@ fn ml_fix_renders_a_wrap_in_ml_syntax_and_applies_it() {
 }
 
 #[test]
+fn ml_fix_deletes_a_discarded_do_statement_and_recompiles_clean() {
+    // `cdz fix` on an ML file must DELETE a discarded non-final sequencing statement (CDZ0307) cleanly —
+    // absorbing the `;` separator that follows it, so the surviving statements stay well-formed. Before
+    // the ML separator-aware widening, the byte-delete left an orphaned `;` (`inc(8); n*2` → ` ; n*2`, a
+    // parse error), so `cdz fix` silently declined every discarded-value delete on `.cdz`/`.ml`. Now it
+    // applies + recompiles clean.
+    let dir = scratch_dir("ml_discardfix");
+    let f = dir.join("prog.cdz");
+    std::fs::write(
+        &f,
+        "def inc(n) = n + 1\n\ndef dbl(n) =\n  inc(8);\n  n * 2\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        !repaired.contains("inc(8)") && repaired.contains("n * 2"),
+        "the discarded `inc(8);` statement is removed, the value `n * 2` kept: {repaired}"
+    );
+    assert!(
+        !repaired.contains(';'),
+        "no orphaned `;` separator remains: {repaired}"
+    );
+    // The repaired ML file re-checks clean (the CDZ0307 is gone, and no new parse/type error).
+    let (check_ok, check, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        check_ok && !check.contains("CDZ0307"),
+        "the repaired file no longer discards a value and has no error: {check}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ml_fix_deletes_the_first_of_two_discarded_do_statements_leaving_the_second() {
+    // Two discarded inline statements — `inc(1); inc(2); n * 2`. `cdz fix --all` deletes BOTH across its
+    // fixpoint passes (each pass absorbs one `;` separator), leaving only the block's value `n * 2`. Pins
+    // that the ML separator widening composes over a longer sequence, not just a single deletion.
+    let dir = scratch_dir("ml_discard2");
+    let f = dir.join("prog.cdz");
+    std::fs::write(
+        &f,
+        "def inc(n) = n + 1\n\ndef f(n) =\n  inc(1); inc(2); n * 2\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        !repaired.contains("inc(1)") && !repaired.contains("inc(2)") && repaired.contains("n * 2"),
+        "both discarded statements removed, the value kept: {repaired}"
+    );
+    let (check_ok, check, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        check_ok && !check.contains("CDZ0307"),
+        "the repaired file re-checks clean: {check}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ml_drops_a_non_renderable_insert_fix_but_keeps_the_message() {
     // An `insert` fix (a handle/match arm) renders s-expr arm syntax that can't be byte-spliced into an
     // ML file (arm syntax only exists in-context). On ML the structured fix is DROPPED — but the message

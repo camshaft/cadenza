@@ -693,16 +693,48 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // Async/gas mode: thread `env` as the callee's first argument, and `Box::pin(…).await`
                 // the call. The pin is what makes a RECURSIVE `async fn` well-sized (a recursive future
                 // is otherwise infinite); a non-recursive call inlines upstream and never reaches here,
-                // so this only ever wraps a genuine recursive/mutual call. `env` is passed by `&mut *env`
-                // — a fresh reborrow per call so a later sibling call (two calls as operands of one op)
-                // can borrow `env` again after this `.await` releases it.
-                let args = if rendered.is_empty() {
-                    "env".to_string()
+                // so this only ever wraps a genuine recursive/mutual call. `env` is the shared gas/yield
+                // cell each call reborrows.
+                //
+                // A NESTED async call — one whose result is an ARGUMENT to this call (`cnt(env, mk(env,
+                // k).await)`) — would borrow `env` mutably TWICE at once: Rust reborrows `env` for the
+                // OUTER call's first arg and holds it while evaluating the second arg, which reborrows
+                // `env` again for the inner call (E0499 "borrow `*env` as mutable more than once"). A
+                // sibling pair (two calls as separate operands of one op) is fine — those borrows are
+                // sequential — but an argument-nested call is not. So HOIST any argument that itself
+                // contains an `.await` into a `let` evaluated BEFORE this call: each hoisted call's `env`
+                // reborrow completes (its `.await` releases it) before the next statement, so no two are
+                // ever live together. Args with no `.await` (scalars, field reads) stay inline.
+                let needs_hoist = rendered.iter().any(|a| a.contains(".await"));
+                if needs_hoist {
+                    let mut binds = String::new();
+                    let mut call_args = Vec::with_capacity(rendered.len());
+                    for (i, a) in rendered.iter().enumerate() {
+                        if a.contains(".await") {
+                            let tmp = format!("__aarg{i}");
+                            binds.push_str(&format!("let {tmp} = {a}; "));
+                            call_args.push(tmp);
+                        } else {
+                            call_args.push(a.clone());
+                        }
+                    }
+                    let args = if call_args.is_empty() {
+                        "env".to_string()
+                    } else {
+                        format!("env, {}", call_args.join(", "))
+                    };
+                    Ok(format!(
+                        "{{ {binds}::std::boxed::Box::pin({ident}({args})).await }}"
+                    ))
                 } else {
-                    format!("env, {}", rendered.join(", "))
-                };
-                // Fully-qualify `::std::boxed::Box::pin` so a user sum named `Box` cannot shadow it.
-                Ok(format!("::std::boxed::Box::pin({ident}({args})).await"))
+                    let args = if rendered.is_empty() {
+                        "env".to_string()
+                    } else {
+                        format!("env, {}", rendered.join(", "))
+                    };
+                    // Fully-qualify `::std::boxed::Box::pin` so a user sum named `Box` cannot shadow it.
+                    Ok(format!("::std::boxed::Box::pin({ident}({args})).await"))
+                }
             } else {
                 Ok(format!("{ident}({})", rendered.join(", ")))
             }

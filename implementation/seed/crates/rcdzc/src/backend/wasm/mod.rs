@@ -1731,20 +1731,11 @@ fn emit_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
-    // A SOLE fixed-shape scalar tuple/record arg composes with EVERY result shape (all four cores thread the
-    // `TupleArgRebuild`). A tuple AMONG scalar args (non-empty prefix/suffix) is threaded through the SCALAR-
-    // result path only this increment — the list-result cores' arg push doesn't yet interleave prefix/suffix
-    // scalars around the rebuilt tuple, so decline an among-scalars tuple with a list<u8>-crossing result.
-    let tuple_among_scalars = tuple_arg
-        .as_ref()
-        .is_some_and(|(_, _, pre, suf, _)| !pre.is_empty() || !suf.is_empty());
-    if tuple_among_scalars && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a closure with a fixed-shape compound argument ALONGSIDE other args AND a byte-rope/compound/\
-             collection result is not yet emitted (the list-result cores do not yet interleave prefix/suffix \
-             scalars around the rebuilt tuple — a later widening; a scalar result works)",
-        ));
-    }
+    // On the SINGLE-export path a fixed-shape scalar tuple/record arg — SOLE or AMONG scalar args — composes
+    // with EVERY result shape: the shared `emit_closure_call_args` helper threads the prefix scalars, the
+    // rebuilt tuple, and the suffix scalars for the scalar AND the three list-result (`bytes`/value-form/
+    // value-encode) cores alike, and the envelope emits the interleaved `call` functype. (The MULTI/MIXED/
+    // DISTINCT-SIG among-scalars list-result paths remain a follow-on and decline in their own emit fns.)
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
@@ -1910,6 +1901,10 @@ fn emit_closure_resource(
         // the bytes `call` rebuilds the cell from the flattened fields, the envelope emits the `tuple<…>` type.
         let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
         let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+        let (tpre, tsuf) = tuple_arg
+            .as_ref()
+            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
+            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1931,6 +1926,8 @@ fn emit_closure_resource(
             &arg_bytes,
             true,
             tuple_bytes,
+            tpre,
+            tsuf,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
@@ -1942,6 +1939,10 @@ fn emit_closure_resource(
         // the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
         let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
         let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+        let (tpre, tsuf) = tuple_arg
+            .as_ref()
+            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
+            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1964,6 +1965,8 @@ fn emit_closure_resource(
             &arg_bytes,
             true,
             tuple_bytes,
+            tpre,
+            tsuf,
         ));
     }
     // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
@@ -1975,6 +1978,10 @@ fn emit_closure_resource(
         // from the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
         let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
         let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+        let (tpre, tsuf) = tuple_arg
+            .as_ref()
+            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
+            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1997,6 +2004,8 @@ fn emit_closure_resource(
             &arg_bytes,
             true,
             tuple_bytes,
+            tpre,
+            tsuf,
         ));
     }
     // DIRECT-CALL COMPOUND ARG: a fixed-shape scalar tuple/record closure argument crosses as a native

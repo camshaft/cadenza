@@ -10408,6 +10408,86 @@ mod tests {
         assert_eq!(live_object_count(), 0, "no Rational leak");
     }
 
+    /// DIFFERENTIAL FUZZ for the runtime Rational ops (R3a, ops 74-81) — the safety net the bigint ops have
+    /// (`differential_arithmetic_vs_num_bigint`, 5000 pairs) but Rational did NOT: the sibling's landing test
+    /// is FIXED inputs only, and the arithmetic's subtle logic (sign placement, gcd reduction, cross-multiply
+    /// add/sub/mul/div, cmp direction) is exactly where random inputs catch a bug a spot-check misses. Cross-
+    /// check every op against a self-contained `i128`-fraction reference (exact at fuzzer scale — small
+    /// operands; no new dep). The reference reduces + normalizes the SAME way the runtime must (gcd to lowest
+    /// terms, sign on the numerator, denominator strictly positive), so the runtime's `(num, den)` output
+    /// must equal it byte-for-byte — which also pins the map-key canonicalization (equal value → identical
+    /// normalized form). Denominators are forced nonzero (the zero-denom TRAP is covered by the fixed test).
+    #[test]
+    fn rational_ops_match_an_i128_fraction_reference_under_random_pairs() {
+        // i128 gcd (Euclid, non-negative) + normalize: lowest terms, den > 0, sign on num. Matches
+        // `normalize_rational`'s contract. Inputs are bounded so cross-multiplication stays within i128.
+        fn gcd_i128(mut a: i128, mut b: i128) -> i128 {
+            a = a.abs();
+            b = b.abs();
+            while b != 0 {
+                let t = a % b;
+                a = b;
+                b = t;
+            }
+            a
+        }
+        fn norm(mut n: i128, mut d: i128) -> (i128, i128) {
+            if d < 0 {
+                n = -n;
+                d = -d;
+            }
+            let g = gcd_i128(n, d);
+            if g == 0 { (0, 1) } else { (n / g, d / g) }
+        }
+        // Read a runtime rational's normalized (num, den) as i128 (fits — operands are small).
+        fn read(r: Handle) -> (i128, i128) {
+            let (nh, dh) = (op_rational_num(r), op_rational_den(r));
+            let v = (
+                op_bigint_to_i64_checked(nh) as i128,
+                op_bigint_to_i64_checked(dh) as i128,
+            );
+            op_drop(nh);
+            op_drop(dh);
+            v
+        }
+        let rat = |n: i64, d: i64| op_rational_of(op_bigint_of_i64(n), op_bigint_of_i64(d));
+        // Two bytes → a (num in −128..127, den in 1..64) pair; den forced nonzero.
+        bolero::check!().with_type::<(i8, u8, i8, u8)>().for_each(|&(an, ad, bn, bd)| {
+            let before = live_object_count();
+            let (a_n, a_d) = (an as i64, (ad % 63 + 1) as i64); // den ∈ 1..=63, never 0
+            let (b_n, b_d) = (bn as i64, (bd % 63 + 1) as i64);
+            let (ra, rb) = (rat(a_n, a_d), rat(b_n, b_d));
+            // Construction normalizes — must match the reference.
+            assert_eq!(read(ra), norm(a_n as i128, a_d as i128), "of {a_n}/{a_d}");
+            assert_eq!(read(rb), norm(b_n as i128, b_d as i128), "of {b_n}/{b_d}");
+            let (ran, rad) = norm(a_n as i128, a_d as i128);
+            let (rbn, rbd) = norm(b_n as i128, b_d as i128);
+            // add/sub/mul: cross-multiply over the NORMALIZED reference components, then renormalize.
+            let add = op_rational_add(ra, rb);
+            assert_eq!(read(add), norm(ran * rbd + rbn * rad, rad * rbd), "add {a_n}/{a_d} {b_n}/{b_d}");
+            let sub = op_rational_sub(ra, rb);
+            assert_eq!(read(sub), norm(ran * rbd - rbn * rad, rad * rbd), "sub {a_n}/{a_d} {b_n}/{b_d}");
+            let mul = op_rational_mul(ra, rb);
+            assert_eq!(read(mul), norm(ran * rbn, rad * rbd), "mul {a_n}/{a_d} {b_n}/{b_d}");
+            // cmp: cross-multiply (both dens > 0). Sign of (ran*rbd − rbn*rad).
+            let want_cmp = (ran * rbd - rbn * rad).signum() as i64;
+            assert_eq!(op_rational_cmp(ra, rb), want_cmp, "cmp {a_n}/{a_d} {b_n}/{b_d}");
+            let mut live = alloc::vec![add, sub, mul];
+            // div: only when b ≠ 0 (else it TRAPS — the fixed test covers that path).
+            if rbn != 0 {
+                let div = op_rational_div(ra, rb);
+                assert_eq!(read(div), norm(ran * rbd, rad * rbn), "div {a_n}/{a_d} {b_n}/{b_d}");
+                live.push(div);
+            }
+            for h in live {
+                op_drop(h);
+            }
+            op_drop(ra);
+            op_drop(rb);
+            assert_eq!(live_object_count(), before, "no leak across the random rational ops");
+        });
+    }
+
     /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them
     /// (`champ_hash`) — exactly like Bytes/String. So two BigInts that are EQUAL BY VALUE but reached by
     /// DIFFERENT arithmetic MUST produce byte-IDENTICAL leaves, else they'd be distinct map/set keys and

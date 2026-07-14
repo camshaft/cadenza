@@ -2849,10 +2849,54 @@
   (call   mk (: 1 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: 114 Int64)))
 
+; The tuple-among-scalars arg shape now composes with EVERY result shape on the SINGLE-export path: the shared
+; `emit_closure_call_args` helper threads prefix scalars, the rebuilt tuple, and suffix scalars into the SCALAR
+; `call` body AND the three list-result cores (byte-rope / fixed-shape compound value-form / collection
+; value-encode) alike, and the `call` functype interleaves the scalar boundary bytes around the `tuple<…>` type.
+
+(case "a Tuple ARG among scalars with a LIST result crosses the direct-call boundary"
+  (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) (List Int64))` — a prefix scalar `n` then a tuple `p`,
+           returning a variable-length List. The list-result `call` rebuilds the tuple from params 2..4, pushes
+           `n` before it, dispatches, then value-encodes the returned List handle. `call(handle, 100, (10, 3))`
+           → `(list 100 10 3)`. The among-scalars interleaving now reaches the list-result cores.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary"
+  (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) Bytes)` — a prefix scalar then a tuple, returning a
+           byte rope. The bytes `call` interleaves `n` around the rebuilt tuple, dispatches, copies the returned
+           Bytes out as `list<u8>`. `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 n) (u8 (. p 0)) (u8 (. p 1)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (100 10 3) Bytes)))
+
+(case "a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary"
+  (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` — a prefix scalar then a
+           tuple, returning a fixed-shape tuple. The value-form `call` interleaves `n` around the rebuilt arg
+           tuple, dispatches, walks the returned handle into the value-form template. `call(handle, 100, (10,
+           3))` → `(tuple 100 10 3)`, decoded by the host to the typed document.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
+
+(case "a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary"
+  (doc    "`(fn (p) (n)) : (-> (Tuple Int64 Int64) Int64 (List Int64))` — the tuple FIRST (base_param=1) then a
+           SUFFIX scalar, returning a List. The list-result `call` rebuilds the tuple from params 1..3, pushes
+           the suffix scalar `n` (param 3), dispatches. `call(handle, (10, 3), 100)` → `(list 10 3 100)`.
+           Confirms the interleaving handles a suffix scalar on the list-result path too.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) (list (. p 0) (. p 1) n)))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: (list 10 3 100) (List Int64))))
+
 ; The tuple-among-scalars arg shape extends to the MULTI-EXPORT scalar-result path: N same-sig closures each
 ; taking `(-> Int64 (Tuple Int64 Int64) Int64)` share one `call` that interleaves the prefix scalar with the
-; rebuilt tuple. (An among-scalars tuple with a LIST result, or on the mixed/distinct-sig paths, still declines
-; — those cores don't yet interleave prefix/suffix.)
+; rebuilt tuple. (An among-scalars tuple with a LIST result on the mixed/distinct-sig paths still declines —
+; those cores don't yet interleave prefix/suffix; the SINGLE-export list-result path is covered above.)
 
 (case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across
