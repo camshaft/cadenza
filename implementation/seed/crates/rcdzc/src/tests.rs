@@ -11036,6 +11036,41 @@ mod match_engine {
             41
         );
     }
+
+    #[test]
+    fn a_modules_delegated_capability_is_reachable_as_meta_capabilities() {
+        // 11-modules "a module's delegated capability is reachable as metadata, not as an export": a module
+        // whose entry DELEGATES `log` to the host via `(host (log) …)` carries the manifest as a
+        // `(meta capabilities)` metadata field — the union of its members' host delegations —
+        // reachable by `(. m (meta capabilities))` = `(list "log")`, DISTINCT from the export namespace
+        // (`modules::module_capabilities` scans the def bodies for `(host (E…) …)`).
+        assert!(
+            run_returns::<bool>(
+                &component(
+                    "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                     (def (main) (host (log) ((. log emit) \"hi\")))) \
+                     (= (. m (meta capabilities)) (list \"log\")))) (export main))"
+                ),
+                "main"
+            ),
+            "(. m (meta capabilities)) is the manifest (list \"log\")"
+        );
+        // The metadata key does NOT collide with a like-named EXPORT: a module with both a `capabilities`
+        // export (→7) and a `(meta capabilities)` manifest reaches each distinctly (the export via `(. m
+        // capabilities)`, the manifest via `(. m (meta capabilities))`).
+        assert!(
+            run_returns::<bool>(
+                &component(
+                    "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                     (def (capabilities) 7) (def (main) (host (log) ((. log emit) \"hi\")))) \
+                     (if (= ((. m capabilities) unit) 7) (= (. m (meta capabilities)) (list \"log\")) false))) (export main))"
+                ),
+                "main"
+            ),
+            "an export and a like-named metadata key are reached distinctly"
+        );
+    }
+
     #[test]
     fn a_nested_module_value_def_projects_through_member_access() {
         // 11-modules "a module value definition registers a reachable export field": a do-local `(module m

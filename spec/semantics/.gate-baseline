@@ -1478,7 +1478,7 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a module's delegated capability is reachable as metadata, not as an export
+pass	a module's delegated capability is reachable as metadata, not as an export
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
@@ -1518,7 +1518,7 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an explicit annotation overrides the default-integer pragma
-todo	an export and a like-named metadata key do not collide
+pass	an export and a like-named metadata key do not collide
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an unusual-width value that overflows its computed range traps
