@@ -3276,8 +3276,8 @@ type TopScan = (
 // The `(doc "…")` rides as an ordinary node of the binary AST attached to its def — the codec's generic
 // encode/decode round-trips it like any list node, and this load-time pass captures it into the doc
 // column (post-decode). So the AST carries documentation attached to a definition, per ast-encoding.
-// (The COMMENT half of that section — a comment as a tree node — is not realized: the codec has no
-// comment node.)
+// (The COMMENT half of that section — a comment as a tree node — is ALSO realized now: a `//` comment
+// reifies to a `(comment "text" <form>)` node that `strip_comments` peels; see there for its citations.)
 //= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
 //# The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
@@ -3453,6 +3453,16 @@ pub(crate) struct StrippedAnnotations {
 /// intervening comment nodes are then orphaned, harmless like `strip_annotations`'s unwrapped inner). A
 /// `(comment …)` of the wrong arity (not exactly `<string> <form>`) is left untouched (a malformed node a
 /// later pass handles). Runs FIRST in `load_linked`, before the doc/const/annotation strips + the scan.
+///
+/// The `(comment "text" <form>)` this pass peels IS a comment carried as a NODE of the AST — the reader
+/// reifies a `//` comment into it, wrapping (attached to) the form it annotates, and it is an ordinary
+/// `Struct::List` so it lives in the stored BINARY form (the codec's generic encode/decode round-trips it
+/// unchanged, exactly as it does the `(doc …)` node), not only in a textual rendering. That this pass can
+/// find and peel a `(comment …)` at load is the proof the tree carries it.
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
 fn strip_comments(ast: &mut Arenas) {
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
