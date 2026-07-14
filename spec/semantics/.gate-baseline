@@ -307,6 +307,7 @@ pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
+pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 pass	a fixpoint loop that threads a growing list accumulator returns that list
@@ -731,6 +732,7 @@ pass	a recursive reader decodes a CBOR application tree and evaluates it by head
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
+pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry's structural copy
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -901,6 +903,7 @@ pass	a string passed to a function as a runtime argument is measured by its byte
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a sum type NAMED after a primitive scalar does not collide with the primitive
 pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
@@ -978,6 +981,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
+pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a utf8 bin segment binds a decoded string when the bytes are well-formed
@@ -1679,6 +1683,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
@@ -1753,7 +1758,7 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
-todo	a fixed-shape Tuple ARG with a Tuple RESULT is declined (compound-result core lacks the rebuild)
+todo	a fixed-shape Tuple ARG with a Tuple RESULT is declined (value-form result core lacks the rebuild)
 todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
