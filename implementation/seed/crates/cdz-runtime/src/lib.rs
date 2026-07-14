@@ -8690,6 +8690,75 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// `value-encode` of a `Set String` — the EXACT shape the compiler-in-Cadenza port returns across the
+    /// host boundary (e.g. `free-vars.cdz`'s `Set String` of an AST's identifier Names). The int set-render
+    /// test above covers `canonical_scalar_order`'s numeric-Int arm; this covers its `Shape::Str` arm
+    /// (lexicographic BYTE order over the flattened leaf) driving `set_elements_canonical`'s sort. A String
+    /// element takes the arity-0 heap-byte-leaf champ path (distinct from an immediate int), and the
+    /// render must be lexicographic — NOT the CHAMP hash order the set stores/iterates in. Verifies the
+    /// canonical order (incl. the empty string sorting first + a shared "foo"/"foobar" prefix) + the
+    /// iterative-vs-recursive-oracle byte-identity + no leak.
+    #[test]
+    fn value_encode_renders_a_string_set_in_lexicographic_order() {
+        reset();
+        let before = live_nodes();
+        // desc: [0]=Str(tag 3), [1]=Set(tag 12, elem→0), root=1.
+        let desc: &[u8] = &[0x02, 0x03, 0x0c, 0x00, 0x01];
+        // Insert out of lexicographic order, incl. the empty string + a shared "foo"/"foobar" prefix.
+        let mut s = op_set_empty();
+        for e in &["foo", "bar", "baz", "", "foobar"] {
+            s = op_set_insert(s, op_str_new((*e).to_string()));
+        }
+        let doc = op_value_encode_form(s, desc).expect("encode a Set String");
+        // Differential: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root =
+            encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0).expect("recursive");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Set String encode must agree"
+        );
+        // Decode the KIND_STR (kind 7) leaves in emission order — the elements in canonical order.
+        let mut strs: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                7 => {
+                    // KIND_STR: LEB len + UTF-8 bytes.
+                    let len = doc[i] as usize;
+                    i += 1;
+                    strs.push(String::from_utf8(doc[i..i + len].to_vec()).expect("utf8"));
+                    i += len;
+                }
+                10 => {
+                    // KIND_NAME (`list`/`.`/`Set`/`of` heads): skip.
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                other => panic!("unexpected leaf kind {other} in a Set-of-String document"),
+            }
+        }
+        assert_eq!(
+            strs,
+            vec![
+                "".to_string(),
+                "bar".to_string(),
+                "baz".to_string(),
+                "foo".to_string(),
+                "foobar".to_string(),
+            ],
+            "a Set String renders its elements in LEXICOGRAPHIC byte order (empty first, \"foo\" before \
+             its extension \"foobar\"), NOT the CHAMP hash order they were inserted/stored in"
+        );
+        op_drop(s);
+        assert_eq!(live_nodes(), before, "no leak across the Set String encode");
+    }
+
     /// `value-encode` renders a Map (`Shape::Map`) as `(map (k1 v1) … (kn vn))` with entries in CANONICAL
     /// KEY order — NOT the CHAMP hash order. The walk collects (key,value) pairs + sorts by the key's
     /// canonical scalar value (matching `const_key_order`). Verifies the structure + canonical INT-key
