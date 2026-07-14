@@ -705,6 +705,16 @@ pub struct Db {
     /// exploding exponentially in appended nodes when its body branches.
     pub(crate) recursive: crate::fxhash::FxHashMap<StructId, bool>,
 
+    /// Memo of `lower::subtree_reaches_host_call` — whether the subtree at a node reaches a `Core::HostCall`
+    /// (an observable effect that DCE must keep). A pure function of the fixed AST/core structure, keyed by
+    /// node `StructId`. WITHOUT it the predicate re-walks a node's WHOLE subtree calling `core_of` per node,
+    /// and it is called from TWO hot passes over overlapping subtrees — the `do`/`let` lowering
+    /// (per do-block) and `collect_discarded_value_warnings` (per non-final statement) — so a `do` block's
+    /// statement subtrees were re-walked repeatedly. On the real corpus workload this pair was ~45% of
+    /// compile time (`subtree_reaches_host_call` + its per-node `core_of`). The memo makes each node's
+    /// verdict O(1) after first computation. `None` until computed.
+    pub(crate) reaches_host_call: crate::fxhash::FxHashMap<StructId, bool>,
+
     /// Memo of one function body's DIRECT callee edges (`eval::collect_callees`): for a body/callee
     /// occurrence, the list of callee bodies its code calls (excluding nested `fn` boundaries). A pure
     /// function of the fixed resolved structure — the same node's edges never change — so it caches by
@@ -1221,6 +1231,7 @@ impl Db {
             reached_clipped: false,
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
+            reaches_host_call: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),

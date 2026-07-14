@@ -132,15 +132,29 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// on EXACTLY the pure non-final statements this lowering drops — one predicate, no drift between the DCE
 /// decision and the diagnostic that explains it.
 pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
-    if matches!(core_of(db, id), Core::HostCall { .. }) {
-        return true;
+    // MEMOIZED (`Db::reaches_host_call`): a pure function of the node's fixed AST/core structure. This is
+    // called from TWO hot passes over OVERLAPPING subtrees — the `do`/`let` lowering (per do-block) and
+    // `collect_discarded_value_warnings` (per non-final statement) — and each call re-walked the WHOLE
+    // subtree calling `core_of` per node. On the real corpus workload the pair was ~45% of compile time;
+    // the memo makes a node's verdict O(1) after first computation (so a statement queried by both passes,
+    // and overlapping do-statement subtrees, pay the walk once).
+    if let Some(&cached) = db.reaches_host_call.get(&id) {
+        return cached;
     }
-    match db.ast.get(id).clone() {
+    let result = match db.ast.get(id).clone() {
+        // A `Core::HostCall` only ever lowers from an APPLICATION `(head args)` — a `Struct::List` (a
+        // host-delegated effect-op perform). So only a List node need be lowered (`core_of`) to test for
+        // it; an ATOM (a name/literal) can never be a host call, so skip the (per-node, per-compile)
+        // `core_of` lowering entirely for it. This is what dominated the real corpus workload: the old code
+        // forced `core_of` on EVERY node — including every leaf atom — of every do-statement subtree.
         crate::ast::Struct::List(children) => {
-            children.iter().any(|&c| subtree_reaches_host_call(db, c))
+            matches!(core_of(db, id), Core::HostCall { .. })
+                || children.iter().any(|&c| subtree_reaches_host_call(db, c))
         }
         crate::ast::Struct::Atom(_) => false,
-    }
+    };
+    db.reaches_host_call.insert(id, result);
+    result
 }
 
 fn compute(db: &mut Db, id: StructId) -> Core {

@@ -24937,6 +24937,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_do_block_discarded_value_pass_runs_in_bounded_time() {
+        // REGRESSION (perf): `collect_discarded_value_warnings` + the `do`/`let` lowering both call
+        // `lower::subtree_reaches_host_call` (does a statement reach an observable host call?), which walked
+        // each statement's WHOLE subtree calling `core_of` per node — on the real corpus workload this pair
+        // was ~45% of compile time. It is now MEMOIZED (`Db::reaches_host_call`) and SKIPS `core_of` on atom
+        // nodes (a host call only lowers from an application `List`). A do-block of N pure non-final
+        // statements each a non-trivial expression must stay LINEAR (and still warn on each), never a
+        // per-statement re-walk of the whole block. N=800 with each statement flagged is the gate.
+        let n = 800;
+        let stmts: String = (0..n).map(|i| format!("(+ {i} {i}) ")).collect();
+        let src = format!("(module m (def (main) (do {stmts}0)) (export main))");
+        let ws = discarded_of(&src);
+        // Every one of the N pure non-final statements is a discarded non-Unit value → N warnings; the last
+        // `0` is the block value (not discarded). Confirms the pass still fires exactly, in bounded time.
+        assert_eq!(
+            ws.len(),
+            n,
+            "each of the {n} pure non-final statements warns"
+        );
+    }
+
+    #[test]
     fn an_effectful_non_final_do_form_does_not_warn() {
         // A non-final statement that reaches a HOST CALL is KEPT by the `Core::Seq` lowering — its call
         // crosses the boundary and must run, so sequencing it for effect is exactly why a non-final form
