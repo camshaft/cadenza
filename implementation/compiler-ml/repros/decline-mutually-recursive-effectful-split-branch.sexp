@@ -1,14 +1,19 @@
-;; MISCOMPILE / DECLINE (2026-07-14, seed rcdzc — effect specialization). `cdz check` is CLEAN (exit 0);
-;; `cdz compile -t wasm` FAILS with an INTERNAL-looking error:
-;;   error [CDZ0101]: unbound name `ev#eff3$s0` — did you mean `ev#eff3`?
-;; The `#eff3$s0` suffix is an effect-SPECIALIZATION mangled name (the state-threaded specialization of an
-;; effectful function). It escapes into name resolution as an "unbound name" when two MUTUALLY RECURSIVE
-;; functions are specialized for an effect and at least one performs an operation of that effect.
+;; ✅ LEAK FIXED (2026-07-14, seed rcdzc — landed by THIS loop) → now a CLEAN DECLINE (still a Todo).
+;; This shape used to `cdz compile` with an INTERNAL-looking `error [CDZ0101]: unbound name ev#eff3$s0`
+;; (an effect-specialization mangled name leaking into resolution). It now declines cleanly:
+;;   error: this handler is not yet reducible by the tail-resumptive fold (cross-function or non-tail
+;;          resume arrives in a later increment)
+;; The FEATURE (specializing this shape) is still unbuilt, but the confusing internal-name leak is gone.
+;; FIX (`effects.rs::specialize_recursive`): a new syntactic guard
+;; `perform_and_mutual_call_in_separate_branches` declines up front when a cycle def performs a discharged
+;; op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch — the shape the
+;; branch-distributed state threading + cross-def memo knot cannot yet handle. Unit test
+;; `a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly` locks in that the
+;; decline does NOT leak the internal name.
 ;;
 ;; TRIGGER (minimal, this file): `ev` and `od` are mutually recursive over an Int64; `ev` performs
 ;; `Fresh.next` in its BASE-CASE branch (`(if (= n 0) (Fresh.next) (od …))`), and the MUTUAL recursive
-;; call `(od …)` is in the OTHER branch. The specializer mints a state-threaded `ev#eff…$s0` but leaves a
-;; dangling reference, so name resolution fails at emit. No user type / list is needed.
+;; call `(od …)` is in the OTHER branch.
 ;;
 ;; SHARP BISECTION (2026-07-14) — mutual-recursive effect specialization mostly WORKS; the gap is narrow:
 ;;   - A SINGLE self-recursive effectful fn compiles + runs (self-recursion + effect is fine).

@@ -745,6 +745,29 @@
             ((None _) false)))
   (output (: true Bool)))
 
+(case "decoding an encoded string round-trips to the same bytes (the inverse direction)"
+  (doc    "The INVERSE round-trip of the case above: for a String `s`, ENCODING then DECODING then
+           re-encoding yields `s`'s bytes. `(String.to-bytes \"café\")` is the 5-byte UTF-8 `[99 97 102 195
+           169]` (é is the 2-byte `C3 A9`); `String.from-bytes` decodes those well-formed bytes back to a
+           `Some s'`, and `(String.to-bytes s')` re-encodes to the SAME 5 bytes. Pins that decode is the
+           inverse of encode-of-a-string (collections-and-text.md #Decoding Bytes To A String Is Total — the
+           bijection in the other direction from the decode-then-encode case above), the shape the compiler
+           takes encoding an export name to UTF-8 and reading it back.")
+  (input  (match (String.from-bytes (String.to-bytes "café"))
+            ((Some s) (= (String.to-bytes s) (Bytes.of (list 99 97 102 195 169))))
+            ((None _) false)))
+  (output (: true Bool)))
+
+(case "an encode-decode round-trip preserves an ASCII string's byte length"
+  (doc    "The length face of the inverse round-trip: `(String.from-bytes (String.to-bytes \"hi\"))` decodes
+           the encoded bytes back to a `Some s'` whose `String.byte-len` is 2 — the original length. Pins
+           that a to-bytes→from-bytes round-trip yields a usable String of the right size (measured, not
+           `=`-compared), the length companion of the byte-preservation case above.")
+  (input  (do
+            (def (main) (match (String.from-bytes (String.to-bytes "hi")) ((Some s) (String.byte-len s)) (None -1)))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "a helper decodes bytes to a string and consumes the fallible result"
   (doc    "The reader's symbol-table idiom: a helper takes raw `Bytes` (a slice of the input), decodes
            them with `String.from-bytes`, and `match`es the fallible result — binding the string in the

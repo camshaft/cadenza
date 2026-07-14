@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 130 tests total across 15 modules):
+top. Current `src/` modules (each with same-file `@test`s — 149 tests total across 17 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -112,6 +112,18 @@ top. Current `src/` modules (each with same-file `@test`s — 130 tests total ac
   effectful loop (that shape specializes + runs; a mutually-recursive effectful group with the perform
   in a separate branch does NOT yet — see the log). 8 `@test`s (closed-form sums, a custom start, a
   draw-count via a constant-handback handler).
+- `src/collect.cdz` — a leaf-collecting analysis returning a RECORD `{ count, vals }` (the number of
+  `Num` leaves and their values) built bottom-up in one traversal. Stresses a record carrying a heap
+  `List` field, CONSTRUCTED per node and THREADED (concatenated) through the recursion, then projected —
+  the record-of-results shape a real analysis returns. Confirmed WORKING (no new bug): record values +
+  the heap-list field survive the recursion exactly (a `count == vals-length` invariant test). 9
+  `@test`s.
+- `src/scope-fv.cdz` — the BINDING-AWARE free-variable analysis of the untyped lambda calculus (the
+  scope-respecting complement to `free-vars.cdz`'s flat collector): a `Var` is a singleton `Set`, an
+  `App` UNIONS, and a `Lam x` REMOVES its bound var. Stresses `Set String` union + remove threaded
+  through recursion. 10 `@test`s incl. shadowing (`λx.λx.x` closed) and a name free-and-bound at once
+  (`(x (λx.x))` — outer x free). Confirmed WORKING (no new bug). ⚠ minor API inconsistency: a `Set`'s
+  count is `Set.len` but a `Map`'s is `Map.size` (same "count" concept, two names).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -189,17 +201,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
-- **OPEN (seed `rcdzc` — effect specialization leaks an internal name): a mutually-recursive effectful
-  group where the perform is in a DIFFERENT branch from the mutual call.**
-  `repros/miscompile-mutually-recursive-effectful-functions.sexp`. `cdz check` CLEAN; `cdz compile`
-  fails with `unbound name ev#eff3$s0` (an effect-specialization mangled name leaking as unbound). The
-  seed HANDLES mutual-recursive effect specialization when the perform and the mutual call sit in the
-  SAME strict expression (`(+ (Ctr.tick) (od …))` — its own passing test), but when the perform is in
-  the base-case branch and the mutual `(od …)` call is in the other branch, the `#ctx$s0` specialization
-  is left dangling. NOT a blanket "mutual recursion fails" (a blanket decline would regress the working
-  same-branch shape) — the fix must tie the memo knot for the separate-branch case. A SINGLE
-  self-recursive effectful fn is fine (see `src/fresh.cdz`), so the port threads fresh ids with
-  self-recursion for now.
+- **✅ LEAK FIXED (seed `rcdzc`, 2026-07-14 — landed by THIS loop) → now a clean DECLINE (feature still a
+  Todo): a mutually-recursive effectful group where the perform is in a DIFFERENT branch from the mutual
+  call.** `repros/decline-mutually-recursive-effectful-split-branch.sexp`. Was: `cdz compile` leaked
+  `unbound name ev#eff3$s0` (a specialization mangled name). Now `cdz check`/`cdz compile` both decline
+  cleanly: "this handler is not yet reducible by the tail-resumptive fold." FIX
+  (`effects.rs::specialize_recursive`): a syntactic guard `perform_and_mutual_call_in_separate_branches`
+  declines up front for exactly this shape. NOT a blanket decline — the seed still specializes the
+  working same-branch / same-strict-spine mutual shape (`(+ (Ctr.tick) (od …))`); a unit test locks in
+  that the decline doesn't leak the internal name, and the gate's mutual-effect corpus case still passes.
+  BUILDING the separate-branch specialization (tie the memo knot with per-branch state distribution)
+  remains the Todo. A SINGLE self-recursive effectful fn works (see `src/fresh.cdz`).
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): two live `String` sum-payloads across a
   recursion drop a per-node result.** `repros/miscompile-two-live-string-payloads-across-recursion.sexp`.
@@ -242,14 +254,15 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `filter` over inferred closures — the compiler's bread and butter — need an arrow annotation on the fn
   parameter; the fully-inferred spelling should work.
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent trap): a PARAMETERIZED compound-returning export traps.**
-  An export that takes a parameter AND returns a compound (tuple / record / sum) compiles clean (`cdz
-  check` passes; the component WIT even shows `make: func(p0: s64) -> t`) but TRAPS at run time —
-  `cdz-run … --arg 5` → "trap: expected 1 argument(s), got 0" (wasmtime's arity check). The export's
-  argument is not delivered to the resource-escape `make`. A NULLARY compound-return export works
-  perfectly. Repro `repros/miscompile-parameterized-compound-export-traps.sexp`. ⚠ the seed test
-  `a_parameterized_compound_return_export_compiles_via_the_resource_escape` only asserts it COMPILES —
-  it never RUNS the component with an arg, so this runtime gap is untested (a false-confidence test).
+- **✅ FIXED (seed, by 2026-07-14 — landed by a sibling): a PARAMETERIZED compound-returning export.**
+  Was: an export taking a parameter AND returning a compound compiled clean but TRAPPED at run time
+  ("expected 1 argument(s), got 0") — the resource-escape `make` didn't forward the export's argument.
+  Now `cdz-run … --arg 5` correctly returns the compound (`(: (tuple 5 6) …)`); verified across tuple/
+  record/List/BigInt/Result, and run-gated by corpus cases ("a parameterized export returns a runtime
+  BigInt/Rational/list computed from its argument"). Witness `repros/fixed-parameterized-compound-
+  export.sexp`. ⚠ **PROCESS LESSON:** this loop reported it OPEN for ~14 iterations because the
+  per-iteration finding-check rebuilt `cdz` but NOT `cdz-run` — a stale runner kept reproducing the old
+  trap. Finding-checks that RUN a component now rebuild `cdz-run` too.
 
 - **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines):** `String.from-bytes` (and the
   `Ast.decode` self-decode) only compute on a *compile-time-constant* `Bytes`; a runtime byte slice

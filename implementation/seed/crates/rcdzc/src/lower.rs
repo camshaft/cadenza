@@ -4593,6 +4593,16 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
         ));
     }
+    // The scrutinee map's KEY type — each pattern key must agree with it. A `(map ("x" v))` pattern on a
+    // `(Map Int64 Int64)` writes a String key where an Int64 is required: without this check it silently
+    // never matches (`const_compound_eq` of a String vs an Int is `None` → the arm falls through to the
+    // catch-all), so a mistyped key was accepted as dead code rather than the type error it is — the map
+    // twin of the scalar-match "pattern type … does not match scrutinee type …" check. `Any` (an unsolved
+    // key type) is not checked (the not-yet-constrained treatment a projection of `Any` gets).
+    let scrut_key_ty = match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::Map(k, _) => Some((*k).clone()),
+        _ => None,
+    };
     for &(pat, body) in arms {
         // A bare binder / `_` is a catch-all — it always matches.
         if db.ast.as_name(pat).is_some() {
@@ -4604,6 +4614,28 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             ));
         };
+        // Each pattern KEY must type-agree with the map's key type — a wrong-type key literal is a
+        // structural mismatch (CDZ0201), not a never-matching arm, anchored at the offending key.
+        if let Some(kt) = &scrut_key_ty
+            && !matches!(kt, crate::ty::Ty::Any)
+        {
+            for &(k, _) in &pat_entries {
+                let key_ty = crate::infer::type_of(db, k);
+                if !matches!(key_ty, crate::ty::Ty::Any) && !key_ty.agrees_with(kt) {
+                    return Core::Poison(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "this map-pattern key is {}, but the map's keys are {}",
+                                key_ty.render_name(),
+                                kt.render_name()
+                            ),
+                        )
+                        .at(k),
+                    );
+                }
+            }
+        }
         // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
         // single-variant `(Mk n)`) whose binders read via `MapField` `value_steps` (resolve descends them).
         // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor `(Some n)`) is DISPATCHED: it is
@@ -5268,12 +5300,20 @@ fn classify_binding_ctor(
         },
     };
     let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
-        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor).
-        return Err(Reject::coded(
+        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
+        // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
+        // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here
+        // (an unbound name is not a ctor), giving the opaque shape message. When the matched type is a sum,
+        // ENRICH with the same "did you mean `Add`?" + rename fix a top-level match arm gets
+        // (`enrich_pattern_head_suggestion` over the element sum's variants) — so a misspelled variant in a
+        // LIST-ELEMENT pattern reads as well as one in a direct match arm. A non-sum element type, or a head
+        // with no near variant, keeps the bare shape message.
+        let base = Reject::coded(
             Code::Malformed,
             "a binding pattern head is not a tuple, record, or constructor",
         )
-        .at(pat));
+        .at(pat);
+        return Err(enrich_pattern_head_suggestion(db, head, value_ty, base));
     };
     let variant_count = db
         .type_decl_by_occ(decl)

@@ -21685,6 +21685,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_misspelled_variant_in_a_list_element_pattern_suggests_the_near_variant() {
+        // A misspelled variant ctor as a LIST-ELEMENT pattern — `(list (Ad) .. r)` on `(List Op)` for
+        // `(type Op (Add) (Sub))` — read as "a binding pattern head is not a … constructor" (an unbound
+        // name is not a ctor), the opaque shape message with no route to a fix. It now carries the same
+        // "did you mean `Add`?" + rename fix a direct match arm's typo gets (the element sum's variants are
+        // the candidate set, via `enrich_pattern_head_suggestion`).
+        let d = reject_full(
+            "(module m (type Op (Add) (Sub)) \
+               (def (f (: xs (List Op))) (match xs ((list (Ad) .. r) 1) (_ 0))) (export f))",
+        )
+        .expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `Add`?"),
+            "a misspelled list-element variant names the near one: {}",
+            d.message
+        );
+        // The fix rewrites the misspelled NAME node (`Ad` → `Add`); the surface re-render splices it into
+        // the enclosing `(Ad)` → `(Add)`, but the carried replacement is the bare variant name.
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Add"),
+            "carries the rename fix on the variant name"
+        );
+        // A FAR miss lists the closest matches (no baseless fix); a NON-SUM element type keeps the bare
+        // shape message (no false suggestion).
+        let far = reject_full(
+            "(module m (type Op (Add) (Sub)) \
+               (def (f (: xs (List Op))) (match xs ((list (Zzz) .. r) 1) (_ 0))) (export f))",
+        )
+        .expect("must reject");
+        assert!(
+            far.message.contains("closest matches") && far.fix.is_none(),
+            "a far-miss list-element variant lists options, no fix: {}",
+            far.message
+        );
+        let non_sum = reject_full(
+            "(module m (def (f (: xs (List Int64))) (match xs ((list (Foo) .. r) 1) (_ 0))) (export f))",
+        )
+        .expect("must reject");
+        assert!(
+            !non_sum.message.contains("did you mean"),
+            "a non-sum element type gets no variant suggestion: {}",
+            non_sum.message
+        );
+    }
+
+    #[test]
     fn a_map_list_element_dispatches_by_key_presence() {
         // The MAP twin of the refutable-ctor list element: a list of key-value records matched by KEY in one
         // arm — `(match xs ((list (map (1 a)) .. rest) a) …)`. A `(map (k v)…)` element is REFUTABLE (matches
@@ -21914,6 +21962,46 @@ mod match_engine {
             .unwrap(),
             "3",
             "the rest binder reads the runtime map minus the named key (size 2)"
+        );
+    }
+
+    #[test]
+    fn a_map_pattern_key_of_the_wrong_type_is_a_type_error() {
+        // A `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is
+        // required. Before, `const_compound_eq` of a String vs an Int returned `None` (not equal), so the
+        // arm silently never matched and fell through to the catch-all — a mistyped key accepted as dead
+        // code. It is now a CDZ0201 naming both types, anchored at the offending key (the map twin of the
+        // scalar-match "pattern type … does not match scrutinee type …").
+        let d = reject_full(
+            "(module m (def (main) (match (map (1 10) (2 20)) ((map (\"x\" v)) v) (_ 0))) (export main))",
+        )
+        .expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("map-pattern key is String")
+                && d.message.contains("the map's keys are Int64"),
+            "names both key types: {}",
+            d.message
+        );
+        // The symmetric case (an Int pattern on String keys) is likewise rejected.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (map (\"a\" 10)) ((map (5 v)) v) (_ 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a correctly-typed key pattern compiles + runs (Int key on an Int-keyed map).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            10,
+            "a well-typed map-pattern key matches and binds its value"
         );
     }
 
@@ -30085,6 +30173,29 @@ mod diagnostics {
         assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
     }
 
+    /// A `.`-MEMBER pattern `C.R` (a NULLARY variant used as a whole arm pattern, printed `(. C R)`) binds
+    /// NOTHING — its segments are the TYPE and VARIANT names, not binders. The unused-binding pass must not
+    /// treat the first segment (`C`) as a spuriously-unused binder. (Regression: `collect_arm_binder_leaves`
+    /// recursed a compound's args generically, collecting `C` from `(. C R)` → a bogus CDZ0306 "unused
+    /// binding `C`" with a nonsense `_C` rename on every nullary-variant match arm.)
+    #[test]
+    fn a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused() {
+        // A total match over a three-nullary-variant sum, each arm a bare `C.x` member — no binders, so
+        // NO CDZ0306 at all.
+        let clean = "(module m (type C R G B) (def (f (: c C)) (match c (C.R 1) (C.G 2) (C.B 3))) (export f))";
+        assert!(
+            unused_of(clean).is_empty(),
+            "a dotted nullary-variant arm binds nothing — no spurious `C` warning: {:?}",
+            unused_of(clean)
+        );
+        // The suppression is SURGICAL — it silences only the member HEAD, not real binders. A genuinely
+        // unused payload binder alongside a dotted arm still warns (only `n`, never `C`).
+        let mixed = "(module m (type C R G B) (def (f (: c C) (: o (Option Int64))) (match o ((Some n) (match c (C.R 1) (C.G 2) (C.B 3))) ((None) 0))) (export f))";
+        let u = unused_of(mixed);
+        assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
+        assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
+    }
+
     /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
     /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
     /// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
@@ -32204,6 +32315,56 @@ mod stage1 {
             "a genuinely-missing field gets no rename fix: {} fix={:?}",
             dm.message,
             dm.fix
+        );
+        // The LET-BINDER twin: a record literal with a misspelled field bound to a `(: r (Record …))`
+        // binder gets the SAME rename on the primary binding-mismatch reject (previously it declined the
+        // fix the argument + value-annotation sites gave).
+        let binder = "(module m (def (main) \
+                       (let (((: r (Record (foo Int64))) (record (fooo 1)))) 0)) (export main))";
+        let db_ =
+            compile_component(&crate::codec::encode(&parse(binder))).expect_err("must reject");
+        assert_eq!(db_.code.as_deref(), Some("CDZ0203"), "got: {}", db_.message);
+        assert!(
+            db_.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the let-binder carries the field rename: {} fix={:?}",
+            db_.message,
+            db_.fix
+        );
+        // NESTED: a typo inside a SHARED field whose want/got are both records — the field sets agree at the
+        // top level, so the rename DRILLS into `inner`'s literal (`inner.fooo`→`foo`). The field-typo twin of
+        // the numeric-leaf drill.
+        let nested = "(module m \
+                      (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
+                      (def (main) (g (record (inner (record (fooo 1)))))) (export main))";
+        let dn = compile_component(&crate::codec::encode(&parse(nested))).expect_err("must reject");
+        let nfix = dn.fix.as_ref().expect("a nested rename fix is carried");
+        assert!(
+            nfix.replacement.contains("foo"),
+            "the nested field typo drills to a rename: {} fix={:?}",
+            dn.message,
+            nfix.replacement
+        );
+        // The renamed nested record compiles.
+        let nested_fixed = "(module m \
+                            (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
+                            (def (main) (g (record (inner (record (foo 1)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(nested_fixed))).is_ok(),
+            "the renamed nested record compiles"
+        );
+        // NO false rename: a genuinely-missing NESTED field (not a typo) gets no fix.
+        let nested_missing = "(module m \
+                              (def (g (: r (Record (inner (Record (a Int64) (b Int64)))))) (. r inner)) \
+                              (def (main) (g (record (inner (record (a 1)))))) (export main))";
+        let dnm = compile_component(&crate::codec::encode(&parse(nested_missing)))
+            .expect_err("must reject");
+        assert!(
+            dnm.fix.is_none(),
+            "a genuinely-missing nested field gets no rename: {} fix={:?}",
+            dnm.message,
+            dnm.fix
         );
     }
 
@@ -37301,32 +37462,59 @@ mod stage1 {
         );
         // SEPARATE-BRANCH mutual perform: the perform and the mutual call sit in DIFFERENT branches of a
         // conditional (`ev` performs in its base case, calls `od` in its recursive branch), not the same
-        // strict expression. This leaked the internal `ev#eff…$s0` specialization name (a compile-time
-        // CDZ0101, `check`-clean) because the `if` threading shared ONE state-ref node across both branches
-        // and the arena is single-parent — the second-parented branch orphaned the first. Copying the
-        // state-refs per branch fixes it; the group now specializes and RUNS. `ev 2 -> od 1 -> ev 0` fires
-        // `Fresh.next` at the base, seed 42, arm resumes `s + 1` = 43 (gate verifies the value).
+        // strict expression. This shape is NOT yet reducible by the tail-resumptive fold (building the
+        // branch-distributed state threading + cross-def memo knot is a later increment). It used to LEAK
+        // the internal `ev#eff…$s0` specialization name (a `check`-clean CDZ0101); it now DECLINES CLEANLY
+        // ("this handler is not yet reducible by the tail-resumptive fold"), never leaking the internal
+        // name. (Full decline coverage is `a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly`.)
         let sep_branch = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
                    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
-            "a mutual group with the perform in a different branch from the mutual call must specialize, \
-             not leak an internal ev#eff…$s0 name"
+            compile_component(&crate::codec::encode(&parse(sep_branch))).is_err(),
+            "a mutual group with the perform in a different branch from the mutual call declines cleanly \
+             (not yet reducible), never leaking an internal ev#eff…$s0 name"
         );
         // The MATCH-dispatch analogue: the cycle dispatches on a `match` (perform in one arm, mutual call in
-        // another) rather than an `if`. The `match` thread arm had the SAME shared-state-ref bug as the `if`
-        // arm (each arm threaded under one shared `cur`); copying the state-refs per arm fixes it. Same
-        // recursion `ev 2 -> od 1 -> ev 0` fires `Fresh.next`, seed 42, resumes 43.
+        // another) rather than an `if`. Same not-yet-reducible split-branch shape — it declines cleanly too.
         let sep_match = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1))))) \
                    (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1))))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_match))).is_ok(),
+            compile_component(&crate::codec::encode(&parse(sep_match))).is_err(),
             "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
-             must specialize, not leak an internal ev#eff…$s0 name"
+             declines cleanly (not yet reducible), never leaking an internal ev#eff…$s0 name"
+        );
+    }
+
+    #[test]
+    fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly() {
+        // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
+        // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
+        // (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`) is NOT yet reducible: the branch-distributed
+        // state threading + the cross-def memo knot would leave a `$s{k}` state reference dangling and leak
+        // the internal `ev#eff…$s0` name in a confusing CDZ0101. It must DECLINE CLEANLY (a "not yet
+        // reducible" fold decline), never leak the internal name. Contrast the SAME-strict-spine mutual
+        // shape (`(def (od n) (+ (Ctr.tick) (ev …)))`), which specializes fine (the test above).
+        let split = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
+                   (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
+                   (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (ev 3))) (export main))";
+        // It must FAIL to compile — but with a CLEAN decline, not the leaked internal name. The Err IS the
+        // decline diagnostic.
+        let d = compile_component(&crate::codec::encode(&parse(split)))
+            .expect_err("the split-branch mutual-effect group must decline");
+        assert!(
+            !d.message.contains("$s0") && !d.message.contains("#eff"),
+            "the decline must NOT leak the internal specialization name: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("not yet reducible"),
+            "the decline names the tail-resumptive-fold limit: {}",
+            d.message
         );
     }
 
