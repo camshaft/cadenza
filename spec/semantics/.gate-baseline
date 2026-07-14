@@ -591,6 +591,9 @@ pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 pass	a hexadecimal literal with digit separators
 pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a higher-order function applies a callback that matches its own sum argument
+pass	a higher-order left fold applies its combiner, not a fixed operator
+pass	a higher-order left fold over a built-in list with an annotated callback
+pass	a higher-order left fold over a built-in list with an annotated fn parameter
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
@@ -1496,6 +1499,9 @@ pass	an exported closure with a narrow-arg wide-result mismatched body is reject
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if on Type.eq selects a branch at compile time
+pass	an if over two trap-free bitwise arms selects branchlessly — else arm
+pass	an if over two trap-free bitwise arms selects branchlessly — then arm
+pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
