@@ -6,6 +6,10 @@ pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-si
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
+pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
+pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
+pass	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
 pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
@@ -319,6 +323,7 @@ pass	a do-local generic function is instantiated per type
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
+pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
@@ -347,6 +352,7 @@ pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
+pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -373,6 +379,7 @@ pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic sum whose payload NESTS the parameter escapes with the instantiated inner type
@@ -382,6 +389,7 @@ pass	a generic sum with a type parameter inside a tuple payload constructs and d
 pass	a generic sum with a type parameter nested inside another sum payload matches through both
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
+pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
@@ -839,6 +847,7 @@ pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
 pass	a runtime integer converts to a float with the machine convert
+pass	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
@@ -889,6 +898,7 @@ pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
+pass	a runtime-computed Rational crosses the host boundary as its exact value
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
@@ -948,6 +958,8 @@ pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
+pass	a sum variant carrying a Map payload is deconstructed and the map queried
+pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
@@ -1482,7 +1494,9 @@ pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	negating a runtime Int64 near the boundary is exact just above the min
+pass	negating a runtime Int64 overflows at Int64.min
 pass	negating a runtime narrow integer just above its min is exact
+pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
 pass	negative zero is distinct in the canonical value form
@@ -1803,14 +1817,11 @@ todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
-todo	a factorial that overflows the integer type traps through the recursion
-todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
-todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
@@ -1822,8 +1833,6 @@ todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	negating a runtime Int64 overflows at Int64.min
-todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
 todo	the default-integer pragma is definition-site scoped, not use-site

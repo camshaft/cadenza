@@ -351,14 +351,24 @@ constructor … applied by ordinary application"; `:250` monomorphized before th
    arg is consumed at monomorphization, never passed at run time.
 
 ## Increment plan (each gated + landed separately)
-- **T1** — `typeval_of` maps the type-reflection module → `Ty::Type`; `(: t Type)` accepted; a param typed
-  `Type` is compile-time-only (no valtype, erased). Gate: `(: t Type)` parses+types; a runtime use of a
-  `Type` param still rejects (CDZ0302, no machine rep).
-- **T2** — a `t : Type` param usable as a type-constructor arg `(Box t)` / `(Lst t)`: the annotation is
-  generic in `t` until the call site binds it.
-- **T3** — call-site type-value argument + monomorphization keyed on it (extend `type_specialize`), with
-  the type-arg erased from the emitted signature. Gate: `unbox` at Int64+String → 42; `len` over `Lst
-  Int64`+`Lst String` with an explicit `(: t Type)` → 5.
+- ✅ **T1 — LANDED (`@72a5a8f0`).** `typeval_of` maps the type-reflection module → `Ty::Type`; `(: t
+  Type)` accepted (recognized structurally, no name key).
+- ✅ **T2 — LANDED (this increment).** In-order SIGNATURE SCOPING: an earlier param is visible in a later
+  param's annotation (`binder_in` Case 4b + `def_sig_list_of`/`param_binder_before`, the sig list made a
+  `is_binding_candidate`). So `t` in `(Box t)` resolves to the earlier `(: t Type)` param.
+- ✅ **T3 (NON-RECURSIVE) — LANDED (this increment).** `typeval_of` reduces a type-valued param in a type
+  position to a stable `Ty::Var(binder)` (`type_valued_param_binder`), so `(Box t)` → the generic `(Box
+  ?t)`. A NON-recursive `unbox` INLINES at each call site — monomorphization-by-β-reduction, the type arg
+  folds away — so `unbox` at Int64+String → 42 with no runtime type arg. The spurious CDZ0306 "unused
+  param `t`" (used only in a sibling annotation) is fixed: `used_param_names` now also scans each param's
+  annotation type-expression.
+- ⏭ **T3 (RECURSIVE) — NEXT.** A RECURSIVE generic with a type-valued param (`(def (len (: t Type) (: l
+  (Lst t))) … (len t tl))`) does NOT inline → lowers to a `Core::Call`, and the type-valued arg `t` must
+  be ERASED from that call + from the emitted signature (it has no runtime slot, `valtype_of(Ty::Type) =
+  None`). TODAY this hits `CDZ0203: Type and Unit` at the recursive self-call (the type arg is threaded as
+  a runtime value). FIX: in `lower`'s `Core::Call` + `type_specialize`, DROP a `Ty::Type`-typed argument
+  (specialize on its type-VALUE, emit no runtime arg for it). Gate target: `len` over `Lst Int64`+`Lst
+  String` with explicit `(: t Type)` → 5.
 - **T4** — a type-value arg that is NOT compile-time-resolvable (flows from runtime data) → CDZ0302
   (`:226` "a type-value never flows from runtime data into a position that determines a type").
 

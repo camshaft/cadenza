@@ -7898,7 +7898,7 @@ fn emit_machine_overflow_guard(
         out.push(Lir::LocalGet(sr));
         a_src.push(out);
         out.push(if trap_when_r_lt_a { m.lt_s() } else { m.gt_s() });
-        out.push(Lir::IfUnreachableEnd);
+        out.push(Lir::IfIntegerOverflowEnd);
         return;
     }
     // NEGATION FAST PATH (full-width signed `(- 0 a)`): the constant is on the LEFT (`0 - a`), which
@@ -7914,7 +7914,7 @@ fn emit_machine_overflow_guard(
         sb.push(out); // the operand `a`
         out.push(m.konst(min));
         out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
-        out.push(Lir::IfUnreachableEnd);
+        out.push(Lir::IfIntegerOverflowEnd);
         return;
     }
     // IDENTICAL-OPERAND FAST PATH (full-width signed `(+ a a)` — doubling): the general add guard is
@@ -7929,7 +7929,7 @@ fn emit_machine_overflow_guard(
         out.push(m.xor());
         out.push(m.konst(0));
         out.push(m.lt_s());
-        out.push(Lir::IfUnreachableEnd);
+        out.push(Lir::IfIntegerOverflowEnd);
         return;
     }
     match op {
@@ -7944,14 +7944,14 @@ fn emit_machine_overflow_guard(
             out.push(m.and());
             out.push(m.konst(0));
             out.push(m.lt_s());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
         Prim::Add if addsub_can_overflow => {
             // unsigned add: `r <ᵤ a` → trap (the sum carried out of the slot).
             out.push(Lir::LocalGet(sr));
             sa.push(out);
             out.push(m.lt_u());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
         Prim::Sub if addsub_can_overflow && m.signed => {
             // signed sub: `((r^a) & (a^b)) < 0` → trap. Mathematically `((a^b) & (a^r)) < 0`, but `^`
@@ -7967,7 +7967,7 @@ fn emit_machine_overflow_guard(
             out.push(m.and());
             out.push(m.konst(0));
             out.push(m.lt_s());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
         Prim::Sub if addsub_can_overflow => {
             // unsigned sub: `a <ᵤ b` → trap (an unsigned value cannot go below 0). For a NARROW unsigned
@@ -7978,7 +7978,7 @@ fn emit_machine_overflow_guard(
             sa.push(out);
             sb.push(out);
             out.push(m.lt_u());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
         Prim::Mul => {
             // NARROW-PRODUCT-FITS-SLOT FAST PATH: when `2 * width <= slot bits`, the machine multiply in
@@ -8028,11 +8028,11 @@ fn emit_machine_overflow_guard(
                 a_src.push(out);
                 out.push(m.konst(gt_bound));
                 out.push(m.gt_s());
-                out.push(Lir::IfUnreachableEnd);
+                out.push(Lir::IfIntegerOverflowEnd);
                 a_src.push(out);
                 out.push(m.konst(lt_bound));
                 out.push(m.lt_s());
-                out.push(Lir::IfUnreachableEnd);
+                out.push(Lir::IfIntegerOverflowEnd);
                 return;
             }
             // mul: `if a≠0 { if r/a ≠ b { unreachable } }` — guards div against a=0 (a=0 can't overflow);
@@ -8047,7 +8047,7 @@ fn emit_machine_overflow_guard(
             out.push(m.div());
             sb.push(out);
             out.push(m.ne());
-            out.push(Lir::IfUnreachableEnd); //   if (r/a) != b { unreachable }
+            out.push(Lir::IfIntegerOverflowEnd); //   if (r/a) != b { unreachable }
             out.push(Lir::End); // }
         }
         _ => {}
@@ -8091,21 +8091,21 @@ fn emit_range_check(m: Machine, sr: u32, reach: ReachableBounds, out: &mut Emit)
             out.push(Lir::LocalGet(sr));
             out.push(m.konst(min_n));
             out.push(m.lt_s());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
         // r >ₛ max_N → trap. Skipped when the result provably cannot exceed max (LowerOnly).
         if reach != ReachableBounds::LowerOnly {
             out.push(Lir::LocalGet(sr));
             out.push(m.konst(max_n));
             out.push(m.gt_s());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
         }
     } else {
         // r >=ᵤ 2^N → trap (the single unsigned upper-bound test; `2^N = max_N + 1`).
         out.push(Lir::LocalGet(sr));
         out.push(m.konst(max_n.wrapping_add(1)));
         out.push(m.ge_u());
-        out.push(Lir::IfUnreachableEnd);
+        out.push(Lir::IfIntegerOverflowEnd);
     }
 }
 
@@ -8429,7 +8429,7 @@ fn emit_mul_pow2_as_shift(
         out.push(m.shr());
         sa.push(out);
         out.push(m.ne());
-        out.push(Lir::IfUnreachableEnd);
+        out.push(Lir::IfIntegerOverflowEnd);
         // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
         emit_range_check(m, sr, ReachableBounds::Both, out);
     }
@@ -8594,7 +8594,7 @@ fn emit_shift(
             out.push(m.shr());
             sa.push(out);
             out.push(m.ne());
-            out.push(Lir::IfUnreachableEnd);
+            out.push(Lir::IfIntegerOverflowEnd);
             // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
             emit_range_check(m, sr, ReachableBounds::Both, out);
             out.push(Lir::LocalGet(sr));
@@ -9174,7 +9174,7 @@ mod tests {
                 Lir::I64And,
                 Lir::ConstI64(0),
                 Lir::I64LtS,
-                Lir::IfUnreachableEnd,
+                Lir::IfIntegerOverflowEnd,
                 // result
                 Lir::LocalGet(2),
             ]
@@ -9211,7 +9211,7 @@ mod tests {
                 // specialized guard: `r <ₛ a` → trap (a constant `+1` overflows only past MAX).
                 Lir::LocalGet(0),
                 Lir::I64LtS,
-                Lir::IfUnreachableEnd,
+                Lir::IfIntegerOverflowEnd,
                 Lir::LocalGet(1),
             ]
         );
@@ -9243,7 +9243,7 @@ mod tests {
                 Lir::I64ShrS, // arithmetic shift (signed) for the exact round-trip.
                 Lir::LocalGet(0),
                 Lir::I64Ne,
-                Lir::IfUnreachableEnd,
+                Lir::IfIntegerOverflowEnd,
                 Lir::LocalGet(1),
             ]
         );
@@ -9268,7 +9268,7 @@ mod tests {
             select("(module m (def (f (: x Int64)) (* (& x 15) 2)) (def (main) 0) (export main))");
         assert!(
             !mul.iter().any(|i| matches!(i, Lir::I64Ne))
-                && !mul.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+                && !mul.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a provably-in-range `* 2^k` drops its shift-overflow guard; got {mul:?}"
         );
         // A user `(<< (& x 15) 2)` ∈ [0,60] likewise.
@@ -9747,14 +9747,14 @@ mod tests {
         );
         assert!(
             !add.iter().any(|i| matches!(i, Lir::I64Xor))
-                && !add.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+                && !add.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a provably-in-range add drops its guard; got {add:?}"
         );
         // `(* (& x 15) 3)`: [0,15]×3 = [0,45], fits → NO const-multiplier bound check.
         let mul =
             select("(module m (def (f (: x Int64)) (* (& x 15) 3)) (def (main) 0) (export main))");
         assert!(
-            !mul.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !mul.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a provably-in-range mul drops its bound check; got {mul:?}"
         );
         // A full-range add (either operand unbounded) KEEPS its guard.
@@ -9762,7 +9762,7 @@ mod tests {
             "(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (def (main) 0) (export main))",
         );
         assert!(
-            kept.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            kept.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a full-range add keeps its overflow guard; got {kept:?}"
         );
         // A NARROW result whose interval EXCEEDS the type keeps its range-check: [0,200]+[0,200]=[0,400]
@@ -9773,7 +9773,7 @@ mod tests {
         assert!(
             narrow_over
                 .iter()
-                .any(|i| matches!(i, Lir::IfUnreachableEnd)),
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an over-range narrow add keeps its range-check; got {narrow_over:?}"
         );
         // CHAINED: the range PROPAGATES through nested arith — the inner `(+ (& x 15) (& y 15))` bounds to

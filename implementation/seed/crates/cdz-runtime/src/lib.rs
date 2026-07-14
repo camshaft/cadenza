@@ -1334,6 +1334,11 @@ enum Shape {
     /// big-endian magnitude bytes, NOT i64-bounded), so a BigInt needs NO new wire kind, only its own
     /// SHAPE tag (so the walk reads the value via `unbox_bigint`, not `op_get_int` which caps at i64).
     BigInt,
+    /// An exact-rational leaf (a runtime `Rational`, `box_rational_normalized`'s normalized 2-BigInt-handle
+    /// node). Rendered as a single `num/den` NAME leaf — the walk reads both components via `unbox_rational`
+    /// and formats each `Big` decimal in the runtime (the codec's Int leaf formats decimal on the HOST, but
+    /// a rational is ONE name leaf, so the runtime does it), matching the constant form `(: 1/2 Rational)`.
+    Rational,
     /// A Float32 leaf — read with `get-float32` (an `f32`) and rendered as the f32's SHORTEST decimal,
     /// distinct from `Float` (Float64). A Float32 is stored 4-byte (`box-float32`), so its canonical value
     /// form is the f32's, not a promoted f64's (`0.1f32` renders `0.1`, not `0.10000000149011612`).
@@ -1509,6 +1514,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             Shape::Spread(elems)
         }
         17 => Shape::BigInt, // arbitrary-precision integer leaf (a runtime BigInt), rendered as KIND_INT
+        18 => Shape::Rational, // exact-rational leaf (a 2-BigInt-handle node), rendered as a num/den name
         _ => return None,
     })
 }
@@ -2170,6 +2176,18 @@ fn encode_value(
                         // caps at i64) and render it as the SAME `KIND_INT` leaf — the leaf is already
                         // sign + arbitrary-width big-endian magnitude, so no new wire kind is needed.
                         let l = b.bigint_leaf(&unbox_bigint(h));
+                        out.push(b.atom(l));
+                    }
+                    Shape::Rational => {
+                        // Read the two BigInt components (`unbox_rational`) and render the single `num/den`
+                        // NAME leaf — the constant-Rational value form. Each component is formatted decimal
+                        // in the runtime (`Big::to_decimal_string`), since a rational is ONE name leaf (the
+                        // codec's Int leaf would format on the host, but there is no "num/den" wire kind).
+                        let (num, den) = unbox_rational(h);
+                        let mut s = num.to_decimal_string();
+                        s.push('/');
+                        s.push_str(&den.to_decimal_string());
+                        let l = b.name_leaf(&s);
                         out.push(b.atom(l));
                     }
                     Shape::Bool => {
@@ -6896,6 +6914,14 @@ mod tests {
             }
             S::BigInt => {
                 let l = b.bigint_leaf(&unbox_bigint(h));
+                b.atom(l)
+            }
+            S::Rational => {
+                let (num, den) = unbox_rational(h);
+                let mut s = num.to_decimal_string();
+                s.push('/');
+                s.push_str(&den.to_decimal_string());
+                let l = b.name_leaf(&s);
                 b.atom(l)
             }
             S::Bool => {

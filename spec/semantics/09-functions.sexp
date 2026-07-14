@@ -2907,3 +2907,24 @@
                            (len (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
             (export main)))
   (output (: 5 Int64)))
+
+; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
+; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
+; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,
+; and the caller passes the concrete type as a regular argument `(unbox Int64 …)`. `t` resolves by
+; ordinary lexical scope (an earlier parameter is visible in a later parameter's annotation); the type
+; argument is compile-time-only and consumed by monomorphization (erased before run time), so `unbox` is
+; specialized per passed type exactly as an inferred generic is. NOT implicit type variables — the type is
+; a first-class value passed explicitly.
+
+(case "a generic definition takes the type as a type-valued parameter"
+  (doc    "`unbox` takes `(: t Type)` — a type-valued parameter — and `(: b (Box t))`, then unwraps the
+           box. The caller passes the concrete element type as an ordinary argument: `(unbox Int64 (Box.Mk
+           40))` and `(unbox String (Box.Mk \"hi\"))`. `unbox` is monomorphized per passed type (the type
+           argument is compile-time-only, erased before run time). 40 + byte-len(\"hi\")=2 = 42.")
+  (input  (do
+            (type Box (Mk a))
+            (def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v)))
+            (def (main) (+ (unbox Int64 (Box.Mk 40)) (String.byte-len (unbox String (Box.Mk "hi")))))
+            (export main)))
+  (output (: 42 Int64)))

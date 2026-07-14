@@ -1087,6 +1087,17 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let_of_bindings_list(db, form).is_some() {
         return last_binder_named(db, form, name, Some(from));
     }
+    // Case 4b: `form` is a `(def (NAME param…) body)`'s SIGNATURE LIST, ascended from a parameter `from`
+    // (a later param's annotation). An EARLIER type-valued parameter is visible in a later parameter's
+    // annotation — `(def (unbox (: t Type) (: b (Box t))) …)`, where `(Box t)` reads the earlier `t`. This
+    // is the signature's IN-ORDER scope, the type-valued-parameter analogue of a `let`'s in-order bindings
+    // (Case 2): a param sees the params written before it, not itself or later ones. `NAME` at position 0
+    // is the def name, never a parameter, so it is excluded by the window (`from` is a param, always after
+    // NAME). Only reached for a def SIGNATURE list (`def_sig_list_of` confirms the parent is a `def` and
+    // `form` is its first tail element) — a def body ascends through Case 4 above, not here.
+    if def_sig_list_of(db, form).is_some() {
+        return param_binder_before(db, form, name, from);
+    }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
     // this arm's body. The bound value IS the scrutinee, so a reference resolves to the scrutinee
@@ -2350,6 +2361,57 @@ fn let_of_bindings_list(db: &Db, form: StructId) -> Option<StructId> {
     } else {
         None
     }
+}
+
+/// If `form` is a `(def (NAME param…) body)`'s SIGNATURE LIST (its parent is a `def` and `form` is that
+/// def's first tail element), the `def` form; else `None`. The signature analogue of
+/// [`let_of_bindings_list`] — confirms `form` is the parameter list a Case-4b reference ascended into, so
+/// an earlier type-valued parameter binds in a later parameter's annotation. A `fn` param list is NOT
+/// matched (its params are bare/annotated and do not depend on each other today; only a `def` signature
+/// carries the type-valued-parameter surface).
+fn def_sig_list_of(db: &Db, form: StructId) -> Option<StructId> {
+    let parent = db.parent_of(form)?;
+    let tail = db.ast.as_form(parent, "def")?;
+    if tail.first().copied() == Some(form) {
+        Some(parent)
+    } else {
+        None
+    }
+}
+
+/// Resolve `name` against the parameters of a def SIGNATURE LIST `sig` that appear STRICTLY BEFORE the
+/// parameter `from` we ascended from — the in-order signature scope (Case 4b). `sig = [NAME, p0, p1, …]`;
+/// a parameter is a bare name `p` or an annotated binder `(: p T)`. Returns a `Ref` to the matching
+/// parameter's NAME occurrence (the same `Resolved` a body reference to a param produces via
+/// `binder_in_scope`), last-of-`name`-before-`from` wins. `NAME` at index 0 is the def name, never a
+/// parameter, so it is skipped. `None` if no earlier parameter is named `name`.
+fn param_binder_before(db: &Db, sig: StructId, name: &str, from: StructId) -> Option<Resolved> {
+    let Struct::List(children) = db.ast.get(sig) else {
+        return None;
+    };
+    // The window end: parameters strictly before `from` (a direct child of `sig` — its `child_ix` is O(1)).
+    let k = db.child_ix_of(from);
+    if children.get(k) != Some(&from) {
+        return None; // `from` is not a direct child of this signature (defensive)
+    }
+    // `from` at index 0 is the def NAME (not a parameter) or index 1 is the first param — either way there
+    // is no EARLIER parameter, so the window `[1, k)` is empty. Guard the slice (avoid `1..0` underflow).
+    if k <= 1 {
+        return None;
+    }
+    // Scan [1, k) in REVERSE (skip NAME at 0; last-before-`from` wins). Each element is a parameter binder.
+    for &p in children[1..k].iter().rev() {
+        // A parameter is a bare name `p` or an annotated binder `(: p T)` — take the NAME occurrence from
+        // either (a bare name atom directly, or the FIRST operand of a `(: name T)` form).
+        let name_occ = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+            Some(occ) => occ,
+            None => p,
+        };
+        if db.ast.as_name(name_occ) == Some(name) {
+            return Some(Resolved::Ref { value: name_occ });
+        }
+    }
+    None
 }
 
 /// The `(binder-name-occ, init-occ)` pairs of a `let` bindings-list occurrence. A malformed pair is
