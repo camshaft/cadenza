@@ -6620,6 +6620,56 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every string value dropped");
     }
 
+    /// value-encode of a BOXED i64 at the extremes, byte-exact against the codec's KIND_INT sign+magnitude
+    /// form. `int_round_trip` only checks `op_get_int` (round-trip) and a test-side `render` reimpl — NOT
+    /// `int_leaf`'s real codec bytes through `op_value_encode_form`. The riskiest value is `i64::MIN`,
+    /// whose `-v` overflows: `int_leaf` uses `v.unsigned_abs()` (= 2^63, magnitude `80 00…00`) so the
+    /// magnitude is right and the sign flag negative. A big-endian / leading-zero-strip / sign bug in
+    /// `int_leaf` slips past the small-value `intlist` differential; this pins the boundary. Descriptor:
+    /// table [0]=Int (tag 0), root=0. Doc = header(8)·leaf_count(1)·[KIND·LEB(mlen)·mag]·struct(1)·
+    /// [TAG_ATOM·0]·root(0). KIND 0 = pos, 3 = neg.
+    #[test]
+    fn value_encode_boxed_int_extremes_byte_exact() {
+        reset();
+        let before = live_nodes();
+        let desc: &[u8] = &[0x01, 0x00, 0x00]; // table_len=1, [0]=Int(tag 0), root=0
+        let hdr = [0x63u8, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01]; // cdzast\0\1
+        // Assemble the expected single-int document from (kind, big-endian magnitude bytes).
+        let doc_of = |kind: u8, mag: &[u8]| -> Vec<u8> {
+            let mut d = hdr.to_vec();
+            d.push(0x01); // leaf_count = 1
+            d.push(kind);
+            d.push(mag.len() as u8); // LEB len (all these lengths are < 128 → one byte)
+            d.extend_from_slice(mag);
+            d.push(0x01); // struct_count = 1
+            d.push(0x00); // TAG_ATOM
+            d.push(0x00); // leaf id 0
+            d.push(0x00); // root = 0
+            d
+        };
+        // (value, expected kind, expected big-endian magnitude with leading zeros stripped)
+        let cases: &[(i64, u8, &[u8])] = &[
+            (0, 0, &[]),                                              // zero → empty magnitude, POSITIVE
+            (1, 0, &[0x01]),
+            (-1, 3, &[0x01]),                                        // negative one
+            (255, 0, &[0xff]),
+            (256, 0, &[0x01, 0x00]),                                 // two-byte magnitude, no stray leading zero
+            (i64::MAX, 0, &[0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            (i64::MIN, 3, &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // unsigned_abs = 2^63
+        ];
+        for &(v, kind, mag) in cases {
+            let h = op_box_int(v);
+            let got = op_value_encode_form(h, desc).expect("encode a boxed int");
+            assert_eq!(
+                got,
+                doc_of(kind, mag),
+                "value-encode of {v} must be the codec's KIND_INT sign+magnitude form"
+            );
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak: every boxed int dropped");
+    }
+
     /// A String nested inside a recursive sum encodes (the real use — a value form like an AST node with
     /// an identifier, or a `List Str`). Descriptor: a Cons/Nil list whose element is a Str. Drives the
     /// iterative walk through Sum → Tuple → Str and back via Ref, and checks byte-identity vs the oracle.
