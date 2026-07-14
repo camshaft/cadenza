@@ -14007,6 +14007,16 @@ mod match_engine {
             "the arg-unify site also names it: {}",
             op.message
         );
+        // The operator-arg LEAD is the polished arg-site phrasing, NOT the raw internal-clash unify wording
+        // ("type mismatch: Int64 and (-> …) must be the same type here, but differ") — it reads as an
+        // argument-type mismatch, like the annotation / member-op / effect-op sibling messages.
+        assert!(
+            op.message.contains(
+                "this argument is a function value, but a value of type Int64 is expected here"
+            ) && !op.message.contains("must be the same type here"),
+            "the operator-arg lead is polished, not the raw unify clash: {}",
+            op.message
+        );
         // Plural: a 3-ary fn applied to 1 needs 2 more arguments to reach the annotated scalar.
         let h3 = "(def (h (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))";
         let two = reject_full(&format!(

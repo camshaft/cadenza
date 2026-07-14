@@ -6373,12 +6373,19 @@ fn check_application(
                         // The ARGUMENT is an UNAPPLIED function where a non-function param is wanted — a
                         // partial application `(+ (h 1) 2)` (h takes 2, applied to 1) passed to `+`, which
                         // wants an Int64. This falls through the bare-operator path to the generic unify
-                        // "Int64 and (-> Int64 Int64) must be the same type here" (an internal-clash read).
-                        // Append the "forgot to call it — apply N more argument(s)" hint, the arg-site twin
-                        // of the annotation-mismatch fn hint. No mechanical fix (which values were meant is
-                        // unknown), so tail only, added to the unify-produced message.
+                        // "type mismatch: Int64 and (-> Int64 Int64) must be the same type here, but differ"
+                        // — an INTERNAL-CLASS read that never says the argument is simply a function you
+                        // forgot to finish calling. REPLACE the raw unify LEAD with the arg-site phrasing the
+                        // annotation / member-op / effect-op siblings use ("this argument is …, but a value
+                        // of type … is expected here"), then append the "apply N more argument(s)" hint
+                        // (`fn_not_applied_hint`). No mechanical fix (which values were meant is unknown), so
+                        // the hint is a tail only. Keeps the reject's CODE.
                         out.push(Reject {
-                            message: format!("{}{hint}", reject.message),
+                            message: format!(
+                                "this argument is a function value, but a value of type {} is expected \
+                                 here{hint}",
+                                sparam.render_name()
+                            ),
                             ..reject
                         });
                     } else {
