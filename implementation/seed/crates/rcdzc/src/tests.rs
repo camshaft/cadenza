@@ -20400,6 +20400,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_condition_must_be_bool_and_its_faults_surface() {
+        // A guarded arm's guard `(guard <pattern> <cond>)` is a boolean predicate gating the arm, so
+        // `<cond>` must be Bool — like an `if` condition. A non-Bool guard (`(guard x (+ x 1))`, an Int64)
+        // used to compile, using a non-boolean as a branch condition; and a fault INSIDE the guard (an
+        // unbound name) was silently accepted because the guard cond was never walked. Both now surface.
+        let err = |src: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("no error for {src}"))
+        };
+        // A non-Bool guard condition → CDZ0203, the same "must be Bool" the `if` condition gives.
+        let d = err(
+            "(module m (def (g (: n Int64)) (match n ((guard x (+ x 1)) x) (_ 0))) (export g))",
+        );
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("guard condition must be Bool") && d.message.contains("Int64"),
+            "names the guard + the offending type: {}",
+            d.message
+        );
+        // A String guard is likewise rejected (the check is general, not int-specific).
+        assert!(
+            err("(module m (def (g (: n Int64)) (match n ((guard x \"y\") x) (_ 0))) (export g))")
+                .message
+                .contains("guard condition must be Bool"),
+        );
+        // A fault INSIDE a guard condition (an unbound name) now surfaces — the cond is walked.
+        assert_eq!(
+            err("(module m (def (g (: n Int64)) (match n ((guard x (> x zzz)) x) (_ 0))) (export g))")
+                .code
+                .as_deref(),
+            Some("CDZ0101"),
+        );
+        // NO false positive: a valid Bool guard compiles clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export g))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a Bool guard produces no fault"
+        );
+    }
+
+    #[test]
     fn a_guarded_arm_over_a_runtime_scrutinee_gates_and_falls_through() {
         // A guarded arm over a RUNTIME scrutinee (an exported param, so no fold): `(classify n)` returns
         // -1 when n<0, else n's own value via a later guard, else 0. Exercises the runtime probe chain's

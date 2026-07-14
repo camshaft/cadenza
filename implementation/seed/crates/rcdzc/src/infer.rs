@@ -5915,7 +5915,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             }
             collect(db, scrutinee, out);
-            for (_, body) in &arms {
+            for (pat, body) in &arms {
+                // A GUARDED arm `(guard <pattern> <cond>)`: the guard condition is a boolean predicate
+                // gating the arm (`core-semantics.md` §A Guard Refines A Pattern With A Boolean Test), so
+                // it must have type Bool — exactly like an `if` condition. A non-Bool guard (`(guard x (+
+                // x 1))`) was NOT checked (nor descended into): it compiled, using an Int64 as a branch
+                // condition. Type-check the cond against Bool (CDZ0203, the `if`-condition message) and
+                // descend into it so a fault INSIDE the guard (an unbound name, a type error) also surfaces.
+                if let Some(g) = db.ast.as_form(*pat, "guard").filter(|g| g.len() == 2) {
+                    let cond = g[1];
+                    let cond_ty = type_of(db, cond);
+                    if !cond_ty.agrees_with(&Ty::Bool) {
+                        trace!(target: "rcdzc::infer", node = cond.0, cond_ty = %cond_ty.render_name(), "fault: guard condition not Bool (CDZ0203)");
+                        out.push(
+                            Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "guard condition must be Bool, found {}",
+                                    cond_ty.render_name()
+                                ),
+                            )
+                            .at(cond),
+                        );
+                    }
+                    collect(db, cond, out);
+                }
                 collect(db, *body, out);
             }
         }
