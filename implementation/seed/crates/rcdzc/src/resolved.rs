@@ -334,6 +334,14 @@ pub enum Prim {
     /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
     /// type constructors `Int`/`Tuple`/`Record`.
     ListCtor,
+    /// `ast-splice-lift` — a COMPILER-INTERNAL operation (`(List Int64) → (List Ast)`) emitted only by the
+    /// quasiquote splice desugar (`quote::reify_active`): it LIFTS each element of a list into an `Ast.Int`
+    /// node, so an active `,@args` splice's elements enter the parent `Ast.List` already wrapped. Applied
+    /// via `(intrinsic "ast-splice-lift")` (never a user-spellable surface). CONSTANT-fold only this
+    /// increment — a constant `Core::ListNew` of Int64 folds to a `ListNew` of `(Ast.Int e)` `Core::SumNew`
+    /// nodes; a runtime list operand declines (the runtime map is a later increment). Int-only lift, the
+    /// splice companion of the active-unquote `(Ast.Int e)` wrap.
+    AstSpliceLift,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -681,6 +689,7 @@ impl Prim {
             "list-concat" => Some(Prim::ListConcat),
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),
+            "ast-splice-lift" => Some(Prim::AstSpliceLift),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),

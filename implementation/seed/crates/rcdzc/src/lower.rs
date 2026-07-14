@@ -1030,7 +1030,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
                 return core_of(db, head);
             }
-            match crate::eval::meta_apply_of(db, head) {
+            // The applied operation: a value record's `(meta apply)` prim (the usual `List.len`/`+`/…
+            // path), OR — for a COMPILER-INTERNAL intrinsic emitted directly as a prim head (no module
+            // record), e.g. `(intrinsic "ast-splice-lift")` from the quasiquote-splice desugar — the
+            // head's own directly-resolved prim. (A bare prim used as a VALUE, not applied, still declines
+            // at the non-Apply `Resolved::Prim` arm; here it is genuinely applied to `args`.)
+            match crate::eval::meta_apply_of(db, head).or_else(|| crate::eval::prim_of(db, head)) {
                 // MIXED-UNIT COMBINE: `+`/`-`/comparison on two quantities of the SAME dimension but
                 // DIFFERENT scale (`1 km + 500 m`, `1 KiB + 1 kB`). Each operand converts to the
                 // dimension's REFERENCE unit by its exact scale (`value * num / den` in the inner type T),
@@ -1240,6 +1245,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         },
                     }
                 }
+                // `ast-splice-lift` — the quasiquote-splice lift `(List Int64) → (List Ast)`: wrap each
+                // element in an `Ast.Int` node. FOLD a constant list literal into a `Core::ListNew` of
+                // `(Ast.Int e)` `Core::SumNew` nodes (the Ast sum's `Int` variant is disc 0, one payload).
+                // A runtime list operand (no visible `ListNew`) declines — the runtime map is a later
+                // increment. A non-Int element declines (a wrong lift would corrupt the value).
+                Some(Prim::AstSpliceLift) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::Poison(r) => Core::Poison(r),
+                    Core::ListNew { elems } => match lower_ast_splice_lift(db, id, &elems) {
+                        Some(core) => core,
+                        None => Core::Poison(Reject::decline(
+                            "an active `,@` splice needs a compile-time-constant Int64 list \
+                                 (the runtime splice map is not yet built)",
+                        )),
+                    },
+                    _ => Core::Poison(Reject::decline(
+                        "an active `,@` splice needs a compile-time-constant list (the runtime \
+                         splice map is not yet built)",
+                    )),
+                },
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
@@ -1734,6 +1758,41 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
 /// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
 /// any binding is kept, or just the body's core when none is (no residual `let`).
+/// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in an `(Ast.Int e)` node — a
+/// `Core::SumNew` at the `Ast` sum's `Int` variant disc (one payload). Returns a `Core::ListNew` of the
+/// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum / its `Int` variant is somehow
+/// absent OR an element is not an Int (a non-Int element cannot lift — the splice declines rather than
+/// building a wrong `Ast.Int`). `id` seeds nothing structural; the synthesized nodes carry their own
+/// `Ty::Sum{Ast}`. The splice companion of the active-unquote `(Ast.Int e)` wrap (Int-only this increment).
+fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Option<Core> {
+    // The `Ast` sum type + its `Int` variant discriminant (the decl's variant order pins Int = disc 0;
+    // read it by name so a reordering does not silently mis-tag).
+    let ast_ty = {
+        let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
+        db.normalize_sum(occ, "Ast".to_string(), Vec::new())
+    };
+    let int_disc = variant_disc_by_name(db, &ast_ty, "Int")?;
+    let _ = id;
+    let mut wrapped = Vec::with_capacity(elems.len());
+    for &e in elems {
+        // Every element must be a constant Int (the list's element type is Int64; a non-Int constant —
+        // e.g. a nested list — has no `Ast.Int` lift this increment). Confirm it folds to a `ConstInt`.
+        if !matches!(core_of(db, e), Core::ConstInt(_)) {
+            return None;
+        }
+        let node = synth_core(
+            db,
+            Core::SumNew {
+                disc: int_disc,
+                payloads: vec![e],
+            },
+            ast_ty.clone(),
+        );
+        wrapped.push(node);
+    }
+    Some(Core::ListNew { elems: wrapped })
+}
+
 fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
     // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
     // what the body's `Ref`s point at and what a kept binding is keyed by.
@@ -8889,6 +8948,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListConcat
         | Prim::ListUpdate
         | Prim::ListAt
+        | Prim::AstSpliceLift
         | Prim::ListCtor
         | Prim::BytesOf
         | Prim::BytesLen
@@ -13008,6 +13068,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListConcat => "list-concat",
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
+        Prim::AstSpliceLift => "ast-splice-lift",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",

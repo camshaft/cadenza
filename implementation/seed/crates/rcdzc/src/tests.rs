@@ -19246,13 +19246,15 @@ mod match_engine {
             .is_none(),
             "a nested quasiquote evaluates only the inner unquote"
         );
-        // An ACTIVE splice (`,@`) is DEFERRED this increment — the quasiquote bails un-reified, so the
-        // existing splice-non-list check still fires: splicing a non-list (Int64 `5`) is CDZ0201.
+        // An ACTIVE splice (`,@`) of a NON-LIST is still CDZ0201. The active splice now reifies (see
+        // `active_unquote_splicing_flattens_a_list`), so the pre-desugar `collect_quote_body_syntax` walk
+        // no longer sees the splice; the reject is preserved by the `ast-splice-lift` operand check in
+        // `check_application` — a `provably_not_list` operand (Int64 `5`) has no elements to splice.
         assert_eq!(
             reject_code("(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))")
                 .as_deref(),
             Some("CDZ0201"),
-            "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
+            "splicing a non-list is CDZ0201 (the ast-splice-lift operand check, not a miscompile)"
         );
         // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
         // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
@@ -19283,6 +19285,39 @@ mod match_engine {
             .is_none(),
             "an active unquote of a let-bound NAME building an Ast result must reify (not bail as a literal)"
         );
+    }
+
+    #[test]
+    fn active_unquote_splicing_flattens_a_list() {
+        // 12-metaprogramming §Unquote-Splicing: an active `,@e` in a quasiquote splices the ELEMENTS of the
+        // list `e` into the surrounding form (vs `,e`, which inserts `e` as one element). `reify_active`
+        // rewrites `` `(f ,@xs) `` to `(Ast.List (List.concat (list (Ast.Name "f")) (ast-splice-lift xs)))`
+        // where the compiler-internal `ast-splice-lift : (List Int64) → (List Ast)` constant-folds each Int
+        // element into an `(Ast.Int e)` node. The splice run is const-folded, so a let-bound constant list
+        // flows through. Builds the SAME AST as writing the elements out longhand.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((xs (list 1 2 3))) (= (quasiquote (f (unquote-splicing xs))) \
+                                               (quote (f 1 2 3))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active splice of a constant Int list flattens its elements into the surrounding form"
+        );
+        // The operand of `,@` MUST be a list: `provably_not_list` types (an Int64 literal or a let-bound
+        // Int64) have no elements to splice → CDZ0201, matching the pre-desugar reject. The message is the
+        // `ast-splice-lift` operand check, not the generic apply-arity path.
+        for src in [
+            "(module m (def (main) (quasiquote (f (unquote-splicing 5)))) (export main))",
+            "(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "splicing a non-list operand is CDZ0201: {src}"
+            );
+        }
     }
 
     #[test]

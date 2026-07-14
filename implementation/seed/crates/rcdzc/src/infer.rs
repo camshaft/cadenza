@@ -2005,8 +2005,22 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
             }
             Ty::List(Box::new(elem_ty))
         }
+        // `ast-splice-lift : (List Int64) → (List Ast)` — the quasiquote-splice lift (compiler-internal).
+        // Its result is a list of `Ast` nodes; a bad operand shape is caught at the fold (declines), so
+        // typing is unconditional here.
+        Prim::AstSpliceLift => match ast_sum_ty(db) {
+            Some(ast_ty) => Ty::List(Box::new(ast_ty)),
+            None => Ty::Any,
+        },
         _ => Ty::Any,
     }
+}
+
+/// The `Ty::Sum` of the built-in `Ast` prelude sum (a monomorphic sum — no args), or `None` if the
+/// declaration is somehow absent. Used to type `ast-splice-lift`'s `(List Ast)` result.
+fn ast_sum_ty(db: &Db) -> Option<Ty> {
+    let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
+    Some(db.normalize_sum(occ, "Ast".to_string(), Vec::new()))
 }
 
 /// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
@@ -2495,6 +2509,13 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     ) = crate::eval::meta_apply_of(db, head)
     {
         return compound_ctor_type(db, prim, args);
+    }
+    // The COMPILER-INTERNAL `ast-splice-lift` intrinsic (`(intrinsic "ast-splice-lift") args`) — its head
+    // resolves DIRECTLY to a prim (no `(meta apply)` module record), so read it via `prim_of`. Result is
+    // `(List Ast)` (`compound_ctor_type`'s `AstSpliceLift` arm). Only the quasiquote-splice desugar emits
+    // it, never user surface.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift) {
+        return compound_ctor_type(db, crate::resolved::Prim::AstSpliceLift, args);
     }
     // The `map` VALUE-constructor alias applied — `(map (k v) …)` written as a bare NAME head. Its `args`
     // are the ENTRY-PAIR nodes (each a two-element `(key value)` list), NOT curried arguments — so type
@@ -3444,6 +3465,32 @@ fn check_application(
     args: &[StructId],
     out: &mut Vec<Reject>,
 ) {
+    // `ast-splice-lift` (the quasiquote-splice desugar's `(intrinsic "ast-splice-lift") e`) requires its
+    // operand to be a LIST — `,@` splices the ELEMENTS of a list (`metaprogramming.md`), so an operand
+    // that is PROVABLY not a list has no elements to splice → CDZ0201, the same reject the pre-desugar
+    // `collect_quote_body_syntax` gave a raw `(unquote-splicing 5)`. CONSERVATIVE (`provably_not_list`):
+    // only a concrete non-list rejects; an open/unknown type does not (never a false reject).
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift)
+        && args.len() == 1
+    {
+        let ty = type_of(db, args[0]);
+        if provably_not_list(&ty) {
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "unquote-splicing (,@) splices the elements of a list, but its operand is {} \
+                         — a value with no elements to splice",
+                        ty.render_name()
+                    ),
+                )
+                .at(args[0]),
+            );
+        }
+        // The operand's own faults are collected by the caller's `collect(head/operand)`; return so the
+        // generic scheme-unify below does not ALSO fault (the intrinsic has no HM scheme).
+        return;
+    }
     // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
     // integer. `CheckedOf`'s HM scheme source is `(Int a)`, which does NOT unify with a `BigInt` — so
     // the generic scheme-unify below would wrongly fault CDZ0203. Skip it for a `BigInt` source: the
