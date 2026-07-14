@@ -7002,6 +7002,39 @@ mod runtime_ops {
             ),
             "a runtime-divisor rem must still trap on ÷0 (not trap-free)"
         );
+
+        // WRAPPING ARITHMETIC IS TRAP-FREE: `wrapping-add`/`wrapping-mul` emit the raw machine add/mul with
+        // NO overflow guard (they wrap modulo the slot — that is their whole purpose), so they never trap.
+        // A discarding annihilator `(* 0 <wrapping-mul>)` → 0 now DROPS the wrapping-mul (no `i64.mul`
+        // remains); the CHECKED `(* 0 (* x x))` keeps its operand (a checked `*` can overflow → trapping, so
+        // its trap must be preserved even when the product is annihilated).
+        let muls = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Mul)).count();
+        assert_eq!(
+            muls(&lir("(: x Int64)", "(* 0 ((. Int64 wrapping-mul) x x))")),
+            0,
+            "a dead wrapping-mul is dropped by the annihilator fold (it is trap-free)"
+        );
+        assert!(
+            muls(&lir("(: x Int64)", "(* 0 (* x x))")) >= 1,
+            "a dead CHECKED mul is KEPT (it can overflow → trapping, so the trap is preserved)"
+        );
+        // VALUE PARITY: the annihilated wrapping product is 0; a live wrapping fold computes correctly.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(* 0 ((. Int64 wrapping-mul) x x))",
+                &[Val::S64(7)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x))",
+                &[Val::S64(6)]
+            ),
+            42 // 6 + 6*6
+        );
     }
 
     #[test]
