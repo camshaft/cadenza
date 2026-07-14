@@ -1150,6 +1150,26 @@
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right"
+  (doc    "A perform in a tuple or list CONSTRUCTOR element is a strict, ordered position — each element is
+           evaluated exactly once, left to right, before the compound is built — so the fold threads it like
+           an arithmetic operand or a call argument. This pins the STRING-HEADED constructor primitive
+           `(\"tuple\" …)` / `(\"list\" …)`, which is what the ML surface's tuple/list literal `(a, b)` /
+           `[a, b]` lowers to (a bare `tuple` NAME reduces via `(meta apply)` and threads through the call
+           path; the string-head ctor is the primitive and reaches the compound-constructor fold arm). Two
+           `Fresh.next` reads in a tuple, projected and summed: seeded 0, the elements read 0 then 1, so `(+
+           (. p 0) (. p 1))` = `0 + 1` = 1. Before this, a perform in a tuple/list/record element declined
+           ('not yet reducible by the tail-resumptive fold') — the ML surface (which always emits the
+           string-head ctor) could not build a tuple/list from performed values without a manual prefetch;
+           now the fold hoists the perform out of the element position like the operand/arg/sum-payload
+           cases it already handled. (Record fields — a `(label value)` pair structure — are a follow-up.)")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1))))
+                (let ((p ("tuple" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a performed operation composes as a RECORD field value that is then projected"
   (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
            is a strict, unconditional position, so it composes and the surrounding projection is a pure

@@ -3173,6 +3173,32 @@ fn thread_bounded(
             let rty = copy_pure(db, ty_expr);
             Some((db.push_list(vec![colon, rexpr, rty]), cur))
         }
+        // A TUPLE / LIST CONSTRUCTOR `("tuple" e0 e1 …)` / `("list" …)` — a STRICT compound constructor:
+        // every element is evaluated exactly once, left to right, before the compound is built. So a perform
+        // in an element reads/threads state exactly like an arithmetic operand or a call argument (the fold
+        // already handles those). Thread each element in order, then rebuild the same constructor with the
+        // rewritten elements. This is what threads `(let ((p ("tuple" (Fresh.next) (Fresh.next)))) …)` — the
+        // ML tuple/list literal, whose head is the STRING-LITERAL ctor primitive `"tuple"`/`"list"` (a bare
+        // `tuple` NAME reduces via `(meta apply)` and threads through the Apply arm; the string-head ctor
+        // reaches HERE). The ctor string is re-pushed as a `Leaf::Str` head so the resolver re-recognizes it.
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            let ctor = match resolved_of(db, node) {
+                Resolved::List { .. } => "list",
+                _ => "tuple",
+            };
+            let elems: Vec<StructId> = elems.iter().copied().collect();
+            let mut cur = states;
+            let mut relems = Vec::with_capacity(elems.len());
+            for e in elems {
+                let (re, next) = thread_bounded(db, e, cur, ctx, inline_depth)?;
+                relems.push(re);
+                cur = next;
+            }
+            let head = db.push_atom(Leaf::Str(ctor.to_string()));
+            let mut children = vec![head];
+            children.extend(relems);
+            Some((db.push_list(children), cur))
+        }
         // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
         // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
         // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with

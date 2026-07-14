@@ -3663,6 +3663,24 @@ fn two_sibling_self_recursive_calls_in_a_let_decline_not_miscompile() {
     );
 }
 
+/// A perform in a TUPLE/LIST CONSTRUCTOR element (the STRING-HEADED primitive `("tuple" …)`, what the ML
+/// tuple/list literal lowers to) now THREADS like an arithmetic operand / call argument (reported by the
+/// compiler-ml port, iter 38 — was an honest decline). `thread_bounded` gained a `Resolved::Tuple`/`List`
+/// arm that threads each element left-to-right and rebuilds the string-headed ctor. `(let ((p ("tuple"
+/// (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1)))` seeded 0 reads 0, 1 → 1. (Bare `tuple` NAME already
+/// threaded via the `(meta apply)` call path; only the string-head ctor primitive was declining.)
+#[test]
+fn a_perform_in_a_tuple_constructor_element_threads() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((p (\"tuple\" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed tuple ctor element must thread, not decline"
+    );
+}
+
 /// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
 /// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
 /// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of
