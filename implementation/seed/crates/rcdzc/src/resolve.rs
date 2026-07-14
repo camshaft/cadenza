@@ -755,6 +755,16 @@ fn nearest_name_suggestion(db: &mut Db, id: StructId, name: &str) -> Option<Stri
     // Positions that admit only NON-VALUE names drop the value tiers (lexical binders, value defs) — a
     // member operand and a type expression are each such a position.
     let non_value_position = member_operand || type_expr;
+    // HEAD position — `id` is the FIRST child of a List `(id …)`, so the author may have meant a GRAMMAR
+    // KEYWORD (`(mtch …)` for `match`, `(iff …)` for `if`, `(le …)` for `let`). A correctly-spelled
+    // grammar head is dispatched structurally (never reaches here); only a MISSPELLED one falls through to
+    // "unbound name", where — without the keywords in the pool — it got no suggestion and often cascaded
+    // (the mis-parsed body then faulting too). A head is ALSO a value position (a call `(helper 5)`), so
+    // the value tiers still apply; the keywords are ADDED candidates, not a replacement. Not a member
+    // operand / type expr (those are non-head positions).
+    let head_position = !non_value_position
+        && matches!(parent, Some(p)
+            if matches!(db.ast.get(p), Struct::List(kids) if kids.first() == Some(&id)));
     // Tier 1 — lexical scope: every binder visible where the reference sits. This is the ONLY per-NODE
     // tier (a param/`let`/pattern binder near THIS reference), and it is small, so it is collected fresh.
     let mut tier1: Vec<String> = Vec::new();
@@ -772,12 +782,22 @@ fn nearest_name_suggestion(db: &mut Db, id: StructId, name: &str) -> Option<Stri
     // pool winner — farther, or equal-distance-but-lexicographically-larger — could never have beaten it
     // against tier1 either).
     let pool_winner = pool_suggest_winner(db, member_operand, type_expr, name);
+    // In head position, the GRAMMAR keywords join the candidate set — a small FIXED const, so scanned
+    // inline (no memoized pool). `HANDLE_INTERNAL` is a synthesized desugar token, never something an
+    // author types, so it is excluded from the user-facing suggestions.
+    let grammar_candidates: &[&str] = if head_position { GRAMMAR } else { &[] };
     crate::diag::suggest::nearest(
         name,
         tier1
             .iter()
             .map(String::as_str)
-            .chain(pool_winner.as_deref()),
+            .chain(pool_winner.as_deref())
+            .chain(
+                grammar_candidates
+                    .iter()
+                    .copied()
+                    .filter(|k| *k != crate::effects::HANDLE_INTERNAL),
+            ),
     )
 }
 
