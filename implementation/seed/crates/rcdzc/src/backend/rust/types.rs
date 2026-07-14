@@ -95,12 +95,51 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
 /// primitive is namespace-isolated from the primitive it would otherwise shadow. The prefix is applied to
 /// the WHOLE sum/variant-name space uniformly (decl, construct, match all route through here), so they agree.
 pub fn sum_ident(name: &str) -> String {
-    let s = super::sanitize_ident(name);
-    if is_rust_primitive_type(&s) {
-        format!("cdz_ty_{s}")
+    // INJECTIVITY (a sum name is an emitted TYPE name — two distinct sums that collapse to one enum ident
+    // would be a duplicate `enum` / conflated construct+match, rustc E0428). `sanitize_ident` is LOSSY: it
+    // maps every non-`[A-Za-z0-9_]` char to `_` and prefixes a leading digit, so `Foo-Bar` and `Foo_Bar`
+    // both become `Foo_Bar`. For the sum/variant namespace we need an INJECTIVE map. A "clean" name — a
+    // valid Rust identifier start + body (`[A-Za-z_][A-Za-z0-9_]*`) that does NOT begin with the mangle
+    // MARKER — passes through `sanitize_ident` LOSSLESSLY (it changes nothing), so keep it (readable, and
+    // the common case). Any OTHER name (a lossy char, a leading digit, or a literal MARKER prefix) is
+    // HEX-mangled: `MARKER + hex(utf8)`. Two distinct originals give distinct hex; a clean name never
+    // begins with MARKER (excluded); a name that literally begins with MARKER is itself mangled — so the
+    // clean space and the mangled space are disjoint and each is injective. Result: no two distinct sum
+    // names ever share an emitted ident.
+    const MARKER: &str = "cdzsum_";
+    if is_clean_ident(name) && !name.starts_with(MARKER) {
+        let s = super::sanitize_ident(name);
+        // A clean name may still be a Rust PRIMITIVE (`i64`, `bool`, …) — valid char-wise but ruinous as an
+        // emitted enum name (`enum i64 { A(i64) }` makes the field refer to the enum, E0072). Escape it.
+        // (`sanitize_ident` already handled keywords → `r#kw` / `cdz_kw_…`.)
+        if is_rust_primitive_type(&s) {
+            format!("cdz_ty_{s}")
+        } else {
+            s
+        }
     } else {
-        s
+        // Lossy / leading-digit / MARKER-prefixed → hex-mangle the whole ORIGINAL name (injective).
+        let mut hex = String::with_capacity(name.len() * 2 + MARKER.len());
+        hex.push_str(MARKER);
+        for b in name.bytes() {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        hex
     }
+}
+
+/// Whether `name` is already a valid Rust identifier — starts with `[A-Za-z_]`, and every char is
+/// `[A-Za-z0-9_]`. Such a name passes through `sanitize_ident` UNCHANGED (the lossy `→ _` map fires on no
+/// char), so it is safe to emit verbatim; any other name must be hex-mangled to stay injective. An empty
+/// name is not a valid ident. (A keyword IS a clean ident here — `sanitize_ident` escapes it separately to
+/// `r#kw`, which is still injective: distinct keywords give distinct `r#kw`.)
+fn is_clean_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 /// Whether `s` names a Rust PRIMITIVE / built-in scalar type — the set an emitted `enum <name>` would
