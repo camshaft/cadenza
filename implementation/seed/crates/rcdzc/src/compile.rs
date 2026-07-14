@@ -819,6 +819,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
+        // `doc` is a real form, but it documents a definition from INSIDE it — `(def (f …) (doc "…") …)`
+        // (the `///` surface renders exactly there) — NOT as a top-level WRAPPER around the def. A user
+        // who writes `(doc "…" (def (f …) …))` at the top level (a natural guess, since a `//` COMMENT
+        // *does* wrap transparently — `strip_comments` peels it) gets the generic "unbound name `doc`"
+        // PLUS a misleading "export names no definition" cascade (the wrapped `def` is hidden from the
+        // top-level scan). Name the real placement so the author moves the `(doc …)` inside the def,
+        // rather than hunting a `def`/`export` typo the generic keyword-suggestion would propose. A DECLINE
+        // (the wrapped form is invisible, so the program cannot compile either way — outcome unchanged).
+        if head == "doc" {
+            // Coded CDZ0201 (a MALFORMED program — a `(doc …)` in an invalid position), NOT an uncoded
+            // decline: the doc form is a KNOWN construct merely MISPLACED (unlike `import`, an unmodeled
+            // feature), so this is a well-formedness rejection. Coding it also makes it the PREFERRED
+            // primary over the consequent "export names no definition" CDZ0101 (`compile_component` prefers
+            // a coded error; both are coded, and this one — anchored earlier, at the wrapper — sorts first
+            // and names the ROOT, while the export fault is the downstream symptom of the hidden def).
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `(doc …)` documents a definition from INSIDE it — write `(def (name …) (doc \
+                     \"…\") body)`, the shape a `///` doc-comment produces — not as a top-level wrapper \
+                     around the definition (a wrapper hides the definition from the module, so nothing \
+                     is defined or exported)",
+                )
+                .at(occ),
+            );
+            continue;
+        }
         // `pragma` is a recognized MODULE DIRECTIVE, but its `default-integer` effect (fixing bare
         // literals' type) is collected only from the members of a NESTED `(module NAME …)` declaration
         // (one written inside a `(do …)`), not from the program's outermost/root module. A `(pragma …)`

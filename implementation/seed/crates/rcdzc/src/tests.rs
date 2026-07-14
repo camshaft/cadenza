@@ -33078,6 +33078,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_top_level_doc_wrapper_names_its_in_definition_placement() {
+        // Unlike a `//` COMMENT (which `strip_comments` peels, so a `(comment "…" (def …))` wrapper is
+        // seen through), a `(doc "…")` documents a definition from INSIDE it — `(def (f …) (doc "…") …)`,
+        // the shape a `///` doc-comment renders to. A user who WRAPS a def in a top-level `(doc "…" (def
+        // …))` (a natural guess from the comment behavior) used to get the generic "unbound name `doc`"
+        // plus a misleading "export names no definition" cascade. Now the message names the real placement.
+        let msg = compile_component(&crate::codec::encode(&parse(
+            "(module m (doc \"the main fn\" (def (main) 1)) (export main))",
+        )))
+        .expect_err("a top-level doc wrapper hides the def, so the program cannot compile")
+        .message;
+        assert!(
+            msg.contains("documents a definition from INSIDE it")
+                && msg.contains("not as a top-level wrapper"),
+            "names the in-definition placement, not a bare unbound name: {msg}"
+        );
+        // The CANONICAL shape — a `(doc …)` INSIDE the def — compiles and the doc is queryable.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) (doc \"the main fn\") 42) (export main))",
+        )))
+        .expect("an in-definition doc clause is valid");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
