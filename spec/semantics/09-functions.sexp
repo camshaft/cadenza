@@ -3004,3 +3004,36 @@
             (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0))
             (export main)))
   (error  CDZ0201))
+
+(case "a const collection recursively folded is rejected, not compiled to an infinite loop"
+  (doc    "A `const` COLLECTION parameter (here a `(List Int64)`) consumed by a SELF-RECURSIVE fold in the
+           same function is REJECTED (CDZ0201) rather than compiled — because the composition of const
+           erasure and the tail-loop transform would MISCOMPILE it into an infinite loop. The recursion
+           `(s t …)` passes a shorter derived list `t` at each depth, but its argument node is the same
+           rest-binder occurrence every time, so the specialization memo collapses all depths to ONE copy;
+           the tail-loop transform then emits a `loop { … br 0 }` whose exit test (the `(list)`-nil / length
+           check) was const-erased away — a valid program that HANGS. Declining is decline-don't-miscompile:
+           a coded compile error beats a runtime infinite loop. The RUNTIME-list version (drop `const`)
+           compiles + runs correctly (the case below), and a const SCALAR recursion or a const DICTIONARY
+           consumer (the dict passed UNCHANGED, driven by a runtime counter) is unaffected — only a const
+           collection the callee recursively folds OVER. (Fully unrolling the fold over the compile-time
+           list is the ideal future fix; until it is wired safely, the reject prevents the hang.)")
+  (input  (do
+            (def (s (const (: xs (List Int64))) (: acc Int64))
+              (match xs ((list) acc) ((list h .. t) (s t (+ acc h)))))
+            (def (main) (s (list 1 2 3) 0))
+            (export main)))
+  (error  CDZ0201))
+
+(case "the runtime-list version of a tail fold compiles and folds correctly"
+  (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
+           `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real
+           length/nil test, and runs — `s [1,2,3] 0` = 6. Pins that dropping `const` (so the list is an
+           ordinary runtime value the loop iterates) is the working form, and that the reject above is
+           specific to the const-erasure × tail-loop composition, not to tail-folding a list.")
+  (input  (do
+            (def (s (: xs (List Int64)) (: acc Int64))
+              (match xs ((list) acc) ((list h .. t) (s t (+ acc h)))))
+            (def (main) (s (list 1 2 3) 0))
+            (export main)))
+  (output (: 6 Int64)))

@@ -1366,6 +1366,7 @@ pub fn assemble_runtime_resource(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
+    make_param_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1494,11 +1495,14 @@ pub fn assemble_runtime_resource(
         section(sec::ALIAS, &wasm_vec(4, &items))
     };
     out.extend_from_slice(&boundary_aliases);
-    // sec 7: `own<t>` (type 2) then the `make` functype `() -> own<t>` (type 3). The resource is
-    // component type 1 here (the import-instance-type is type 0), so `own` references type 1.
+    // sec 7: `own<t>` (type 2) then the `make` functype `(make-params…) -> own<t>` (type 3). The resource
+    // is component type 1 here (the import-instance-type is type 0), so `own` references type 1. A NULLARY
+    // export gives `make() -> own<t>` (empty `make_param_bytes`, byte-identical to the old form); a
+    // PARAMETERIZED export forwards its scalar boundary params so the host computes the heap value from
+    // its arguments (the value analogue of the closure resource's `make(k)`).
     let make_types = {
         let mut items = own_item(1);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_types);
@@ -1531,8 +1535,10 @@ pub fn assemble_runtime_resource(
         ),
     ));
     // sec 4: the nested re-export component — the BORROW variant (re-types `encode` against
-    // `borrow<t>`), matching the borrow lift above.
-    out.extend_from_slice(&component_section(&resource_inner_component_borrow()));
+    // `borrow<t>`), matching the borrow lift above; its `make` carries the same forwarded params.
+    out.extend_from_slice(&component_section(&resource_inner_component_borrow(
+        make_param_bytes,
+    )));
     // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the two
     // lifted funcs (comp funcs k, k+1) → component instance 0.
     out.extend_from_slice(&section(
@@ -1566,6 +1572,7 @@ pub fn assemble_runtime_resource_with_len(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
+    make_param_bytes: &[u8],
 ) -> Vec<u8> {
     // `len` is the single scalar method `len : borrow<t> -> u32`; the generic path is the one hand-emit.
     assemble_runtime_resource_with_scalar_methods(
@@ -1573,6 +1580,7 @@ pub fn assemble_runtime_resource_with_len(
         dtor_core,
         imports,
         import_name,
+        make_param_bytes,
         &[ScalarMethod {
             boundary_name: LEN_BOUNDARY_NAME,
             core_export: LEN_CORE_EXPORT,
@@ -1618,6 +1626,7 @@ pub fn assemble_runtime_resource_with_scalar_methods(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
+    make_param_bytes: &[u8],
     methods: &[ScalarMethod],
 ) -> Vec<u8> {
     let k = imports.len();
@@ -1729,10 +1738,10 @@ pub fn assemble_runtime_resource_with_scalar_methods(
     };
     out.extend_from_slice(&boundary_aliases);
     // sec 7 + 8: make (types 2,3 → comp func k) and encode (types 4,5,6 → comp func k+1) — IDENTICAL to
-    // `assemble_runtime_resource`.
+    // `assemble_runtime_resource`, including the `make(make-params…) -> own<t>` param forwarding.
     let make_types = {
         let mut items = own_item(1);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_types);
@@ -1774,9 +1783,10 @@ pub fn assemble_runtime_resource_with_scalar_methods(
         };
         out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &lift)));
     }
-    // sec 4: the nested re-export component with make/encode + each scalar method.
+    // sec 4: the nested re-export component with make/encode + each scalar method; `make` carries the
+    // same forwarded params as the outer lift.
     out.extend_from_slice(&component_section(
-        &resource_inner_component_scalar_methods(methods),
+        &resource_inner_component_scalar_methods(make_param_bytes, methods),
     ));
     // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the lifted
     // funcs (make = comp func k, encode = k+1, method i = k+2+i) → component instance 0.
@@ -5975,7 +5985,7 @@ fn component_instantiate_roundtrip_item(
 /// against the ComponentBuilder borrow oracle) as scaffolding for the follow-up; the live path still
 /// uses `own` ([[rcdzc-r1-resource-encode-linking-findings]]).
 #[allow(dead_code)]
-fn resource_inner_component_borrow() -> Vec<u8> {
+fn resource_inner_component_borrow(make_param_bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     // sec 10: import the abstract resource `import-type-t` (Type, SubResource bound) → type 0.
@@ -5983,10 +5993,11 @@ fn resource_inner_component_borrow() -> Vec<u8> {
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_subresource_item("import-type-t")),
     ));
-    // sec 7: `own<0>` (type 1) then the imported `make` functype `() -> own<0>` (type 2).
+    // sec 7: `own<0>` (type 1) then the imported `make` functype `(make-params…) -> own<0>` (type 2) —
+    // the SAME param signature the outer component lifts, so the re-export ascription type-checks.
     let make_import_types = {
         let mut items = own_item(0);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_import_types);
@@ -6014,10 +6025,11 @@ fn resource_inner_component_borrow() -> Vec<u8> {
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: `own<6>` (type 7) then the `make` functype re-typed against the exported resource (type 8).
+    // sec 7: `own<6>` (type 7) then the `make` functype re-typed against the exported resource (type 8),
+    // carrying the same forwarded params as the import side.
     let make_export_types = {
         let mut items = own_item(6);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(7)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(7)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_export_types);
@@ -6054,7 +6066,10 @@ fn resource_inner_component_borrow() -> Vec<u8> {
 ///   EXPORT re-decls: own<E> (E+1), make-ft (E+2), borrow<E> (E+3), list (E+4), encode-ft (E+5), then per
 ///            method i: borrow<E> (E+6+2i), method-ft (E+7+2i).
 /// Funcs: make 0, encode 1, method i = 2+i.
-fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> {
+fn resource_inner_component_scalar_methods(
+    make_param_bytes: &[u8],
+    methods: &[ScalarMethod],
+) -> Vec<u8> {
     let m = methods.len() as u32;
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -6063,10 +6078,10 @@ fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> 
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_subresource_item("import-type-t")),
     ));
-    // sec 7: own<0> (type 1) + make functype `() -> own<0>` (type 2).
+    // sec 7: own<0> (type 1) + make functype `(make-params…) -> own<0>` (type 2).
     out.extend_from_slice(&{
         let mut items = own_item(0);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
     // sec 10: import `import-func-make` : type 2 → func 0.
@@ -6114,10 +6129,13 @@ fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> 
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: own<E> (type E+1) + make functype re-typed (type E+2).
+    // sec 7: own<E> (type E+1) + make functype re-typed (type E+2), same forwarded params.
     out.extend_from_slice(&{
         let mut items = own_item(e);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(e + 1)));
+        items.extend_from_slice(&params_result_functype(
+            make_param_bytes,
+            &owned_valtype(e + 1),
+        ));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
     // sec 11: export `make` (func 0) ascribed to functype E+2.

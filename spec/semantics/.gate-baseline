@@ -21,6 +21,7 @@ pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driv
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
 pass	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
+pass	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
@@ -31,8 +32,10 @@ pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
 pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)
+pass	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
@@ -318,6 +321,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
+pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
@@ -477,6 +481,8 @@ pass	a handle whose head names a value rather than an effect is rejected
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
+pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
@@ -759,6 +765,11 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a runtime BigInt computed from its argument
+pass	a parameterized export returns a runtime Rational computed from its argument
+pass	a parameterized export returns a sum value computed from its argument
+pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial constructor bound in a let completes when applied
@@ -1415,6 +1426,7 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
 pass	converting a fixed-width integer to BigInt is explicit
 pass	converting a float to its own width is the identity
@@ -1837,6 +1849,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
+pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same-core-shape sibling dispatches ITS body, not the first
@@ -1937,6 +1950,7 @@ pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
+pass	wrapping arithmetic uses the named wrapping form of the operator
 pass	wrapping multiplication wraps rather than trapping
 todo	Type is a first-class value
 todo	a closure returning Unit is declined — Unit has no machine representation
@@ -1950,10 +1964,8 @@ todo	an open sum payload that does not match its schema yields a typed failure, 
 todo	an open sum's payload decodes against a schema to a typed result
 todo	comparing same-shape nominal types is a type error
 todo	constructing a runtime value that does not fit its segment traps
-todo	converting a BigInt back to a fixed width is checked and traps when out of range
 todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	reading the text a printer produced round-trips to an equal value
-todo	wrapping arithmetic uses the distinct wrapping type

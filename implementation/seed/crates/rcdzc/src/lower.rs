@@ -4165,11 +4165,21 @@ fn pattern_constraints(
     } = ty
         && crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl)
     {
-        return Err(Reject::coded(
-            Code::TypeMismatch,
-            format!(
-                "this variant pattern is not a variant of the matched type {}",
-                ty.render_name()
+        // The ctor is a VALID variant, but of a DIFFERENT sum (`Nn` from `B` matched against `A`). Enrich
+        // with the same "did you mean?" over the SCRUTINEE sum's variants the typo path gets — the author
+        // reached for one of the MATCHED type's variants — and carry a replace fix on the pattern head.
+        // A far miss lists the matched type's variants (a CLOSED set — listing is signal), so the reader
+        // learns what `A` actually offers instead of only that this ctor is not one of them.
+        return Err(enrich_pattern_head_suggestion(
+            db,
+            head,
+            ty,
+            Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "this variant pattern is not a variant of the matched type {}",
+                    ty.render_name()
+                ),
             ),
         ));
     }
@@ -5804,6 +5814,16 @@ fn arg_captures_runtime_binding(db: &mut Db, arg: StructId) -> bool {
 /// reuses ONE function (byte-identical copies dedup by construction — same key). Returns `None` if an
 /// argument type is undetermined (`Any`/a free `Var`) — the call declines rather than baking a loose
 /// annotation. Modeled on `effects::specialize_recursive` (minus the trailing state params).
+/// Whether `ty` is a runtime COLLECTION (List/Map/Set) — a value whose length/shape drives a fold's
+/// recursion. Used to gate the `const`-collection-consumed-by-a-recursive-fold miscompile guard in
+/// `type_specialize` (a const SCALAR / record / type is fine; only a collection folds down a spine).
+fn is_collection_ty(ty: &crate::ty::Ty) -> bool {
+    matches!(
+        ty,
+        crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+    )
+}
+
 fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usize, Vec<usize>)> {
     let orig_body = db.defs[callee].body?;
     let orig_params = db.defs[callee].params.clone();
@@ -5853,6 +5873,25 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             // violated → decline (the gate raises the coded error). Otherwise inline the arg's value node.
             if arg_captures_runtime_binding(db, a) {
                 return None; // the const arg depends on runtime data — not compile-time-known
+            }
+            // ⚠ MISCOMPILE GUARD: a `const` COLLECTION param (List/Map/Set) consumed by a SELF-RECURSIVE
+            // fold cannot be specialized correctly here yet. The recursion passes a DERIVED shorter
+            // collection (`(s t …)` where `t` is the rest of the const list) at each depth, but its arg
+            // node is the SAME rest-binder occurrence every time, so the syntactic fingerprint collapses
+            // ALL depths to ONE specialization → the recursion re-enters that spec → the tail-loop
+            // transform emits a `loop { … br 0 }` whose exit test (the `(list)`-nil / length check) was
+            // const-erased away ⇒ an INFINITE LOOP on a valid program (a value HANGS). A folded-value
+            // fingerprint (to fully unroll) needs `core_of`, which memoizes into the arg node the
+            // specialization then SPLICES into the copy — corrupting a `const`-DICTIONARY consumer's
+            // lowering. Until the unroll is wired safely, DECLINE this composition (decline-don't-
+            // miscompile): a coded compile error beats a runtime hang, and the RUNTIME-collection version
+            // (no `const`) compiles + runs correctly. A NON-recursive const collection, or a const SCALAR /
+            // DICTIONARY (unchanged through the recursion), is unaffected — only a const collection the
+            // callee recursively folds over.
+            if is_collection_ty(&crate::infer::type_of(db, a))
+                && crate::eval::is_recursive(db, orig_body)
+            {
+                return None;
             }
             let mut fp = String::new();
             subtree_fingerprint(db, a, &mut fp);

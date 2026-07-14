@@ -138,6 +138,37 @@
                 (handle A 5 ((a (u) s (do (Count.tick) (resume s s)))) (A.a)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
+  (doc    "Witnesses capabilities-and-effects.md #Capabilities Attenuate: A Handler Forwards A Narrower Row
+           (2nd sentence — attenuation never WIDENS): a handler MUST NOT grant its sub-computation an effect
+           row label it does not itself hold. `A`'s arm forwards `B` (performs `(B.b)` as its resume value),
+           but `B` is neither handled by an enclosing handler nor delegated at the entrypoint anywhere in
+           `main`'s scope — so the arm reaches an effect its enclosing scope does not hold. Rejected at
+           compile time (CDZ0401, the no-home check): an arm cannot forward a capability the enclosing row
+           does not carry, keeping 'no ambient authority' transitive across the handle. The over-broad
+           forward is a compile-time rejection, not a runtime failure.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (resume (B.b) s))) (A.a))) (export main)))
+  (error  CDZ0401))
+
+(case "a handler arm forwards an effect its enclosing scope DOES hold and runs"
+  (doc    "The positive companion (attenuation NARROWS within what is held — 1st sentence): the SAME arm that
+           forwards `B` is accepted once an enclosing handler HOLDS `B`. `main` wraps the `A`-handler in a
+           `B`-handler, so `A`'s arm forwarding `(B.b)` reaches a held effect: `B` seeded 100 resumes `s`
+           (=100), so `(B.b)` is 100, `A`'s arm resumes 100, and `(A.a)` = 100. Pins that the forward is
+           legal exactly when the enclosing scope carries the label — the row a handler forwards is a SUBSET
+           of the row it holds, checked statically (the reject above is the same check failing).")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle B 100 ((b (u) s (resume s s)))
+                (handle A 0 ((a (u) s (resume (B.b) s))) (A.a)))) (export main)))
+  (output (: 100 Int64)))
+
 (case "an abortive handler abandons a host call in the path it discards"
   (doc    "Witnesses that an abortive perform's abandonment extends to a DELEGATED host call in the
            discarded continuation (capabilities-and-effects.md #A Handler Arm May Abandon The Computation It

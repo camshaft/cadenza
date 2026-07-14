@@ -678,6 +678,47 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
+        // `pragma` is a recognized MODULE DIRECTIVE, but its `default-integer` effect (fixing bare
+        // literals' type) is collected only from the members of a NESTED `(module NAME …)` declaration
+        // (one written inside a `(do …)`), not from the program's outermost/root module. A `(pragma …)`
+        // that reaches `unknown_top_forms` is one at the program's top level — the root module's own
+        // member, or a bare do-item — where its effect is NOT applied. The generic path would suggest
+        // "did you mean `def`?" (a misleading typo fix); instead name the real situation so the author
+        // wraps the module in a `(do …)` (the tested, effective placement) rather than chasing a phantom
+        // typo. Coded CDZ0601 (the pragma-directive code): a mis-scoped directive is a directive fault, not
+        // an unbound name. (A pragma inside a nested module is collected by the pragma pass and its module's
+        // members never reach `unknown_top_forms`, so this fires only for a top-level/root-scope pragma.)
+        if head == "pragma" {
+            // Only emit the placement message for a RECOGNIZED, WELL-FORMED directive — a top-level
+            // `(pragma default-integer <T>)` with the correct arity whose SOLE defect is its placement. A
+            // malformed pragma (an unknown key `nonesuch`, a wrong arity, a non-integer type) ALSO gets a
+            // more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
+            // CDZ0303 domain), which is MORE actionable than "it's mis-scoped" — so skip the placement
+            // message there and let the registry message be the one primary. Gate on the exact shape the
+            // registry pass accepts: key `default-integer` with exactly one argument (`ptail.len() == 2`);
+            // the domain (integer-type) check is the registry's, so a bad type still gets CDZ0303 alone.
+            let ptail = db.ast.as_form(occ, "pragma").map(<[_]>::to_vec);
+            let well_formed_default_integer = ptail.as_deref().is_some_and(|t| {
+                t.len() == 2
+                    && t.first()
+                        .and_then(|&k| db.ast.as_name(k))
+                        == Some("default-integer")
+                    // A non-integer type argument is the registry's CDZ0303 — defer to it, no placement noise.
+                    && non_integer_default_fault(db, occ, t[1]).is_none()
+            });
+            if well_formed_default_integer {
+                faults.push(
+                    Reject::coded(
+                        Code::UnknownDirective,
+                        "a `(pragma …)` directive has effect only inside a nested `(module NAME …)` \
+                         declaration (one written in a `(do …)` block); at the program's top level it \
+                         has no effect — wrap the module carrying it in a `(do …)`",
+                    )
+                    .at(occ),
+                );
+            }
+            continue;
+        }
         // FIRST: is the head a plausible TYPO of a top-level DECLARATION KEYWORD (`exprot`→`export`,
         // `deff`→`def`)? That is the far likelier intent than a mistyped VALUE name — a top-level `(head
         // …)` form is a declaration position, so a near-miss for `def`/`export`/`type`/`effect`/`module`/

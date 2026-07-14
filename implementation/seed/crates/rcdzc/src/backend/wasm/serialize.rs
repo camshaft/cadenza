@@ -990,8 +990,15 @@ pub fn runtime_resource_core_module(
     imports: &[&RtOp],
     export_abs: u32,
     template: &crate::lower::ValueFormTemplate,
+    make_param_vts: &[ValType],
 ) -> Result<Vec<u8>, String> {
-    runtime_resource_core_module_form(funcs, imports, export_abs, EscapeForm::Flat(template))
+    runtime_resource_core_module_form(
+        funcs,
+        imports,
+        export_abs,
+        EscapeForm::Flat(template),
+        make_param_vts,
+    )
 }
 
 /// The value-form the escape `t-encode` walker renders — a single flat template (a tuple/record, ONE
@@ -1022,8 +1029,9 @@ pub fn runtime_resource_core_module_form(
     imports: &[&RtOp],
     export_abs: u32,
     form: EscapeForm,
+    make_param_vts: &[ValType],
 ) -> Result<Vec<u8>, String> {
-    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, &[])
+    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, &[], make_param_vts)
 }
 
 /// A value-resource METHOD the core module emits beyond make/t-encode/cabi_realloc (VM-1..VM-3). Each is a
@@ -1056,6 +1064,7 @@ pub fn runtime_resource_core_module_form_ex(
     export_abs: u32,
     form: EscapeForm,
     methods: &[CoreMethod],
+    make_param_vts: &[ValType],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1081,11 +1090,14 @@ pub fn runtime_resource_core_module_form_ex(
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    // make `()->i32`.
+    // make `(make-params…)->i32` — a NULLARY export gives `make()`; a PARAMETERIZED export forwards its
+    // scalar params so the host computes a distinct value per input (the value analogue of the closure
+    // resource's `make(k)`, C-HOST-2).
     let make_type_idx = defined_type_base + n;
     {
+        let params: Vec<u8> = make_param_vts.iter().map(|v| v.byte()).collect();
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
-        t.extend_from_slice(&wasm_vec(0, &[]));
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
@@ -1228,10 +1240,16 @@ pub fn runtime_resource_core_module_form_ex(
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // make: `call <export>` (builds the compound → its heap handle on the stack) then
-    // `call resource-new` (register the handle → a resource handle).
+    // make: forward the export's params (locals `0..p`), `call <export>` (builds the compound → its heap
+    // handle on the stack) then `call resource-new` (register the handle → a resource handle). A NULLARY
+    // export forwards zero params (byte-identical to the old `make()`); a parameterized export threads its
+    // scalar params into the body call so the compound is computed from the host's arguments.
     {
-        let mut inner = uleb_bytes(0); // no locals
+        let mut inner = uleb_bytes(0); // no locals of its own — params are locals 0..p
+        for p in 0..make_param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
         inner.push(op::CALL);

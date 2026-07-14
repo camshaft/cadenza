@@ -216,11 +216,17 @@ pub fn emit(
     // through and declines below with the arity/parameter diagnosis (`crosses_as_resource_escape` there too,
     // so the message names the real constraint, not the type).
     if let [e] = &layout.exports[..]
-        && e.params.is_empty()
         && crosses_as_resource_escape(&e.result)
     {
         let body = def_body(db, e.def)?;
-        if let Some(value_bytes) = crate::lower::constant_value_form(db, body) {
+        // A CONSTANT compound (a foldable body) bakes its value bytes into the resource core with a
+        // NULLARY `make` — only a nullary export can be constant (a parameterized body's value depends on
+        // its argument, so `constant_value_form` returns `None` and it falls through to the runtime
+        // walkers below, whose `make` forwards the params). Guard the bake on nullary so a parameterized
+        // export never takes the constant shape.
+        if e.params.is_empty()
+            && let Some(value_bytes) = crate::lower::constant_value_form(db, body)
+        {
             let main_core = serialize::resource_core_module(&value_bytes);
             let dtor_core = serialize::resource_dtor_module();
             return Ok(envelope::assemble_resource(&main_core, &dtor_core));
@@ -674,9 +680,11 @@ pub fn emit(
                 // representation" (false — it crosses fine alone via the resource escape).
                 "a heap value (a compound, string, or collection) crosses the host boundary only as the program's SINGLE export; this program has multiple exports (make it the only export, or return a scalar)"
             } else if !e.params.is_empty() {
-                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY export,
-                // so a heap return from a function that takes a parameter declines here.
-                "a heap value escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized heap return is not yet supported)"
+                // A single PARAMETERIZED export whose heap result reached here — the resource escape now
+                // FORWARDS scalar params (`make(a…) -> own<t>`), so a scalar-param heap return crosses.
+                // Reaching this fallthrough means a param has NO scalar boundary type (a compound/closure
+                // param), which `make` cannot yet forward — that widening is a later increment.
+                "a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not yet supported)"
             } else {
                 // A single NULLARY export whose heap result reached here — the resource-escape path above
                 // TRIED and its value-form template was `None`: the result has no runtime value form yet.
@@ -1139,11 +1147,14 @@ fn resource_escape_dwarf(
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping sum export is not in the emission order")
         })?;
+        // The sidecar only runs for a NULLARY export (guarded at the top of this fn), so `make` forwards
+        // no params — pass `&[]`, byte-identical to the nullary emitter's `make() -> own<t>`.
         let main_core = serialize::runtime_resource_core_module_form(
             &funcs,
             &imports,
             export_abs,
             serialize::EscapeForm::Sum(&tpl),
+            &[],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1183,6 +1194,7 @@ fn resource_escape_dwarf(
                 serialize::CoreMethod::IsEmpty,
                 serialize::CoreMethod::ToBytes,
             ],
+            &[], // nullary sidecar — `make` forwards no params
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1204,8 +1216,9 @@ fn resource_escape_dwarf(
         let export_abs = layout
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
-        let main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl)
-            .map_err(Reject::decline)?;
+        let main_core =
+            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[])
+                .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
         )?));
@@ -1433,8 +1446,10 @@ fn emit_runtime_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
 
-    let mut main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl)
-        .map_err(Reject::decline)?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
+    let mut main_core =
+        serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl, &make_param_vts)
+            .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
     // core's code section (the synthesized `make`/`t-encode`/`cabi_realloc` follow), so `code_ranges`
     // over `funcs` gives their correct payload-relative offsets and `code_section_payload_base` walks
@@ -1450,6 +1465,7 @@ fn emit_runtime_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -1829,6 +1845,38 @@ fn nested_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<NestedAmon
     ))
 }
 
+/// A fixed-shape compound closure argument with a NESTED compound field — the SOLE arg OR among aliased-width
+/// scalars — as a [`NestedCompoundArgBoundary`]. The SOLE case (arity 1) has empty prefix/suffix + `base_param`
+/// 1 and `leaf_bytes` == the flattened leaves; the AMONG-SCALARS case (arity > 1) carries prefix/suffix + a
+/// shifted `base_param` (and empty `leaf_bytes` — the shape drives the mint). `None` unless exactly one
+/// compound (with a nested field) among scalars. Shared by every closure emit path's `nested_tuple` binding.
+fn nested_sole_or_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<NestedCompoundArgBoundary> {
+    if arg_tys.len() == 1 {
+        let (lb, lv, rf, shape) = nested_fixed_shape_tuple_arg(&arg_tys[0])?;
+        // Only this path when there IS a nested field (else the all-scalar case is a flat `tuple_arg`).
+        let has_nested = shape.iter().any(|f| {
+            matches!(
+                f,
+                crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+            )
+        });
+        has_nested.then_some((
+            lb,
+            lv,
+            crate::backend::wasm::serialize::TupleArgRebuild {
+                fields: rf,
+                base_param: 1,
+            },
+            shape,
+            Vec::new(),
+            Vec::new(),
+        ))
+    } else {
+        nested_compound_among_scalars(arg_tys)
+            .map(|(all_vts, pre, suf, rb, shape)| (Vec::new(), all_vts, rb, shape, pre, suf))
+    }
+}
+
 fn emit_closure_resource(
     db: &mut Db,
     layout: &Layout,
@@ -1919,38 +1967,12 @@ fn emit_closure_resource(
     // recursive `TupleArgRebuild`, and the envelope mints the inner `tuple<…>` types (`TupleFieldShape`). The
     // sole case has empty prefix/suffix + `base_param=1`; the among-scalars case carries prefix/suffix + a
     // shifted `base_param`.
-    let nested_tuple: Option<NestedCompoundArgBoundary> = if host_imports.is_empty()
-        && tuple_arg.is_none()
-    {
-        if arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                // Only this path when there IS a nested field (else the all-scalar case = `tuple_arg`).
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if host_imports.is_empty() && tuple_arg.is_none() {
+            nested_sole_or_among_scalars(arg_tys.as_slice())
         } else {
-            // A nested compound AMONG scalar args: prefix/suffix scalars surround it, `base_param` shifted.
-            nested_compound_among_scalars(arg_tys.as_slice())
-                .map(|(all_vts, pre, suf, rb, shape)| (Vec::new(), all_vts, rb, shape, pre, suf))
-        }
-    } else {
-        None
-    };
+            None
+        };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
@@ -2658,33 +2680,13 @@ fn emit_multi_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    // A SOLE fixed-shape compound arg with a NESTED compound field (all exports share it): the shared `call`
-    // rebuilds the nested cell recursively, the envelope mints the inner `tuple<…>` types by index. Detected
-    // when `tuple_arg` (all-scalar-field) is None. Scoped: SOLE nested arg (empty prefix/suffix), any result.
-    let nested_tuple: Option<NestedCompoundArgBoundary> =
-        if tuple_arg.is_none() && arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
-        } else {
-            None
-        };
+    // A fixed-shape compound arg with a NESTED compound field (shared by all closure exports) — SOLE or among
+    // scalars. Detected when the flat `tuple_arg` is None.
+    let nested_tuple: Option<NestedCompoundArgBoundary> = if tuple_arg.is_some() {
+        None
+    } else {
+        nested_sole_or_among_scalars(arg_tys.as_slice())
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
@@ -2916,10 +2918,20 @@ fn emit_multi_closure_resource(
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, pre, _)| pre.as_slice())
+        })
         .unwrap_or(&[]);
     let tsuf = tuple_arg
         .as_ref()
         .map(|(_, _, _, suf, _)| suf.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, _, suf)| suf.as_slice())
+        })
         .unwrap_or(&[]);
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
@@ -3062,7 +3074,7 @@ fn emit_multi_closure_resource(
     // whose sole arg is a NESTED fixed-shape compound. The shared `call` rebuilds the nested cell recursively;
     // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
     // was handled by the list-result routings above.)
-    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, _npre, _nsuf)) = &nested_tuple {
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, npre, nsuf)) = &nested_tuple {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -3088,8 +3100,8 @@ fn emit_multi_closure_resource(
             &[], // no plain exports
             false,
             None, // the flat all-scalar path is unused; the shape drives the mint
-            &[],  // sole nested tuple → no prefix/suffix scalars
-            &[],
+            npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
+            nsuf,
             Some(shape),
         ));
     }
@@ -3203,34 +3215,13 @@ fn emit_mixed_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    // A SOLE fixed-shape compound arg with a NESTED compound field (shared by all closure exports; the plain
-    // exports ride alongside): the shared `call` rebuilds the nested cell recursively, the envelope mints the
-    // inner `tuple<…>` types by index. Detected when `tuple_arg` (all-scalar-field) is None. Scoped: sole
-    // nested arg, any result.
-    let nested_tuple: Option<NestedCompoundArgBoundary> =
-        if tuple_arg.is_none() && arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
-        } else {
-            None
-        };
+    // A fixed-shape compound arg with a NESTED compound field (shared by all closure exports; the plain
+    // exports ride alongside) — SOLE or among scalars. Detected when the flat `tuple_arg` is None.
+    let nested_tuple: Option<NestedCompoundArgBoundary> = if tuple_arg.is_some() {
+        None
+    } else {
+        nested_sole_or_among_scalars(arg_tys.as_slice())
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
@@ -3511,10 +3502,20 @@ fn emit_mixed_closure_resource(
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, pre, _)| pre.as_slice())
+        })
         .unwrap_or(&[]);
     let tsuf = tuple_arg
         .as_ref()
         .map(|(_, _, _, suf, _)| suf.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, _, suf)| suf.as_slice())
+        })
         .unwrap_or(&[]);
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
@@ -3657,7 +3658,7 @@ fn emit_mixed_closure_resource(
     // the closure exports, with plain exports alongside. The shared `call` rebuilds the nested cell recursively;
     // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
     // was handled by the list-result routings above.)
-    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, _npre, _nsuf)) = &nested_tuple {
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, npre, nsuf)) = &nested_tuple {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -3683,8 +3684,8 @@ fn emit_mixed_closure_resource(
             &abi_plain,
             false,
             None, // the flat all-scalar path is unused; the shape drives the mint
-            &[],  // sole nested tuple → no prefix/suffix scalars
-            &[],
+            npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
+            nsuf,
             Some(shape),
         ));
     }
@@ -5164,12 +5165,14 @@ fn emit_runtime_bytes_resource(
         serialize::CoreMethod::IsEmpty,
         serialize::CoreMethod::ToBytes,
     ];
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
         &core_methods,
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -5183,6 +5186,7 @@ fn emit_runtime_bytes_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
         &[
             envelope::ScalarMethod {
                 boundary_name: "len",
@@ -5274,12 +5278,14 @@ fn emit_runtime_sum_resource(
     let export_abs = layout
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::Sum(tpl),
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -5292,6 +5298,7 @@ fn emit_runtime_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -5353,12 +5360,14 @@ fn emit_recursive_sum_resource(
     let export_abs = layout.abs(export_def).ok_or_else(|| {
         Reject::decline("the escaping recursive-sum export is not in the emission order")
     })?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
@@ -5369,6 +5378,7 @@ fn emit_recursive_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -5423,6 +5433,46 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
     db.defs[def]
         .body
         .ok_or_else(|| Reject::decline(format!("definition `{}` has no body", db.defs[def].name)))
+}
+
+/// The escaping export's `make`-forwarded parameters, as BOTH the core valtypes (`make`'s wasm params +
+/// body `local.get`s) and the component boundary bytes (`make`'s component functype params) — the two
+/// reps `make` needs, built from the ONE param list so they cannot diverge. A NULLARY export gives two
+/// empty vecs (the classic `make() -> own<t>`, byte-identical to before); a PARAMETERIZED export gives
+/// its scalar params (`make(a, …) -> own<t>`), so a heap value that depends on the host's arguments
+/// crosses via the resource escape. Read off the export plan (the same params the export's selected body
+/// takes). A NON-scalar param declines — a parameterized heap return forwards scalar params only this
+/// increment (a compound-param export is a later widening), the SAME boundary the closure-resource
+/// `make(k)` and the plain multi-export path draw for their params.
+fn export_make_params(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
+    let params = match layout.export_plan(export_def) {
+        Some(e) => e.params.clone(),
+        None => crate::layout::def_params(db, export_def),
+    };
+    let mut vts = Vec::with_capacity(params.len());
+    let mut bytes = Vec::with_capacity(params.len());
+    for (_, t) in &params {
+        let vt = crate::backend::wasm::lir::valtype_of(t);
+        let byte = closure_boundary_byte(t);
+        match (vt, byte) {
+            (Some(vt), Some(byte)) => {
+                vts.push(vt);
+                bytes.push(byte);
+            }
+            _ => {
+                return Err(Reject::decline(format!(
+                    "a parameterized heap-return export forwards scalar params only; parameter of type \
+                     `{}` has no scalar boundary type (a compound-param heap return is not yet supported)",
+                    t.render_name()
+                )));
+            }
+        }
+    }
+    Ok((vts, bytes))
 }
 
 /// The runtime ops every emitted function will call, into `used`. Walks BOTH the top-level defs
