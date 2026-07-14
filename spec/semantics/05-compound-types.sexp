@@ -4223,6 +4223,45 @@
             (export main)))
   (output (: 7 Int64)))
 
+; A sum VARIANT may be named the same as a PRELUDE type or operation module (`List`, `Bool`, …). Within
+; the declaring module a constructor selector `(. T List)` (surface `T.List`) resolves to `T`'s
+; constructor — a member access on the nominal type `T`, NOT a reference to the free prelude name `List`
+; — so the variant and the prelude name coexist: `T.List` builds the variant while `List.len` still
+; names the prelude op in the same body. These pin that coexistence in the DECLARING file (the natural
+; case: a hand-rolled `Ast`/IR sum has a `List` variant, a `Bool` variant, etc., and a compiler's own
+; passes construct and match them alongside the real `List`/`Bool` prelude). (Reaching such a variant
+; through an IMPORT from another file is a separate concern tracked in the failures queue — the importer
+; currently mis-resolves the colliding tail to the prelude name; these declaring-file cases are correct
+; today and are the counterpart working boundary.)
+
+(case "a variant named like a prelude type is constructed and matched in its declaring module"
+  (doc    "`(type T (Foo Int64) (List (List T)))` declares a variant `List` whose name shadows the prelude
+           `List` — and whose payload is a real `(List T)` using that same prelude `List` as the type
+           constructor. Within the module `(T.List …)` builds the variant (a member access on `T`), the
+           `((T.List es) …)` arm matches it, and `(List.len es)` on the payload still names the prelude op:
+           `sz (T.List [Foo 1, Foo 2])` = 9 + 2 = 11. Pins that a constructor selector on a nominal type
+           resolves to the type's constructor, independent of a prelude binding of the same name, so a sum
+           and the prelude coexist in one body (the AST/IR-sum-with-a-List-variant idiom a compiler needs).")
+  (input  (do
+            (type T (Foo Int64) (List (List T)))
+            (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.List es) (+ 9 (List.len es)))))
+            (def (main) (sz (T.List (list (T.Foo 1) (T.Foo 2)))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a variant named Bool shadows the prelude Bool within its declaring module"
+  (doc    "The `Bool` companion — the collision is not `List`-specific. `(type T (Foo Int64) (Bool Int64))`
+           declares a variant `Bool`; `(T.Bool 42)` constructs it and `((T.Bool v) v)` reads its payload →
+           42. Pins that a variant whose name shadows the prelude TYPE `Bool` resolves to `T`'s constructor
+           through `T.Bool`, so naming a variant after any prelude type is admissible in its declaring
+           module.")
+  (input  (do
+            (type T (Foo Int64) (Bool Int64))
+            (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.Bool v) v)))
+            (def (main) (sz (T.Bool 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a variant carrying a record payload escapes to the host"
   (doc    "The escape companion: `(P.Pt (record (x 1) (y 2)))` returned as the program result renders
            its canonical form `(: (Pt (record (x 1) (y 2))) P)` — the variant's BARE name `Pt` applied to

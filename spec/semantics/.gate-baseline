@@ -1295,6 +1295,8 @@ pass	a variant carrying a Rational payload constructs and matches
 pass	a variant carrying a Symbol payload constructs, matches, and binds it
 pass	a variant carrying a record payload escapes to the host
 pass	a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches
+pass	a variant named Bool shadows the prelude Bool within its declaring module
+pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
