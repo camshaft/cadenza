@@ -2319,3 +2319,19 @@
   (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
   (output (: 2 Int64)))
 
+(case "a parameterized export returns a runtime BigInt computed from its argument"
+  (doc    "A `main` that TAKES a parameter and RETURNS a BigInt crosses the host boundary as a resource
+           whose `make` forwards the argument (`make(a) -> own<t>`), so the host computes the value from
+           its input: `main(5000000000) = 5000000000 * 3 = 15000000000`, a value beyond Int64 that no
+           constant fold could produce. Closes the last cross-cutting heap-return limit (a List/BigInt/
+           Rational from a parameterized export all declined identically before).")
+  (input  (do (def (main (: a Int64)) (* (BigInt.of a) (BigInt.of 3))) (export main)))
+  (call   main (: 5000000000 Int64))
+  (output (: 15000000000 BigInt)))
+
+(case "a parameterized export returns a runtime Rational computed from its argument"
+  (doc    "The Rational companion: `main(1) = 1/6 + 1/6 = 1/3` exactly, the runtime rational built from
+           the argument crossing the boundary via the param-forwarding resource escape.")
+  (input  (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1/3 Rational)))

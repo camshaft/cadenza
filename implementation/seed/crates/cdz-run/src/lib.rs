@@ -422,7 +422,7 @@ fn run_export(
             .map(|name| !names_a_top_level_func(&mut *store, name))
             .unwrap_or(true)
     {
-        return run_resource_escape(&mut *store, &instance);
+        return run_resource_escape(&mut *store, &instance, &opts.args);
     }
 
     // The CLOSURE ESCAPE (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a program whose result is a
@@ -1160,6 +1160,7 @@ fn run_closure_resource(
 fn run_resource_escape(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
+    args: &[String],
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, RUN_INTERFACE)
@@ -1177,8 +1178,17 @@ fn run_resource_escape(
         .get_func(&mut *store, encode_idx)
         .ok_or_else(|| anyhow!("resource escape: `encode` is not a function"))?;
 
+    // `make` forwards the escaping export's parameters: a NULLARY export takes no args (`make()`); a
+    // PARAMETERIZED export (`(def (main (: a Int64)) …)`) takes the `(call …)` args, so the host computes
+    // the heap value from its inputs. Coerce the raw arg strings to `make`'s declared param types.
+    let make_param_types: Vec<Type> = make
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    let make_args = coerce_args(args, &make_param_types)?;
     let mut handle = [Val::Bool(false)];
-    if let Err(e) = make.call(&mut *store, &[], &mut handle) {
+    if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
         return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = make.post_return(&mut *store);

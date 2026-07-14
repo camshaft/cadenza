@@ -28423,24 +28423,18 @@ mod stage1 {
     }
 
     #[test]
-    fn a_parameterized_compound_return_export_declines() {
-        // A tuple returned from an export that TAKES A PARAMETER cannot cross as the resource escape:
-        // the resource's constructor is `make : () -> own<t>` (NULLARY), so the escaping export must be
-        // nullary. A parameterized compound-returning export therefore still DECLINES here (its
-        // component functype would need a compound RESULT with parameters, which the boundary does not
-        // carry — reject-don't-miscompile). The runtime-compound escape (R2) covers the NULLARY case: a
-        // recursive/heap-built tuple returned from a nullary export now crosses (see
-        // `a_recursive_runtime_tuple_escapes_to_the_host`). Pins the nullary-only escape boundary.
+    fn a_parameterized_compound_return_export_compiles_via_the_resource_escape() {
+        // A tuple returned from an export that TAKES A PARAMETER now crosses as the resource escape: the
+        // resource's constructor `make` FORWARDS the export's scalar params (`make(n) -> own<t>`), so the
+        // host computes the compound from its argument, then `encode()` walks the live handle to the
+        // value form. This closed the last cross-cutting heap-return decline (a `List`/`BigInt`/`Rational`
+        // from a parameterized export declined identically); the end-to-end value is corpus-gated
+        // ("a parameterized export returns a … computed from its argument"). Previously DECLINED
+        // "a heap value escapes … only from a NULLARY export".
         let src = "(module m (def (pair (: n Int64)) (tuple n 1)) (export pair))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a parameterized compound-return export declines");
-        // The message names the ACTUAL trigger — a NULLARY-only resource escape, and this export takes a
-        // parameter — NOT the misleading "multi-export boundary" (there is one export). See the emit-side
-        // diagnosis in `backend::wasm::emit`.
         assert!(
-            err.message.contains("NULLARY export") && err.message.contains("takes a parameter"),
-            "the parameterized-compound decline must name the nullary-export trigger, got: {}",
-            err.message
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized compound-return export must compile via the param-forwarding resource escape"
         );
     }
 
@@ -35527,18 +35521,17 @@ mod stage1 {
     }
 
     #[test]
-    fn a_parameterized_sum_returning_export_declines() {
-        // A sum crosses the host boundary ONLY as a single NULLARY export's result (the resource escape
-        // path, `emit`). A PARAMETERIZED sum-returning export (`mk` takes `a`) is not that shape — it has
-        // no scalar boundary form — so it DECLINES cleanly (not a miscompile). The nullary escape is
-        // exercised by `a_nullary_sum_export_escapes_to_the_host` below.
+    fn a_parameterized_sum_returning_export_escapes_via_param_forwarding_make() {
+        // A PARAMETERIZED sum-returning export (`mk` takes `a`) now crosses as the resource escape: `make`
+        // forwards the export's scalar param (`make(a) -> own<t>`), so the host builds `(Option.Some a)`
+        // from its argument and `encode()` renders it. Previously DECLINED "only from a NULLARY export".
+        // The nullary escape is still exercised by `a_nullary_sum_export_escapes_to_the_host` below.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (mk (: a Int64)) (Option.Some a)) (export mk))";
-        let result = compile_component(&crate::codec::encode(&parse(src)));
         assert!(
-            result.is_err(),
-            "a parameterized sum-returning export must decline (not the nullary escape shape)"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized sum-returning export must compile via the param-forwarding resource escape"
         );
     }
 
@@ -39920,7 +39913,7 @@ mod r2_runtime_resource {
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
         let ops: Vec<&RtOp> = walker_ops().to_vec();
-        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name);
+        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name, &[]);
         let oracle = oracle_runtime_resource_component(&core, import_name);
         assert_eq!(
             ours, oracle,
@@ -39942,7 +39935,7 @@ mod r2_runtime_resource {
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
         let ops: Vec<&RtOp> = methods_ops().to_vec();
-        let ours = assemble_runtime_resource_with_len(&core, &dtor, &ops, import_name);
+        let ours = assemble_runtime_resource_with_len(&core, &dtor, &ops, import_name, &[]);
         let oracle = oracle_tuple_methods(&core, import_name);
         assert_eq!(
             ours, oracle,

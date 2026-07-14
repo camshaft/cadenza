@@ -216,11 +216,17 @@ pub fn emit(
     // through and declines below with the arity/parameter diagnosis (`crosses_as_resource_escape` there too,
     // so the message names the real constraint, not the type).
     if let [e] = &layout.exports[..]
-        && e.params.is_empty()
         && crosses_as_resource_escape(&e.result)
     {
         let body = def_body(db, e.def)?;
-        if let Some(value_bytes) = crate::lower::constant_value_form(db, body) {
+        // A CONSTANT compound (a foldable body) bakes its value bytes into the resource core with a
+        // NULLARY `make` — only a nullary export can be constant (a parameterized body's value depends on
+        // its argument, so `constant_value_form` returns `None` and it falls through to the runtime
+        // walkers below, whose `make` forwards the params). Guard the bake on nullary so a parameterized
+        // export never takes the constant shape.
+        if e.params.is_empty()
+            && let Some(value_bytes) = crate::lower::constant_value_form(db, body)
+        {
             let main_core = serialize::resource_core_module(&value_bytes);
             let dtor_core = serialize::resource_dtor_module();
             return Ok(envelope::assemble_resource(&main_core, &dtor_core));
@@ -674,9 +680,11 @@ pub fn emit(
                 // representation" (false — it crosses fine alone via the resource escape).
                 "a heap value (a compound, string, or collection) crosses the host boundary only as the program's SINGLE export; this program has multiple exports (make it the only export, or return a scalar)"
             } else if !e.params.is_empty() {
-                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY export,
-                // so a heap return from a function that takes a parameter declines here.
-                "a heap value escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized heap return is not yet supported)"
+                // A single PARAMETERIZED export whose heap result reached here — the resource escape now
+                // FORWARDS scalar params (`make(a…) -> own<t>`), so a scalar-param heap return crosses.
+                // Reaching this fallthrough means a param has NO scalar boundary type (a compound/closure
+                // param), which `make` cannot yet forward — that widening is a later increment.
+                "a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not yet supported)"
             } else {
                 // A single NULLARY export whose heap result reached here — the resource-escape path above
                 // TRIED and its value-form template was `None`: the result has no runtime value form yet.
@@ -1139,11 +1147,14 @@ fn resource_escape_dwarf(
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping sum export is not in the emission order")
         })?;
+        // The sidecar only runs for a NULLARY export (guarded at the top of this fn), so `make` forwards
+        // no params — pass `&[]`, byte-identical to the nullary emitter's `make() -> own<t>`.
         let main_core = serialize::runtime_resource_core_module_form(
             &funcs,
             &imports,
             export_abs,
             serialize::EscapeForm::Sum(&tpl),
+            &[],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1183,6 +1194,7 @@ fn resource_escape_dwarf(
                 serialize::CoreMethod::IsEmpty,
                 serialize::CoreMethod::ToBytes,
             ],
+            &[], // nullary sidecar — `make` forwards no params
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1204,8 +1216,9 @@ fn resource_escape_dwarf(
         let export_abs = layout
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
-        let main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl)
-            .map_err(Reject::decline)?;
+        let main_core =
+            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[])
+                .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
         )?));
@@ -1433,8 +1446,10 @@ fn emit_runtime_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
 
-    let mut main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl)
-        .map_err(Reject::decline)?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
+    let mut main_core =
+        serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl, &make_param_vts)
+            .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
     // core's code section (the synthesized `make`/`t-encode`/`cabi_realloc` follow), so `code_ranges`
     // over `funcs` gives their correct payload-relative offsets and `code_section_payload_base` walks
@@ -1450,6 +1465,7 @@ fn emit_runtime_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -5149,12 +5165,14 @@ fn emit_runtime_bytes_resource(
         serialize::CoreMethod::IsEmpty,
         serialize::CoreMethod::ToBytes,
     ];
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
         &core_methods,
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -5168,6 +5186,7 @@ fn emit_runtime_bytes_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
         &[
             envelope::ScalarMethod {
                 boundary_name: "len",
@@ -5259,12 +5278,14 @@ fn emit_runtime_sum_resource(
     let export_abs = layout
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::Sum(tpl),
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -5277,6 +5298,7 @@ fn emit_runtime_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -5338,12 +5360,14 @@ fn emit_recursive_sum_resource(
     let export_abs = layout.abs(export_def).ok_or_else(|| {
         Reject::decline("the escaping recursive-sum export is not in the emission order")
     })?;
+    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
+        &make_param_vts,
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
@@ -5354,6 +5378,7 @@ fn emit_recursive_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
     ))
 }
 
@@ -5408,6 +5433,46 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
     db.defs[def]
         .body
         .ok_or_else(|| Reject::decline(format!("definition `{}` has no body", db.defs[def].name)))
+}
+
+/// The escaping export's `make`-forwarded parameters, as BOTH the core valtypes (`make`'s wasm params +
+/// body `local.get`s) and the component boundary bytes (`make`'s component functype params) — the two
+/// reps `make` needs, built from the ONE param list so they cannot diverge. A NULLARY export gives two
+/// empty vecs (the classic `make() -> own<t>`, byte-identical to before); a PARAMETERIZED export gives
+/// its scalar params (`make(a, …) -> own<t>`), so a heap value that depends on the host's arguments
+/// crosses via the resource escape. Read off the export plan (the same params the export's selected body
+/// takes). A NON-scalar param declines — a parameterized heap return forwards scalar params only this
+/// increment (a compound-param export is a later widening), the SAME boundary the closure-resource
+/// `make(k)` and the plain multi-export path draw for their params.
+fn export_make_params(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
+    let params = match layout.export_plan(export_def) {
+        Some(e) => e.params.clone(),
+        None => crate::layout::def_params(db, export_def),
+    };
+    let mut vts = Vec::with_capacity(params.len());
+    let mut bytes = Vec::with_capacity(params.len());
+    for (_, t) in &params {
+        let vt = crate::backend::wasm::lir::valtype_of(t);
+        let byte = closure_boundary_byte(t);
+        match (vt, byte) {
+            (Some(vt), Some(byte)) => {
+                vts.push(vt);
+                bytes.push(byte);
+            }
+            _ => {
+                return Err(Reject::decline(format!(
+                    "a parameterized heap-return export forwards scalar params only; parameter of type \
+                     `{}` has no scalar boundary type (a compound-param heap return is not yet supported)",
+                    t.render_name()
+                )));
+            }
+        }
+    }
+    Ok((vts, bytes))
 }
 
 /// The runtime ops every emitted function will call, into `used`. Walks BOTH the top-level defs

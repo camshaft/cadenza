@@ -765,6 +765,11 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a runtime BigInt computed from its argument
+pass	a parameterized export returns a runtime Rational computed from its argument
+pass	a parameterized export returns a sum value computed from its argument
+pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial constructor bound in a let completes when applied
