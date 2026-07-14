@@ -1680,7 +1680,21 @@ fn emit_multi_closure_resource(
         crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
     };
     let ret_is_compound = ret_template.is_some();
-    let result_byte = if ret_is_bytes || ret_is_compound {
+    // A VARIABLE-LENGTH collection (List/Map/Set) shared result → the value-encode core (all exports share
+    // the result type → the ONE shape descriptor). `None` for bytes/scalar/fixed-template.
+    let ret_descriptor =
+        if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
+            None
+        } else if matches!(
+            ret_ty.strip_nominal(),
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) {
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
+        } else {
+            None
+        };
+    let ret_is_collection = ret_descriptor.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
@@ -1756,6 +1770,19 @@ fn emit_multi_closure_resource(
         if ret_is_compound {
             used.insert("get-bool");
         }
+        // A collection-result shared `call` renders via `value-encode(rep, desc)` (build the descriptor
+        // Bytes + copy the doc out).
+        if ret_is_collection {
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -1813,6 +1840,30 @@ fn emit_multi_closure_resource(
             &arg_vts,
             lifted_type_idx,
             template,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_multi_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            &[],
+        ));
+    }
+    // A VARIABLE-LENGTH collection shared result → the N-makes-one-list-`call` VALUE-ENCODE core (each `call`
+    // dispatches, then value-encodes the returned collection handle) + the SAME memory/realloc envelope.
+    if let Some(descriptor) = &ret_descriptor {
+        let main_core = serialize::multi_closure_value_encode_resource_core_module(
+            &funcs,
+            &imports,
+            &ser_makes,
+            &[],
+            &arg_vts,
+            lifted_type_idx,
+            descriptor,
             &layout,
         )
         .map_err(Reject::decline)?;

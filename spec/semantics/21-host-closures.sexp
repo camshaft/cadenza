@@ -1839,3 +1839,48 @@
   (input  (do (def (mk) (fn ((: n Int64)) (: (list) (List Int64)))) (export mk)))
   (call   mk (: 0 Int64))
   (output (: (list) (List Int64))))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MULTI-EXPORT path — N same-signature
+; closures each returning a List/Map/Set share ONE `call` that value-encodes the returned handle against the
+; ONE shared shape descriptor (all exports share the result type). The shared `call` recovers each closure's
+; code slot from the resource rep, dispatches it, and `value-encode`s its collection result.
+
+(case "multi-export collection result — the first list closure"
+  (doc    "Two same-signature closures — `up : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `dn`
+           returns `(list n n-1)`. `call(up-handle, 5)` dispatches then value-encodes → `(: (list 5 6) (List
+           Int64))`. Pins the variable-length collection result on the shared-`call` multi-export path.")
+  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+              (export up) (export dn)))
+  (call   up (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "multi-export collection result — the second list closure"
+  (doc    "The SAME two-closure program, driving the OTHER export: `call(dn-handle, 5)` → `(: (list 5 4)
+           (List Int64))`. Confirms the shared `call` value-encodes whichever closure a handle names (the
+           code slot rides in the rep, the descriptor is shared since the type is).")
+  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+              (export up) (export dn)))
+  (call   dn (: 5 Int64))
+  (output (: (list 5 4) (List Int64))))
+
+(case "multi-export Set-result closures — three sharing one call"
+  (doc    "THREE same-signature Set-returning closures share ONE value-encode `call`. `b(3)` builds `{3, 6}`;
+           `call(b-handle, 3)` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
+  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
+              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
+              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+              (export a) (export b) (export c)))
+  (call   b (: 3 Int64))
+  (output (: ((. Set of) (list 3 6)) (Set Int64))))
+
+(case "multi-export Set-result closures — the singleton one"
+  (doc    "The SAME three-closure program, driving `c`: `call(c-handle, 9)` → `(: ((. Set of) (list 9)) (Set
+           Int64))`. Confirms each of the three shares the one descriptor + value-encodes its own result.")
+  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
+              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
+              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+              (export a) (export b) (export c)))
+  (call   c (: 9 Int64))
+  (output (: ((. Set of) (list 9)) (Set Int64))))
