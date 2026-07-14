@@ -1,0 +1,87 @@
+/// depth.cdz — pure structural METRICS over an `Ast`: nesting depth, leaf count, and internal-node
+/// count. Every function returns a SCALAR (`Int64`/`Bool`) and never carries a heap value across a call
+/// boundary, so this pass sidesteps the `Map.lookup`/matched-payload borrow-ownership gap that blocks
+/// the resolver (`repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`) — a deliberately
+/// scalar-only complement that RUNS. Useful in a real compiler for cost heuristics (inline budget by
+/// subtree size) and recursion-limit / stack-depth guards.
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+/// The maximum nesting depth: a leaf is 1, a list is 1 + the deepest child.
+def depth(node: Ast) = match node with
+  | Ast.List(es) => 1 + max-depth-list(es)
+  | _ => 1
+
+def max-depth-list(xs: List(Ast)) = match xs with
+  | [] => 0
+  | [h, .. t] => (let d = depth(h) in let r = max-depth-list(t) in if d > r then d else r)
+
+/// The number of LEAF (non-list) nodes.
+def leaf-count(node: Ast) = match node with
+  | Ast.List(es) => leaf-count-list(es)
+  | _ => 1
+
+def leaf-count-list(xs: List(Ast)) = match xs with
+  | [] => 0
+  | [h, .. t] => leaf-count(h) + leaf-count-list(t)
+
+/// The number of internal (list) nodes.
+def internal-count(node: Ast) = match node with
+  | Ast.List(es) => 1 + internal-count-list(es)
+  | _ => 0
+
+def internal-count-list(xs: List(Ast)) = match xs with
+  | [] => 0
+  | [h, .. t] => internal-count(h) + internal-count-list(t)
+
+@test
+def depth-leaf() = if depth(Ast.Int(5)) == 1 then unit else trap("leaf depth 1")
+
+@test
+def depth-flat-list() =
+  // (a b c) → depth 2 (one list level over leaves)
+  if depth(Ast.List([Ast.Name("a"), Ast.Name("b"), Ast.Name("c")])) == 2 then unit else trap("flat depth 2")
+
+@test
+def depth-nested() =
+  // (a (b (c))) → depth 4 (3 list levels + leaf)
+  let tree = Ast.List([Ast.Name("a"), Ast.List([Ast.Name("b"), Ast.List([Ast.Name("c")])])]) in
+  if depth(tree) == 4 then unit else trap("nested depth 4")
+
+@test
+def depth-empty-list() = if depth(Ast.List([])) == 1 then unit else trap("empty list depth 1")
+
+@test
+def leaf-count-flat() =
+  if leaf-count(Ast.List([Ast.Int(1), Ast.Int(2), Ast.Int(3)])) == 3 then unit else trap("3 leaves")
+
+@test
+def leaf-count-nested() =
+  // (a (b c) d) → 4 leaves
+  let tree = Ast.List([Ast.Name("a"), Ast.List([Ast.Name("b"), Ast.Name("c")]), Ast.Name("d")]) in
+  if leaf-count(tree) == 4 then unit else trap("4 leaves nested")
+
+@test
+def leaf-count-single() = if leaf-count(Ast.Bool(true)) == 1 then unit else trap("single leaf")
+
+@test
+def internal-count-nested() =
+  // (a (b) (c (d))) → 4 list nodes: outer, (b), (c (d)), (d)
+  let tree = Ast.List([Ast.Name("a"), Ast.List([Ast.Name("b")]), Ast.List([Ast.Name("c"), Ast.List([Ast.Name("d")])])]) in
+  if internal-count(tree) == 4 then unit else trap("4 internal nodes")
+
+@test
+def internal-count-leaf() = if internal-count(Ast.Int(0)) == 0 then unit else trap("leaf has 0 internal")
+
+@test
+def metrics-consistency() =
+  // leaf-count + internal-count = total node count, for any tree
+  let tree = Ast.List([Ast.Int(1), Ast.List([Ast.Int(2), Ast.Name("x")]), Ast.Bool(false)]) in
+  // leaves: 1, 2, x, false = 4 ; internal: outer + inner = 2 ; total 6
+  if leaf-count(tree) + internal-count(tree) == 6 then unit else trap("leaf+internal = total")
+
+export { depth, leaf-count, internal-count }

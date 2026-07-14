@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 92 tests total across 11 modules):
+top. Current `src/` modules (each with same-file `@test`s — 102 tests total across 12 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -97,6 +97,16 @@ top. Current `src/` modules (each with same-file `@test`s — 92 tests total acr
   `int-total` (fold every Int leaf). Exercises closures passed to self-recursive HOFs (each fn param
   arrow-annotated to sidestep the inference gap above). 9 `@test`s (map/filter/fold, a pipeline,
   predicate counts, nested Int total).
+- `src/depth.cdz` — pure structural METRICS over an `Ast`: `depth` (max nesting), `leaf-count`,
+  `internal-count`. All SCALAR-returning (no heap value crosses a call), so it sidesteps the resolver's
+  borrow-ownership block — a deliberately scalar-only pass that RUNS. Useful for cost heuristics /
+  recursion-depth guards. 10 `@test`s (incl. a leaf+internal = total consistency check).
+
+A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
+threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
+`cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
+DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
+full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`.
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
 check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
@@ -305,7 +315,11 @@ are the sharp edges.
   narrow form by SHAPE-checking (`match … ((Ast.Name _) …)`) but there is no honest sidestep for an
   env-lookup whose whole purpose is to return the looked-up type. Likely fix locus: the Perceus/borrow
   analysis — a heap value read out of a persistent collection needs an owned (dup'd) handle when it
-  escapes via a return.
+  escapes via a return. A THIRD, threshold-dependent face: `repros/decline-borrow-scope-resolver-test-
+  emit-threshold.cdz` (a scope resolver threading a `Set`+`List` through recursion) `cdz check`s clean
+  and runs correctly when exported singly, but its full `@test` suite DECLINES under the `EmitTests`
+  layout — 1 test compiles, the whole suite doesn't (aggregate/total-locals sensitivity, like the
+  slot-alias bug). So the borrow gap also scales with the test-emit boundary size.
 
 - **OPEN (seed `rcdzc` — a `///` doc comment on an `import` HIDES it; extends the line-comment finding).**
   A `///` doc comment on a `def`/`type`/`module` is stripped by the top-level scan (works), but a `///`
