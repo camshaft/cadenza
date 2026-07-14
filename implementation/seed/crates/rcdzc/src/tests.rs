@@ -21696,6 +21696,58 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_mistyped_variant_pattern_on_a_function_param_surfaces_in_the_diagnostics_query() {
+        // The pattern-fault TWIN of the non-exhaustiveness case above. A MISTYPED variant pattern head
+        // (`((C.Gren) …)` on `(type C Red Green)`) is a CODED CDZ0201 carrying a "did you mean `Green`?"
+        // REPLACE fix — but it was produced ONLY by the emit-path lowering walk, which runs on nullary
+        // EXPORTED bodies alone. So a variant typo in ANY parameterized function's match silently PASSED
+        // `cdz check` (exit 0, no diagnostic) while `compile` rejected it — hiding the very fix from the
+        // fast check path. `collect`'s match arm now surfaces it whether the def takes parameters or not.
+        let src = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Gren) 2))) (export g))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .collect();
+        assert_eq!(
+            d.len(),
+            1,
+            "one mistyped-variant fault on the parameterized body, reported exactly once: {d:?}"
+        );
+        assert!(
+            d[0].message.contains("`Gren`") && d[0].message.contains("did you mean `Green`?"),
+            "names the mistyped variant AND the near one: {}",
+            d[0].message
+        );
+        let fix = d[0]
+            .fix
+            .as_ref()
+            .expect("carries the did-you-mean replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "Green");
+
+        // The nullary-EXPORTED case (already reached by the lowering walk) still reports EXACTLY ONE — the
+        // infer-side and emit-side copies anchor at the same key node and `dedup_faults` collapses them.
+        let src_nullary = "(module m (type C Red Green) \
+             (def (g) (match (C.Red) ((C.Red) 1) ((C.Gren) 2))) (export g))";
+        let dn: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_nullary)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .collect();
+        assert_eq!(dn.len(), 1, "nullary body: one fault, not a double: {dn:?}");
+
+        // A CORRECT variant pattern on a parameterized body stays clean — no false positive.
+        let src_ok = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Green) 2))) (export g))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0201")),
+            "a correct variant match produces no field fault"
+        );
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.

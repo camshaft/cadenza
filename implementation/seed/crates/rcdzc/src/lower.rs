@@ -1785,6 +1785,29 @@ pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
     }
 }
 
+/// The CODED pattern-well-formedness fault of a `(match …)` — a mistyped variant pattern head
+/// (`((C.Gren) …)` on `(type C Red Green)` → CDZ0201 "record has no field `Gren` — did you mean `Green`?"
+/// carrying a replace fix on the key), a foreign-sum variant (CDZ0203), a payload-arity mismatch, or a
+/// non-linear binder (CDZ0102). Surfaced for `type_errors` so `cdz check` catches it in EVERY body, not
+/// only the nullary-EXPORTED ones the emit-path lowering walk (`collect_reached_poisons`) reaches — the
+/// same "check missed what only lowering produced" hole `match_nonexhaustive_fault` closes for
+/// exhaustiveness. Like a mistyped variant in VALUE position, a variant typo in a pattern is a
+/// well-formedness fault independent of the function's parameter values, so surfacing it over an
+/// unreached parameterized body is not a false alarm (the scrutinee's TYPE — the source of the variant
+/// set — comes from its annotation, not a runtime value).
+///
+/// Returns the poison ONLY when it is a CODED pattern fault that is NOT the non-exhaustiveness CDZ0210
+/// (which `match_nonexhaustive_fault` already reports — filter it here to avoid a double report). A
+/// not-yet-lowerable DECLINE (an unbuilt compound scrutinee, an unsolved-`Any` scrutinee type) is
+/// UNCODED, so it yields `None` and this adds no false alarm — the exact conservatism the exhaustiveness
+/// accessor uses.
+pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
+    match core_of(db, id) {
+        Core::Poison(r) if r.code.is_some() && r.code != Some(Code::NonExhaustive) => Some(r),
+        _ => None,
+    }
+}
+
 /// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
 /// [`Probe`] (an integer/boolean literal, a binder, or the wildcard `_`); a pattern that is none of
 /// these declines (sum/tuple/record patterns walk the value heap — a separate path). If the scrutinee

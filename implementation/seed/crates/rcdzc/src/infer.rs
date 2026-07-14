@@ -5405,6 +5405,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if let Some(r) = crate::lower::match_nonexhaustive_fault(db, id) {
                 out.push(r);
             }
+            // PATTERN-HEAD WELL-FORMEDNESS: a MISTYPED variant pattern head (`((C.Gren) …)` on `(type C
+            // Red Green)`), a foreign-sum variant, a payload-arity mismatch, or a non-linear binder is a
+            // CODED fault (CDZ0201 "record has no field `Gren` — did you mean `Green`?" carrying a replace
+            // fix, CDZ0203, CDZ0102). It was produced ONLY by the emit-path lowering walk
+            // (`collect_reached_poisons`), which runs on nullary-EXPORTED bodies alone — so a variant typo
+            // in ANY parameterized function's match silently PASSED `cdz check` (exit 0, no diagnostic)
+            // while `compile` rejected it, hiding the very "did you mean?" fix from the fast check path.
+            // Surface it here, where `collect` visits EVERY match in every body — the pattern-fault twin of
+            // the exhaustiveness accessor above. `match_pattern_fault` returns only a CODED non-CDZ0210
+            // pattern fault (never a not-yet-lowerable decline, never the exhaustiveness code the accessor
+            // already reports), so it adds the actionable fix to `check`/`--json`/`fix` with no false
+            // alarm. A scrutinee/body poison it also bubbles up is independently collected below and shares
+            // its (code, node, message), so `dedup_faults` collapses the duplicate; a genuine pattern-head
+            // fault is produced by no other `collect` path, so it appears exactly once.
+            if let Some(r) = crate::lower::match_pattern_fault(db, id) {
+                out.push(r);
+            }
             // SCRUTINEE / PATTERN TYPE COMPATIBILITY: a VARIANT-constructor pattern (`(C.Red)`, `(Some x)`)
             // over a scrutinee whose type is a DEFINITE NON-SUM — a scalar `(match 5 ((C.Red) …))`, a Bool,
             // a Float, a String — is a type confusion: the scrutinee has no variants to dispatch on. Reject
