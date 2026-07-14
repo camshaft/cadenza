@@ -4172,6 +4172,8 @@ fn emit_recursive_sum_resource(
 ///
 //= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
 //# The compiler MUST emit a component that names the exact host-interface version it targets.
+//= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
+//# The runnable form of a program MUST be a content-addressed binary component behind a versioned host interface.
 ///
 //= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
 //# The identity of the value-heap runtime a program is emitted against MUST be the content address of that runtime component, so that "which runtime" is a hash rather than a version label and a program's observable behavior — which depends on the runtime's construction, storage, and reclamation of values — is pinned to exact bytes (component-abi.md §The Value-Heap Runtime).
