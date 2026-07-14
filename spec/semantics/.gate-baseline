@@ -35,6 +35,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
@@ -45,6 +46,7 @@ pass	Type.of reflects a value's type for use as an annotation
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
@@ -95,6 +97,12 @@ pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
+pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
+pass	a RECORD closure ARG on the MULTI-EXPORT path
+pass	a RECORD closure ARG whose fields are NOT in sorted source order
+pass	a RECORD closure ARG with a LIST result
+pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
@@ -104,6 +112,7 @@ pass	a Rational set deduplicates by exact value regardless of how each was writt
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
+pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -125,11 +134,13 @@ pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
+pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
+pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
@@ -282,6 +293,7 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant tuple is returned as a program result
 pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
+pass	a constructor selected at RUNTIME is a first-class value that is then applied
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
@@ -1043,6 +1055,7 @@ pass	a two-parameter sum whose variants use the parameters in different orders i
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
+pass	a type stored in a compound result cannot cross the boundary
 pass	a type-value in integer-width position is rejected
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
