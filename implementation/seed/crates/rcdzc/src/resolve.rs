@@ -2608,6 +2608,10 @@ fn resolve_unquote(db: &Db, id: StructId, head: &str) -> Resolved {
             None => reject,
         });
     }
+    // An `unquote`/`unquote-splicing` is meaningful ONLY inside a `` ` `` template — a `,`/`,@` with no
+    // enclosing quasiquote has no template to insert into, so it is a syntax error (CDZ0003).
+    //= spec/capabilities/metaprogramming.md#quasiquote-constructs-ast-with-selective-evaluation
+    //# Unquote and unquote-splicing outside a quasiquote context MUST be a syntax error.
     if !inside_quasiquote(db, id) {
         return Resolved::Poison(Reject::coded(
             Code::UnquoteOutsideQuasiquote,
