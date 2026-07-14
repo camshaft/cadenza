@@ -768,6 +768,7 @@ pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
