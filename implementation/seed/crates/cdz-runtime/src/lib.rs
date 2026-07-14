@@ -1277,9 +1277,40 @@ enum DocStruct {
 
 impl DocBuilder {
     fn name_leaf(&mut self, name: &str) -> u32 {
-        // Dedup via the `name_index` map (O(log N)); a linear scan of `self.leaves` was O(N) per call and
-        // O(N²) over a value with many DISTINCT names. Byte-identical output: same leaf, same index (a
-        // repeated name still resolves to its FIRST-inserted index, since the map records that index).
+        // Dedup names to a single leaf. HYBRID, so the common encode pays ZERO extra allocation:
+        //  • SMALL regime (few distinct names — the norm: `Cons`/`Nil`/`tuple`/`record`/`map`/`:`/keys):
+        //    scan the existing `DocLeaf::Name` entries directly. Allocation-FREE (the name String lives
+        //    only in the leaf, no duplicate map key) and fast — the scan short-circuits on the first match
+        //    near the front, so a repeated head is O(1).
+        //  • LARGE regime (many DISTINCT names — a wide record's fields, a many-variant sum): once the
+        //    NAME leaf count crosses `NAME_INDEX_THRESHOLD` the linear scan would go O(N²) (a 3200-field
+        //    record took 183 ms), so build `name_index` ONCE from the leaves seen so far and use the
+        //    BTreeMap (O(log N)) thereafter (~15 ms). Byte-identical either way — a repeated name resolves
+        //    to its FIRST-inserted index in both.
+        const NAME_INDEX_THRESHOLD: u32 = 16;
+        if self.name_index.is_empty() {
+            let mut name_count = 0u32;
+            for (i, l) in self.leaves.iter().enumerate() {
+                if let DocLeaf::Name(n) = l {
+                    if n == name {
+                        return i as u32;
+                    }
+                    name_count += 1;
+                }
+            }
+            let i = self.leaves.len() as u32;
+            self.leaves.push(DocLeaf::Name(String::from(name)));
+            if name_count + 1 > NAME_INDEX_THRESHOLD {
+                // Crossed the threshold — index every name leaf ONCE; the map owns dedup from here.
+                for (idx, l) in self.leaves.iter().enumerate() {
+                    if let DocLeaf::Name(n) = l {
+                        self.name_index.insert(n.clone(), idx as u32);
+                    }
+                }
+            }
+            return i;
+        }
+        // Large regime: the map owns the dedup (O(log N)).
         if let Some(&i) = self.name_index.get(name) {
             return i;
         }
