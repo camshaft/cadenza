@@ -7305,6 +7305,18 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // carries the arbitrary-precision magnitude; only the static type widens to
                     // `Ty::BigInt` (the annot node's type, from `type_of`'s `Annot` arm). No fault.
                     trace!(target: "rcdzc::infer", node = id.0, "integer literal annotated BigInt — grounds to BigInt (unbounded, always fits)");
+                } else if matches!(resolved_of(db, expr), Resolved::Int(_) | Resolved::Float(_))
+                    && matches!(annot_ty, Ty::Rational)
+                {
+                    // A numeric LITERAL annotated `Rational` is a GROUNDING — the same "Annotations
+                    // Constrain" rule as `(: 200 UInt8)` / `(: N BigInt)`, but with NO range check and
+                    // no truncation: an EXACT rational holds any literal. An integer `k` grounds to the
+                    // exact `k/1`; a decimal `significand·10^exp` grounds to the exact `significand /
+                    // 10^|exp|` (LOSSLESS — a `Decimal` is captured exactly, so `0.5` is precisely `1/2`,
+                    // never a rounded float). `lower`'s `Annot` arm folds the literal to the normalized
+                    // `Core::ConstRational`; here we only suppress the CDZ0203 the generic unify below
+                    // (`Rational` vs the literal's deferred int/float type) would otherwise report.
+                    trace!(target: "rcdzc::infer", node = id.0, "numeric literal annotated Rational — grounds to the exact rational (always fits)");
                 } else if let (
                     Ty::Qty {
                         inner: ai,

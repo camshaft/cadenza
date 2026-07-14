@@ -110,6 +110,7 @@ pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
+pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
@@ -317,6 +318,9 @@ pass	a cycle of module imports is rejected
 pass	a decimal integer literal
 pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
+pass	a decimal literal annotated Rational equals its explicit constructor form
+pass	a decimal literal annotated Rational grounds to its exact fraction
+pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
@@ -637,6 +641,7 @@ pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
+pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
@@ -955,6 +960,7 @@ pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
@@ -1219,6 +1225,7 @@ pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
+pass	an integer literal annotated Rational grounds to that integer over one
 pass	an integer literal in a type annotation's type position is rejected
 pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee

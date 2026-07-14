@@ -261,8 +261,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
-        // annotation's force is entirely on inference; it has no runtime trace).
-        Resolved::Annot { expr, .. } => core_of(db, expr),
+        // annotation's force is entirely on inference; it has no runtime trace). The ONE exception is a
+        // numeric LITERAL annotated `Rational`: the annotation is what GROUNDS the literal to the exact
+        // rational (`(: 5 Rational)` = 5/1, `(: 0.5 Rational)` = 1/2), so it must fold to a
+        // `Core::ConstRational` here rather than pass through as the inner `ConstInt`/`ConstFloat` (which
+        // would carry the wrong value type). Inference already grants the grounding (no CDZ0203).
+        Resolved::Annot { expr, ty_expr } => {
+            if matches!(
+                crate::eval::typeval_of(db, ty_expr),
+                Some(crate::ty::Ty::Rational)
+            ) && let Some(folded) = rational_from_literal(db, expr)
+            {
+                folded
+            } else {
+                core_of(db, expr)
+            }
+        }
         // A sum-variant pattern's payload binder — read the scrutinee's payload. If the scrutinee is a
         // CONSTANT sum (`Core::SumNew` with a single payload), FOLD to that payload's core directly — a
         // constant `(match (Some 5) ((Some x) x))` yields the constant `5`, no heap build/read (the sum
@@ -8178,6 +8192,47 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
         d = d.neg();
     }
     Core::ConstRational(n, d)
+}
+
+/// Fold a numeric LITERAL to a normalized `Core::ConstRational` — the value an annotation `(: lit
+/// Rational)` (and, later, the `R` literal suffix) grounds to. An integer `k` is the exact `k/1`; a
+/// decimal `significand·10^exp` is the exact `significand / 10^|exp|` (LOSSLESS — a `Decimal` captures
+/// the source exactly, so `0.5` is precisely `1/2`, never a rounded `f64`): a non-negative exponent
+/// scales the numerator (`12·10^2 / 1`), a negative one is the denominator `10^|exp|` (`5 / 10^1` for
+/// `0.5`). `normalized_rational` reduces to lowest terms + puts the sign on the numerator. Returns
+/// `None` for a non-literal expression (the annotation then erases normally). Only reached when the
+/// annotation type is `Rational` (checked by the `Annot` arm).
+fn rational_from_literal(db: &mut Db, expr: StructId) -> Option<Core> {
+    use crate::ast::IntValue;
+    // 10^k as an IntValue (k ≥ 0), by repeated multiply — no bignum dep, and `k` is a literal's decimal
+    // digit count, so it is small.
+    fn ten_pow(k: u64) -> IntValue {
+        let ten = IntValue::from_i64(10);
+        let mut acc = IntValue::from_i64(1);
+        for _ in 0..k {
+            acc = acc.mul(&ten);
+        }
+        acc
+    }
+    match crate::resolve::resolved_of(db, expr) {
+        // An integer literal `k` grounds to `k/1`.
+        crate::resolved::Resolved::Int(v) => Some(normalized_rational(v, IntValue::from_i64(1))),
+        // A decimal `significand·10^exp` grounds to the exact fraction. The significand shares
+        // `IntValue`'s big-endian magnitude representation, so it lifts directly (its sign is on `d.negative`).
+        crate::resolved::Resolved::Float(d) => {
+            let sig = IntValue {
+                negative: d.negative,
+                magnitude: d.significand.clone(),
+            };
+            let (num, den) = if d.exponent >= 0 {
+                (sig.mul(&ten_pow(d.exponent as u64)), IntValue::from_i64(1))
+            } else {
+                (sig, ten_pow((-d.exponent) as u64))
+            };
+            Some(normalized_rational(num, den))
+        }
+        _ => None,
+    }
 }
 
 /// Lower `Rational.of n d` — fold a constant numerator/denominator pair to a normalized

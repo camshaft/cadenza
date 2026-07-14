@@ -135,6 +135,54 @@
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
+(case "an integer literal annotated Rational grounds to that integer over one"
+  (doc    "`(: 5 Rational)` grounds the bare integer literal 5 to the exact rational 5/1 — the same
+           "Annotations Constrain" rule that fixes `(: 200 UInt8)`, extended to Rational with no range
+           check (an exact rational holds any integer). The annotation is what SELECTS Rational; the
+           literal keeps its exact value. Being explicit (an annotation), not an implicit widening.")
+  (input  (: 5 Rational))
+  (output (: 5/1 Rational)))
+
+(case "a decimal literal annotated Rational grounds to its exact fraction"
+  (doc    "`(: 0.5 Rational)` grounds the decimal literal to the EXACT rational 1/2 — a decimal literal is
+           captured exactly as significand*10^exp (0.5 = 5*10^-1), so it converts to 5/10 = 1/2 with NO
+           float rounding. This is why the annotation, not `/`, is the rational spelling: `(/ 1 2)` is
+           integer division (= 0), while `(: 0.5 Rational)` is the exact one-half.")
+  (input  (: 0.5 Rational))
+  (output (: 1/2 Rational)))
+
+(case "a decimal literal annotated Rational is exact for a value no float rounds cleanly"
+  (doc    "`(: 0.1 Rational)` is EXACTLY 1/10 — the classic value a binary float cannot represent. The
+           exact-Decimal capture (1*10^-1) makes the rational grounding lossless where a Float64 would
+           round, witnessing that the annotation grounds from the exact literal, not an f64.")
+  (input  (: 0.1 Rational))
+  (output (: 1/10 Rational)))
+
+(case "a negative decimal literal annotated Rational normalizes its sign onto the numerator"
+  (doc    "`(: -0.75 Rational)` grounds to -3/4: 75*10^-2 = 75/100, reduced to 3/4 with the sign on the
+           numerator (the canonical normalized form — the denominator is strictly positive).")
+  (input  (: -0.75 Rational))
+  (output (: -3/4 Rational)))
+
+(case "a scientific-notation literal annotated Rational scales the numerator"
+  (doc    "`(: 12e2 Rational)` grounds to 1200/1: a non-negative decimal exponent multiplies the
+           significand (12*10^2 = 1200), the whole being an exact integer-valued rational.")
+  (input  (: 12e2 Rational))
+  (output (: 1200/1 Rational)))
+
+(case "a Rational-annotated literal composes with exact rational arithmetic"
+  (doc    "The grounding is a real Rational value, so it flows into the exact `+ - * /` arithmetic: `(+ (:
+           0.5 Rational) (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly. The annotated literal and the
+           explicit constructor produce the same kind of value; math "just works" over both.")
+  (input  (+ (: 0.5 Rational) (Rational.of 1 3)))
+  (output (: 5/6 Rational)))
+
+(case "a decimal literal annotated Rational equals its explicit constructor form"
+  (doc    "`(= (: 1.25 Rational) (Rational.of 5 4))` is true — the decimal grounding 1.25 -> 5/4 is the
+           SAME normalized value the constructor builds, so the two spellings denote one rational.")
+  (input  (= (: 1.25 Rational) (Rational.of 5 4)))
+  (output (: true Bool)))
+
 (case "two rationals denoting the same number are equal regardless of how they were written"
   (doc    "`(= (Rational.of 2 4) (Rational.of 1 2))` is true: because both normalize to 1/2, rational
            equality is structural over the normalized pair (deterministic-value-form.md #A Value Has One
