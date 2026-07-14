@@ -3459,11 +3459,15 @@ pub(crate) struct StrippedAnnotations {
 /// `Struct::List` so it lives in the stored BINARY form (the codec's generic encode/decode round-trips it
 /// unchanged, exactly as it does the `(doc …)` node), not only in a textual rendering. That this pass can
 /// find and peel a `(comment …)` at load is the proof the tree carries it.
+///
+/// `pub(crate)` so `compile.rs::link_inputs` can peel each package file's arena BEFORE `link` scans its
+/// imports/exports (the link scan runs before `Db::load`'s own call to this, so a comment on an
+/// `(import …)` would otherwise leave it wrapped + unrecognized).
 //= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
 //# The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
 //= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
 //# A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
-fn strip_comments(ast: &mut Arenas) {
+pub(crate) fn strip_comments(ast: &mut Arenas) {
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         if ast.as_form(id, "comment").is_none() {

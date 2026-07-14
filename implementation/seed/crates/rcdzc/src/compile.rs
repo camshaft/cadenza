@@ -4076,9 +4076,16 @@ fn link_inputs(
         _ => {
             let mut files = Vec::with_capacity(ast_arts.len());
             for art in ast_arts {
-                let arena = crate::codec::decode(&art.bytes).ok_or_else(|| {
+                let mut arena = crate::codec::decode(&art.bytes).ok_or_else(|| {
                     Reject::decline(format!("binary AST for `{}` failed to decode", art.name))
                 })?;
+                // Peel `(comment "…" <form>)` wrappers BEFORE `link` scans this file's top-level items —
+                // `link` reads `(import …)`/`(export …)` off the raw arena (before `Db::load`'s own
+                // `strip_comments` runs), so a `//`/`///` comment on an `(import …)` would leave it wrapped
+                // and unrecognized → spliced as an unmodeled top-level form → "`import` … not modeled".
+                // The db-level strip already fixes the single-file/def/type/export cases; this extends the
+                // same peel to the LINK scan so a commented import in a package resolves identically.
+                crate::db::strip_comments(&mut arena);
                 files.push((art.name.clone(), arena));
             }
             let entry = match entry_name {
