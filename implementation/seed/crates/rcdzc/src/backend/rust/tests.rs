@@ -1190,7 +1190,10 @@ fn rustc_roundtrip_runtime_equality_over_a_payload_sum() {
         "(module m (type W (V (Option Int64)) (Z)) \
            (def (f (: k Int64)) (if (= (W.V (Option.Some k)) (W.V (Option.Some 5))) 1 0)) (export f))",
     );
-    assert!(rs.contains("PartialEq, Eq"), "payload sum derives Eq:\n{rs}");
+    assert!(
+        rs.contains("PartialEq, Eq"),
+        "payload sum derives Eq:\n{rs}"
+    );
     assert!(rs.contains("=="), "emits a native == :\n{rs}");
     if let Some(out) = rustc_run(&rs, "f(5)") {
         assert_eq!(out, "1");
