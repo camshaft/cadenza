@@ -1189,6 +1189,25 @@
                 (let ((r ("record" (b (Fresh.next)) (a (Fresh.next))))) (- (. r a) (. r b))))) (export main)))
   (output (: 1 Int64)))
 
+(case "performs in the VALUES of a MAP constructor thread and the entry reads back correctly"
+  (doc    "The map completion of the compound-constructor element threading (tuple/list/record above). A
+           perform in a map entry's VALUE is a strict, ordered position — each entry is evaluated in written
+           order, and within an entry the key then the value — so the fold threads it and rebuilds the
+           `(\"map\" (key rvalue)…)` string-headed ctor. Two `Fresh.next` VALUES under keys 10 and 20: seeded
+           0, the first entry's value reads 0 (under key 10), the second reads 1 (under key 20); looking up
+           key 20 returns `(Some 1)`, matched to 1. Pins that a map built from performed values threads the
+           reads in entry order and stores each under its key correctly (a lookup confirms key 20 holds the
+           second read, 1, not the first). Completes tuple / list / record / MAP — an effectful program can
+           build any compound from performed values directly. (wasm: rust declines — value-heap/Map emission
+           parity gap, not the effects fold.)")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1))))
+                (let ((m ("map" (10 (Fresh.next)) (20 (Fresh.next)))))
+                  (match (Map.lookup m 20) ((Some v) v) (None 99))))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a performed operation composes as a RECORD field value that is then projected"
   (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
            is a strict, unconditional position, so it composes and the surrounding projection is a pure

@@ -3769,6 +3769,22 @@ fn a_perform_in_a_record_field_threads_in_written_order() {
     );
 }
 
+/// A perform in a MAP constructor entry VALUE (the string-headed `("map" (key value)…)` primitive) now
+/// THREADS — the `thread_bounded` map arm threads each entry's key then value in written order and rebuilds
+/// the ctor. `(let ((m ("map" (10 (Fresh.next)) (20 (Fresh.next))))) …)` reads 0 under key 10, 1 under key
+/// 20. Completes the compound-ctor element threading: tuple / list / record / map.
+#[test]
+fn a_perform_in_a_map_entry_value_threads() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((m (\"map\" (10 (Fresh.next)) (20 (Fresh.next))))) (Map.size m)))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed map ctor entry value must thread, not decline"
+    );
+}
+
 /// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
 /// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
 /// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of
