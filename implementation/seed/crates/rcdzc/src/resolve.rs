@@ -4397,6 +4397,17 @@ pub(crate) fn read_record_fields(
     for &field in fields_tail {
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
+            Struct::List(kv) => {
+                // A wrong-arity field entry `(x 1 2)` / `(x)` — a fixed-arity shape (want 2). A SURPLUS
+                // element gets the shared delete-the-surplus fix (`(x 1 2)` → `(x 1)`); too few is
+                // message-only. Anchored at the offending entry.
+                return Err(fixed_arity_reject(
+                    field,
+                    kv,
+                    2,
+                    "record field must be (key value)",
+                ));
+            }
             _ => {
                 return Err(Reject::coded(
                     Code::Malformed,
@@ -4579,6 +4590,17 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
     for &entry in tail {
         match db.ast.get(entry) {
             Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            Struct::List(items) => {
+                // A wrong-arity entry `(1 2 3)` / `(1)` — a fixed-arity shape (want 2). A SURPLUS element
+                // gets the shared delete fix (`(1 2 3)` → `(1 2)`); too few is message-only. Anchored at
+                // the offending entry.
+                return Resolved::Poison(fixed_arity_reject(
+                    entry,
+                    items,
+                    2,
+                    "a map entry is a (key value) pair",
+                ));
+            }
             _ => {
                 return Resolved::Poison(Reject::coded(
                     Code::Malformed,

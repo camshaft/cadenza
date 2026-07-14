@@ -30053,6 +30053,64 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wrong_arity_record_or_map_entry_offers_a_delete_the_surplus_fix() {
+        // A record field / map entry is a fixed-arity `(key value)` pair. A SURPLUS element `(x 1 2)` /
+        // `(1 2 3)` now routes through the shared `fixed_arity_reject` — a delete-the-surplus fix, bringing
+        // these entry forms to fix-parity with the rest of the fixed-arity family. TOO FEW (`(x)` / `(1)`)
+        // keeps the message with no fix (nothing to delete).
+        let find = |src: &str, msg: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains(msg))
+                .unwrap_or_else(|| panic!("expected the entry-arity fault for {src}"))
+        };
+        // SURPLUS record field → delete fix.
+        let rec = find(
+            "(module m (def (main) (record (x 1 2))) (export main))",
+            "record field must be (key value)",
+        );
+        assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
+        assert_eq!(
+            rec.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a surplus record field carries a delete fix: {:?}",
+            rec.fix
+        );
+        // SURPLUS map entry → delete fix (both the NAME alias and the primitive form).
+        for src in [
+            "(module m (def (main) (map (1 2 3))) (export main))",
+            "(module m (def (main) (\"map\" (1 2 3))) (export main))",
+        ] {
+            let m = find(src, "a map entry is a (key value) pair");
+            assert_eq!(
+                m.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "a surplus map entry carries a delete fix: {src} -> {:?}",
+                m.fix
+            );
+        }
+        // TOO FEW — nothing to delete, no fix.
+        let few_rec = find(
+            "(module m (def (main) (record (x))) (export main))",
+            "record field must be (key value)",
+        );
+        assert!(
+            few_rec.fix.is_none(),
+            "a too-few record field has no surplus to delete: {:?}",
+            few_rec.fix
+        );
+        let few_map = find(
+            "(module m (def (main) (map (1))) (export main))",
+            "a map entry is a (key value) pair",
+        );
+        assert!(
+            few_map.fix.is_none(),
+            "a too-few map entry has no surplus to delete: {:?}",
+            few_map.fix
+        );
+    }
+
+    #[test]
     fn a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form() {
         // A record TYPE `(Record (x Int64) (x Bool))` names field `x` twice. A record's field names are a
         // fixed SET (the same rule the record VALUE `(record (a 1) (a 2))` is rejected for), but the type

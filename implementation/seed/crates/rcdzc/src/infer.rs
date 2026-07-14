@@ -8978,12 +8978,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // the MALFORMED-entry fault (a non-`(key value)` entry) so it is reported — the well-formed
                 // entries' faults are already collected. Do NOT `collect` the raw entry pairs.
                 for &entry in args.iter() {
-                    if !matches!(db.ast.get(entry), crate::ast::Struct::List(items) if items.len() == 2)
-                    {
-                        out.push(Reject::coded(
+                    match db.ast.get(entry) {
+                        crate::ast::Struct::List(items) if items.len() == 2 => {}
+                        // A wrong-arity entry — a SURPLUS element gets the shared delete fix, too few is
+                        // message-only (mirrors `resolve_map`; this path handles the `(map …)` NAME alias).
+                        crate::ast::Struct::List(items) => {
+                            let items = items.clone();
+                            out.push(crate::resolve::fixed_arity_reject(
+                                entry,
+                                &items,
+                                2,
+                                "a map entry is a (key value) pair",
+                            ));
+                        }
+                        _ => out.push(Reject::coded(
                             Code::Malformed,
                             "a map entry is a (key value) pair",
-                        ));
+                        )),
                     }
                 }
             } else if let Some(rec_op) = record_row_op_name(crate::eval::meta_apply_of(db, head))
