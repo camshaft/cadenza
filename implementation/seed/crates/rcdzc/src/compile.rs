@@ -2979,17 +2979,23 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if !db.is_user_node(s) {
                 continue;
             }
+            // A concrete non-Unit type means a real value was thrown away. `Ty::Unit` discards nothing; a
+            // poison (`Ty::Any`) already faulted elsewhere; a free type variable is unresolved — stay
+            // conservative on both and do not warn (a false "discarded value" is worse than a missed one).
+            // CHECK THIS FIRST (before the host-call walk): the type is already solved by the preceding
+            // check, so this is O(1), whereas `subtree_reaches_host_call` recursively walks the statement's
+            // whole subtree. Most non-final statements are Unit-typed (a `(host …)`/sequencing effect, an
+            // assignment-like op) and short-circuit here — so the expensive walk only runs on a statement
+            // that IS a discarded non-Unit value candidate, not on every statement. (Order-independent: both
+            // are `continue` guards, so a warning fires iff BOTH pass — reordering changes nothing.)
+            let ty = crate::infer::type_of(db, s);
+            if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
+                continue;
+            }
             // Effectful statements are KEPT by the lowering (their host call is observable and must run) —
             // sequencing them for effect is exactly why a non-final form is allowed to have a value at all,
             // so they are not dead. Only a PURE statement's discarded value is the defect.
             if crate::lower::subtree_reaches_host_call(db, s) {
-                continue;
-            }
-            // A concrete non-Unit type means a real value was thrown away. `Ty::Unit` discards nothing; a
-            // poison (`Ty::Any`) already faulted elsewhere; a free type variable is unresolved — stay
-            // conservative on both and do not warn (a false "discarded value" is worse than a missed one).
-            let ty = crate::infer::type_of(db, s);
-            if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
                 continue;
             }
             // Deleting a pure, value-discarded, non-final form preserves the block's meaning (it still
