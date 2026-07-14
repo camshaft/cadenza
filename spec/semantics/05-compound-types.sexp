@@ -4337,6 +4337,63 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "two sum types whose names differ only by punctuation stay DISTINCT types"
+  (doc    "`(type foo-bar …)` and `(type foo_bar …)` are DISTINCT Cadenza types whose names differ only by
+           a `-` vs `_`. A backend that sanitized both to one identifier (`-`→`_`) would define one type
+           twice AND conflate their constructors/matches (Rust E0428 / a wrong-variant miscompile). Each
+           must map to a DISTINCT emitted type. `f` sums a `foo-bar.A 5` (→5) and a `foo_bar.C 3` (→3) = 8,
+           and the two matches dispatch on the correct type's variants. Pins that the emitted-type-name
+           mapping is INJECTIVE — two source type names never collapse to one target type, so a program is
+           free to use both punctuation styles for genuinely different types.")
+  (input  (do
+            (type foo-bar (A Int64) (B))
+            (type foo_bar (C Int64) (D))
+            (def (f (: x foo-bar) (: y foo_bar))
+              (+ (match x ((foo-bar.A n) n) ((foo-bar.B) 0))
+                 (match y ((foo_bar.C m) m) ((foo_bar.D) 0))))
+            (def (main (: k Int64)) (f (foo-bar.A k) (foo_bar.C 3)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 8 Int64)))
+
+(case "a GENERIC recursive sum branching through a tuple folds at a concrete instantiation"
+  (doc    "`(type GTree (GLeaf a) (GNode (Tuple (GTree a) (GTree a))))` is a generic BINARY tree — the
+           `GNode` payload is a TUPLE of two recursive `(GTree a)` (a two-way branch, unlike the linear
+           `Cons a (Lst a)` list). A fold over `(GTree Int64)` boxes the tuple-of-recursive payload (both
+           branches reach back through the sum) and recurses into the left branch. `(leftmost (GNode
+           (GLeaf 5) (GLeaf 9)))` = 5. Pins that the recursive-payload indirection reaches through a TUPLE
+           inside a GENERIC sum's variant, monomorphized at the concrete element type — the generic +
+           multi-way-branch combination of the recursive-fold shape.")
+  (input  (do
+            (type GTree (GLeaf a) (GNode (Tuple (GTree a) (GTree a))))
+            (def (leftmost (: t (GTree Int64)))
+              (match t ((GTree.GLeaf x) x) ((GTree.GNode (tuple l r)) (leftmost l))))
+            (def (main (: k Int64)) (leftmost (GTree.GNode (tuple (GTree.GLeaf k) (GTree.GLeaf 9)))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a two-parameter sum whose variants use the parameters in different orders instantiates correctly"
+  (doc    "`(type Pair (First a b) (Swapped b a))` has two type parameters used in DIFFERENT orders across
+           its variants: `First` carries `(a, b)`, `Swapped` carries `(b, a)`. At `(Pair Int64 Bool)` the
+           `First` payload is `(Int64, Bool)` and the `Swapped` payload is `(Bool, Int64)` — the SECOND
+           payload slot of `Swapped` is the FIRST type parameter. A backend that bound payload types by
+           position-in-the-variant rather than by the parameter each slot names would mis-type `Swapped`'s
+           second field. `(f (First 5 true))` reads `First`'s first field → 5. Pins that per-variant
+           payload typing follows the NAMED parameter, not a positional assumption, so a variant may permute
+           the sum's type parameters.")
+  (input  (do
+            (type Pair (First a b) (Swapped b a))
+            (def (f (: p (Pair Int64 Bool)))
+              (match p ((Pair.First n _) n) ((Pair.Swapped _ n) n)))
+            (def (main (: k Int64)) (f (Pair.First k true)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
