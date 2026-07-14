@@ -2076,6 +2076,25 @@
                 (Node (tuple (Leaf 0) (Leaf 0)))
                 (Node (tuple (Leaf 0) (Leaf 0))))) Tree)))
 
+(case "a deep balanced tree is built and folded to a scalar, consuming both children"
+  (doc    "The FOLD dual of the render case above, at DEPTH: a balanced binary `Tree` is built to a
+           runtime-`d`-driven depth (`build d v` recurses on BOTH children until `d = 0`), then a
+           self-recursive `sm` FOLDS it to a scalar by summing every leaf — recursing on the left AND right
+           of each `Node`. `build 8 1` is a depth-8 tree with 2^8 = 256 leaves each holding 1, so `sm` = 256.
+           Pins that a recursive-sum CONSUME (not just render) recurses on each recursive payload position at
+           scale — a fold that walked only one child, or truncated, would give a wrong sum. Exercises the
+           recursive construct + match + arithmetic path to a non-trivial depth in one program.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Leaf Int64) (Node (Tuple T T)))
+            (def (build (: d Int64) (: v Int64))
+              (if (= d 0) (T.Leaf v) (T.Node (tuple (build (- d 1) v) (build (- d 1) v)))))
+            (def (sm (: t T)) (match t ((T.Leaf n) n) ((T.Node (tuple l r)) (+ (sm l) (sm r)))))
+            (def (main (: d Int64)) (sm (build d 1)))
+            (export main)))
+  (call   main (: 8 Int64))
+  (output (: 256 Int64)))
+
 (case "a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT"
   (doc    "The two cases above use a SINGLE tuple-typed payload `(Cons (Tuple Int64 IntList))`, matched
            `(Cons (tuple h t))` — the tuple IS the one payload, so it renders `(Cons (tuple h t))`. THIS
