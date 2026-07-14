@@ -31574,7 +31574,7 @@ mod stage1 {
         // (it is `at`) and `get` is too far to be a confident typo, so the diagnostic LISTS the closest
         // real operations. Before, an agent got only "record has no field `get`" and had to read the
         // prelude to discover the real names; now the fix route is in the message itself. A prelude module
-        // IS a record of operations, so this rides the same `no_field_reject` a user-record field takes.
+        // rides the same `no_field_reject` a user-record field takes, but names the MODULE category.
         let d = expect_error("(. List get)");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
@@ -31583,9 +31583,53 @@ mod stage1 {
             d.message
         );
         assert!(
+            d.message.contains("the `List` module has no member `get`"),
+            "names the MODULE category, not 'record has no field': {}",
+            d.message
+        );
+        assert!(
             !d.message.contains("did you mean"),
             "`get` is too far from any op for a confident single: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn an_absent_member_names_the_operand_category_not_always_record() {
+        // The `no_field_reject` message names the operand's REAL category instead of always "record has no
+        // field": an EFFECT's op set → "operation", a prelude MODULE → "member", a user SUM type → "variant".
+        // A user RECORD keeps "record has no field". Same did-you-mean fix on all.
+        let err = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject")
+        };
+        // EFFECT: `(. E emt)` — names the effect + "operation".
+        let eff = err(
+            "(module m (effect E (op emit (-> Int64 Unit)) (op log (-> Int64 Unit))) \
+             (def (main) (host (E) (E.emt 5))) (export main))",
+        );
+        assert!(
+            eff.message.contains("effect `E` has no operation `emt`")
+                && eff.message.contains("did you mean `emit`?"),
+            "an effect op typo names the effect + operation: {}",
+            eff.message
+        );
+        // USER SUM TYPE: `(Color.Gren)` — names the type + "variant".
+        let sum = err(
+            "(module m (type Color (Red) (Green) (Blue)) (def (main) (Color.Gren 5)) (export main))",
+        );
+        assert!(
+            sum.message
+                .contains("the type `Color` has no variant `Gren`")
+                && sum.message.contains("did you mean `Green`?"),
+            "a user-sum variant typo names the type + variant: {}",
+            sum.message
+        );
+        // USER RECORD keeps "record has no field" (the default — a record IS a record to the author).
+        let rec = err("(module m (def (g (: r (Record (foo Int64)))) (. r fooo)) (export g))");
+        assert!(
+            rec.message.contains("record has no field `fooo`"),
+            "a user record keeps 'record has no field': {}",
+            rec.message
         );
     }
 
@@ -32188,10 +32232,15 @@ mod stage1 {
 
     #[test]
     fn an_absent_builtin_field_rejects_like_a_closed_record() {
-        // `(. Int64 bogus)` — a field the module does NOT carry rejects (CDZ0201), the same closed
-        // projection a user record takes. Realized/unrealized/absent are one uniform projection.
+        // `(. Int64 bogus)` — a member the module does NOT carry rejects (CDZ0201), the same closed
+        // projection a user record takes. Realized/unrealized/absent are one uniform projection. The
+        // message names the MODULE category — "the `Int64` module has no member `bogus`" — not the generic
+        // "record has no field" (a prelude module is not a record to the author).
         let msg = expect_decline("(. Int64 bogus)");
-        assert!(msg.contains("no field"), "got: {msg}");
+        assert!(
+            msg.contains("the `Int64` module has no member `bogus`"),
+            "got: {msg}"
+        );
     }
 
     // ── arithmetic intrinsics: application of a built-in operation, generic over the integer type ──
@@ -35080,18 +35129,19 @@ mod stage1 {
     #[test]
     fn a_far_handler_op_access_typo_reports_the_absent_field_exactly_once() {
         // A FAR-typo op ACCESS in a handle body — `((. E zzzzz))` where `zzzzz` matches no op — surfaces
-        // the member "record has no field" CDZ0201 via TWO unanchored desugar/reduction paths (the handle's
+        // the member absent-op CDZ0201 via TWO unanchored desugar/reduction paths (the handle's
         // op-resolution AND the perform). Once the member two-tier (M82) began appending a closest-matches
         // suffix, the two copies' MESSAGES differed (one listed matches, one bare) so the full-message
         // dedup key let both through as a DOUBLE report. `dedup_faults` now keys an unanchored no-field
-        // fault by its INVARIANT CORE (+ collapses an unanchored copy against an anchored one by core), so
-        // the miss reports exactly ONCE — keeping the located, closest-matches copy.
+        // fault by its INVARIANT CORE (`has no <word> \`k\``, category-aware — here "effect `E` has no
+        // operation `zzzzz`") + collapses an unanchored copy against an anchored one by core, so the miss
+        // reports exactly ONCE — keeping the located, closest-matches copy.
         let src = "(do (effect E (op ask (-> Unit Int64)) (op tell (-> Int64 Unit))) \
                    (def (main) (handle E unit ((ask () s (resume 1 s)) (tell (x) s (resume unit s))) \
                      ((. E zzzzz)))) (export main))";
         let field_errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
             .into_iter()
-            .filter(|d| d.message.contains("record has no field `zzzzz`"))
+            .filter(|d| d.message.contains("has no operation `zzzzz`"))
             .collect();
         assert_eq!(
             field_errs.len(),

@@ -6977,6 +6977,34 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
     out
 }
 
+/// The CATEGORY subject + member-noun for an absent-member access `(. operand key)`, so the rejection
+/// names what the operand ACTUALLY is instead of always calling it a "record". `(. E emt)` on an effect
+/// reads "effect `E` has no operation `emt`", `(. List nonesuch)` on a prelude module "the `List` module
+/// has no member `nonesuch`", `(. Option Nonesuch)` on a sum type "the sum type `Option` has no variant
+/// `Nonesuch`" — a plain user record keeps "record has no field". The operand's SOURCE NAME classifies it
+/// (an effect via `effect_decl_by_name`, a prelude module via `db.prelude`, a sum/nominal type via
+/// `type_decl_by_name`); anything else (a runtime record value, a `record` literal) is the record default.
+/// Returns `(subject, member_word)` where the message is `<subject> has no <member_word> \`key\``. The
+/// `has no <word> \`` shape is the shared DEDUP invariant (`compile::dedup_faults`' `no_field_key` splits on
+/// it), so every category still collapses its infer/emit twin.
+pub(crate) fn member_category(db: &Db, operand: StructId, key: &str) -> (String, &'static str) {
+    let _ = key;
+    if let Some(name) = db.ast.as_name(operand) {
+        if db.effect_decl_by_name(name).is_some() {
+            return (format!("effect `{name}`"), "operation");
+        }
+        // A prelude MODULE name (`List`/`Map`/`Set`/`String`/`Bytes`/`Int64`/…) — a closed record of ops.
+        if db.prelude.contains_key(name) {
+            return (format!("the `{name}` module"), "member");
+        }
+        // A user (or built-in) SUM / nominal TYPE name — its members are its variant constructors.
+        if db.type_decl_by_name(name).is_some() {
+            return (format!("the type `{name}`"), "variant");
+        }
+    }
+    ("record".to_string(), "field")
+}
+
 /// The `record has no field \`key\`` rejection for a member access `member` (`(. operand key)`),
 /// enriched two-tier (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
 /// record analogue of the unbound-name suggestion). `operand`'s field names are the candidate set (a
@@ -7024,9 +7052,13 @@ fn no_field_reject(
     };
     // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
     let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
+    // NAME the operand's real category (effect / module / type / record) instead of always "record" —
+    // `(. E emt)` reads "effect `E` has no operation `emt`", `(. List nonesuch)` "the `List` module has no
+    // member `nonesuch`". The `has no <word> \`key\`` shape stays the shared dedup invariant.
+    let (subject, member_word) = member_category(db, operand, &key.name);
     let reject = Reject::coded(
         Code::Malformed,
-        format!("{}`{}`{hint}", crate::diag::NO_FIELD_PREFIX, key.name),
+        format!("{subject} has no {member_word} `{}`{hint}", key.name),
     );
     match (suggestion, key_occ) {
         (Some(field), Some(occ)) => reject.with_fix(Fix::replace_heuristic(occ, field)),

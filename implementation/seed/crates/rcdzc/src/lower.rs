@@ -404,13 +404,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // DIFFERENT node than infer's member-node copy, so the two slip through as the SAME CDZ0201
             // printed twice. (A NESTED `(. (. r k) k)` still yields two, correctly: two DISTINCT member
             // nodes, each its own field read.)
-            crate::eval::Member::NoField => Core::Poison(
-                Reject::coded(
-                    Code::Malformed,
-                    format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
+            crate::eval::Member::NoField => {
+                // Match `infer::no_field_reject`'s category-aware subject/word (effect/module/type/record)
+                // so the two copies share the `has no <word> \`key\`` dedup core and `dedup_faults`
+                // collapses them (keeping the infer copy's did-you-mean fix).
+                let (subject, member_word) = crate::infer::member_category(db, operand, &key.name);
+                Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!("{subject} has no {member_word} `{}`", key.name),
+                    )
+                    .at(id),
                 )
-                .at(id),
-            ),
+            }
             // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
             // `(if c R S)` whose BOTH branches are visible records carrying the field →
             // `(if c R.key S.key)`, pushing the member read into each branch. The record analogue of the

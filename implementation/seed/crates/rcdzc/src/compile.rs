@@ -2493,9 +2493,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     // a distinct record keeps its own node, so it is never in this branch). Together: node-keyed for the
     // ordinary same-node case (no false-merge), name-keyed-when-unanchored for the inlined/synthesized twin.
     fn no_field_key(msg: &str) -> Option<&str> {
-        // The invariant core is `record has no field \`k\`` — strip an optional ` — did you mean …?` tail.
-        msg.strip_prefix(crate::diag::NO_FIELD_PREFIX)
-            .map(|rest| rest.split(" — ").next().unwrap_or(rest))
+        // The invariant core is `<subject> has no <word> \`k\`` (the subject/word vary by operand category
+        // — "record … field", "effect `E` … operation", "the `List` module … member", "the type `T` …
+        // variant" — but the infer + emit copies of ONE absent-member fault build the IDENTICAL core, and
+        // the did-you-mean tail begins ` — `). Key on the whole `has no …`-onward core (past an optional
+        // ` — did you mean …?` tail), so every category collapses its twin. Anchored to `has no ` so a
+        // message that merely contains those words elsewhere is not mistaken for a member fault.
+        msg.find(" has no ")
+            .map(|i| msg[i..].split(" — ").next().unwrap_or(&msg[i..]))
     }
     // The NODES at which a no-field fault carries a fix (the infer did-you-mean copy) — a fix-less no-field
     // fault at one of these same nodes is that copy's twin and is dropped below (keep the richer copy).
