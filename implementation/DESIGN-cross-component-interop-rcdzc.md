@@ -171,13 +171,14 @@ composition** in the runner.
 Calibrated against the closures arc, which repeatedly proved a "large vertical" decomposes into
 safe, gate-guarded bricks once attempted. Each brick lands independently onto `spec`.
 
-**X0 — this design doc + additive spec note.** Land the doc. Draft (do not yet freeze) the additive
-`component-abi.md` clause: *"Components composed against a shared runtime instance MAY exchange runtime
-values as opaque handles of a well-known `value` resource type; this shared-runtime handle form is the
-internal-composition representation, distinct from the external marshaling representation, and adding it is
-additive (a representation where the shared-runtime mode previously had none)."* Plus a
-`cross-component-interop` capability spec sketch. **Bind to** the frozen value-form + type-mapping; do not
-re-pin them.
+**X0 — this design doc + additive spec note. ✅ DONE (`spec`).** Landed: (1) this doc; (2)
+`component-abi.md` **Contract version 5** + a new `## Cross-Component Value Exchange` section (the shared-
+runtime `value`-handle transport, borrow-arg/own-result ownership, monomorphic exchanged signature,
+shared-instance handle meaning) — additive (a representation the shared-runtime mode previously lacked; a
+single-program run stays byte-identical to v4); (3) `spec/capabilities/cross-component-interop.md` — the
+program-level binding surface (explicit peer import, export-list visibility, concrete interface, value
+same-on-both-sides, no-authority-widening, decline-don't-miscompile), binding to — not re-pinning — the
+frozen value-form + type-mapping + host-interface-binding contracts.
 
 **X1 — the COMPOSITION ORACLE (test-only, the de-risker).** A `wasmtime ComponentBuilder` reference: two
 hand-built core modules A and B, both importing the SAME runtime instance's heap ops and a shared `value`

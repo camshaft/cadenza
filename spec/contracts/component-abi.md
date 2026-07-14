@@ -70,6 +70,21 @@
 > and trap arms, a boundary-representation change carrying a version increment; but both preceded any
 > deployed component, so no in-the-wild artifact requires re-derivation. A program that reaches no host
 > function keeps a plain `input -> output` entry, byte-identical to v1's normal-completion representation.
+>
+> **Contract version: 5.** Version 5 adds the cross-component shared-runtime value transport (§Cadenza
+> Components Composed Against A Shared Runtime Exchange Values As Handles): when two separately-derived
+> Cadenza components are composed against one value-heap runtime instance, a compound value passes between
+> them as an opaque handle of the well-known `value` resource type the runtime interface publishes, rather
+> than being marshaled into a component-model aggregate at each hop, so that a value crosses between Cadenza
+> components with no serialization while remaining meaningful only within the one shared runtime instance
+> that owns it (§The Value-Heap Runtime, §A Runtime Value Crosses As An Opaque Handle). This is the internal
+> composition representation for a value crossing between Cadenza components; the external marshaling
+> representation (the type table at the declared-default location) is unchanged and remains how a value
+> crosses to a non-Cadenza consumer. **Migration:** the shared-runtime handle transport is a new boundary
+> representation for a mode that previously had none — before this version no two Cadenza program components
+> were composed against one runtime, so no value crossed between them at all — and it is therefore additive
+> (§Additive Evolution): a single-program run, and a value crossing to a non-Cadenza consumer by marshaling,
+> are both byte-identical to version 4. No in-the-wild artifact requires re-derivation.
 
 ## Purpose And Scope
 
@@ -197,6 +212,34 @@ A runtime handle MUST be meaningful only within the single run and runtime insta
 The observable result of a program that produces a compound value MUST be an ordinary string the program returns, produced by type-directed code the compiler emits that walks the value through the runtime's accessors and assembles its canonical text, rather than by the runtime rendering the value or by the program's own component owning a display of it, so that the names a rendering requires stay with the compiler that holds them and the host reads back a plain string (host-interface-binding.md §The Host Does Not Format A Component's Values).
 
 The text the compiler-emitted rendering produces MUST be the value's canonical text form under deterministic-value-form.md, so that a compound result crossing the boundary is byte-identical to the same value's recorded corpus form.
+
+## Cross-Component Value Exchange
+
+### Cadenza Components Composed Against A Shared Runtime Exchange Values As Handles
+
+Two or more separately-derived Cadenza components that a host composes against a single value-heap runtime instance MUST exchange a compound value that crosses between them as an opaque handle of the well-known `value` resource type, rather than by marshaling the value into a component-model aggregate at the crossing, so that a value passes between Cadenza components with no serialization and the shared runtime that owns the value is the one place its representation lives.
+
+A scalar value that crosses between such components MUST cross by its component-model scalar representation and not as a handle, so that only a value the runtime owns is carried by handle and a scalar carries no runtime dependency.
+
+The `value` resource type by which a handle crosses MUST be a single well-known type the value-heap runtime interface publishes and every composed component imports, so that a handle one component produces is a value of the same resource type another component accepts and the transport needs no per-type resource.
+
+### A Cross-Component Handle Is Meaningful Only In The Shared Runtime Instance
+
+A `value` handle that crosses between composed components MUST be meaningful only within the single runtime instance the composition shares, consistent with a runtime handle being meaningful only within the instance that produced it (§A Runtime Value Crosses As An Opaque Handle), so that composing components against a shared runtime is what makes a handle one produces intelligible to another and a handle never denotes a value in a different instance.
+
+A host that composes Cadenza components which exchange values by handle MUST bind every such component's value-heap runtime import to the one shared runtime instance, so that the components' handles index one heap and a component cannot be handed a handle into a heap it does not share.
+
+A composed component MUST NOT dereference or interpret a handle it receives from a peer, reading the value only through the shared runtime's accessors as the value's statically-known type, so that the receiving component depends on the runtime's interface rather than on the handle's byte representation and no peer's heap is aliased by another linear memory.
+
+### The Exchanged Signature Is Monomorphic
+
+A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
+
+### Ownership Of An Exchanged Handle Follows The Crossing Direction
+
+A `value` handle a component passes as an argument to a peer MUST cross as a borrow that the receiving component reads but does not reclaim, so that the passing component retains ownership and reclaims the value, matching the repeated-use callback shape a borrowed handle already serves.
+
+A `value` handle a component returns as a result to a peer MUST transfer ownership to the receiving component, which later reclaims it through the shared runtime, so that a returned value's storage is balanced by exactly one reclamation and no value the runtime owns is leaked or double-freed across the crossing.
 
 ## Additive Evolution
 
