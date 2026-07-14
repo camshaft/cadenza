@@ -1200,7 +1200,21 @@ the component type. The new work:
   scalar-guard so a sum-arg list result declines (the multi list cores thread tuples, not sums). Corpus:
   MULTI-EXPORT two Option-arg (drive each, Some+None), two Result-arg; MIXED Option-arg alongside plain (drive
   both).
-  **REMAINING within SUM-arg:** the DISTINCT-SIG shape; a general USER sum / >2 variants (needs a NAMED
+- **✅✅ SUM (Option/Result scalar) arg on the DISTINCT-SIG shape — scalar result (`spec@25d0914f`). The sum-arg
+  feature is now CLOSED across ALL FOUR export shapes.** A distinct-signature component crosses G closures of
+  DIFFERENT signatures as G distinct resource types, each with its own per-signature `call-g<n>`. A group whose
+  closure takes an `(Option/Result scalar)` mints its OWN `option<…>`/`result<…>` boundary type (via a per-group
+  `ArgSlot`) and rebuilds the sum cell in its `call-g<n>` — INDEPENDENTLY per group, so distinct groups may
+  freely mix Option and Result, different payload widths, or a sum group beside a tuple/scalar group. Wiring
+  mirrors the distinct-sig tuple path exactly: `GroupInfo` gains `sum_arg: Option<(ArgSlot, SumArgRebuild)>`
+  (classified via `group_sum_arg` only for scalar-result single-arg groups where no tuple classifier fired);
+  `arg_vts` sum arm `[i32, payload_vt]`, `match_vts` arm `[i32]`; `SigGroup` threads `sums: Vec<SumArgRebuild>`
+  into the distinct core's scalar `call-<g>` branch (`sum_local = tuple_local + tuples.len()`, drop loop over
+  sums); `call_arg_slots` `.or_else`-es to the sum slot; `sum-new`+box ops registered when `any_sum_arg`. `&[]`/
+  no-sum groups stay byte-identical. Corpus: 6 DISTINCT-SIG cases (mixed Option/Result groups + driving each,
+  different-width Option payloads, a sum group beside a tuple group, capturing sum groups, sum groups alongside
+  a plain export).
+  **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED
   `variant<…>` — an export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened
   join); a compound/nested payload; a LIST result over a sum arg (the list cores thread tuples, not sums).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
