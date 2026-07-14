@@ -2105,6 +2105,7 @@ pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
 pass	two performs bound by nested lets thread the handler state in order
+pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk

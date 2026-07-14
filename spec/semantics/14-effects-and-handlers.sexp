@@ -1106,6 +1106,22 @@
                 (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
   (output (: 10 Int64)))
 
+(case "two performs of a MULTI-parameter op each combine both args with the state advancing between them"
+  (doc    "A two-scalar-parameter operation whose arm combines BOTH arguments with the threaded state, called
+           twice on one strict spine so each perform reads the state the previous one advanced. `Acc.add2 :
+           Int64 -> Int64 -> Int64`, arm `(add2 (a b) s (resume (+ (+ a b) s) (+ s 1)))` — sums its two args
+           plus the current state, threading `s + 1`. Seeded 100: `(Acc.add2 1 2)` = `1 + 2 + 100` = 103
+           (state → 101), then `(Acc.add2 10 20)` = `10 + 20 + 101` = 131 (state → 102), so `(+ 103 131)` =
+           234. Pins that a multi-parameter op's arm binds ALL its parameters AND the state, and that the
+           state advances between successive performs on the spine (had it not threaded, the second would
+           read 100 too, giving 233) — the multi-arg companion of the sequential-state-threading case above.")
+  (input  (do
+            (effect Acc (op add2 (-> Int64 Int64 Int64)))
+            (def (main)
+              (handle Acc 100 ((add2 (a b) s (resume (+ (+ a b) s) (+ s 1))))
+                (+ (Acc.add2 1 2) (Acc.add2 10 20)))) (export main)))
+  (output (: 234 Int64)))
+
 (case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
   (input  (do
             (effect Log (op w (-> Int64 Unit)))
