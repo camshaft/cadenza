@@ -142,13 +142,23 @@ export default function RecordsTuples() {
 
       <Exercise
         id="records-tuples:2"
-        prompt={<>Write <C>third</C> to pull element 2 out of a 3-tuple, so <C>(third (tuple 5 6 7))</C> gives <C>7</C>.</>}
-        starter={`(def (third t) (. t ?))
-(def (main) (third (tuple 5 6 7)))`}
-        solution={`(def (third t) (. t 2))
-(def (main) (third (tuple 5 6 7)))`}
-        expected="7"
-        hint={<>Tuple indices start at 0, so the third element is index <C>2</C>.</>}
+        prompt={
+          <>
+            Concatenating shifts the second tuple's indices up by the first's length. Cat{" "}
+            <C>(tuple 1 2)</C> onto <C>(tuple 3 4 5)</C> and reach the <em>last</em> element, <C>5</C>, by
+            its index in the joined tuple. Which index is it?
+          </>
+        }
+        starter={`(. (Tuple.cat (tuple 1 2) (tuple 3 4 5)) ?)`}
+        solution={`(. (Tuple.cat (tuple 1 2) (tuple 3 4 5)) 4)`}
+        expected="5"
+        hint={
+          <>
+            The joined tuple is <C>(tuple 1 2 3 4 5)</C> — five elements, indices <C>0</C> to <C>4</C>. The
+            <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>: the first tuple pushed it two slots
+            over.
+          </>
+        }
       />
 
       <Exercise

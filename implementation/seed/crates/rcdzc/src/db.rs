@@ -86,6 +86,15 @@ thread_local! {
     /// `a_deeply_nested_generic_nominal_annotation_reduces_to_a_linear_size_type`.
     pub(crate) static SUBST_TEMPLATE_VARS_VISITS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total `resolve::binder_in` calls (one per enclosing form a name-resolution's scope walk
+    /// visits) since the last reset. The runtime-map-match desugar builds an O(arms)-DEEP synthesized
+    /// `(if <k-present> body <else>)` presence chain; without a scope-skip entry for those synth nodes, a
+    /// prelude name (`Map`/`Some`/`None`) in an inner arm walked O(depth) enclosing forms → O(arms²) total.
+    /// `extend_scope_skip_pass_through` makes each such resolution hop O(1). This counter is the noise-free
+    /// signal (a wall-clock ratio is diluted by the rest of check) — see
+    /// `a_wide_runtime_map_match_resolves_synth_names_in_bounded_time`.
+    pub(crate) static BINDER_IN_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -1986,6 +1995,63 @@ impl Db {
         if ix < self.parent.len() {
             self.parent[ix] = new_parent;
             self.child_ix[ix] = child_ix;
+        }
+    }
+
+    /// Give a SYNTHESIZED subtree scope-skip entries so a name resolved inside it hops O(1) to the nearest
+    /// real binding candidate instead of walking every enclosing synth form. `push_list` deliberately
+    /// leaves synth nodes UNCOVERED (the exhaustive parent walk is cheap for a SHALLOW β-reduced copy — its
+    /// usual case), but a desugar that builds a DEEP self-contained chain (the runtime map-match's N-nested
+    /// `(if <k-present> body <else>)` presence chain) breaks that: each synth node is a NON-binding
+    /// `if`/`match`/`.`/application form, so a prelude name (`Map`/`Some`/`None`/…) in the innermost arm
+    /// walks O(depth) forms to conclude "not lexically bound", and with N arms that is O(N²).
+    ///
+    /// Every node in such a chain is a non-binding form (its only real binders are the REUSED arm bodies,
+    /// which resolved — and memoized — BEFORE the desugar, so they never re-resolve here). So each fresh
+    /// node's skip is simply its PARENT's skip (path-compression over the non-binding spine, exactly what
+    /// `build_scope_skip` computes for a non-candidate) — bottoming at the chain root's skip. The root is
+    /// self-contained (parent `None` after `push_list`), so its names fall through to the prelude, which is
+    /// where `Map`/`Some`/`None`/`match`/`if` resolve anyway. Idempotent + bounded to `root`'s subtree.
+    pub fn extend_scope_skip_pass_through(&mut self, root: StructId) {
+        // Grow the skip vector to cover every id up to the current arena length (synth nodes appended since
+        // load), defaulting to `None` (no candidate above → prelude fallback), then fill `root`'s subtree
+        // top-down: a child inherits its parent's (now-final) skip entry, since a synth form binds nothing.
+        // A node BELOW `covered_boundary` was covered by the load-time `build_scope_skip` (or a prior
+        // extension) — it keeps its own final entry; only ids at/above the boundary are fresh synth nodes.
+        let covered_boundary = self.scope_skip.len();
+        let len = self.ast.structure.len();
+        if self.scope_skip.len() < len {
+            self.scope_skip.resize(len, None);
+        }
+        // A root already covered by the load-time index (or a prior extension) keeps its own entry — only
+        // a fresh synth root needs seeding. Nothing to do if it is out of range.
+        if (root.0 as usize) < covered_boundary || (root.0 as usize) >= self.scope_skip.len() {
+            return;
+        }
+        // The root's own skip: whatever its parent sees (usually `None` — a freshly-pushed root is
+        // parentless), so a name in the chain resolves against the root's lexical context (the prelude).
+        let root_skip = match self.parent_of(root) {
+            Some(p) if (p.0 as usize) < self.scope_skip.len() => self.scope_skip[p.0 as usize],
+            _ => None,
+        };
+        self.scope_skip[root.0 as usize] = root_skip;
+        // Descend: each node passes its skip down to its children (a non-binding synth form is transparent
+        // to scope). A child that is a LOAD-TIME node (a reused body occurrence) already has its own final
+        // entry — do not overwrite it; only fill fresh (previously-`None`, past-load) synth nodes.
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let node_skip = self.scope_skip[node.0 as usize];
+            if let Struct::List(children) = self.ast.get(node) {
+                for &c in children.clone().iter() {
+                    let ci = c.0 as usize;
+                    // Only propagate INTO fresh synth nodes (a reused load-time / already-covered child
+                    // keeps its own final skip — do not overwrite it).
+                    if ci >= covered_boundary && ci < self.scope_skip.len() {
+                        self.scope_skip[ci] = node_skip;
+                        stack.push(c);
+                    }
+                }
+            }
         }
     }
 

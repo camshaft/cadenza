@@ -99,6 +99,7 @@ pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
@@ -597,6 +598,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
@@ -788,6 +790,7 @@ pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
+pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -1287,6 +1290,7 @@ pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
+pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
 pass	a tail-recursive accumulator loop runs to a large runtime N in constant stack
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive countdown loop runs to a very large runtime N
@@ -1322,6 +1326,7 @@ pass	a tuple binding pattern against a non-tuple value is a shape error
 pass	a tuple binding pattern nests to any depth
 pass	a tuple compound export under a non-main name crosses to the host
 pass	a tuple is constructed with positional elements
+pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns
 pass	a tuple pattern against a Sign scrutinee is a type error
@@ -1343,6 +1348,8 @@ pass	a tuple-wrapped self-application is rejected in bounded time, not a compile
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
+pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
+pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
@@ -1415,6 +1422,7 @@ pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
+pass	an Option pipeline short-circuits on the first None
 pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic

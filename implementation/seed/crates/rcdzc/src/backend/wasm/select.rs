@@ -7041,6 +7041,56 @@ fn emit_probe_chain(
     )? {
         return Ok(());
     }
+    // BRANCHLESS TERMINAL PAIR: when the chain has narrowed to exactly TWO arms — a literal-probe arm
+    // then its unconditional cover (a wildcard, or the redundant last probe of an exhaustive wildcard-less
+    // match) — this is `(if (scrutinee == probe0) body0 body1)`, the same shape the standalone 2-arm match
+    // selects (see `emit_match_dispatch`). When both are unguarded with cheap trap-free `is_select_arm`
+    // bodies and the result is a scalar, emit `body0 ; body1 ; (scrutinee == probe0) ; select` instead of
+    // an `if`/`else` block — so the TAIL of an N-arm sparse chain (`(match x (0 a) (5 b) (_ c))` → the
+    // inner `(5 b)/(_ c)` pair) is branchless too, not only a standalone 2-arm match. `body1` covers every
+    // non-`probe0` value, so the select is total. TAIL position is fine: a trap-free body is never a call,
+    // so no arm is a tail call to preserve (matching the standalone case). Falls through to the linear
+    // chain for a guarded arm, a heavier/possibly-trapping body, or a non-Int/Bool probe.
+    if arms.len() == 2
+        && arms.iter().all(|a| a.guard.is_none())
+        && matches!(
+            arms[0].probe,
+            crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
+        )
+        && is_select_arm(db, arms[0].body)
+        && is_select_arm(db, arms[1].body)
+        && !matches!(block_ty, BlockType::Empty)
+    {
+        let res_ty = match result_it {
+            Some(rit) => Ty::Int(rit),
+            None => Ty::Bool,
+        };
+        emit_branch(
+            db,
+            arms[0].body,
+            &res_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_branch(
+            db,
+            arms[1].body,
+            &res_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_probe_condition(&arms[0].probe, src, it, out);
+        out.push(Lir::Select);
+        return Ok(());
+    }
     // An arm body is emitted via `emit_arm_body` (grounds a bare-`ConstInt` body to the match's result
     // width, threads the tail context). The chain dispatches per arm below.
     let Some((arm, rest)) = arms.split_first() else {
@@ -10806,6 +10856,56 @@ mod tests {
         assert!(
             bind.contains(&Lir::Select) && !bind.iter().any(|i| matches!(i, Lir::If(_))),
             "a scrutinee-binding trap-free arm selects, got: {bind:?}"
+        );
+    }
+
+    #[test]
+    fn the_terminal_pair_of_a_sparse_match_chain_selects() {
+        // A 3+-arm SPARSE scalar match (not dense enough for a br_table) emits a linear probe chain — but
+        // its TERMINAL pair (the last literal-probe arm + the wildcard cover) is a 2-arm select shape, so
+        // when both are trap-free `is_select_arm` bodies it emits a branchless `select` there instead of a
+        // nested `if`/`else`. `(match x (0 10) (100 20) (_ 30))`: the outer `(0 10)` stays an `if` (its
+        // else is the inner match sub-chain), but the `(100 20)/(_ 30)` tail → `20 ; 30 ; (x==100) ;
+        // select`. So the chain has exactly ONE structured `if` (the outer 0-probe) and ONE `select`.
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let sparse = lir(
+            "(module m (def (f (: x Int64)) (match x (0 10) (100 20) (_ 30))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            sparse.iter().filter(|i| matches!(i, Lir::Select)).count(),
+            1,
+            "the terminal pair selects, got: {sparse:?}"
+        );
+        assert_eq!(
+            sparse.iter().filter(|i| matches!(i, Lir::If(_))).count(),
+            1,
+            "only the outer 0-probe stays a structured if, got: {sparse:?}"
+        );
+        // A 4-arm sparse chain: only the LAST pair selects; the two leading probes stay `if`s.
+        let four = lir(
+            "(module m (def (f (: x Int64)) (match x (0 1) (5 2) (9 3) (_ 4))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            four.iter().filter(|i| matches!(i, Lir::Select)).count(),
+            1,
+            "the 4-arm chain's terminal pair selects once, got: {four:?}"
+        );
+        // A terminal pair with a POSSIBLY-TRAPPING body (`(+ y 1)`, checked add) does NOT select — the
+        // chain stays a nested `if` for that pair.
+        let trapping = lir(
+            "(module m (def (f (: x Int64) (: y Int64)) (match x (0 y) (7 (+ y 1)) (_ y))) (def (main) 0) (export main))",
+        );
+        assert!(
+            trapping.iter().filter(|i| matches!(i, Lir::Select)).count() == 0,
+            "a possibly-trapping terminal-pair body keeps the if, got: {trapping:?}"
         );
     }
 

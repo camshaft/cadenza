@@ -634,6 +634,34 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
 
+; A self-tail loop that threads a (node, cursor) pair — a BOXED-SUM accumulator `(. r 0)` AND a cursor
+; `(. r 1)`, BOTH projected from the same tuple returned by an `if`-builder — must thread each projection
+; into its own loop slot. These pin that shape (the byte-decode reader loop): the accumulator carries the
+; last-read sum node and the cursor advances, projected from the builder's tuple each step. (This was a
+; slot-aliasing wrong-value miscompile — one projection read the other's slot; now fixed. Its invalid-wasm
+; sibling and the fallible-read-in-base variant, both fixed, are pinned above.)
+
+(case "a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple"
+  (doc    "A `(node, cursor)` decode loop: `one` returns `(tuple (W.Atom <byte>) (+ pos 1))` from an `if`,
+           and `loop` threads BOTH projections — the boxed-sum node `(. r 0)` as the `last` accumulator and
+           the cursor `(. r 1)` as the position. Over b\"\\x05\\x07\\x09\" iterating three times from a
+           boundary-parameter start, `last` ends holding `(W.Atom 9)` (the byte at position 2), and `wval`
+           extracts 9. Pins that a self-tail loop threading a projected boxed-sum accumulator alongside a
+           projected cursor reads each projection from its own slot — the reader-loop shape. (Was a
+           slot-aliasing wrong value — the accumulator read the cursor's slot, returning 0; now correct.)")
+  (input  (do
+            (type W (Atom Int64) (Zero))
+            (def (one (: b Bytes) (: pos Int64))
+              (if (= (Option.expect (Bytes.at b pos) "t") 5)
+                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
+                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))))
+            (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
+              (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
+            (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
+            (def (main (: pos Int64)) (wval (loop b"\x05\x07\x09" 3 pos ((. W Atom) 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 9 Int64)))
+
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
            (itself a record) from the if-selected record, then field `x` from that — the projection sinks
@@ -2185,10 +2213,11 @@
 ; The list-element cases above bind an IRREFUTABLE element (a tuple, always matches once the length holds)
 ; or refine on a LITERAL. A list arm's element MAY also be a refutable sum-CONSTRUCTOR pattern `(A.I x)`,
 ; which adds a runtime DISCRIMINANT test on that element (does it carry the `I` tag?) on top of the length
-; dispatch — the head-plus-typed-args shape a compiler pass destructures. A list arm may carry AT MOST ONE
-; such refutable constructor element today (with the other positions bare binders); two or more decline
-; (a later increment). These pin the ONE-constructor-element form: at the head, at a non-head position, its
-; fall-through when the tag differs, and over a runtime-built list.
+; dispatch — the head-plus-typed-args shape a compiler pass destructures. A list arm may carry SEVERAL such
+; refutable constructor elements (each at any position, the others bare binders): every ctor element gets a
+; fresh binder, all their discriminant tests are ANDed into the arm guard, and the body re-matches nest so
+; each ctor's payload is in scope. These pin the constructor-element form: one at the head, one at a
+; non-head position, its fall-through when the tag differs, over a runtime-built list, and TWO in one arm.
 
 (case "a list arm with one constructor element binds its payload and its bare siblings"
   (doc    "A list arm whose FIRST element is a refutable constructor pattern `(A.I x)` plus bare binders
@@ -2239,6 +2268,30 @@
             (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (A.I (* i 10)))) out))
             (def (main) (f (build 1 3 (list)))) (export main)))
   (output (: 10 Int64)))
+
+(case "a list arm with two constructor elements binds both payloads"
+  (doc    "TWO refutable constructor elements in one arm: `((list (A.I x) (A.N y) .. r) (+ x y))` requires
+           the first element to be an `A.I` AND the second an `A.N`, binding BOTH payloads. Each ctor
+           element gets a fresh binder, both discriminant tests are ANDed into the arm guard, and the body
+           re-matches nest so `x` and `y` are both in scope. `(list (A.I 1) (A.N 2))` → 1+2 = 3. Pins that a
+           list arm dispatches on MORE THAN ONE tagged element at once — the fixed-shape `[Head op, Arg a]`
+           destructure a compiler pass wants.")
+  (input  (do
+            (type A (I Int64) (N Int64))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f (list (A.I 1) (A.N 2)))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a two-constructor-element list arm falls through when the second tag differs"
+  (doc    "The refutability of BOTH ctor elements: the same `((list (A.I x) (A.N y) .. r) …)` arm against a
+           list whose second element is an `A.I` (not `A.N`) does NOT match — the first discriminant holds
+           but the second fails, so the ANDed guard is false and it falls through → -1. Pins that every ctor
+           element in a multi-element arm is genuinely tested, not just the first.")
+  (input  (do
+            (type A (I Int64) (N Int64))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f (list (A.I 1) (A.I 2)))) (export main)))
+  (output (: -1 Int64)))
 
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
@@ -2891,6 +2944,48 @@
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
+; `Option` is the partial-lookup carrier; chaining two lookups so a `None` short-circuits the rest is the
+; partial-lookup pipeline (the Option analogue of the Result-pipeline cases). And a `(Map.lookup m k)` over
+; a map whose VALUE is itself an `Option` yields a HOMOGENEOUS nest `Option (Option v)` — the matcher must
+; distinguish the OUTER `None` (key absent) from the INNER `None` (key present, value is `None`), two arms
+; over the SAME `Option` type (unlike the Option-of-Result nest above, whose levels are different types).
+
+(case "an Option pipeline short-circuits on the first None"
+  (doc    "Two lookups chained so a `None` from either aborts the rest: `(match (Map.lookup m k1) ((Some a)
+           (match (Map.lookup m k2) ((Some b) (+ a b)) (None -1))) (None -2))`. Over `{1↦10, 2↦20}`:
+           k1=1,k2=2 → both present → 10+20 = 30; k1=1,k2=9 → second absent → -1; k1=9 → first absent, the
+           second lookup never runs → -2. Pins the partial-lookup pipeline short-circuit — a present value
+           flows into the next lookup, an absent one skips the rest (the Option analogue of the Result
+           pipeline; the resolve-two-names-then-combine idiom).")
+  (input  (do
+            (def (main (: k1 Int64) (: k2 Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (match (Map.lookup m k1)
+                  ((Some a) (match (Map.lookup m k2) ((Some b) (+ a b)) (None -1)))
+                  (None -2))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 1 Int64) (: 9 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 2 Int64)) (output (: -2 Int64)))
+
+(case "a homogeneous nested Option distinguishes its outer and inner None"
+  (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
+           v) ((Some (None _)) -1) (None -2)`. The scrutinee is runtime (an `if`), so no fold: `b`=true →
+           `(Some (Some 5))` → 5; `b`=false → `(Some (None unit))` → the INNER-None arm → -1 (NOT the outer
+           -2). Pins that the matcher distinguishes the outer `None` (the whole optional is absent) from the
+           inner `None` (present, but its payload is absent) when both levels are the same `Option` type —
+           the shape a `(Map (Option v))` lookup returns (`Option (Option v)`), distinct from the
+           Option-of-Result nest whose levels differ.")
+  (input  (do
+            (def (main (: b Bool))
+              (match (if b (Some (Some 5)) (Some (None unit)))
+                ((Some (Some v)) v)
+                ((Some (None _)) -1)
+                (None -2)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: -1 Int64)))
+
 (case "equality over a partly-un-built sum with a free Err type compiles on every backend"
   (doc    "The equality companion to the total-match case above: `(= (if (> k 0) (Ok k) (Ok 0)) (Ok 5))`
            compares two `Result Int64 ?e` values where NO `Err` is ever built, so the Err type stays a
@@ -3092,6 +3187,22 @@
                 ((Outer.Wrap (tuple (Inner.B v) k)) (- v k))))
             (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22)))) (export main)))
   (output (: 42 Int64)))
+
+(case "a tuple of bools is exhaustive when every combination is covered"
+  (doc    "EXHAUSTIVENESS over a product of FINITE types: `(match t ((tuple true b) …) ((tuple false b) …))`
+           over `(Tuple Bool Bool)` is exhaustive WITHOUT a `_` — the first column covers both `Bool`
+           values (the second is a binder). A `Bool` sub-pattern in a tuple element is a value TEST, and a
+           test does not by itself count toward coverage; but `Bool` is a finite 2-value type, so testing
+           one value refines the else to the other — `true`+`false` together exhaust it (parity with the
+           top-level `(match b (true …) (false …))` matcher). Here `(false, true)` selects the `false` arm →
+           its `b`=true is unused, returns 2.")
+  (input  (do
+            (def (f (: t (Tuple Bool Bool)))
+              (match t
+                ((tuple true b) 1)
+                ((tuple false b) 2)))
+            (def (main) (f (tuple false true))) (export main)))
+  (output (: 2 Int64)))
 
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a

@@ -1120,13 +1120,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // it constructs its value here (falls through to `core_of(head)`), preserving the valid
                 // bare-nullary-construction path.
                 if crate::eval::variant_disc_of(db, head).is_some()
-                    && crate::eval::variant_payload_type(db, head).is_some()
+                    && let Some(payload) = crate::eval::variant_payload_type(db, head)
                 {
                     trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unary variant ctor under-applied (CDZ0201)");
-                    return Core::Poison(Reject::coded(
-                        Code::Malformed,
-                        "a variant constructor with a payload must be applied to its argument",
-                    ));
+                    // NAME the constructor + its payload type (`` `Wrap` needs its payload argument — it
+                    // carries an Int64 ``) instead of the anonymous "a variant constructor with a payload
+                    // …", so the reader sees WHICH ctor and WHAT to supply — the under-application twin of
+                    // the "`Mk` takes N arguments, but M were given" over-application message. The name
+                    // reads off the head: a bare `Wrap` / a member `(. Sum Wrap)` → `Wrap`. When the payload
+                    // type is UNRESOLVED (a generic ctor whose parameter no use has fixed — `(Some)` :
+                    // `∀a. a`, rendering as `_`), the "it carries `_`" clause reads as noise, so OMIT it and
+                    // just say the payload is needed.
+                    let carries = if payload.has_free_var() || matches!(payload, crate::ty::Ty::Any)
+                    {
+                        String::new()
+                    } else {
+                        format!(" — it carries {}", payload.render_with_article())
+                    };
+                    let msg = match ctor_head_display_name(db, head) {
+                        Some(name) => format!(
+                            "`{name}` needs its payload argument{carries}; apply it, e.g. `({name} <value>)`"
+                        ),
+                        None => {
+                            format!("this variant constructor needs its payload argument{carries}")
+                        }
+                    };
+                    return Core::Poison(Reject::coded(Code::Malformed, msg).at(head));
                 }
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
@@ -1960,6 +1979,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
 /// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
 /// any binding is kept, or just the body's core when none is (no residual `let`).
+/// The source DISPLAY NAME of a variant-constructor head — a bare name (`Wrap` → `"Wrap"`) or a member
+/// form `(. Sum V)` (→ `"V"`, the variant it names). Used to NAME the constructor in the under-application
+/// diagnostic (`` `Wrap` needs its payload argument ``), the lower-side twin of `infer`'s
+/// `variant_ctor_head_name`. `None` for a head with no readable name (an anonymous / synthesized head),
+/// where the caller falls back to the un-named phrasing.
+fn ctor_head_display_name(db: &Db, head: StructId) -> Option<String> {
+    if let Some(n) = db.ast.as_name(head) {
+        return Some(n.to_string());
+    }
+    // A member `(. Sum V)` head — the ctor is its KEY (second child after the `.`), a bare name.
+    let tail = db.ast.as_form(head, ".")?;
+    tail.get(1)
+        .and_then(|&k| db.ast.as_name(k))
+        .map(str::to_string)
+}
+
 /// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in an `(Ast.Int e)` node — a
 /// `Core::SumNew` at the `Ast` sum's `Int` variant disc (one payload). Returns a `Core::ListNew` of the
 /// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum / its `Int` variant is somehow
@@ -3296,82 +3331,85 @@ fn desugar_refutable_ctor_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         }
-        if ctor_positions.len() > 1 {
-            // ≥2 refutable-ctor elements in one arm — the body-rematch nesting + payload-scope interleaving
-            // is a later increment. Decline honestly (rare shape; the common tree-walk matches ONE tagged
-            // head per arm).
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable constructor element is not yet supported \
-                 (match one tagged element per arm)",
-            )));
-        }
-        let cpos = ctor_positions[0];
-        let ctor_pat = es[cpos]; // the original `(C.V p…)` element pattern
+        // N refutable-ctor elements in one arm (N ≥ 1): give each a fresh binder in the list pattern, AND
+        // all their discriminant-tests into the guard, and NEST one body re-match per ctor binder (the
+        // innermost holds the original body, so every ctor payload sub-pattern is in scope for it). The
+        // single-ctor case (N == 1) is exactly this with one binder — the loop generalizes it uniformly.
         let head = db.ast.get(inner);
         let list_head = match head {
             crate::ast::Struct::List(items) if !items.is_empty() => items[0],
             _ => db.push_name("list"),
         };
-        let name = format!("__lc{ai}");
-        // Rebuild the list pattern with the ctor element replaced by a fresh bare binder.
+        // A fresh binder name per ctor position (`__lc{arm}_{k}`), paired with its original ctor pattern.
+        let ctor_binders: Vec<(String, StructId)> = ctor_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &cpos)| (format!("__lc{ai}_{k}"), es[cpos]))
+            .collect();
+        // Rebuild the list pattern with EACH ctor element replaced by its fresh bare binder.
         let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
         for (p, &e) in es.iter().enumerate() {
-            if p == cpos {
-                new_es.push(db.push_name(&name)); // the inert pattern-position element binder
-            } else {
-                new_es.push(e);
+            match ctor_positions.iter().position(|&cp| cp == p) {
+                Some(k) => new_es.push(db.push_name(&ctor_binders[k].0)),
+                None => new_es.push(e),
             }
         }
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The DISCRIMINANT-TEST guard: `(match __lc (<ctor-with-wildcard-payloads> true) (_ false))`. Build a
-        // wildcard-payload copy of the ctor pattern so it tests ONLY the discriminant (no payload binding in
-        // the guard). The guard scrutinee is a fresh occurrence of `__lc`.
-        let disc_scrut = db.push_name(&name);
-        let disc_pat = ctor_pattern_with_wildcard_payloads(db, ctor_pat);
-        // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
-        // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+        // The DISCRIMINANT-TEST guard, ANDed over every ctor binder: each is
+        // `(match __lc_k (<ctor-with-wildcard-payloads> true) (_ false))` — testing ONLY the discriminant
+        // (no payload binding in the guard). Fold them (plus any author guard) with `and`.
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
-        let wild = db.push_name("_");
-        let disc_false_arm = db.push_list(vec![wild, false_node]);
-        let disc_match_head = db.push_name("match");
-        let disc_test = db.push_list(vec![
-            disc_match_head,
-            disc_scrut,
-            disc_true_arm,
-            disc_false_arm,
-        ]);
-        // Combine with any existing guard (AND): the discriminant must hold AND the author's guard.
-        let guard_cond = match existing_guard {
-            None => disc_test,
-            Some(g) => {
-                let and_head = db.push_name("and");
-                db.push_list(vec![and_head, g, disc_test])
-            }
-        };
+        let mut guard_cond: Option<StructId> = existing_guard;
+        for (bname, ctor_pat) in &ctor_binders {
+            let disc_scrut = db.push_name(bname);
+            let disc_pat = ctor_pattern_with_wildcard_payloads(db, *ctor_pat);
+            // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
+            // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+            let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+            let wild = db.push_name("_");
+            let disc_false_arm = db.push_list(vec![wild, false_node]);
+            let disc_match_head = db.push_name("match");
+            let disc_test = db.push_list(vec![
+                disc_match_head,
+                disc_scrut,
+                disc_true_arm,
+                disc_false_arm,
+            ]);
+            guard_cond = Some(match guard_cond {
+                None => disc_test,
+                Some(g) => {
+                    let and_head = db.push_name("and");
+                    db.push_list(vec![and_head, g, disc_test])
+                }
+            });
+        }
         let guard_head = db.push_name("guard");
-        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
-        // The BODY re-match: `(match __lc (<original ctor pattern> <body>) (_ (trap …)))` — binds the ctor's
-        // payload sub-patterns for the original body; the `_` arm is dead (the guard proved the discriminant)
-        // but keeps the inner match exhaustive. The scrutinee + fall-through are fresh nodes.
-        let body_scrut = db.push_name(&name);
-        let body_true_arm = db.push_list(vec![ctor_pat, body]);
-        let trap_head = db.push_name("trap");
-        let trap_msg =
-            db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
-        let trap = db.push_list(vec![trap_head, trap_msg]);
-        let wild_b = db.push_name("_");
-        let body_false_arm = db.push_list(vec![wild_b, trap]);
-        let body_match_head = db.push_name("match");
-        let new_body = db.push_list(vec![
-            body_match_head,
-            body_scrut,
-            body_true_arm,
-            body_false_arm,
-        ]);
+        // `guard_cond` is `Some` here — `ctor_binders` is non-empty (ctor_positions non-empty).
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond.unwrap()]);
+        // The BODY re-match, NESTED from the INNERMOST ctor binder out: the innermost match holds the
+        // original `body` (all ctor payloads in scope); each enclosing match binds its own ctor's payloads
+        // and its body is the next-inner match. Building inside-out means each step wraps the accumulator.
+        let mut new_body = body;
+        for (bname, ctor_pat) in ctor_binders.iter().rev() {
+            let body_scrut = db.push_name(bname);
+            let body_true_arm = db.push_list(vec![*ctor_pat, new_body]);
+            let trap_head = db.push_name("trap");
+            let trap_msg =
+                db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let wild_b = db.push_name("_");
+            let body_false_arm = db.push_list(vec![wild_b, trap]);
+            let body_match_head = db.push_name("match");
+            new_body = db.push_list(vec![
+                body_match_head,
+                body_scrut,
+                body_true_arm,
+                body_false_arm,
+            ]);
+        }
         new_arms.push(db.push_list(vec![new_pat, new_body]));
     }
     let match_head = db.push_name("match");
@@ -4057,12 +4095,13 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
 /// Accept a map-pattern VALUE sub-pattern `v` iff it is IRREFUTABLE — a bare binder / `_`, or an
 /// irrefutable nested pattern (a `(tuple …)` of irrefutable elements, a single-variant `(Mk n)`), composed
 /// to any depth. Its binders read via `MapField` `value_steps` (resolve descends them). A REFUTABLE value
-/// sub-pattern DECLINES: a LITERAL is lifted by `desugar_map_value_subpatterns` (runs first, so a bare
-/// literal never reaches here — but a literal nested in a tuple would); a MULTI-VARIANT ctor `(Some n)`
-/// needs value-DISCRIMINANT dispatch (a later increment). Reuses `check_binding_pattern` (a binding
-/// position IS "must be irrefutable") against `Any` — refutability is a property of the pattern SHAPE, not
-/// the value type — mapping its CDZ0210 (refutable) to a codeless DECLINE, exactly as
-/// `list_element_irrefutable_or_decline` does for a list element.
+/// (a literal, or a multi-variant ctor `(Some n)`) does NOT reach this guard: `map_value_liftable` lifts it
+/// FIRST into a dispatching `(match __mv (<value> body) (_ <catch-all>))` (`5bc7215e` literals, `d4a471d3`
+/// multi-variant ctors), so by here every value is bare or irrefutable. This residual guard reuses
+/// `check_binding_pattern` (a binding position IS "must be irrefutable") against `Any` — refutability is a
+/// property of the pattern SHAPE, not the value type — mapping a stray CDZ0210 (a refutable value the lift
+/// somehow missed) to a codeless DECLINE, exactly as `list_element_irrefutable_or_decline` does for a list
+/// element.
 fn map_value_irrefutable_or_decline(db: &mut Db, v: StructId) -> Result<(), Reject> {
     match check_binding_pattern(db, v, &crate::ty::Ty::Any) {
         Ok(()) => Ok(()),
@@ -4364,10 +4403,12 @@ fn desugar_runtime_map_match(
             "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
         )));
     };
-    // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern whose value
-    // sub-patterns are IRREFUTABLE (a bare binder, or a tuple / single-variant ctor — checked just below);
-    // a refutable value sub-pattern declines. (Over a RUNTIME map a nested value binder's READ isn't wired
-    // yet, so it accepts the shape here and declines at `lower_map_field` — honest, no miscompile.)
+    // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern. By the time
+    // this runs, `desugar_map_value_subpatterns` has already LIFTED every non-bare value (a REFUTABLE
+    // literal/multi-variant ctor into a dispatching `(match __mv …)`, an IRREFUTABLE compound bound by
+    // Inc-17's `value_steps`), so the values reaching here are bare binders or irrefutable compounds. Over
+    // a RUNTIME map the nested-binder READ is wired (`f3f8f94e`): `lower_map_field_runtime` walks
+    // `value_steps` after the `Map.lookup` via `synth_value_path_read`.
     for &(pat, _) in &arms[..catch_all_ix] {
         let inner = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => g[0],
@@ -4378,10 +4419,8 @@ fn desugar_runtime_map_match(
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             )));
         };
-        // A value sub-pattern must be a bare binder or an IRREFUTABLE nested pattern (its binders read via
-        // `MapField` `value_steps`). Over a RUNTIME map the nested-binder READ is wired (`f3f8f94e`):
-        // `lower_map_field_runtime` walks `value_steps` after the `Map.lookup` via `synth_value_path_read`.
-        // A refutable value sub-pattern declines.
+        // The irrefutability guard now sees only bare binders + irrefutable compounds (refutable values
+        // were lifted out above); their binders read via `MapField` `value_steps`.
         for &(_, v) in &entries {
             if let Err(r) = map_value_irrefutable_or_decline(db, v) {
                 return Some(Core::Poison(r));
@@ -4438,6 +4477,11 @@ fn desugar_runtime_map_match(
         }
         else_node = chain;
     }
+    // Give the synthesized presence-test chain scope-skip entries BEFORE resolving it: the chain nests
+    // O(arms) deep, and every node is a non-binding `if`/`match`/`.`/application form, so without this a
+    // prelude name (`Map`/`lookup`/`Some`/`None`) in an inner arm walks O(depth) parents to conclude "not
+    // lexically bound" → O(N²) over N arms. The pass-through skip makes each such resolution O(1).
+    db.extend_scope_skip_pass_through(else_node);
     crate::resolve::resolve_subtree(db, else_node);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime map match → nested presence-test if-chain (body MapField reads runtime)");
     Some(core_of(db, else_node))
@@ -4487,14 +4531,14 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
 // A value binder position is itself a binder position (Patterns Compose): a value MAY be a wildcard, a
-// name (bare binder), a tuple pattern, or a (single-variant) constructor pattern, matched recursively to
-// any depth against the value at the key — resolve descends the sub-pattern giving `MapField.value_steps`
-// (`880c95b6`; `5bc7215e` first did binder-free literals), and the whole-arm CDZ0102 linearity walk spans
-// the value binders. It reads over a CONSTANT map (fold down `value_steps`) AND a RUNTIME map
-// (`f3f8f94e`: `lower_map_field_runtime` walks `value_steps` after the `Map.lookup`). (SCOPE, honest: only
-// a REFUTABLE value declines — a bare literal is lifted; a MULTI-variant ctor `(Some n)` needs value-
-// discriminant dispatch, a later increment. The sentence's ENUMERATED kinds — wildcard/name/tuple/
-// constructor — all bind, over both const and runtime maps.)
+// name, a tuple pattern, or a constructor pattern (single- OR multi-variant), matched recursively to any
+// depth against the value at the key — the map value-compose axis is now COMPLETE. An IRREFUTABLE value
+// (bare binder / tuple / single-variant ctor) binds via Inc-17's `MapField.value_steps` (resolve descends
+// the sub-path; `880c95b6` const, `f3f8f94e` runtime); a REFUTABLE value (a literal, `5bc7215e`; or a
+// multi-variant ctor `(Some n)`, `d4a471d3`) is LIFTED into a dispatching `(match __mv (<value> body) (_
+// <catch-all>))` by `desugar_map_value_subpatterns` (via `map_value_liftable`), so a non-matching value
+// falls through to the next arm — over both constant and runtime maps. The whole-arm CDZ0102 linearity
+// walk spans the value binders. All of §4's enumerated kinds bind, refutable or not.
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`).
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
@@ -4551,9 +4595,9 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         };
         // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
         // single-variant `(Mk n)`) whose binders read via `MapField` `value_steps` (resolve descends them).
-        // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor) needs value-DISPATCH: a literal is
-        // lifted by `desugar_map_value_subpatterns` (runs before this) so it never reaches here; a
-        // multi-variant ctor declines (value-discriminant dispatch is a later increment).
+        // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor `(Some n)`) is DISPATCHED: it is
+        // lifted by `desugar_map_value_subpatterns` (runs before this) into a `(match __mv …)`, so only bare
+        // binders + irrefutable compounds reach this irrefutability guard.
         for &(_, v) in &pat_entries {
             if let Err(r) = map_value_irrefutable_or_decline(db, v) {
                 return Core::Poison(r);
@@ -6554,7 +6598,22 @@ fn build_lit_test(
         ));
     }
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
-    let els = build_tree(db, scrutinee, else_rows, path_types)?;
+    // BOOL is a FINITE 2-value type: testing `Bool(b)` at `lit_path` means the ELSE branch is exactly the
+    // world where that sub-value is `!b`. So in `else_rows`, refine every row's lit-test at `lit_path`
+    // AGAINST the known `!b`: a row testing `Bool(!b)` there has its test SATISFIED (drop it — the arm now
+    // matches unconditionally), and a row testing `Bool(b)` there is DEAD (the value can't be `b`) and is
+    // dropped. This makes `(match t ((tuple true b) …) ((tuple false b) …))` EXHAUSTIVE — the `false` arm
+    // becomes an unconditional leaf in the `true`-test's else — where before a bool sub-pattern (a lit-test,
+    // not a discriminant) never counted toward coverage and the innermost fall-through was a spurious
+    // CDZ0210 (the top-level scalar-bool matcher already treats `true`+`false` as exhaustive; this brings the
+    // NESTED/decision-tree path to parity). Only Bool gets this — an Int/Str lit-test is over an infinite
+    // type (its else is genuinely open, needs a `_`).
+    let els = if let crate::core::Probe::Bool(b) = probe {
+        let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
+        build_tree(db, scrutinee, &refined, path_types)?
+    } else {
+        build_tree(db, scrutinee, else_rows, path_types)?
+    };
     Ok(crate::core::SumCont::LitTest {
         // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
         path: lit_path.to_vec(),
@@ -6562,6 +6621,45 @@ fn build_lit_test(
         then_: Box::new(then_),
         els: Box::new(els),
     })
+}
+
+/// Refine `else_rows` for the ELSE branch of a `Bool(tested)` test at `lit_path`: in that branch the
+/// sub-value at `lit_path` is known to be `!tested`. For each row, look at its lit-test (if any) at
+/// `lit_path`: a `Bool(!tested)` test there is now SATISFIED — drop it (the row matches this path
+/// unconditionally); a `Bool(tested)` test there is UNSATISFIABLE — the row is dead, drop it entirely; any
+/// other row (no lit-test at `lit_path`, or a non-bool test) passes through unchanged. This is the finite-
+/// type refinement that makes a `true`+`false` cover exhaustive without a `_`.
+fn refine_bool_else_rows(
+    db: &Db,
+    else_rows: &[MatchRow],
+    lit_path: &[crate::core::PathStep],
+    tested: bool,
+) -> Vec<MatchRow> {
+    let _ = db;
+    let mut out = Vec::with_capacity(else_rows.len());
+    'rows: for row in else_rows {
+        let mut kept: Vec<(std::rc::Rc<[crate::core::PathStep]>, crate::core::Probe)> =
+            Vec::with_capacity(row.lit_tests.len());
+        for (p, probe) in &row.lit_tests {
+            if p.as_ref() == lit_path
+                && let crate::core::Probe::Bool(rb) = probe
+            {
+                if *rb == tested {
+                    continue 'rows; // tests `Bool(tested)` at this path — impossible in the `!tested` else
+                }
+                // tests `Bool(!tested)` — satisfied in this else; drop the test.
+                continue;
+            }
+            kept.push((p.clone(), probe.clone()));
+        }
+        out.push(MatchRow {
+            constraints: row.constraints.clone(),
+            lit_tests: kept,
+            body: row.body,
+            guard: row.guard,
+        });
+    }
+    out
 }
 
 /// The solved TYPE of the sub-value at `path` from `scrutinee`, computed by walking the scrutinee's own
