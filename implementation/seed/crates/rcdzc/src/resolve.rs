@@ -1132,7 +1132,22 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
             return Some(Resolved::Ref { value: record });
         }
     }
-    None
+    // No SEQUENTIAL (backward-visible) declaration bound `name`. A do-local FUNCTION declaration, though,
+    // is in scope in its OWN body (self-recursion) and in a SIBLING function's body regardless of order
+    // (mutual recursion) — a function group in a `do` is mutually visible exactly like a module's members
+    // or the top-level defs, not strictly sequential like a value binding. So scan EVERY form (including
+    // `from` itself and the ones after it) for a FUNCTION def of `name` — accepting ONLY a `Lambda` (a
+    // `(def (f p…) BODY)` with parameters), never a `Ref`. This keeps a VALUE def strictly backward
+    // (`(do (def x 5) (def x (+ x 10)) x)` = 15 — the second `x` sees only the first, not itself), while a
+    // recursive/forward FUNCTION reference resolves. First match wins across the block (a duplicate
+    // function name is a separate well-formedness concern).
+    forms
+        .iter()
+        .filter_map(|&f| match do_def_binds(db, f, name) {
+            lam @ Some(Resolved::Lambda { .. }) => lam,
+            _ => None,
+        })
+        .next()
 }
 
 /// If `form` is a nested module's SYNTHESIZED RECORD, resolve `name` against the module's `(def …)`

@@ -894,6 +894,11 @@ impl Db {
         // member's body → its def) and before `def_name_index` (an internal def is EXCLUDED from it — its
         // name resolves by scope, `resolve::module_sibling_binds`, per the no-keys-outside-the-prelude rule).
         crate::modules::register_callable(&ast, &modules, &mut defs);
+        // Register each DO-LOCAL FUNCTION declaration the same way — the do-block analogue: a do-local
+        // recursive/mutually-recursive `(def (f p…) …)` resolves by scope (`resolve::do_local_binds`) but
+        // still needs a `db.defs` index to lower its call to a `Core::Call`. Same INTERNAL discipline
+        // (excluded from `def_name_index`; not an export/warning target).
+        crate::modules::register_do_local_callables(&ast, &mut defs);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary

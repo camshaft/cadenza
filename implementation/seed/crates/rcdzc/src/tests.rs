@@ -20260,6 +20260,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_do_local_function_declaration_is_recursive() {
+        // 02-binding-and-control "a do-local function declaration is recursive": a do-local `(def (fac
+        // n) …)` is in scope in its OWN body (self-recursion, like a top-level/module-member def, NOT
+        // strictly sequential like a value binding), and the self-call LOWERS — `register_do_local_callables`
+        // registers it as an internal `db.defs` entry so the recursive call is a `Core::Call`. fac(5)=120.
+        assert_eq!(
+            run_main("(do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5))"),
+            120
+        );
+        // MUTUAL recursion: `ev` calls `od`, `od` calls `ev` — a do-local function is visible in a sibling's
+        // body regardless of order (a forward reference a strictly-sequential scope would reject). ev(10) →
+        // true → 1.
+        assert_eq!(
+            run_main(
+                "(do (def (ev n) (if (= n 0) true (od (- n 1)))) \
+                     (def (od n) (if (= n 0) false (ev (- n 1)))) \
+                     (if (ev 10) 1 0))"
+            ),
+            1
+        );
+        // A do-local VALUE declaration stays STRICTLY sequential (backward-only) — the function
+        // mutual-visibility must not leak to values: the second `x` sees only the first → 15, and a
+        // forward VALUE reference is still unbound (checked in
+        // `a_do_local_declaration_scope_is_backward_only`).
+        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
