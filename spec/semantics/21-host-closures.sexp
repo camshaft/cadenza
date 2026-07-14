@@ -1581,3 +1581,62 @@
               (export mk) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64)))
+
+; A COMPOUND (tuple/record) closure RESULT on the DISTINCT-SIG path — closures of DIFFERENT signatures each
+; returning a fixed-shape compound cross as G distinct resource types, each with its OWN `call-g<n>`
+; returning THAT group's value form as `list<u8>` (a PER-GROUP template, since the result types differ). A
+; compound group, a byte-rope group, and a scalar group can all coexist in one component: compound templates
+; occupy their own data-section regions, byte-rope groups write dynamically PAST them, scalars return by
+; value — so the three list<u8>/scalar memory uses never collide.
+
+(case "distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure"
+  (doc    "`mki : () -> (-> Int64 (Tuple Int64 Int64))` and `mkb : () -> (-> Bool (Tuple Bool Int64))` are
+           distinct signatures WITH distinct RESULT types → two resource types, each with its own value-form
+           template. `call(mki-handle, 5)` walks its tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`.")
+  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mki (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "distinct-sig compound result — the Bool→(Tuple Bool Int64) closure"
+  (doc    "The SAME program's OTHER group, whose result type differs: `call(mkb-handle, true)` → `(: (tuple
+           true 1) (Tuple Bool Int64))`. Confirms each distinct-sig group walks its OWN per-group template.")
+  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mkb (: true Bool))
+  (output (: (tuple true 1) (Tuple Bool Int64))))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the compound"
+  (doc    "THREE distinct signatures, THREE result MODES in one component: `mkt` returns a tuple (value
+           form), `mkb` a `Bytes` (raw byte-rope), `inc` an Int64 (by value). `call(mkt-handle, 9)` → `(:
+           (tuple 9 10) (Tuple Int64 Int64))`. Pins the disjoint-memory layout (compound template + byte-rope
+           payload + scalar all coexisting).")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   mkt (: 9 Int64))
+  (output (: (tuple 9 10) (Tuple Int64 Int64))))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope"
+  (doc    "The SAME 3-mode program, driving the byte-rope group: `call(mkb-handle, false)` → `(8)` (a raw
+           byte list, rendered bare — NOT a value-form document). Its payload is written PAST the compound
+           template region.")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   mkb (: false Bool))
+  (output (8)))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
+  (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (returned by value, NOT list<u8>).
+           Confirms the scalar `call-<g>` is unaffected by the sibling list-returning groups' memory.")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))

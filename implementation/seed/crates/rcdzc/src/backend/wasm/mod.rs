@@ -2169,6 +2169,7 @@ fn emit_distinct_sig_resource(
         arg_bytes: Vec<u8>,
         result_byte: u8,
         ret_is_bytes: bool,
+        ret_template: Option<crate::lower::ValueFormTemplate>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -2189,7 +2190,14 @@ fn emit_distinct_sig_resource(
             ret_ty.strip_nominal(),
             crate::ty::Ty::Bytes | crate::ty::Ty::String
         );
-        let result_byte = if ret_is_bytes {
+        // A fixed-shape COMPOUND result crosses `call-<g>` as `list<u8>` carrying the value form (its own
+        // per-group template, since each group's result type may differ). `None` for byte-rope/scalar.
+        let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
+            None
+        } else {
+            crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+        };
+        let result_byte = if ret_is_bytes || ret_template.is_some() {
             0
         } else {
             closure_boundary_byte(&ret_ty)
@@ -2209,6 +2217,7 @@ fn emit_distinct_sig_resource(
             arg_bytes,
             result_byte,
             ret_is_bytes,
+            ret_template,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -2320,6 +2329,7 @@ fn emit_distinct_sig_resource(
     // `import_base` accordingly (else `abs`/`lifted_abs`/the element segment are off by 2*(G-1)).
     let intrinsics = (2 * sigs.len()) as u32;
     let any_bytes = ginfos.iter().any(|gi| gi.ret_is_bytes);
+    let any_compound = ginfos.iter().any(|gi| gi.ret_template.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -2329,6 +2339,11 @@ fn emit_distinct_sig_resource(
             // `bytes-get` loop into linear memory (the `list<u8>` payload).
             used.insert("bytes-len");
             used.insert("bytes-get");
+        }
+        if any_compound {
+            // A compound group's `call-<g>` walks the returned handle to fill the value form — a Bool leaf
+            // reads `get-bool` (int + nested `arr-get` already covered).
+            used.insert("get-bool");
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -2387,12 +2402,14 @@ fn emit_distinct_sig_resource(
             ret_vt: ginfos[gi].ret_vt,
             lifted_slot: slot,
             ret_is_bytes: ginfos[gi].ret_is_bytes,
+            ret_template: ginfos[gi].ret_template.clone(),
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
             arg_bytes: ginfos[gi].arg_bytes.clone(),
             result_byte: ginfos[gi].result_byte,
-            ret_is_bytes: ginfos[gi].ret_is_bytes,
+            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — true for a byte-rope OR a compound.
+            ret_is_bytes: ginfos[gi].ret_is_bytes || ginfos[gi].ret_template.is_some(),
         });
     }
 

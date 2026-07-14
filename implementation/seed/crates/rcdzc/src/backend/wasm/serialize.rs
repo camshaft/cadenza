@@ -2819,6 +2819,13 @@ pub struct SigGroup {
     /// `bytes-len`/`bytes-get` copy loop writing a `(ptr,len)` return area) and the envelope's list-lift
     /// differ. When ANY group is byte-rope the core gains a memory + `cabi_realloc` (shared across groups).
     pub ret_is_bytes: bool,
+    /// `Some(template)` when this group's closure result is a fixed-shape COMPOUND (tuple/record/sum) — its
+    /// `call-<g>` returns the canonical VALUE FORM as `list<u8>` (walking the returned handle into the
+    /// per-group value-form template). Mutually exclusive with `ret_is_bytes` (both cross as `list<u8>` but
+    /// a compound writes the value form, a byte-rope the raw payload). Each compound group's template gets
+    /// its OWN data-section region; byte-rope groups write dynamically PAST all compound data so the two
+    /// never collide. When any group is byte-rope OR compound the core gains a memory + `cabi_realloc`.
+    pub ret_template: Option<crate::lower::ValueFormTemplate>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -2840,10 +2847,35 @@ pub fn distinct_sig_resource_core_module(
     let n = funcs.len();
     let g = groups.len();
     let total_makes: usize = groups.iter().map(|gr| gr.makes.len()).sum();
-    // Any byte-rope group makes the whole component need a memory + `cabi_realloc` (shared across groups —
-    // the compound `call-<g>` writes its `list<u8>` payload + `(ptr,len)` return area into linear memory,
-    // then the envelope lifts that group with the Memory/Realloc canon options).
-    let any_bytes = groups.iter().any(|gr| gr.ret_is_bytes);
+    // A group whose result crosses as `list<u8>` — a byte-rope (`ret_is_bytes`) OR a fixed-shape COMPOUND
+    // (`ret_template`). Either makes the component need a memory + `cabi_realloc` (shared across groups); the
+    // envelope lifts each such group with the Memory/Realloc canon options. A compound group writes the
+    // VALUE FORM from its own data-section template region; a byte-rope group writes a runtime-length
+    // payload PAST all compound data so the two never collide.
+    let is_list = |gr: &SigGroup| gr.ret_is_bytes || gr.ret_template.is_some();
+    let any_list = groups.iter().any(is_list);
+    // Per COMPOUND group: place its template + `(ptr,len)` retarea in the data section (4-aligned), record
+    // `(byte_off, ret_off)`. `data_end` is the 4-aligned end of all compound data — where byte-rope groups
+    // put their dynamic retarea (`data_end`) + payload (`data_end + 8`); only one `call` runs per host
+    // invocation, so all byte-rope groups can share that region.
+    let mut data_bytes: Vec<u8> = Vec::new();
+    let mut compound_place: Vec<Option<(usize, usize)>> = Vec::with_capacity(g);
+    for gr in groups {
+        if let Some(t) = &gr.ret_template {
+            let byte_off = (data_bytes.len() + 3) & !3;
+            data_bytes.resize(byte_off, 0);
+            data_bytes.extend_from_slice(&t.bytes);
+            let ret_off = (data_bytes.len() + 3) & !3;
+            data_bytes.resize(ret_off, 0);
+            data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+            data_bytes.extend_from_slice(&(t.bytes.len() as u32).to_le_bytes());
+            compound_place.push(Some((byte_off, ret_off)));
+        } else {
+            compound_place.push(None);
+        }
+    }
+    let bytes_ret_off = (data_bytes.len() + 3) & !3; // byte-rope retarea (past all compound templates)
+    let bytes_out_off = bytes_ret_off + 8; // byte-rope payload starts after its 8-byte (ptr,len) area
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -2894,15 +2926,16 @@ pub fn distinct_sig_resource_core_module(
         call_type_idx.push(next_type as u32);
         next_type += 1;
     }
-    // If any group is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the group functypes.
+    // If any group crosses as `list<u8>`, one shared `cabi_realloc` functype `(i32×4)->i32` after the group
+    // functypes.
     let realloc_type_idx = next_type as u32;
-    if any_bytes {
+    if any_list {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + total_makes + g + usize::from(any_bytes);
+    let total_types = defined_type_base + n + total_makes + g + usize::from(any_list);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops (each against its own `import_functype` at index i) + per group
@@ -2937,23 +2970,23 @@ pub fn distinct_sig_resource_core_module(
     for &ti in &call_type_idx {
         uleb128(ti as u64, &mut func_items);
     }
-    if any_bytes {
+    if any_list {
         uleb128(realloc_type_idx as u64, &mut func_items);
     }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + total_makes + g + usize::from(any_bytes), &func_items),
+        &wasm_vec(n + total_makes + g + usize::from(any_list), &func_items),
     );
     // Absolute core-func indices: defined bodies at import_count..; then makes; then calls; then (if any
-    // byte-rope group) the shared cabi_realloc.
+    // list-returning group) the shared cabi_realloc.
     let import_count = k + 2 * g;
     let defined_abs_base = import_count as u32;
     let make_abs_base = defined_abs_base + n as u32;
     let call_abs_base = make_abs_base + total_makes as u32;
-    let realloc_abs = call_abs_base + g as u32; // valid only when any_bytes
+    let realloc_abs = call_abs_base + g as u32; // valid only when any_list
 
-    // ── Memory ── only when a byte-rope group needs to write its `list<u8>` payload.
-    let mem_sec = if any_bytes {
+    // ── Memory ── only when a list-returning group needs to write its `list<u8>` payload.
+    let mem_sec = if any_list {
         section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
     } else {
         Vec::new()
@@ -3011,14 +3044,14 @@ pub fn distinct_sig_resource_core_module(
         for p in plain {
             items.extend_from_slice(&func_export(&p.export_name, p.body_abs));
         }
-        if any_bytes {
+        if any_list {
             items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
             items.extend_from_slice(&func_export("cabi_realloc", realloc_abs));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,
             &wasm_vec(
-                total_makes + g + plain.len() + if any_bytes { 2 } else { 0 },
+                total_makes + g + plain.len() + if any_list { 2 } else { 0 },
                 &items,
             ),
         )
@@ -3050,14 +3083,71 @@ pub fn distinct_sig_resource_core_module(
     // calls (one per group): resource.rep-g → cell → dispatch the group's lifted functype. A SCALAR group
     // returns the dispatched value directly (drop the cell after); a BYTE-ROPE group's lifted call yields a
     // runtime Bytes/String handle, which the copy-loop writes out as a `list<u8>` `(ptr,len)` return area
-    // (identical body to the single/multi-export bytes `call`), returning an i32 retptr.
+    // returning an i32 retptr; a COMPOUND group walks the returned handle into ITS value-form template
+    // region + returns that template's `(ptr,len)` retarea.
     let imp = |name: &str| import_index[name] as u64;
     for (gi, gr) in groups.iter().enumerate() {
         let lifted_tyi = (defined_type_base + layout.order.len() + gr.lifted_slot) as u32;
         let arity = gr.arg_vts.len() as u32;
         let mut inner = Vec::new();
-        if gr.ret_is_bytes {
-            const OUT: i64 = 8;
+        if let Some(template) = &gr.ret_template {
+            // Compound: dispatch → the compound handle (rep), drop the cell, walk the handle into this
+            // group's template region, drop the handle, return the template's retarea pointer.
+            let (byte_off, ret_off) =
+                compound_place[gi].expect("a compound group has a data placement");
+            let cell = 1 + arity;
+            let rep = cell + 1;
+            let scratch = rep + 1;
+            inner.extend_from_slice(&wasm_vec(2, &{
+                let mut gl = uleb_bytes(2);
+                gl.push(wasm_abi::CORE_I32);
+                let mut g2 = uleb_bytes(1);
+                g2.push(wasm_abi::CORE_I64);
+                gl.extend_from_slice(&g2);
+                gl
+            }));
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            get(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rrep_fn[gi] as u64, &mut inner);
+            set(cell, &mut inner);
+            get(cell, &mut inner);
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
+            get(cell, &mut inner);
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("arr-get"), &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("get-int"), &mut inner);
+            inner.push(op::I32_WRAP_I64);
+            inner.push(op::CALL_INDIRECT);
+            uleb128(lifted_tyi as u64, &mut inner);
+            uleb128(0, &mut inner);
+            set(rep, &mut inner);
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            for hole in &template.leaves {
+                emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
+            }
+            get(rep, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(ret_off as i64, &mut inner);
+            inner.push(op::END);
+        } else if gr.ret_is_bytes {
+            let out_off = bytes_out_off as i64;
             let cell = 1 + arity;
             let bh = cell + 1;
             let nlen = bh + 1;
@@ -3116,7 +3206,7 @@ pub fn distinct_sig_resource_core_module(
             inner.push(op::I32_GE_U);
             inner.push(op::BR_IF);
             uleb128(1, &mut inner);
-            ci32(OUT, &mut inner);
+            ci32(out_off, &mut inner);
             get(iv, &mut inner);
             inner.push(op::I32_ADD);
             get(bh, &mut inner);
@@ -3134,12 +3224,12 @@ pub fn distinct_sig_resource_core_module(
             uleb128(0, &mut inner);
             inner.push(op::END);
             inner.push(op::END);
-            ci32(0, &mut inner);
-            ci32(OUT, &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
+            ci32(out_off, &mut inner);
             inner.push(op::I32_STORE);
             inner.push(0x02);
             inner.push(0x00);
-            ci32(4, &mut inner);
+            ci32(bytes_ret_off as i64 + 4, &mut inner);
             get(nlen, &mut inner);
             inner.push(op::I32_STORE);
             inner.push(0x02);
@@ -3147,7 +3237,7 @@ pub fn distinct_sig_resource_core_module(
             get(bh, &mut inner);
             inner.push(op::CALL);
             uleb128(imp("drop"), &mut inner);
-            ci32(0, &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
             inner.push(op::END);
         } else {
             let cell_local = 1 + arity;
@@ -3195,8 +3285,8 @@ pub fn distinct_sig_resource_core_module(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    // cabi_realloc stub (only when a byte-rope group needs it).
-    if any_bytes {
+    // cabi_realloc stub (only when a list-returning group needs it).
+    if any_list {
         let mut inner = uleb_bytes(0);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -3207,8 +3297,22 @@ pub fn distinct_sig_resource_core_module(
     }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + total_makes + g + usize::from(any_bytes), &code_items),
+        &wasm_vec(n + total_makes + g + usize::from(any_list), &code_items),
     );
+
+    // ── Data section ── the compound groups' value-form templates + retareas (byte-rope groups write PAST
+    // them at run time). Only present when a compound group laid template bytes.
+    let data_sec = if data_bytes.is_empty() {
+        Vec::new()
+    } else {
+        let mut item = vec![0x00];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut item);
+        item.push(op::END);
+        item.extend_from_slice(&uleb_bytes(data_bytes.len() as u64));
+        item.extend_from_slice(&data_bytes);
+        section(wasm_abi::CORE_SEC_DATA, &wasm_vec(1, &item))
+    };
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
@@ -3220,6 +3324,7 @@ pub fn distinct_sig_resource_core_module(
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
     Ok(core)
 }
 

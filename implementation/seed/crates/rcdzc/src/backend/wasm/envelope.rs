@@ -2262,10 +2262,12 @@ pub struct SigGroupAbi {
     pub makes: Vec<ClosureMakeAbi>,
     pub arg_bytes: Vec<u8>,
     pub result_byte: u8,
-    /// True when this group's closure result is a byte-rope (`Bytes`/`String`) — its `call-<g>` crosses the
-    /// boundary as `list<u8>` (via memory + `cabi_realloc`) rather than the inline scalar `result_byte`.
-    /// When any group is byte-rope, the whole distinct-sig component gains a memory + `cabi_realloc` alias
-    /// (shared) and each byte-rope group's `call-<g>` is lifted with the Memory/Realloc canon options.
+    /// True when this group's `call-<g>` crosses the boundary as `list<u8>` rather than the inline scalar
+    /// `result_byte` — i.e. its closure result is a byte-rope (`Bytes`/`String`, raw payload) OR a fixed-
+    /// shape COMPOUND (tuple/record/sum, the canonical value form). The envelope treats both identically
+    /// here (a `list<u8>` result lifted with the Memory/Realloc canon options); the core serializer decides
+    /// what bytes fill it. When any group crosses as `list<u8>`, the whole distinct-sig component gains a
+    /// shared memory + `cabi_realloc` alias.
     pub ret_is_bytes: bool,
 }
 
