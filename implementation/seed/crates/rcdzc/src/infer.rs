@@ -804,6 +804,20 @@ pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> T
 /// type against the payload's declared function type). `None` when the context declares no arrow (a HOF
 /// call site — handled by the call's own unification — or a genuinely unconstrained position).
 pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option<Ty> {
+    // CUMULATIVE-WORK budget — the SAME `reduce_nodes` counter β-reduction charges against
+    // (`db::REDUCE_NODE_BUDGET`). This context-recovery recurses through `type_of` (path 3 below reads a
+    // parameter's type, which for a SELF-APPLICATION re-enters here on the growing term); like the plain
+    // reduction hang (`c2dae9b9`), the term stays within the descent DEPTH limit yet drives an EXPONENTIAL
+    // number of these lookups (`(fn v (if (v v) 1 (v v)))` applied to itself), so the depth guard alone
+    // does not stop it and inference appears to HANG. Charging each call against the shared work budget
+    // caps the TOTAL across every reduction-equivalent path (plain β-reduction AND this type-context
+    // recovery); past the budget, recover NOTHING (`None`) — the lambda types without the context hint and
+    // the program declines cleanly downstream, rather than looping. A real program makes far fewer of these
+    // than the budget (it is 1M; the corpus never approaches it).
+    if db.reduce_nodes >= crate::db::REDUCE_NODE_BUDGET {
+        return None;
+    }
+    db.reduce_nodes += 1;
     // (1) An ANNOTATION `(: (fn …) (-> P R))` directly on the lambda — the parent is a `(:` form whose
     //     second child is the type expression.
     let parent = db.parent_of(lambda)?;

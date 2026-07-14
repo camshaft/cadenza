@@ -27046,6 +27046,40 @@ mod stage1 {
     }
 
     #[test]
+    fn an_if_wrapped_self_application_is_rejected_not_an_inference_hang() {
+        // A SECOND hang shape the fuzzer surfaced after the plain self-app was capped: `(fn v (if (v v) 1
+        // (v v)))` applied to a copy of itself. The self-app in the if CONDITION forces β-reduction, which
+        // reduces the branch's self-app, and applied to itself the term grows exponentially. Unlike the
+        // plain hang (capped by the β-reduction budget in `enter_reduction`), this one hung type INFERENCE
+        // through a DIFFERENT path — the lambda-parameter context recovery (`expected_arrow_for_lambda` →
+        // `type_of`) re-derives the growing term's types WITHOUT going through `enter_reduction`, so it
+        // stayed within the descent-depth limit while attempting an exponential number of context lookups.
+        // Charging that recovery against the SAME cumulative work budget (`REDUCE_NODE_BUDGET`) makes it
+        // TERMINATE: past the budget it recovers no context hint, and the program is rejected promptly
+        // (the self-app's Int64 result used as an if condition → CDZ0203). The property is 'never hang'.
+        let src = "(module m (def (main) ((fn (v0) (if (v0 v0) 1 (v0 v0))) (fn (v2) (if (v2 v2) 1 (v2 v2))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("an if-wrapped self-application must reject in bounded time, not hang");
+        assert!(
+            reject.code.is_some(),
+            "the rejection is coded (a diagnosed decline, not a bare/uncoded one): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // Two more if-self-app shapes the fuzzer minimized (cond + then; the whole applied to itself) —
+        // both must TERMINATE with a coded rejection, never hang.
+        for s in [
+            "(module m (def (main) ((fn (v0) (if (v0 v0) (v0 v0) 1)) (fn (v2) (if (v2 v2) (v2 v2) 1)))) (export main))",
+            "(module m (def (main) ((fn (v0) (if (v0 v0) 1 2)) (fn (v2) (if (v2 v2) 1 2)))) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(s))).is_err(),
+                "an if-wrapped self-application must decline, not hang: {s}"
+            );
+        }
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,

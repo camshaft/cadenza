@@ -933,6 +933,7 @@ pass	an expression tree built at run time is evaluated by matching its node vari
 pass	an if on Type.eq selects a branch at compile time
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
+pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range

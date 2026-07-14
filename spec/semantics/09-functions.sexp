@@ -1319,6 +1319,21 @@
   (input  (do (def (main) ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))) (export main)))
   (error  CDZ0999))
 
+(case "an if-wrapped self-application is rejected in bounded time, not an inference hang"
+  (doc    "`(fn v (if (v v) 1 (v v)))` applied to a copy of itself has no normal form: the self-app in the
+           if CONDITION forces β-reduction, which reduces the branch's self-app, and applied to itself the
+           term grows exponentially. The plain self-app declines at the reduction budget (above), but this
+           if-wrapped variant HUNG type INFERENCE through a DIFFERENT path — the lambda-parameter context
+           recovery (`expected_arrow_for_lambda` → `type_of` → …) re-derives the growing term's types
+           without going through the β-reduction budget, so it stayed within the descent-depth limit while
+           attempting an exponential number of context lookups. Charging that recovery against the SAME
+           cumulative work budget makes it terminate: inference gives up the context hint past the budget,
+           and the program is REJECTED in a fraction of a second (the self-app's Int64 result used as an if
+           condition is CDZ0203 'if condition must be Bool'). The point is 'never hang' — a compiler
+           completes or declines on any input, regardless of the syntactic form the divergence hides in.")
+  (input  (do (def (main) ((fn (v0) (if (v0 v0) 1 (v0 v0))) (fn (v2) (if (v2 v2) 1 (v2 v2))))) (export main)))
+  (error  CDZ0203))
+
 (case "a deeply nested constant expression compiles or declines without crashing"
   (doc    "A 64-deep nest of `(+ 1 …)` folds to 65 — well within any reasonable bound. The point is the
            companion the gate cannot record: the SAME shape thousands deep must DECLINE (a
