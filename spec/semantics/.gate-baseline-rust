@@ -1347,6 +1347,7 @@ todo	a closure whose CALL returns an Option crosses as the value form
 todo	a closure whose body applies a nested lambda in place runs through a recursive HOF
 todo	a closure whose body calls a top-level helper function
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
+todo	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 todo	a compound closure ARG on the DIRECT-CALL path is declined — an IMPLEMENTATION gap (oracle-proven)
 todo	a conditional with two list branches of different length is well-typed
 todo	a constant BigInt crosses the host boundary as its value form
@@ -1394,6 +1395,7 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
 todo	a list with a runtime element is returned as a program result
+todo	a list-carrying recursion whose base arm does a fallible indexed read compiles
 todo	a literal segment matches a magic-number header by equality
 todo	a map KEYED by a user sum looks up by the variant
 todo	a map built at run time escapes to the host as its value form
