@@ -2375,6 +2375,41 @@ pub fn assemble_mixed_closure_resource_borrow(
     plain: &[PlainExportAbi],
     call_borrow: bool,
 ) -> Vec<u8> {
+    assemble_mixed_closure_resource_borrow_tuple(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        makes,
+        arg_bytes,
+        result_byte,
+        plain,
+        call_borrow,
+        None,
+    )
+}
+
+/// [`assemble_mixed_closure_resource_borrow`] with an optional FIXED-SHAPE SCALAR tuple ARGUMENT for the
+/// shared `call` (the multi-export/mixed direct-call compound-arg path). When `tuple_arg_bytes` is
+/// `Some(field_bytes)`, the shared `call`'s single argument is a native component `tuple<field_bytes…>`
+/// DEFINED type — minted just before the `call` functype (shifting the call functype + every plain functype
+/// past it by 1) and inside the nested re-export — instead of `arg_bytes`'s inline scalar params. `None`
+/// reproduces the scalar path byte-for-byte. Pairs with a shared-`call` core serialized with a matching
+/// `TupleArgRebuild`. SCOPE mirrors the single-export tuple path: one fixed-shape scalar tuple/record arg,
+/// scalar result.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_mixed_closure_resource_borrow_tuple(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    result_byte: u8,
+    plain: &[PlainExportAbi],
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
+) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
     let np = plain.len();
@@ -2505,19 +2540,35 @@ pub fn assemble_mixed_closure_resource_borrow(
             ));
         }
         // the shared call's own/borrow<t> + functype. `borrow<t>` → the handle survives across calls
-        // (repeatable — C-HOST-6); `make`s stay `own<t>`.
+        // (repeatable — C-HOST-6); `make`s stay `own<t>`. For a TUPLE arg, the `tuple<…>` defined type is
+        // minted (comp type 3+2*nmk) between the handle and the call functype, shifting the call functype to
+        // 4+2*nmk and each plain functype by +1.
         items.extend_from_slice(&if call_borrow {
             borrow_item(1)
         } else {
             own_item(1)
         });
         let call_own_ty = (2 + 2 * nmk) as u32;
-        items.extend_from_slice(&closure_call_functype(call_own_ty, arg_bytes, result_byte));
+        if let Some(fields) = tuple_arg_bytes {
+            let tup_ty = (3 + 2 * nmk) as u32;
+            items.extend_from_slice(&tuple_defined_type(fields));
+            items.extend_from_slice(&closure_call_tuple_arg_functype(
+                call_own_ty,
+                tup_ty,
+                result_byte,
+            ));
+        } else {
+            items.extend_from_slice(&closure_call_functype(call_own_ty, arg_bytes, result_byte));
+        }
         // each plain export's functype (scalar result, inline primitive byte).
         for p in plain {
             items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * (nmk + 1) + np, &items))
+        let n_call_types = if tuple_arg_bytes.is_some() { 3 } else { 2 };
+        section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(2 * nmk + n_call_types + np, &items),
+        )
     });
     // sec 8: lift each make (core func k+3+i) against its functype (type 3+2i) → comp func k+i; then lift
     // `call` (core func k+3+N) against the call functype (type 3+2N) → comp func k+N; then lift each PLAIN
@@ -2529,12 +2580,15 @@ pub fn assemble_mixed_closure_resource_borrow(
             let functype = (3 + 2 * i) as u32;
             items.extend_from_slice(&canon_lift_item(core_fn, functype));
         }
+        // A TUPLE arg mints one extra defined type before the call functype, so the call functype (and every
+        // plain functype after it) shifts by +1.
+        let tuple_shift = if tuple_arg_bytes.is_some() { 1 } else { 0 };
         let call_core_fn = (k + 3 + nmk) as u32;
-        let call_functype = (3 + 2 * nmk) as u32;
+        let call_functype = (3 + 2 * nmk + tuple_shift) as u32;
         items.extend_from_slice(&canon_lift_item(call_core_fn, call_functype));
         for j in 0..np {
             let core_fn = (k + 3 + nmk + 1 + j) as u32;
-            let functype = (4 + 2 * nmk + j) as u32;
+            let functype = (4 + 2 * nmk + tuple_shift + j) as u32;
             items.extend_from_slice(&canon_lift_item(core_fn, functype));
         }
         section(sec::CANON, &wasm_vec(nmk + 1 + np, &items))
@@ -2542,7 +2596,13 @@ pub fn assemble_mixed_closure_resource_borrow(
     // sec 4/5/11: nested re-export component; instantiate it (resource type 1 + comp funcs k..k+N makes,
     // k+N call) → component instance 1; export as the closure interface.
     out.extend_from_slice(&component_section(
-        &resource_inner_component_multi_closure_borrow(makes, arg_bytes, result_byte, call_borrow),
+        &resource_inner_component_multi_closure_borrow_tuple(
+            makes,
+            arg_bytes,
+            result_byte,
+            call_borrow,
+            tuple_arg_bytes,
+        ),
     ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
@@ -4243,11 +4303,55 @@ fn resource_inner_component_multi_closure_borrow(
     result_byte: u8,
     call_borrow: bool,
 ) -> Vec<u8> {
+    resource_inner_component_multi_closure_borrow_tuple(
+        makes,
+        arg_bytes,
+        result_byte,
+        call_borrow,
+        None,
+    )
+}
+
+/// [`resource_inner_component_multi_closure_borrow`] with an optional FIXED-SHAPE SCALAR tuple ARGUMENT for
+/// the shared `call`. When `tuple_arg_bytes` is `Some(field_bytes)`, a `tuple<field_bytes…>` DEFINED type is
+/// minted just before the shared `call` functype on BOTH the import and export sides (the call functype
+/// references it by index), so each side's `call` type block adds one extra type — which shifts the exported
+/// resource type index `R` up by 1 (an import-side tuple type sits between). `None` reproduces the scalar
+/// path byte-for-byte. Matches the outer lift in [`assemble_mixed_closure_resource_borrow_tuple`].
+fn resource_inner_component_multi_closure_borrow_tuple(
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    result_byte: u8,
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
+) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
             borrow_item(idx)
         } else {
             own_item(idx)
+        }
+    };
+    // Emit the shared `call`'s type block: the self handle (an `own`/`borrow<resource_ty>`), then — for a
+    // tuple arg — the `tuple<…>` defined type, then the `call` functype (referencing the self-handle type +,
+    // for a tuple, the tuple type, by index). `resource_ty` is the resource the handle wraps (0 import-side,
+    // R export-side); `block_base` is the type index the self-handle item lands at. Returns the emitted type
+    // items + the index the CALL FUNCTYPE lands at + how many types the block added (2 scalar / 3 tuple).
+    let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
+        let handle_ty = block_base; // the self-handle defined type's own index
+        let mut items = call_handle(resource_ty);
+        if let Some(fields) = tuple_arg_bytes {
+            let tup_ty = block_base + 1; // handle at block_base, tuple next
+            items.extend_from_slice(&tuple_defined_type(fields));
+            items.extend_from_slice(&closure_call_tuple_arg_functype(
+                handle_ty,
+                tup_ty,
+                result_byte,
+            ));
+            (items, tup_ty + 1, 3)
+        } else {
+            items.extend_from_slice(&closure_call_functype(handle_ty, arg_bytes, result_byte));
+            (items, block_base + 1, 2)
         }
     };
     let n = makes.len();
@@ -4277,20 +4381,22 @@ fn resource_inner_component_multi_closure_borrow(
             &wasm_vec(1, &import_func_item(&import_wire_name(i), ft_ty)),
         ));
     }
-    // Shared call: `own<0>`/`borrow<0>` (type 1+2N) + call functype (type 2+2N); import the func → func N.
+    // Shared call (import side): self handle `own<0>`/`borrow<0>` (type 1+2N) + [tuple type] + call functype;
+    // import the func → N. The handle wraps the IMPORTED resource (type 0).
     let call_own_ty = (1 + 2 * n) as u32;
-    let call_ft_ty = (2 + 2 * n) as u32;
-    out.extend_from_slice(&{
-        let mut items = call_handle(0);
-        items.extend_from_slice(&closure_call_functype(call_own_ty, arg_bytes, result_byte));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-    });
+    let (call_import_items, call_import_ft, import_call_types) = call_type_block(0, call_own_ty);
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(import_call_types as usize, &call_import_items),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item(&import_wire_name(n), call_ft_ty)),
+        &wasm_vec(1, &import_func_item(&import_wire_name(n), call_import_ft)),
     ));
-    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t` → exported type R = 2N+3.
-    let r = (2 * n + 3) as u32;
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t` → exported type R = the next type index
+    // after all import-side types (resource + 2 per make + the call block). R = 2N+3 (scalar, call block = 2)
+    // or 2N+4 (tuple, call block = 3).
+    let r = 2 * n as u32 + 1 + import_call_types;
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
@@ -4312,19 +4418,19 @@ fn resource_inner_component_multi_closure_borrow(
             &wasm_vec(1, &export_func_ascribed_item(&mk.name, i as u32, ft_ty)),
         ));
     }
-    // Shared call: `own<R>`/`borrow<R>` (R+1+2N) + call functype re-typed (R+2+2N); export `call` (func N).
+    // Shared call (export side): self handle `own<R>`/`borrow<R>` (R+1+2N) + [tuple type] + call functype
+    // re-typed; export `call` (func N). The handle wraps the RE-EXPORTED resource (type R).
     let call_exp_own = r + (1 + 2 * n) as u32;
-    let call_exp_ft = r + (2 + 2 * n) as u32;
-    out.extend_from_slice(&{
-        let mut items = call_handle(r);
-        items.extend_from_slice(&closure_call_functype(call_exp_own, arg_bytes, result_byte));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-    });
+    let (call_export_items, call_export_ft, export_call_types) = call_type_block(r, call_exp_own);
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(export_call_types as usize, &call_export_items),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(
             1,
-            &export_func_ascribed_item(CALL_BOUNDARY_NAME, n as u32, call_exp_ft),
+            &export_func_ascribed_item(CALL_BOUNDARY_NAME, n as u32, call_export_ft),
         ),
     ));
     out

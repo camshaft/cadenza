@@ -121,6 +121,24 @@
   (host-calls (call ask.ask) (call ask.ask))
   (output (: 7 Int64)))
 
+(case "an abortive handler abandons a host call in the path it discards"
+  (doc    "Witnesses that an abortive perform's abandonment extends to a DELEGATED host call in the
+           discarded continuation (capabilities-and-effects.md #A Handler Arm May Abandon The Computation It
+           Discharges, composed with #Host Delegation Is An Entrypoint's Prerogative). The body `(+
+           (Bail.bail 7) (ask.ask))` evaluates LEFT-TO-RIGHT: the first operand `(Bail.bail 7)` is abortive
+           (its arm never resumes), so it abandons the whole `+` — the handle evaluates to 7 and the second
+           operand `(ask.ask)` is NEVER reached. Because it is not reached, the host call is NOT issued: the
+           observed host-call sequence is EMPTY. A run's host I/O is exactly the calls on the taken path,
+           never a call in an abandoned one — so an abort that jumps past a would-be host call elides it.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (host (ask) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (ask.ask))))) (export main)))
+  (host-responses (respond ask.ask (: 100 Int64)))
+  (host-calls)
+  (output (: 7 Int64)))
+
 (case "a delegated host effect composes with the value-heap runtime"
   (doc    "Witnesses that a program may BOTH delegate an effect to the host AND use the value-heap runtime
            in one component (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And

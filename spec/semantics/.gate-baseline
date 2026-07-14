@@ -2,6 +2,7 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
@@ -1016,6 +1017,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation

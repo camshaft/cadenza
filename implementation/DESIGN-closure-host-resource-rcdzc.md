@@ -899,12 +899,24 @@ the component type. The new work:
   fixed-shape scalar tuple/record arg, scalar result, no build-time host effect. Still declines (clean): a
   compound arg with a VARIABLE-LENGTH field (needs `value-decode`), a compound arg ALONGSIDE other args,
   multi-export/round-trip variants of the compound arg, a closure-typed arg.
-- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — a FIXED-SHAPE
-  SCALAR tuple/record is DONE (above); a VARIABLE-LENGTH collection arg still needs a `value-decode` runtime
-  op that does not exist; multi-export/mixed/distinct-sig/round-trip variants of the compound arg + a compound
-  arg alongside other args are follow-on widenings of the shipped single-export path. A closure-typed closure
-  ARG on the direct-call path (a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both
-  directions — cleanly declined). **The entire byte-rope
+- **✅✅ DIRECT-CALL FIXED-SHAPE COMPOUND ARG on the MULTI-EXPORT path** (`@4d2f5582`, baseline `@f42ccc38`).
+  N same-signature closures sharing one `call` whose single arg is a fixed-shape scalar tuple/record. The
+  shared core serializer was ALREADY tuple-capable (brick B threaded `TupleArgRebuild` through it), so this
+  was envelope + routing: `envelope::assemble_mixed_closure_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_borrow_tuple` mint the `tuple<…>` type in the SHARED `call` functype
+  (outer lift + nested re-export, both import + export sides), shifting the call-functype index + the
+  re-exported resource index R past it; `emit_multi_closure_resource` detects the tuple arg + routes. `None` is
+  byte-identical (54 closure tests + gate --check 0-regress). ⚠ INDEX TRAPS FIXED en route: the self-handle
+  `own<resource>` must reference the RESOURCE index (0 import / R export), NOT the handle's own type slot (a
+  `own<self>` self-reference → "type index out of bounds"); and `R = 2N+1+import_call_types` (NOT +2 — the
+  re-exported `t` is the next index after all import types). Corpus: mk-sum/mk-diff share one `call`,
+  `make-diff()` → handle, `call(handle, (10,3))` → 7 e2e under wasmtime. gate 1727p/0f.
+- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
+  SCALAR tuple/record is DONE for single-export AND multi-export (above); still to widen: MIXED (closure+plain)
+  / DISTINCT-SIG / ROUND-TRIP variants of the compound arg, a compound arg ALONGSIDE other args, a
+  VARIABLE-LENGTH collection arg (needs a `value-decode` runtime op that does not exist). A closure-typed
+  closure ARG on the direct-call path (a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>`
+  both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
