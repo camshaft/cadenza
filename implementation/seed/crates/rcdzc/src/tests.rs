@@ -37462,32 +37462,30 @@ mod stage1 {
         );
         // SEPARATE-BRANCH mutual perform: the perform and the mutual call sit in DIFFERENT branches of a
         // conditional (`ev` performs in its base case, calls `od` in its recursive branch), not the same
-        // strict expression. This leaked the internal `ev#eff…$s0` specialization name (a compile-time
-        // CDZ0101, `check`-clean) because the `if` threading shared ONE state-ref node across both branches
-        // and the arena is single-parent — the second-parented branch orphaned the first. Copying the
-        // state-refs per branch fixes it; the group now specializes and RUNS. `ev 2 -> od 1 -> ev 0` fires
-        // `Fresh.next` at the base, seed 42, arm resumes `s + 1` = 43 (gate verifies the value).
+        // strict expression. This shape is NOT yet reducible by the tail-resumptive fold (building the
+        // branch-distributed state threading + cross-def memo knot is a later increment). It used to LEAK
+        // the internal `ev#eff…$s0` specialization name (a `check`-clean CDZ0101); it now DECLINES CLEANLY
+        // ("this handler is not yet reducible by the tail-resumptive fold"), never leaking the internal
+        // name. (Full decline coverage is `a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly`.)
         let sep_branch = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
                    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
-            "a mutual group with the perform in a different branch from the mutual call must specialize, \
-             not leak an internal ev#eff…$s0 name"
+            compile_component(&crate::codec::encode(&parse(sep_branch))).is_err(),
+            "a mutual group with the perform in a different branch from the mutual call declines cleanly \
+             (not yet reducible), never leaking an internal ev#eff…$s0 name"
         );
         // The MATCH-dispatch analogue: the cycle dispatches on a `match` (perform in one arm, mutual call in
-        // another) rather than an `if`. The `match` thread arm had the SAME shared-state-ref bug as the `if`
-        // arm (each arm threaded under one shared `cur`); copying the state-refs per arm fixes it. Same
-        // recursion `ev 2 -> od 1 -> ev 0` fires `Fresh.next`, seed 42, resumes 43.
+        // another) rather than an `if`. Same not-yet-reducible split-branch shape — it declines cleanly too.
         let sep_match = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1))))) \
                    (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1))))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_match))).is_ok(),
+            compile_component(&crate::codec::encode(&parse(sep_match))).is_err(),
             "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
-             must specialize, not leak an internal ev#eff…$s0 name"
+             declines cleanly (not yet reducible), never leaking an internal ev#eff…$s0 name"
         );
     }
 

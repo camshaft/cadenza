@@ -3558,9 +3558,9 @@ fn perform_and_mutual_call_in_separate_branches(
             .map(|&b| calls_other(db, b, callee_def))
             .collect();
         // A branch that performs AND a DIFFERENT branch that makes the mutual call.
-        for i in 0..branches.len() {
-            for j in 0..branches.len() {
-                if i != j && performs[i] && mut_calls[j] {
+        for (i, &does_perform) in performs.iter().enumerate() {
+            for (j, &does_call) in mut_calls.iter().enumerate() {
+                if i != j && does_perform && does_call {
                     return true;
                 }
             }
