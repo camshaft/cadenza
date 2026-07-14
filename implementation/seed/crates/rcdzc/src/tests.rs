@@ -34110,6 +34110,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deeply_nested_capturing_lambda_chain_checks_without_exponential_blowup() {
+        // REGRESSION (perf): a chain of INLINE lambdas each capturing the outer params —
+        // `((fn (a0) ((fn (a1) … (+ a0 (+ a1 … ))) 1)) 0)`. `check_application` type-checks a lambda-headed
+        // app by β-reducing the body and `collect`-ing the reduced (synthesized, cache-missing) copy — AND
+        // it computed a `baseline` by ALSO `collect`-ing the UNREDUCED callee body to diff callee-intrinsic
+        // faults. For a nested chain, BOTH collects contain the inner nested application, so each re-reduced
+        // the inner chain → O(2^depth) (a depth-20 chain took ~28s). FIX: skip the baseline collect when the
+        // reduced body has NO faults to filter (the well-typed common case) — the reduced-body collect alone
+        // then reduces each level once. This depth-20 chain would not finish pre-fix; that `diagnostics`
+        // returns quickly (and clean) is the gate.
+        let d = 20;
+        let mut inner = "0".to_string();
+        for i in 0..d {
+            inner = format!("(+ a{i} {inner})");
+        }
+        let mut body = inner;
+        for i in (0..d).rev() {
+            body = format!("((fn (a{i}) {body}) {i})");
+        }
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested capturing lambda chain type-checks clean in bounded time: {diags:?}"
+        );
+        // And the baseline de-dup it guards STILL works: a callee-intrinsic fault (a non-exhaustive match
+        // in an applied lambda's body) is reported EXACTLY ONCE, not duplicated by the reduced-body check.
+        let intrinsic = "(module m (type T (A) (B)) (def (main) ((fn ((: t T)) (match t ((T.A) 1))) (T.A))) (export main))";
+        let n = crate::diagnostics(&mut crate::db::Db::load(parse(intrinsic)))
+            .iter()
+            .filter(|x| x.code.as_deref() == Some("CDZ0210"))
+            .count();
+        assert_eq!(
+            n, 1,
+            "the non-exhaustive-match fault is reported once, not duplicated"
+        );
+    }
+
+    #[test]
     fn mutually_recursive_functions_decline() {
         // `f` calls `g`, `g` calls `f` — neither reaches a normal form. The transitive call-graph walk
         // finds the cycle f→g→f, so applying `f` declines.

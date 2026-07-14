@@ -4818,16 +4818,28 @@ fn check_application(
                 // faults β-reduction INTRODUCED — the ones absent from the unreduced body, which are exactly
                 // the argument-induced faults this check exists to catch (`(if x …)` → `(if 5 …)`,
                 // `(+ x 1)` → `(+ true 1)`). Diff by (code, message): a renumbering-invariant identity, the
-                // same key `dedup_faults` uses. The unreduced collect is memoized (cache hit after the def's
-                // own check), so this costs nothing on the hot deep-call-chain path.
+                // same key `dedup_faults` uses.
+                //
+                // GUARD: only compute the baseline when the reduced body actually HAS faults to filter — an
+                // empty `body_faults` (the well-typed common case) has nothing to diff, so skip the baseline
+                // collect entirely. This matters for a NESTED-LAMBDA chain `((fn a0) ((fn a1) …) 1) 0)`: the
+                // reduced body and the unreduced callee body BOTH contain the inner nested application, so
+                // collecting BOTH re-reduced the inner chain twice per level → O(2^depth) (a depth-20 chain:
+                // ~28s). The reduced-body collect alone is unavoidable, but the baseline was pure waste when
+                // there are no faults to filter — and a well-typed deep chain has none. (A body WITH faults
+                // still computes the baseline, so a genuine callee-defect is still de-duplicated exactly.)
                 let baseline: std::collections::HashSet<(Option<crate::diag::Code>, String)> =
-                    match crate::eval::lambda_body(g, head) {
-                        Some(callee_body) => {
-                            let mut unreduced = Vec::new();
-                            collect(g, callee_body, &mut unreduced);
-                            unreduced.into_iter().map(|f| (f.code, f.message)).collect()
+                    if body_faults.is_empty() {
+                        std::collections::HashSet::new()
+                    } else {
+                        match crate::eval::lambda_body(g, head) {
+                            Some(callee_body) => {
+                                let mut unreduced = Vec::new();
+                                collect(g, callee_body, &mut unreduced);
+                                unreduced.into_iter().map(|f| (f.code, f.message)).collect()
+                            }
+                            None => std::collections::HashSet::new(),
                         }
-                        None => std::collections::HashSet::new(),
                     };
                 for mut f in body_faults {
                     if baseline.contains(&(f.code, f.message.clone())) {
