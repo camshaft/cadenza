@@ -622,13 +622,19 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
         && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
         && !dec.fits_f32()
     {
+        // The mechanical repair: retype the annotation to `Float64` — the wider float holds the value (a
+        // `Float64` is the literal's own default, so it is finite there), the float twin of the integer
+        // width-widen / BigInt fix. Rewrite the whole `ty_expr` so either spelling — a bare `Float32` or a
+        // `(Float 32)` compound — becomes the bare `Float64`. Heuristic (the author may instead have meant a
+        // smaller literal), but the retype clears the overflow in one shot and type-checks.
         return Some(
             Reject::coded(
                 Code::IntOutOfRange,
                 "float literal does not fit the annotated type Float32 (it overflows the Float32 \
                  range to infinity — the largest finite Float32 is about 3.4e38)",
             )
-            .at(ty_expr),
+            .at(ty_expr)
+            .with_fix(Fix::replace_heuristic(ty_expr, "Float64")),
         );
     }
     let Ty::Int(it) = &annot_ty else { return None };

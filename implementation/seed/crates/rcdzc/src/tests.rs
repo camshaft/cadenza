@@ -8105,9 +8105,11 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        // IMPLIED-true: `(if (>= n 5) (if (> n 0) 1 2) 3)` — the inner `(> n 0)` is known true, so the
-        // inner `if` is just `1`. Exactly ONE comparison remains (the outer `>= 5`), NOT two, and there is
-        // no `Select` (the inner did not become a branchless select on a constant).
+        // IMPLIED-true: `(if (>= n 5) (if (> n 0) 1 2) 3)` — the inner `(> n 0)` is known true under the
+        // outer's `n >= 5` refinement, so the inner `if` folds to just `1`. Exactly ONE comparison remains
+        // (the outer `>= 5`), NOT two — the fold happened. The outer then has two constant arms (`1`, `3`),
+        // so it converts to a branchless `select` (cycle-161). The key invariant this test pins is the
+        // FOLD (one comparison, the dead inner branch `2` gone), which composes with the select.
         let implied = select(
             "(module m (def (f (: n Int64)) (if (>= n 5) (if (> n 0) 1 2) 3)) (def (main) 0) (export main))",
             "f",
@@ -8125,9 +8127,10 @@ mod runtime_ops {
             cmp_count, 1,
             "only the outer comparison should remain (inner folded away), got: {implied:?}"
         );
+        // The dead inner branch value `2` is gone (folded), regardless of the select vs if lowering.
         assert!(
-            !implied.iter().any(|i| matches!(i, Lir::Select)),
-            "the decided inner `if` collapses to its taken branch, no select, got: {implied:?}"
+            !implied.contains(&Lir::ConstI64(2)),
+            "the dead inner branch `2` is eliminated by the refinement fold, got: {implied:?}"
         );
         // VALUE parity across all three shapes and both branch outcomes.
         let same = "(if (> n 0) (if (> n 0) 1 2) 3)";
@@ -8317,14 +8320,14 @@ mod runtime_ops {
             "(module m (def (f (: a Int64) (: b Int64)) (if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)) (def (main) 0) (export main))",
             "f",
         );
+        // The inner `(< b a)` compare is GONE (folded): only the two guards `> 100`, `< 50` remain, NOT
+        // three. The surviving nested conditional over constant arms then converts to a branchless
+        // `select` (cycle-161/162), so this no longer asserts the absence of `Select` — the invariant is
+        // the FOLD (two comparisons), which composes with the select.
         assert_eq!(
             cmps(&disjoint),
             2,
             "the disjoint inner `b < a` should fold away, leaving two guards, got: {disjoint:?}"
-        );
-        assert!(
-            !disjoint.iter().any(|i| matches!(i, Lir::Select)),
-            "the decided inner `if` collapses to its taken branch, no select, got: {disjoint:?}"
         );
         // OVERLAP: widen `b`'s guard to `< 500` so `b ∈ […,499]` and `a ∈ [101,…]` OVERLAP — `b < a` is NOT
         // decided and all THREE compares remain (guards against over-folding).
@@ -14694,7 +14697,25 @@ mod match_engine {
                 "names Float32 + the overflow-to-inf cause: {}",
                 d.message
             );
+            // The retype fix: `Float64` holds the value (the literal's own default width), the float twin
+            // of the integer width-widen / BigInt fix. Replaces the annotation.
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some("Float64"),
+                "retypes the annotation to the wider float: {}",
+                d.message
+            );
         }
+        // The `(Float 32)` COMPOUND spelling gets the same `Float64` retype (the fix rewrites the whole
+        // type-expr, either spelling).
+        let compound = reject_full("(module m (def (main) (: 1.0e40 (Float 32))) (export main))")
+            .expect("a (Float 32) overflow is rejected");
+        assert_eq!(
+            compound.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Float64"),
+            "the compound (Float 32) spelling also retypes to Float64: {}",
+            compound.message
+        );
         // NO false positive: a value that FITS Float32, and the SAME magnitude annotated Float64 (its
         // finite range holds it), both compile clean.
         assert!(reject_full("(module m (def (main) (: 3.0e38 Float32)) (export main))").is_none());
