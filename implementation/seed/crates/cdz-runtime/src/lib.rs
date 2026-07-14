@@ -18722,6 +18722,36 @@ mod tests {
                 "membership of {e} matches"
             );
         }
+        // CURSOR completeness: walk `op_set_iter` to exhaustion and collect every element it visits. The
+        // cursor walks CHAMP HASH order (NOT sorted), so compare as a SET — it must visit EXACTLY the
+        // reference's elements, each once. This is the property a future `Set.to-list`/`fold` rests on,
+        // over a CHAMP shaped by the random insert/remove/fork churn above (collapsed collision nodes,
+        // sparse bitmaps, in-place-drained subtrees) — states fixed-shape cursor tests don't reach. The
+        // set fuzzer previously verified membership only via `scontains` point probes, never the cursor
+        // (the same gap the map fuzzer had before `spec@1cdf6fb7`). The cursor BORROWS each element (read
+        // via `op_get_int`, never dropped); it is dropped when exhausted; the `live_nodes()==before`
+        // balance below still holds. A missing/extra/duplicate element diverges from the reference here.
+        let mut visited: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut cur = op_set_iter(s);
+        loop {
+            let e = op_set_iter_elem(cur);
+            if e == Handle::NULL {
+                break; // exhausted
+            }
+            let fresh = visited.insert(op_get_int(e));
+            assert!(
+                fresh,
+                "the set cursor visits element {} at most once (no duplicate emission)",
+                op_get_int(e)
+            );
+            cur = op_set_iter_next(cur);
+        }
+        op_drop(cur);
+        assert_eq!(
+            visited, reference,
+            "the set cursor visits EXACTLY the reference's elements — complete + correct enumeration over \
+             a churned CHAMP (the Set.to-list/fold property; hash order, compared as a set)"
+        );
         let twin = set_of_reference(&reference);
         assert!(
             champ_eq(s, twin),
