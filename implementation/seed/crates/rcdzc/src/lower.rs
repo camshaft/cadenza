@@ -3439,10 +3439,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                 match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
                     Some(i) => {
                         if i + 2 != es.len() {
-                            return Core::Poison(Reject::coded(
-                                Code::Malformed,
-                                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
-                            ));
+                            // Anchor at the offending list PATTERN, not the enclosing match, so the
+                            // squiggle lands on `(list … .. …)` rather than the whole `(match …)`.
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::Malformed,
+                                    "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+                                )
+                                .at(pat),
+                            );
                         }
                         // The rest binder itself must be a bare name / `_` (it binds the tail SUBLIST — a
                         // nested pattern over the rest is a further increment).
@@ -4641,7 +4646,8 @@ fn pattern_constraints(
             return Err(Reject::coded(
                 Code::Malformed,
                 "a guarded pattern must be (guard <pattern> <cond>)",
-            ));
+            )
+            .at(pat));
         }
         return pattern_constraints(db, g[0], ty, path, lit_tests);
     }
@@ -4682,7 +4688,8 @@ fn pattern_constraints(
                     lit_ty.render_with_article(),
                     ty.render_name()
                 ),
-            ));
+            )
+            .at(pat));
         }
         lit_tests.push((path.into(), probe));
         return Ok(Vec::new());
@@ -4735,6 +4742,9 @@ fn pattern_constraints(
                 return Ok(out);
             }
             _ => {
+                // Anchor at the offending PATTERN node (`pat`), not the enclosing match — the squiggle
+                // then points at `(tuple a b c)`, the actual wrong construct, rather than the whole
+                // `(match … )`. (Without `.at`, `collect_reached_poisons` stamps the coarse match node.)
                 return Err(Reject::coded(
                     Code::Malformed,
                     format!(
@@ -4742,7 +4752,8 @@ fn pattern_constraints(
                         elems.len(),
                         ty.render_name()
                     ),
-                ));
+                )
+                .at(pat));
             }
         };
         let mut out = Vec::new();
@@ -4783,10 +4794,12 @@ fn pattern_constraints(
             Some(_) => {
                 // A `..` that is not the second-to-last element is malformed (a rest binds the whole tail,
                 // so it must be final). CDZ0201 — the same shape rule a top-level list pattern enforces.
+                // Anchored at the offending list PATTERN, not the enclosing match.
                 return Err(Reject::coded(
                     Code::Malformed,
                     "a list rest pattern `.. rest` must be the final element",
-                ));
+                )
+                .at(pat));
             }
             None => (&raw[..], false),
         };
@@ -4800,7 +4813,8 @@ fn pattern_constraints(
                         "a list pattern does not match the payload type {}",
                         ty.render_name()
                     ),
-                ));
+                )
+                .at(pat));
             }
         };
         // The LENGTH test — exactly `leads.len()` for a fixed pattern, AT LEAST `leads.len()` when a
@@ -4889,7 +4903,8 @@ fn pattern_constraints(
                     "this constructor pattern is not the constructor of the matched type {}",
                     ty.render_name()
                 ),
-            ));
+            )
+            .at(pat));
         }
         let inner = (**inner).clone();
         return match args.len() {
@@ -4915,7 +4930,8 @@ fn pattern_constraints(
                                 args.len(),
                                 ts.len()
                             ),
-                        ));
+                        )
+                        .at(pat));
                     }
                     _ => {
                         return Err(Reject::coded(
@@ -4925,7 +4941,8 @@ fn pattern_constraints(
                                 args.len(),
                                 inner.render_name()
                             ),
-                        ));
+                        )
+                        .at(pat));
                     }
                 };
                 let mut payload_path = path;

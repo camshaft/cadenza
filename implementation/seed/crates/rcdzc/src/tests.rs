@@ -29034,6 +29034,46 @@ mod diagnostics {
         );
     }
 
+    /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
+    /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
+    /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,
+    /// `collect_reached_poisons` stamped the coarse whole-match node, so the editor squiggle covered the
+    /// entire match instead of the one wrong pattern.
+    #[test]
+    fn a_malformed_match_pattern_anchors_at_the_pattern_not_the_whole_match() {
+        // The reported node's HEAD is the pattern constructor, not `match` — the precise-anchor signal.
+        fn anchor_head(src: &str) -> Option<String> {
+            let ast = parse(src);
+            let bytes = crate::codec::encode(&ast);
+            let out = compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .expect("a CDZ0201");
+            let node = d.node.expect("the CDZ0201 carries an anchor node");
+            let db = Db::load(parse(src));
+            db.ast.head_name(StructId(node)).map(str::to_string)
+        }
+        // A too-wide tuple pattern anchors at the `(tuple …)` pattern, NOT the `(match …)`.
+        assert_eq!(
+            anchor_head("(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b c) a))) (export f))")
+                .as_deref(),
+            Some("tuple"),
+            "the tuple-arity CDZ0201 anchors at the tuple pattern, not the match"
+        );
+        // A malformed list-rest pattern anchors at the `(list …)` pattern, NOT the `(match …)`.
+        assert_eq!(
+            anchor_head("(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest b) a) (_ 0))) (export f))")
+                .as_deref(),
+            Some("list"),
+            "the list-rest CDZ0201 anchors at the list pattern, not the match"
+        );
+    }
+
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
     /// DEF parameter (CDZ0306 + `_`-prefix fix). A lambda is not in `db.defs`, so the def-param loop missed
     /// it; a dedicated `head_name == "fn"` pass (using the same name-based `used_param_names` check) covers
