@@ -6865,6 +6865,100 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_whose_branches_refine_to_the_same_constant_collapses() {
+        // FLOW-SENSITIVE EQUAL-BRANCH COLLAPSE: when both branches reduce to the SAME constant under their
+        // respective branch refinements, and the condition is trap-free, the whole `if` is that constant.
+        // `(if (> x 10) (if (> x 5) 7 8) 7)`: under `x > 10` the inner `(> x 5)` is decided true → the
+        // then-branch is `7`, matching the else `7` → the `if` is `7`. This is the emit-time analogue of
+        // `lower`'s `core_equiv(then, else)` fold (which only sees branches equal WITHOUT flow facts).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // Both branches refine to `7` → the whole `if` is the constant `7`: NO comparison, NO branch/select.
+        let collapsed = select(
+            "(module m (def (f (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 7)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !collapsed.iter().any(|i| matches!(
+                i,
+                Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::If(_) | Lir::Select
+            )),
+            "equal refined-constant branches collapse to the bare constant, got: {collapsed:?}"
+        );
+        // VALUE PARITY: the collapsed form equals the original — `7` for every `x`.
+        for x in [-100, 0, 5, 6, 10, 11, 50] {
+            assert_eq!(
+                run::<i64>(
+                    "(: x Int64)",
+                    "(if (> x 10) (if (> x 5) 7 8) 7)",
+                    &[Val::S64(x)]
+                ),
+                7,
+                "collapsed value @{x}"
+            );
+        }
+        // NEGATIVE: branches that DON'T refine to the same constant keep the `if` (then→7, else→9).
+        let kept = select(
+            "(module m (def (f (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 9)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::If(_) | Lir::Select)),
+            "unequal branches keep a branch/select, got: {kept:?}"
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (> x 10) (if (> x 5) 7 8) 9)",
+                &[Val::S64(20)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (> x 10) (if (> x 5) 7 8) 9)",
+                &[Val::S64(0)]
+            ),
+            9
+        );
+        // TRAP SAFETY: a trapping condition must NOT be dropped — the collapse requires a trap-free cond.
+        // `(> (/ 10 n) 0)` has a trapping `/`, so the `if` is kept and traps at n=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (> (/ 10 n) 0) (if (> (/ 10 n) 0) 7 8) 7)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping condition is preserved (collapse declined)"
+        );
+        assert_eq!(run_returns_with::<i64>(&tb, "f", &[Val::S64(5)]), 7);
+    }
+
+    #[test]
     fn a_branch_refinement_folds_a_comparison_of_two_disjoint_refined_ranges() {
         // FLOW-SENSITIVE RANGE-VS-RANGE FOLD: when two DIFFERENT variables are each refined by an enclosing
         // branch so their ranges are DISJOINT, a comparison BETWEEN them is decided — no runtime compare.
@@ -19967,6 +20061,45 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant() {
+        // A qualified match-pattern head `(. Sum Q)` where `Q` is not a variant of the scrutinee sum —
+        // `((C.Alph) …)` on `(type C (Alpha) (Beta))` — is CDZ0201 "record has no field `Alph`" (a sum's
+        // variants ARE its record fields). It now also carries a "did you mean `Alpha`?" over the sum's
+        // VARIANT names + a replace fix on the mistyped key — the pattern-position twin of the value-
+        // position suggestion (`infer::no_field_reject`). Reached via a `main`-reachable match (the
+        // pattern-constraint check runs on the emit path).
+        let d = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Alph) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`Alph`") && d.message.contains("did you mean `Alpha`?"),
+            "names the mistyped key AND the nearest variant: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("carries a replace-with-the-variant fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "Alpha",
+            "replaces the mistyped key with the variant"
+        );
+
+        // A FAR typo (no near variant) → the bare "record has no field" message, no spurious suggestion.
+        let far = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Zzz) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
+        assert!(
+            !far.message.contains("did you mean"),
+            "no spurious suggestion for a far typo: {}",
+            far.message
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
@@ -21072,6 +21205,50 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unbound_name_close_to_a_match_arm_pattern_binder_suggests_it() {
+        // A COMPOUND match-arm pattern binds names in the arm BODY's scope — a `(list … .. rest)` element
+        // or rest binder, a `(Some p)` payload, a `(tuple a b)` element. A typo of one is CDZ0101, and the
+        // candidate pool now includes the pattern's binders (before, a compound pattern contributed NONE,
+        // so a rest-binder typo mis-suggested a far prelude name). Each below near-misses a real binder.
+        let find = |body: &str| {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected an unbound-name fault for {body}"))
+        };
+        // A list REST binder `rest`, typo'd `reest` in the body → suggests `rest` (`rest` is a
+        // `(List Int64)`, so passing it to `List.len` type-checks; the only unbound name is the typo).
+        let r = find("(match xs ((list) 0) ((list x .. rest) ((. List len) reest)))");
+        assert_eq!(
+            r.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("rest"),
+            "list rest binder is a candidate: {}",
+            r.message
+        );
+        // A list ELEMENT binder `elem`, typo'd `elm`.
+        let e = find("(match xs ((list elem) elm) (_ 0))");
+        assert_eq!(
+            e.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("elem"),
+            "list element binder is a candidate: {}",
+            e.message
+        );
+        // A variant PAYLOAD binder `payload`, typo'd `payloed` — over an Option scrutinee.
+        let src = "(module m (def (g (: o (Option Int64))) (match o ((Some payload) payloed) ((None) 0))) (export g))";
+        let p = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .expect("expected an unbound-name fault");
+        assert_eq!(
+            p.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("payload"),
+            "variant payload binder is a candidate: {}",
+            p.message
+        );
+    }
+
+    #[test]
     fn an_unbound_name_close_to_a_prelude_builtin_suggests_it() {
         // The prelude's names are candidates — `List` misspelled `Lst` (a module head). `Lst` is
         // distance-1 from BOTH `List` (insert `i`) and the built-in `Ast` (substitute `L`→`A`), so the
@@ -21117,6 +21294,36 @@ mod stage1 {
             Some("ac"),
             "lexicographically-smaller candidate wins the tie: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn many_references_to_one_missing_name_all_suggest_it() {
+        // The program-wide typo-suggestion winner is MEMOIZED per (name, position-class), so N references
+        // to the SAME missing name (a forgotten import / renamed helper called from N sites) share one
+        // edit-distance scan instead of re-running it each — the O(N²) fix. This locks in that the memo
+        // returns the CORRECT, IDENTICAL suggestion for every occurrence (not a stale/first-only answer):
+        // 20 defs each call `helpr`, and every one of the 20 unbound-name faults must suggest `helper`.
+        let n = 20;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} x) (helpr x))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(do (def (helper y) y) {defs} (def (main) (d0 1)) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        let sugg: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+            .filter_map(|d| d.fix.map(|f| f.replacement))
+            .collect();
+        assert_eq!(
+            sugg.len(),
+            n,
+            "one suggested fix per unbound `helpr` reference: {sugg:?}"
+        );
+        assert!(
+            sugg.iter().all(|s| s == "helper"),
+            "every occurrence suggests `helper` (the memo returns the same winner each time): {sugg:?}"
         );
     }
 

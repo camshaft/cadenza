@@ -768,6 +768,24 @@ pub struct Db {
     /// traversal over cached edges. `None` until first materialized; a pure function of the type graph.
     pub(crate) sum_out_edges: crate::fxhash::FxHashMap<StructId, std::rc::Rc<Vec<StructId>>>,
 
+    /// The PROGRAM-WIDE typo-suggestion candidate pool per POSITION CLASS (0 = value, 1 = member-operand,
+    /// 2 = type-expression) — the def / variant / effect / type / prelude names an unbound reference in
+    /// that syntactic position could have meant (`resolve::nearest_name_suggestion` tiers 2-4). It is a
+    /// pure function of the program, so building it FRESH per unbound occurrence (cloning every def name)
+    /// made "N call sites of one missing name" (a forgotten import / renamed helper) O(N²) — N pool
+    /// rebuilds × O(N) clones (a wide such file: ~45% malloc/realloc + the edit-distance over the pool).
+    /// Cached here (built once per class), the per-occurrence work is just prepending the SMALL tier-1
+    /// lexical bindings + the edit-distance scan (length-prefiltered). `None` until first materialized.
+    pub(crate) suggest_pool: [Option<std::rc::Rc<Vec<String>>>; 3],
+
+    /// Memo of the PROGRAM-WIDE typo-suggestion winner per `(unbound-name, position-class)` — the nearest
+    /// name in `suggest_pool[class]` to that query, or `None` if none is within the typo cutoff. The
+    /// edit-distance scan over the pool is O(pool) per query; N call sites of the SAME missing name (a
+    /// forgotten import / renamed helper referenced N times) re-ran the identical scan → O(N²). Keyed by
+    /// `(name, class)`, the pool winner is computed once per distinct query; the per-node lexical tier is
+    /// combined against it afterward (a tiny scan). A pure function of the program + query.
+    pub(crate) suggest_pool_winner: crate::fxhash::FxHashMap<(String, u8), Option<String>>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1080,6 +1098,8 @@ impl Db {
             lifted_by_body: crate::fxhash::FxHashMap::default(),
             sum_reachable: crate::fxhash::FxHashMap::default(),
             sum_out_edges: crate::fxhash::FxHashMap::default(),
+            suggest_pool: [None, None, None],
+            suggest_pool_winner: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),

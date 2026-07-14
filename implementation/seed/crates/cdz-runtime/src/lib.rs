@@ -11585,6 +11585,42 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak after deep split");
     }
 
+    /// `vec-drop(v, index)` (op 72, the `(list p… .. rest)` REST-pattern binder) returns the TAIL
+    /// `[index, len)` as one vector and RECLAIMS the dropped prefix `[0, index)`. It's `vec-split` keeping
+    /// only the right half — a single-u32 result, CONSUMING `v`. Landed `@494d2e44` with no runtime test.
+    /// This mirrors the wit wrapper's EXACT body (`op_vec_split` then `op_drop` the left) and guards:
+    /// correct tail content across offsets, the `index==0` (whole) + `index>=len` (empty) edges, the
+    /// result's RRB invariants, and — since it's consuming and reclaims the prefix — NO LEAK.
+    fn vec_drop_impl(v: Handle, index: u32) -> Handle {
+        let (l, r) = op_vec_split(v, index);
+        op_drop(l);
+        r
+    }
+    #[test]
+    fn vec_drop_returns_the_tail_and_reclaims_the_prefix() {
+        reset();
+        let before = live_nodes();
+        // A size-1500 vector (3 levels) — the drop point spans full-depth descent like the split test.
+        for &idx in &[0u32, 1, 733, 1499, 1500, 2000] {
+            let v = vec_range(1500);
+            let tail = vec_drop_impl(v, idx);
+            let clamped = idx.min(1500);
+            assert_eq!(op_vec_len(tail), 1500 - clamped, "vec-drop({idx}) tail length");
+            assert_eq!(
+                vec_to_ints(tail),
+                (clamped as i64..1500).collect::<Vec<_>>(),
+                "vec-drop({idx}) tail content is [idx, len)"
+            );
+            assert_vec_invariants(tail);
+            op_drop(tail);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "vec-drop({idx}) reclaims the prefix + result fully — no leak (consuming op)"
+            );
+        }
+    }
+
     #[test]
     fn vec_empty_is_len_zero() {
         reset();
