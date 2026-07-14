@@ -503,6 +503,92 @@
   (call   main (: true Bool) (: 0 Int64))
   (trap   "division by zero"))
 
+; The cases above project an if-of-tuples at ONE index, which sinks into each branch (a fold, no heap
+; build). When the if-produced tuple is `let`-BOUND and read at MORE THAN ONE index, it cannot be sunk —
+; it must MATERIALIZE as one runtime value-heap handle joined from both branches, then be projected twice.
+; These pin that materialize-and-read-twice path (regression guards: it previously emitted INVALID WASM —
+; the `if`-value-join slot for a heap handle was mis-typed i64 vs the i32 handle, tripping the wasm
+; validator on the second projection; now fixed). A runtime `if` condition drives the choice so nothing
+; folds, and the elements are runtime-computed so the tuple/record is a genuine handle, not a constant.
+
+(case "a let-bound tuple produced by an if is projected at both indices"
+  (doc    "`(let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))) (+ (. r 0) (. r 1)))` binds a
+           tuple chosen by a runtime `if` (elements computed from the parameter, so it is a real heap handle)
+           and reads BOTH elements: p=0 → `(tuple 5 2)` → 7, p=1 → `(tuple 99 3)` → 102. Unlike the
+           single-projection cases above (which sink into each branch), reading two indices forces the
+           if-joined tuple to materialize once and be projected twice. Regression guard: this emitted invalid
+           wasm (`expected i32, found i64`) until the `if`-branch-join slot for a heap-handle result was
+           typed as the i32 handle it is.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+                (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "a let-bound record produced by an if is read at both fields"
+  (doc    "The record sibling — the fault was never tuple-specific. `(let ((r (if (= p 0) (record (x (+ p 5))
+           (y (+ p 2))) (record (x 99) (y (+ p 2)))))) (+ (. r x) (. r y)))` reads both fields of an
+           if-joined record handle: p=0 → 7, p=1 → 102. Pins that the `if`-value-join for ANY compound
+           handle (not only tuples) types the joined slot as the i32 handle — the same regression guard
+           across the record kind.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+                (+ (. r x) (. r y))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "an if-tuple returned from a call, let-bound and projected twice"
+  (doc    "The if-join handle crosses a CALL return: `(mk p)` returns an if-tuple, and `main` binds it and
+           reads both elements — `(let ((r (mk p))) (+ (. r 0) (. r 1)))` = 7 at p=0. Pins that the
+           mis-typed-slot regression is guarded even when the if-produced handle travels through a function
+           return before the double projection (the caller has no `if` of its own) — the shape a decode
+           helper returning a (value, cursor) pair takes.")
+  (input  (do
+            (def (mk (: p Int64)) (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))
+            (def (main (: p Int64)) (let ((r (mk p))) (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64)) (output (: 104 Int64)))
+
+; The full decode-loop shape those projection guards protect — a self-hosted reader in miniature. A
+; self-tail `read-leaves` loop advances its cursor via `leaf-end`, which projects BOTH fields of the
+; (value, cursor) tuple returned by the recursive `read-varu`, AND pushes compound-payload `Ast` sum nodes
+; (a type with a `(List Ast)` variant) into a `(List Ast)` accumulator. This composes tuple projection,
+; recursive helpers, a sum-node list accumulator, and a self-tail loop — the exact byte→AST reader a
+; self-hosted front end is written in, and (regression guard) the shape whose loop-transform scratch slots
+; must keep i32 heap handles disjoint from i64 arithmetic temps (it previously emitted invalid wasm at this
+; local-count threshold). A single-field scalar advance is the trivial control; this pins the two-field one.
+
+(case "a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs"
+  (doc    "A miniature self-hosted reader: `read-leaves` folds over the input bytes, advancing its position
+           with `leaf-end` (which projects BOTH fields of the (value, cursor) tuple `read-varu` returns) and
+           pushing `Ast` sum nodes into a `(List Ast)` accumulator. Over `b\"\\x00\\x01\\x05\"` it reads one
+           leaf — an `(Ast.Int …)` — and `nc` (node-count) of an `Ast.Int` is 1. Pins that the composed
+           decode shape (tuple projection + recursive helpers + a compound-sum list accumulator + a self-tail
+           loop) compiles to valid wasm and runs — the loop-transform keeps its i32 heap-handle scratch
+           disjoint from its i64 arithmetic temps at this local-count threshold. The self-hosting workload
+           the projection guards above protect, assembled end to end.")
+  (input  (do
+            (type Ast (Int Int64) (List (List Ast)))
+            (def (read-varu (: b Bytes) (: p Int64) (: a Int64) (: s Int64))
+              (let ((byte (Option.expect (Bytes.at b p) "v")))
+                (let ((a2 (+ a (<< (& byte 127) s))))
+                  (if (= (& byte 128) 0) (tuple a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
+            (def (read-mag (: b Bytes) (: p Int64) (: len Int64) (: acc Int64))
+              (if (= len 0) acc (read-mag b (+ p 1) (- len 1) (+ (* acc 256) (Option.expect (Bytes.at b p) "m")))))
+            (def (read-leaf (: b Bytes) (: pos Int64)) ((. Ast Int) (read-mag b (+ pos 1) (. (read-varu b (+ pos 1) 0 0) 0) 0)))
+            (def (leaf-end (: b Bytes) (: pos Int64)) (let ((v (read-varu b (+ pos 1) 0 0))) (+ (. v 1) (. v 0))))
+            (def (read-leaves (: b Bytes) (: pos Int64) (: count Int64) (: acc (List Ast)))
+              (if (= count 0) acc (read-leaves b (leaf-end b pos) (- count 1) (List.push acc (read-leaf b pos)))))
+            (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
+            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
            (itself a record) from the if-selected record, then field `x` from that — the projection sinks

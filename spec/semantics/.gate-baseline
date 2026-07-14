@@ -265,6 +265,7 @@ pass	a built-in comparison on an abstract type's value is rejected outside its m
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
@@ -603,10 +604,12 @@ pass	a let shadowing a parameter with a differently-typed value is not an invali
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
+pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound runtime-if map is looked up with valid wasm
+pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable is in scope inside a boolean connective operand
@@ -1405,6 +1408,7 @@ pass	an expression tree built at run time is evaluated by matching its node vari
 pass	an if on Type.eq selects a branch at compile time
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
+pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
