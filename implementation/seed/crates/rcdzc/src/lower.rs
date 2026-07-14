@@ -244,9 +244,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // binder a `Map.remove` chain), reached under the presence-test dispatch. See `lower_map_field`.
         Resolved::MapField {
             scrutinee,
+            path,
             key,
             named,
-        } => lower_map_field(db, id, scrutinee, key, &named),
+        } => lower_map_field(db, id, scrutinee, &path, key, &named),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -2721,9 +2722,11 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
             crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
-            // A `ListLen` probe never arises in the SCALAR match path (it comes from a list PAYLOAD
-            // sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type check applies.
+            // A `ListLen`/`MapHasKeys` probe never arises in the SCALAR match path (each comes from a
+            // list/map PAYLOAD sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type
+            // check applies.
             crate::core::Probe::ListLen { .. } => None,
+            crate::core::Probe::MapHasKeys { .. } => None,
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -5225,6 +5228,50 @@ fn pattern_constraints(
         }
         return Ok(out);
     }
+    // A MAP pattern `(map (k v) … .. rest)` at `path` — a variant's / tuple's MAP sub-value, destructured
+    // by key. A map has no discriminant; it imposes a KEY-PRESENCE test (`MapHasKeys` — every named key
+    // must be present, gated + folded against a constant `Core::MapNew` like `ListLen`). Each VALUE binder
+    // is read independently via `MapField` (resolve Case M/Mn) — the value's key-directed access has no
+    // `PathStep`, so a value sub-pattern is a BARE binder / `_` (no descent here); a nested value
+    // sub-pattern (`(map (1 (Some x)))`) is a later increment (declines cleanly). The REST binder likewise
+    // reads via `MapField`. SCOPE: the CONSTANT-scrutinee fold only (a runtime map declines at
+    // `build_lit_test`), the same limit the direct map matcher (`lower_match_map`) has.
+    if is_map_pattern(db, pat) {
+        let (entries, _rest) = match crate::resolve::map_pattern_of(db, pat) {
+            Some(mp) => mp,
+            None => {
+                return Err(Reject::coded(Code::Malformed, "a malformed map pattern").at(pat));
+            }
+        };
+        if !matches!(ty, crate::ty::Ty::Map(_, _) | crate::ty::Ty::Any) {
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a map pattern does not match the sub-value type {}",
+                    ty.render_name()
+                ),
+            )
+            .at(pat));
+        }
+        // Every value binder must be a BARE name / `_` (its value reads via `MapField`, no path step). A
+        // NESTED value sub-pattern needs a map-value access step — decline (a later increment), never a
+        // miscompile.
+        for &(_, v) in &entries {
+            if db.ast.as_name(v).is_none() {
+                return Err(Reject::decline(
+                    "a nested (non-binder) map-pattern value sub-pattern is not yet matched",
+                ));
+            }
+        }
+        // The key-presence test at `path`: all named keys must be in the (constant) map. Value binders +
+        // any rest binder read via `MapField`, so they contribute no path constraint here.
+        let keys: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
+        lit_tests.push((
+            path.into(),
+            crate::core::Probe::MapHasKeys { keys: keys.into() },
+        ));
+        return Ok(Vec::new());
+    }
     // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
     // name — and the remaining children are payload sub-patterns.
     let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
@@ -5529,6 +5576,13 @@ fn ctor_pattern_name(db: &Db, pat: StructId) -> String {
         .to_string()
 }
 
+/// Whether `id` is a map PATTERN `(map (k v) … .. rest)` — a `map` NAME head (the alias) or the `"map"`
+/// string-literal primitive. Routes a NESTED map sub-pattern into `pattern_constraints`'s map arm (a
+/// key-presence test + `MapField` value reads), the map analogue of [`is_tuple_pattern`]/[`is_list_pattern`].
+fn is_map_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "map").is_some() || db.ast.head_ctor(id) == Some("map")
+}
+
 /// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
 /// `Resolved::Tuple { elems }` or the `tuple` NAME-alias application (`Prim::TupleNew`). `None` for a
 /// non-tuple. Used by `type_at_path` to type a tuple-scrutinee's element from the constructor directly,
@@ -5763,6 +5817,19 @@ fn build_tree(
                         } else {
                             elems.len() == *len
                         }
+                    }
+                    // A MAP key-presence test folds against a CONSTANT map: every named key must be present
+                    // (some entry key `const_compound_eq` to it). A runtime map has no `MapNew` here → the
+                    // runtime-test arm below, which declines. (The `keys`/`entries` are cloned out of `c`
+                    // first so the `const_compound_eq` `&mut db` calls don't overlap the borrow of `c`.)
+                    (crate::core::Probe::MapHasKeys { keys }, Core::MapNew { entries, .. }) => {
+                        let keys: Vec<StructId> = keys.to_vec();
+                        let entries = entries.clone();
+                        keys.iter().all(|&k| {
+                            entries
+                                .iter()
+                                .any(|&(ek, _)| const_compound_eq(db, ek, k) == Some(true))
+                        })
                     }
                     // A non-constant / type-mismatched sub-value can't fold — emit the runtime test.
                     _ => {
@@ -6319,7 +6386,8 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Bool(_)
         | crate::core::Probe::Str(_)
-        | crate::core::Probe::ListLen { .. } => false,
+        | crate::core::Probe::ListLen { .. }
+        | crate::core::Probe::MapHasKeys { .. } => false,
     }
 }
 
@@ -6330,7 +6398,8 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Str(_)
-        | crate::core::Probe::ListLen { .. } => false,
+        | crate::core::Probe::ListLen { .. }
+        | crate::core::Probe::MapHasKeys { .. } => false,
     }
 }
 
@@ -6343,7 +6412,8 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Bool(_)
-        | crate::core::Probe::ListLen { .. } => false,
+        | crate::core::Probe::ListLen { .. }
+        | crate::core::Probe::MapHasKeys { .. } => false,
     }
 }
 
@@ -14162,18 +14232,40 @@ fn lower_map_field(
     db: &mut Db,
     id: StructId,
     scrutinee: StructId,
+    path: &[crate::core::PathStep],
     key: Option<StructId>,
     named: &[StructId],
 ) -> Core {
-    let Core::MapNew { entries, .. } = core_of(db, scrutinee) else {
-        // A RUNTIME map scrutinee (not a compile-time-constant `MapNew`). The arm was SELECTED by the
-        // runtime presence-test `if`-chain `desugar_runtime_map_match` built, so control is here ONLY when
-        // every named key IS present — so a VALUE binder reads the value at its key (`Map.lookup` then unwrap
-        // the `Some`, safe: the key is present), and the REST binder reads the map minus the named keys (a
-        // `Map.remove` chain). Both are synthesized as SOURCE forms + lowered via `core_of` (the Inc-11/12/14
-        // idiom — a synthesized `Map.lookup`/`Map.remove` grounds its type through `resolve_subtree` +
-        // re-lowering, unlike the raw generic-application Inc-9 tried). `(. Map lookup)`/`(. Map remove)`.
-        return lower_map_field_runtime(db, id, scrutinee, key, named);
+    // Reach the matched MAP core: the scrutinee DIRECTLY (empty path — a direct map match), or a NESTED map
+    // at `path` inside a constant tuple/list scrutinee (`fold_sum_path` folds the `Elem` steps to the
+    // nested `Core::MapNew`).
+    let map_core = if path.is_empty() {
+        core_of(db, scrutinee)
+    } else {
+        match fold_sum_path(db, scrutinee, path) {
+            Some(c) => c,
+            None => {
+                // A nested map inside a RUNTIME/non-constant compound — the runtime nested-map read is not
+                // yet wired (the direct runtime path below reads the whole `scrutinee`, not a sub-path).
+                return Core::Poison(Reject::decline(
+                    "a nested map pattern over a runtime/non-constant scrutinee is not yet matched",
+                ));
+            }
+        }
+    };
+    let Core::MapNew { entries, .. } = map_core else {
+        // A RUNTIME map scrutinee (not a compile-time-constant `MapNew`). Only the DIRECT map match (empty
+        // path) has the runtime read wired: the arm was SELECTED by the runtime presence-test `if`-chain
+        // `desugar_runtime_map_match` built, so control is here ONLY when every named key IS present — a
+        // VALUE binder reads its key (`Map.lookup` then unwrap the `Some`, safe: the key is present) and the
+        // REST binder reads the map minus the named keys (a `Map.remove` chain), both synthesized as SOURCE
+        // forms + re-lowered via `core_of`. A NESTED runtime map (non-empty path) is a further increment.
+        if path.is_empty() {
+            return lower_map_field_runtime(db, id, scrutinee, key, named);
+        }
+        return Core::Poison(Reject::decline(
+            "a nested map pattern over a runtime map scrutinee is not yet matched (constant map only)",
+        ));
     };
     match key {
         // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`).

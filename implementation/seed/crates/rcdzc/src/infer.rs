@@ -212,16 +212,26 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A MAP PATTERN binder: a VALUE binder (`key = Some`) has the map's VALUE type; the REST binder
         // (`key = None`) has the whole MAP type (the scrutinee minus the named keys — same `Map<K,V>`).
         // Both read off the scrutinee's solved `Ty::Map(k, v)`.
-        Resolved::MapField { scrutinee, key, .. } => match type_of(db, scrutinee) {
-            Ty::Map(k, v) => {
-                if key.is_some() {
-                    (*v).clone() // a value binder holds the value type
-                } else {
-                    Ty::Map(k, v) // the rest binder holds the map type
+        Resolved::MapField {
+            scrutinee,
+            path,
+            key,
+            ..
+        } => {
+            // Walk the access PATH from the scrutinee down to the nested MAP (empty for a direct map
+            // scrutinee), then read the value type (a value binder) or the map type (the rest binder).
+            let map_ty = map_field_map_ty(db, scrutinee, &path);
+            match map_ty {
+                Ty::Map(k, v) => {
+                    if key.is_some() {
+                        (*v).clone() // a value binder holds the value type
+                    } else {
+                        Ty::Map(k, v) // the rest binder holds the map type
+                    }
                 }
+                _ => Ty::Any,
             }
-            _ => Ty::Any,
-        },
+        }
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT
@@ -2561,6 +2571,30 @@ fn type_scheme_apply_into(
 /// each step so the generic arg vars stay linked. A `Payload` step descends the variant's payload at the
 /// current instantiation (`payload_ty_at_instantiation`, or a nominal newtype's inner); an `Elem(i)` step
 /// descends a tuple element / a list's element. Used by `arg_ty_in_env` to type a payload binder of the
+/// The `Ty::Map` a `MapField`'s access `path` reaches from its `scrutinee` — the scrutinee's type walked
+/// down `Elem` steps (a tuple element, a list element) to the nested map. EMPTY path = the scrutinee IS the
+/// map (a direct map match). A `Payload` step (a variant-nested map) is not modelled here yet (returns
+/// `Ty::Any`, a graceful decline — the value binder then types `Ty::Any` and the read declines at lowering,
+/// never a miscompile); the common nesting (a map in a tuple/record/list) uses only `Elem`.
+fn map_field_map_ty(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep]) -> Ty {
+    let mut cur = type_of(db, scrutinee);
+    for step in path {
+        cur = match (step, &cur) {
+            (crate::core::PathStep::Elem(i), Ty::Tuple(elems)) => match elems.get(*i) {
+                Some(t) => t.clone(),
+                None => return Ty::Any,
+            },
+            (crate::core::PathStep::Elem(_), Ty::List(elem)) => (**elem).clone(),
+            _ => return Ty::Any,
+        };
+    }
+    cur
+}
+
+/// The type of a nested-payload binder (a variant pattern's payload, possibly through tuple/list `Elem`
+/// steps), walked from the scrutinee's ROOT type `root` down `steps`. `heads` supplies the variant head at
+/// each `Payload` step (its `(-> payload Sum)` gives the next sub-value's type at the current
+/// instantiation); an `Elem` step reads a tuple/list element. `subst` carries the enclosing generic
 /// parameter being solved against its local instantiation. `Ty::Any` on a malformed/unresolvable path.
 fn walk_payload_ty(
     db: &mut Db,
