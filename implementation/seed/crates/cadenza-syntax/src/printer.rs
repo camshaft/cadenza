@@ -609,7 +609,15 @@ impl<'a> Printer<'a> {
                 }
                 if let Struct::List(pair) = self.a.get(b) {
                     let (n, e) = (pair[0], pair[1]);
-                    self.expr(n, 0);
+                    // A binder is a plain NAME (`Atom`) or a destructuring PATTERN (`List` —
+                    // `(tuple a b)` / `(list x .. rest)` / …). A pattern binder renders through the
+                    // pattern surface (`(a, b)`, `[x, .. rest]`), the inverse of `let_expr` routing a
+                    // pattern-opening binder to `pattern`; a plain name renders as an ordinary expr.
+                    if matches!(self.a.get(n), Struct::List(_)) {
+                        self.pattern(n);
+                    } else {
+                        self.expr(n, 0);
+                    }
                     self.doc.word(" = ");
                     self.value(e);
                 }
@@ -2092,11 +2100,40 @@ impl<'a> Printer<'a> {
         }
         match self.a.get(args[0]) {
             Struct::List(binds) => binds.iter().all(|&b| match self.a.get(b) {
-                Struct::List(p) => p.len() == 2 && self.head_name(p[0]).is_some(),
+                // Each binding is a `(binder value)` pair. The binder is a plain NAME (`head_name`) or
+                // a destructuring PATTERN the surface can round-trip (`is_binder_pattern`). Any OTHER
+                // list binder — e.g. a constructor-application pattern `Mk(n)` (`((. Id Mk) n)`), which
+                // the reader has no let-binder surface for — falls back to the generic call form, which
+                // round-trips via idempotence.
+                Struct::List(p) => {
+                    p.len() == 2 && (self.head_name(p[0]).is_some() || self.is_binder_pattern(p[0]))
+                }
                 _ => false,
             }),
             _ => false,
         }
+    }
+
+    /// Whether `id` is a destructuring pattern the ML surface can render AND read back in a BINDER
+    /// position (a `let` binder or a `def`/`fn` parameter): a tuple `(tuple …)`, a list `(list …)`, a
+    /// map `(map …)`, or a binary `(bin …)`. These are exactly the compound patterns `param`/`let_expr`
+    /// route to `pattern` (their surfaces `(a, b)`/`[x, .. rest]`/`#{ k = p }`/`b[u16(n)]` re-lex to a
+    /// binder-position pattern). A constructor-application pattern like `Mk(n)` is deliberately EXCLUDED
+    /// — the reader has no binder surface for it, so sugaring it would not round-trip; it stays the
+    /// generic call form. STRING-headed ctor primitives (`"tuple"`/`"list"`/`"map"`) and their NAME
+    /// aliases both qualify (a name alias is not shadowable in this structural position).
+    fn is_binder_pattern(&self, id: StructId) -> bool {
+        // Read the HEAD child of the pattern list (the printer's `head_ctor`/`head_name` inspect an
+        // atom, so apply them to `items[0]`, not the list itself). The head is a STRING primitive
+        // (`"tuple"`) or a NAME alias (`tuple`); both denote the same binder-position construct.
+        let Struct::List(items) = self.a.get(id) else {
+            return false;
+        };
+        let Some(&head) = items.first() else {
+            return false;
+        };
+        let name = self.head_ctor(head).or_else(|| self.head_name(head));
+        matches!(name.as_deref(), Some("tuple" | "list" | "map" | "bin"))
     }
 
     fn is_match_shape(&self, args: &[StructId]) -> bool {
@@ -2815,6 +2852,47 @@ mod tests {
         assert_eq!(
             print(&sexpr::read("(match x ((bin (u16 n)) n))").unwrap(), 80),
             "match x with\n  | b[u16(n)] => n"
+        );
+    }
+
+    #[test]
+    fn destructuring_binder_patterns_round_trip() {
+        // A destructuring PATTERN in a `def`/`fn` parameter or a `let` binder renders through the
+        // pattern surface (the inverse of `param`/`let_expr` routing a pattern-opening binder to
+        // `pattern`), so it round-trips instead of falling to the garbage generic-call form.
+        assert_eq!(
+            assert_roundtrip("def f((a, b)) = a + b", 80),
+            "def f((a, b)) = a + b"
+        );
+        assert_eq!(
+            assert_roundtrip("def head([x, .. rest]) = x", 80),
+            "def head([x, .. rest]) = x"
+        );
+        // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
+        assert_eq!(
+            assert_roundtrip("let (a, b) = p in a + b", 80),
+            "let (a, b) = p in\na + b"
+        );
+        assert_eq!(
+            assert_roundtrip("let [x, .. rest] = ys in x", 80),
+            "let [x, .. rest] = ys in\nx"
+        );
+        assert_eq!(
+            assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
+            "let x = 1, (a, b) = p in\nx + a"
+        );
+        // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
+        assert_eq!(
+            print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
+            "let (a, b) = p in\na + b"
+        );
+        // A CONSTRUCTOR-application pattern binder (`Mk(n)` = `((. Id Mk) n)`) has no reader binder
+        // surface, so it must stay the generic call form (round-tripping via idempotence), NOT sugar to
+        // a pattern binder the reader could not parse back (the regression `is_binder_pattern` guards).
+        let ctor = print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80);
+        assert!(
+            !ctor.contains("let Id.Mk(n) ="),
+            "a ctor-pattern let binder must not sugar to a pattern binder, got {ctor:?}"
         );
     }
 

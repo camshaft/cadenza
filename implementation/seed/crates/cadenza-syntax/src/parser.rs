@@ -1001,7 +1001,16 @@ impl<'a> Parser<'a> {
         let mut bindings = Vec::new();
         loop {
             let b_start = self.cur_span();
-            let n = self.binder();
+            // A `let` binder is normally a plain name, but a binder that OPENS a destructuring pattern
+            // (`(a, b)` / `[x, .. rest]` / `#{ k = p }` / `b[u16(n)]`) binds by pattern — the same
+            // irrefutable-in-a-binding-position patterns `param` accepts, so `let (a, b) = p in …` and
+            // `def f((a, b)) = …` agree. The compiler already lowers a pattern let-binder (it desugars
+            // to the same destructuring form); this lets the ML reader round-trip it.
+            let n = if self.at_pattern_param_start() {
+                self.pattern()
+            } else {
+                self.binder()
+            };
             self.expect(Kind::Eq, "`=`");
             // The bound value is a single expression (`PREC_SEQ + 1`), delimited by `in` (or the next
             // `,` binding). A `;` after it belongs to the enclosing sequence — `let x = a in b; c` is
@@ -2042,17 +2051,13 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
-        // A parameter is normally a plain binder name, but a parameter that STARTS a compound PATTERN is a
-        // destructuring binder — a `(`-led tuple pattern `(a, b)`, a `[`-led list pattern `[x, .. rest]`, or
-        // a `#{`-led map pattern `#{ k = v }` — each of which `pattern_atom` reads (a refutable/ill-shaped
-        // one then faults CDZ0210/CDZ0201 at lowering, exactly as the equivalent `let` binder does). Parse
-        // it as a pattern so the ML surface ROUND-TRIPS every destructuring parameter the s-expr surface +
-        // the printer support: the printer emits `def head([x, .. rest]) = …` for `(def (head (list x ..
-        // rest)) …)`, so the reader must accept the `[`-led pattern here or the round-trip breaks.
-        let starts_pattern = self.at(Kind::LParen)
-            || self.at(Kind::LBracket)
-            || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace);
-        let binder = if starts_pattern {
+        // A parameter is normally a plain binder name, but a parameter that OPENS a destructuring
+        // PATTERN is parsed as a pattern: a tuple `(a, b)` (or a literal-bearing one like `(1, x)`
+        // desugaring to a refutable binder → CDZ0210), a list `[x, .. rest]`, a map `#{ k = p }`, or a
+        // binary `b[u16(n)]`. Each is irrefutable only in a form the compiler admits in a binding
+        // position; parsing it here lets the ML surface round-trip the pattern parameters the s-expr
+        // surface and the printer already support (a plain `name`/`name: Type` still takes `binder`).
+        let binder = if self.at_pattern_param_start() {
             self.pattern()
         } else {
             self.binder()
@@ -2066,6 +2071,16 @@ impl<'a> Parser<'a> {
         } else {
             binder
         }
+    }
+
+    /// True at a token that OPENS a destructuring pattern in a parameter (or `let`-binder) position:
+    /// `(` tuple, `[` list, `#{` map, `b[` binary. These are the compound patterns [`Self::pattern`]
+    /// deconstructs; a bare name/literal is NOT one (a name is an ordinary binder, a bare literal
+    /// param is not a destructure). Keyed here — not by delegating every token to `pattern` — so a
+    /// plain `name`/`name: Type` parameter keeps the fast [`Self::binder`] path and its diagnostics.
+    fn at_pattern_param_start(&self) -> bool {
+        matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen)
+            || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace)
     }
 
     /// A type reference in a binder/return/payload position (a parameter annotation, a function's
@@ -2589,6 +2604,53 @@ mod tests {
         // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
         let a = parse_ok("5 and mask");
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
+    }
+
+    #[test]
+    fn a_destructuring_pattern_parameter_parses() {
+        use crate::sexpr;
+        // A `(`-led tuple, `[`-led list, `#{`-led map, or `b[`-led binary parameter is a destructuring
+        // PATTERN (`param` routes it to `pattern`); a plain `name` / annotated `name: Type` is not.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, b)) = a + b")),
+            "(def (f (tuple a b)) (+ a b))"
+        );
+        // The reported gap: a list-REST pattern parameter (`def head([x, .. rest]) = x`).
+        assert_eq!(
+            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
+            "(def (head (list x .. rest)) x)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def g(b[u8(n)]) = n")),
+            "(def (g (bin (u8 n))) n)"
+        );
+        // A plain-name and an annotated parameter keep the ordinary binder path.
+        assert_eq!(sexpr::print(&parse_ok("def h(x) = x")), "(def (h x) x)");
+        assert_eq!(
+            sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
+            "(def (s (: xs (List Int64))) xs)"
+        );
+    }
+
+    #[test]
+    fn a_destructuring_pattern_let_binder_parses() {
+        use crate::sexpr;
+        // A `let` binder that opens a destructuring pattern binds by pattern — the twin of the pattern
+        // parameter, so `let (a, b) = p in …` and `let [x, .. rest] = ys in …` parse.
+        assert_eq!(
+            sexpr::print(&parse_ok("let (a, b) = p in a + b")),
+            "(let (((tuple a b) p)) (+ a b))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("let [x, .. rest] = ys in x")),
+            "(let (((list x .. rest) ys)) x)"
+        );
+        // A plain-name binder is unchanged, and a `let` may MIX a name and a pattern binder.
+        assert_eq!(sexpr::print(&parse_ok("let x = 1 in x")), "(let ((x 1)) x)");
+        assert_eq!(
+            sexpr::print(&parse_ok("let x = 1, (a, b) = p in x + a")),
+            "(let ((x 1) ((tuple a b) p)) (+ x a))"
+        );
     }
 
     #[test]
