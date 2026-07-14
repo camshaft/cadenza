@@ -6037,6 +6037,10 @@ fn check_application(
                     // differing sub-part instead of rendering two whole compounds — the join-site reuse of
                     // the annotation-mismatch per-member hints.
                     let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
+                    // Anchor at the OUTLIER element `e` (the one that broke homogeneity against the
+                    // established first-element type), not the whole `(list …)` — the squiggle lands on
+                    // `"three"` in `(list 1 2 "three" 4 5)` rather than the entire list, so the reader sees
+                    // exactly which element is off. (Without `.at`, `collect` stamps the coarse list node.)
                     let mut reject = Reject::coded(
                         code,
                         format!(
@@ -6044,7 +6048,8 @@ fn check_application(
                             first_ty.render_name(),
                             et.render_name()
                         ),
-                    );
+                    )
+                    .at(e);
                     if let Some(fix) = float_literal_retype_fix(db, first, &first_ty, &et)
                         .or_else(|| float_literal_retype_fix(db, e, &et, &first_ty))
                     {

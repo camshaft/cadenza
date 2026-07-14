@@ -16887,6 +16887,25 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_list_anchors_at_the_outlier_element_not_the_whole_list() {
+        // The homogeneity reject anchors at the OUTLIER element (the one that broke homogeneity against the
+        // established first-element type), not the enclosing `(list …)` — so the editor squiggle lands on
+        // exactly the off element in a long list, not the whole literal. `"three"` is the String among
+        // Int64s; its reported node must be that STRING ATOM, not the list.
+        let src = "(module m (def (main) ((. List len) (list 1 2 \"three\" 4 5))) (export main))";
+        let d = reject_full(src).expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let node = d.node.expect("the reject carries an anchor node");
+        let db = crate::db::Db::load(parse(src));
+        // The anchor is the string literal `"three"`, not the `(list …)` form.
+        assert_eq!(
+            db.ast.as_str(crate::ast::StructId(node)),
+            Some("three"),
+            "the mismatch anchors at the outlier element `\"three\"`, not the whole list"
+        );
+    }
+
+    #[test]
     fn a_list_int_literal_vs_float_offers_a_float_literal_retype_fix() {
         // A list-homogeneity clash between an INTEGER LITERAL and a FLOAT type has the SAME one-shot repair
         // the annotation site's `(: 3 Float64)` gives: rewrite the integer literal `n` as a float literal
