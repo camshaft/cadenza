@@ -65,6 +65,15 @@ pub struct Emit {
     /// `DW_TAG_lexical_block` with a PC range that fences the binder to its arms. Indices are into `code`
     /// as emitted; `peephole_emit` remaps them alongside `lines`.
     match_scopes: Vec<MatchScope>,
+    /// SHARED SUM-PAYLOAD-PREFIX slots (a per-arm-body CSE). A match arm reading MULTIPLE elements of one
+    /// payload tuple — `(Node (tuple l r))` → `l`/`r` each a `SumPayload{s, [Payload, Elem(i)]}` — would
+    /// re-walk the `sum-payload(s)` prefix per element. Before emitting such an arm body, the shared
+    /// prefix is computed ONCE into a slot and recorded here keyed by `(scrutinee-id, prefix step count)`;
+    /// the `Core::SumPayload` emit then reads the slot + walks only the SUFFIX. Populated ONLY at an arm-
+    /// body top (a save/restore fences it to that arm), and ONLY for a prefix whose shared extensions are
+    /// all BORROWING `Elem` reads — sound because `op_sum-payload` is TOTAL (never traps) and BORROWING (no
+    /// refcount change), so computing it once when the arm is entered matches per-element re-walks exactly.
+    payload_prefix_slots: HashMap<(StructId, usize), u32>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -2482,6 +2491,163 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         // A variant with binders/patterns or an unanalyzed shape yields no searchable children.
         _ => vec![],
     }
+}
+
+// ── SHARED SUM-PAYLOAD-PREFIX CSE (per-arm-body) ──────────────────────────────────────────────────
+//
+// A match arm reading MULTIPLE elements of one payload tuple — `(Node (tuple l r))` binds `l` =
+// `SumPayload{s, [Payload, Elem(0)]}` and `r` = `SumPayload{s, [Payload, Elem(1)]}` — re-walks the shared
+// `sum-payload(s)` PREFIX per element (the two nodes are not `core_eq`, so the value-numbering CSE does not
+// share them; only their prefix is common, and a prefix is a sub-PATH, not a `Core` node). This is the
+// canonical AST-walker / linked-list-fold shape (`(Cons (tuple h t))`, `(Node (tuple l r))`).
+//
+// Fix: before emitting an arm body, compute each such shared prefix ONCE into a slot and record it (keyed
+// by `(scrutinee-id, prefix step count)`); the `Core::SumPayload` emit then reads the slot and walks only
+// the SUFFIX. SOUND: `op_sum_payload` is TOTAL (never traps — a mismatched node yields NULL, not a trap)
+// and BORROWING (returns a handle from `handles.first()` with NO refcount change), so materializing it at
+// the arm-body top is trap- and refcount-equivalent to the per-element re-walks, regardless of any control
+// flow inside the arm body. Restricted to a prefix ending in `Payload` and shared by ≥2 `SumPayload` nodes
+// that extend it with a BORROWING `Elem` step (an `arr-get`/`vec-get`, not a `RestFrom` `vec-drop`, which
+// consumes) — so the materialized handle is only ever borrowed, never consumed.
+
+/// Collect the shared SUM-PAYLOAD PREFIXES of `body` worth materializing: each returned
+/// `(scrutinee, prefix)` is a path ending in `Payload` that ≥2 distinct `SumPayload` nodes in `body`
+/// extend with a further `Elem` step (so both re-walk `<scrutinee>…prefix`). Walks the whole body
+/// (through control flow — the arm body may nest `if`/`match`); groups by `(scrutinee, prefix)`.
+fn collect_sum_payload_prefixes(
+    db: &mut Db,
+    body: StructId,
+) -> Vec<(StructId, Vec<crate::core::PathStep>)> {
+    // Every distinct SumPayload node in the body, as (scrutinee, path).
+    let mut seen: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    let mut payloads: Vec<(StructId, Vec<crate::core::PathStep>)> = Vec::new();
+    fn walk(
+        db: &mut Db,
+        id: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        payloads: &mut Vec<(StructId, Vec<crate::core::PathStep>)>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        if let Core::SumPayload { scrutinee, path } = core_of(db, id) {
+            payloads.push((scrutinee, path));
+        }
+        for child in licm_children(db, id) {
+            walk(db, child, seen, payloads);
+        }
+    }
+    walk(db, body, &mut seen, &mut payloads);
+    // Tally each PREFIX (a path truncated after a `Payload` step) by how many payload nodes extend it with
+    // a following `Elem`. `(scrutinee, prefix)` with a count ≥2 is a shared prefix worth hoisting.
+    let mut counts: HashMap<(StructId, usize), usize> = HashMap::new();
+    let mut key_path: HashMap<(StructId, usize), (StructId, Vec<crate::core::PathStep>)> =
+        HashMap::new();
+    for (scrutinee, path) in &payloads {
+        // Consider every prefix `path[..k]` that ENDS in `Payload` and is FOLLOWED by an `Elem` (a
+        // borrowing read). `RestFrom` never appears mid-path (it is a sole step), so a followed step is
+        // always `Elem`/`Payload`; require `Elem` so the materialized prefix handle is only borrowed.
+        for k in 1..path.len() {
+            if matches!(path[k - 1], crate::core::PathStep::Payload)
+                && matches!(path[k], crate::core::PathStep::Elem(_))
+            {
+                let key = (*scrutinee, k);
+                *counts.entry(key).or_insert(0) += 1;
+                key_path
+                    .entry(key)
+                    .or_insert_with(|| (*scrutinee, path[..k].to_vec()));
+            }
+        }
+    }
+    // The shared prefixes, unordered (the caller `materialize_payload_prefixes` sorts them shortest-first
+    // so a nested prefix's walk can read a shorter already-materialized one).
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .filter_map(|(key, _)| key_path.remove(&key))
+        .collect()
+}
+
+/// Materialize the shared SUM-PAYLOAD prefixes of an arm `body` into fresh slots (a per-arm-body CSE) and
+/// register them in `out.payload_prefix_slots` keyed by `(scrutinee, prefix step count)`. Each prefix is
+/// emitted ONCE (`<scrutinee> …prefix` — reusing a shorter already-registered prefix via the `SumPayload`
+/// emit's fast path, since shorter prefixes are materialized first) and stored into its slot. Returns the
+/// keys registered so the caller can REMOVE them after the arm body — fencing the slots to this arm so a
+/// sibling arm never reads a payload its own scrutinee value did not produce. Slots are claimed from
+/// `*high` upward (never `base`), so the arm body (which emits above `*high`) never clashes with them.
+#[allow(clippy::too_many_arguments)]
+fn materialize_payload_prefixes(
+    db: &mut Db,
+    body: StructId,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    slots: &HashMap<StructId, u32>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<Vec<(StructId, usize)>, Reject> {
+    let mut prefixes = collect_sum_payload_prefixes(db, body);
+    if prefixes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // SHORTEST-first: a longer prefix's own walk then reads a shorter already-slotted prefix (the emit's
+    // longest-matching-prefix fast path), so a nested payload chain materializes each level once.
+    prefixes.sort_by_key(|(_, p)| p.len());
+    let mut keys = Vec::new();
+    for (scrutinee, prefix) in prefixes {
+        let slot = *high;
+        *high = slot + 1;
+        scratch_ty.insert(slot, ValType::I32); // a payload handle is an i32
+        // Emit the prefix as a BARE HANDLE WALK — `<start> …steps` with NO trailing unbox (`get_op`); a
+        // prefix ends in `Payload`, so its value is a tuple/record HANDLE, used as-is. Start from the
+        // longest ALREADY-registered shorter prefix if one exists (shortest-first order guarantees it is
+        // materialized), else from the scrutinee. Only `Payload`/`Elem` steps appear in a prefix (a
+        // `RestFrom` is a sole step, never followed → never in a prefix), and every `Elem` here is an
+        // `arr-get` (a payload tuple, not a list — a list element would be a lone `Elem` off a list
+        // scrutinee, not under a `Payload`).
+        let start = (0..prefix.len())
+            .rev()
+            .find(|&k| out.payload_prefix_slots.contains_key(&(scrutinee, k)))
+            .map(|k| (k, out.payload_prefix_slots[&(scrutinee, k)]));
+        let from = if let Some((k, s)) = start {
+            out.push(Lir::LocalGet(s)); // [handle] — the shorter shared prefix
+            k
+        } else {
+            emit(
+                db,
+                scrutinee,
+                slots,
+                slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?; // [handle]
+            0
+        };
+        for step in &prefix[from..] {
+            match step {
+                crate::core::PathStep::Payload => {
+                    out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                }
+                crate::core::PathStep::Elem(i) => {
+                    out.push(Lir::ConstI32(*i as i32));
+                    out.push(Lir::CallImport(OP_ARR_GET));
+                }
+                crate::core::PathStep::RestFrom(_) => {
+                    return Err(Reject::decline(
+                        "a payload prefix cannot contain a RestFrom step",
+                    ));
+                }
+            }
+        }
+        out.push(Lir::LocalSet(slot));
+        let key = (scrutinee, prefix.len());
+        out.payload_prefix_slots.insert(key, slot);
+        keys.push(key);
+    }
+    let _ = base;
+    Ok(keys)
 }
 
 // ── STRAIGHT-LINE COMMON-SUBEXPRESSION ELIMINATION (CSE) ──────────────────────────────────────────
@@ -5315,12 +5481,32 @@ fn emit(
         // node's solved type. A single `[Payload]` path is the flat `(Some x)` case; `[Payload, Payload]`
         // is the nested `(Some (Some y))` binder.
         Core::SumPayload { scrutinee, path } => {
+            // SHARED-PREFIX FAST PATH: if a proper prefix of this path (ending in `Payload`) was
+            // materialized into a slot for this arm body (`collect_sum_payload_prefixes` +
+            // `emit_sum_cont`), start from that slot's payload handle and walk only the SUFFIX — instead of
+            // re-emitting `<scrutinee> …prefix`. The prefix ends in `Payload`, so the slotted value is a
+            // payload handle (`cur = Ty::Any`). Take the LONGEST matching slotted prefix. Only prefixes
+            // whose shared extensions are borrowing `Elem` reads are ever recorded (see the collector), so
+            // the slot holds a borrowed handle this suffix walk only reads.
+            let prefix_hit = (0..path.len())
+                .rev()
+                .find(|&k| out.payload_prefix_slots.contains_key(&(scrutinee, k)))
+                .map(|k| (k, out.payload_prefix_slots[&(scrutinee, k)]));
             // A step's array read depends on the CURRENT sub-value's kind: a tuple/record/sum-payload is a
             // flat `arr` (`arr-get`), but a `List` is an RRB `vec` (`vec-get`), and a list REST binder
             // slices the tail with `vec-split`. Track the sub-value type as the walk descends.
-            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
-            let mut cur = type_of(db, scrutinee);
-            for step in &path {
+            let walk_from;
+            let mut cur;
+            if let Some((k, slot)) = prefix_hit {
+                out.push(Lir::LocalGet(slot)); // [payload-handle] — the shared prefix, computed once
+                walk_from = k;
+                cur = Ty::Any; // a `Payload` step's result handle
+            } else {
+                emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+                walk_from = 0;
+                cur = type_of(db, scrutinee);
+            }
+            for step in &path[walk_from..] {
                 match step {
                     crate::core::PathStep::Payload => {
                         out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
@@ -8066,11 +8252,25 @@ fn emit_sum_cont(
 ) -> Result<(), Reject> {
     match cont {
         crate::core::SumCont::Leaf(body) => {
+            // SHARED SUM-PAYLOAD-PREFIX CSE: if this arm body reads ≥2 elements off the same payload tuple
+            // (`(Node (tuple l r))`), compute the shared `sum-payload` prefix ONCE into a slot here and
+            // register it so each element's `SumPayload` emit reads the slot + walks only its suffix. The
+            // slots are fenced to THIS arm body (removed after), so a sibling arm never reads a prefix that
+            // its own scrutinee value did not populate.
+            let prefix_keys = materialize_payload_prefixes(
+                db, *body, base, high, scratch_ty, slots, layout, out,
+            )?;
             // A bare-`ConstInt` leaf grounds to the result width (never a tail call); otherwise the body is
             // emitted at the ambient `tail` position — in a tail match a self-tail-call in the body loops.
-            emit_arm_body(
-                db, *body, result_it, slots, base, high, scratch_ty, layout, out, tail,
-            )
+            // The arm body emits ABOVE the reserved prefix slots (the base advanced by `materialize_*`).
+            let arm_base = (*high).max(base);
+            let r = emit_arm_body(
+                db, *body, result_it, slots, arm_base, high, scratch_ty, layout, out, tail,
+            );
+            for key in prefix_keys {
+                out.payload_prefix_slots.remove(&key);
+            }
+            r
         }
         // A GUARDED arm: `if cond then body else <els>`. The guard cond is a boolean (an i32); each of the
         // body and the fall-through `els` produces the match's result type (`block_ty`), grounding a
@@ -12409,6 +12609,47 @@ mod tests {
         assert!(
             !f.code.contains(&Lir::Select),
             "a payload-reading Option arm keeps the if (no speculative select): {:?}",
+            f.code
+        );
+    }
+
+    // (corpus companion: `05-compound-types.sexp` "a match arm reading two elements of a boxed payload
+    // tuple shares the sum-payload prefix" pins the runtime tree/list fold value with the prefix CSE.)
+    #[test]
+    fn a_match_arm_reading_two_payload_elements_computes_the_prefix_once() {
+        // A `(Pair (tuple a b))` arm binds `a` = SumPayload{p, [Payload, Elem(0)]} and `b` = SumPayload{p,
+        // [Payload, Elem(1)]}. Both re-walk the shared `sum-payload(p)` prefix — the per-arm-body prefix
+        // CSE computes it ONCE into a slot, so the arm reads BOTH elements off the one `sum-payload` via
+        // `arr-get`. Non-recursive so `select_function_of` needs no cross-function emission order. `sum`
+        // reads a and b: exactly ONE `sum-payload` (the shared prefix) + TWO `arr-get` (a and b).
+        // TWO variants so `Pair`'s payload is genuinely BOXED (a single-variant newtype erases the box,
+        // so there is no `sum-payload` prefix to share).
+        let ast = crate::testkit::parse(
+            "(module m (type P (Pair (Tuple Int64 Int64)) Nil) \
+               (def (sum (: p P)) (match p ((P.Pair (tuple a b)) (+ a b)) ((P.Nil) 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("sum").expect("sum");
+        let (params, body) = function_of(&mut db, "sum");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_PAYLOAD))
+                .count(),
+            1,
+            "the arm's shared payload prefix is computed ONCE (1 sum-payload, not 2): {:?}",
+            f.code
+        );
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_ARR_GET))
+                .count(),
+            2,
+            "the two tuple elements read via arr-get off the shared prefix: {:?}",
             f.code
         );
     }

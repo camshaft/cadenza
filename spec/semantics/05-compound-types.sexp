@@ -2025,6 +2025,27 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix"
+  (doc    "A binary-tree fold — the canonical AST-walker shape. `sum-tree` matches `(Tree.Node (tuple l
+           r))` and reads BOTH the left and right subtrees off the SAME boxed payload tuple, then recurses
+           on each. Both element reads share one `sum-payload(t)` walk (the compiler computes the payload
+           tuple handle once and reads element 0 and 1 off it, rather than re-walking the sum payload per
+           element). Built from a runtime argument so the tree is consumed at run time (not folded):
+           `build(5)` = Node(Node(Leaf 5, Leaf 10), Leaf 100), summing to 5+10+100 = 115. Pins that
+           sharing the payload prefix across two element binders preserves the value.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
+            (def (sum-tree (: t Tree))
+              (match t
+                ((Tree.Leaf v) v)
+                ((Tree.Node (tuple l r)) (+ (sum-tree l) (sum-tree r)))))
+            (def (build (: n Int64))
+              (Tree.Node (tuple (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 10))) (Tree.Leaf 100))))
+            (def (main (: x Int64)) (sum-tree (build x)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 115 Int64)))
+
 (case "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
   (doc    "A type is a VALUE, referenceable by name regardless of case — so a lowercase-named sum
            `(type mylist (Nil) (Cons Int64 mylist))` may SELF-REFERENCE `mylist` in its `Cons` field, and
