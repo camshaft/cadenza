@@ -3247,6 +3247,13 @@ fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String
 /// first occurrence sets the type the rest must match). `None` when the two types are not the same
 /// structured kind or agree on every member. No mechanical fix (the repair is retyping a value the author
 /// supplies), matching the per-member hints it composes.
+///
+/// This is how a compound-type rejection names the MINIMAL conflict rather than an arbitrary casualty: it
+/// points at the one differing field / position / element axis (the constraint that actually failed),
+/// leaving the agreeing members out of the blame, instead of rendering two whole compound types that share
+/// most of their structure.
+//= spec/capabilities/type-system.md#a-type-rejection-reports-the-minimal-conflict-at-both-sites
+//# A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
 fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
     record_field_diff_hint(first, other)
         .or_else(|| tuple_arity_mismatch_hint(first, other))
