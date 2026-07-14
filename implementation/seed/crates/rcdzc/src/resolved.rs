@@ -423,6 +423,13 @@ pub enum Prim {
     /// variant FOLDS to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
     /// The message argument is a `String` (for a human), dropped by the pure core (the wasm trap is
     /// textless). ONE prim for both Option and Result — present is discriminant 0 in each.
+    ///
+    /// This IS the value-requiring operation a program uses to obtain the present value of a fallible
+    /// read's optional (a `List.at`/`Map.lookup` result): it carries a mandatory message argument, so the
+    /// boundary between handling absence as data (matching the `Option`) and halting on absence (this
+    /// `expect`) is explicit at the point the program crosses it, not hidden inside the access operation.
+    //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
+    //# A program that requires the present value of such an optional MUST obtain it through the optional's value-requiring operation carrying a mandatory message (core-semantics.md §"Requiring The Value Of An Optional Traps On Absence"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
     SumExpect,
     /// `trap` — the DIVERGING primitive: `∀a. String → a`, an expression that never produces a value but
     /// HALTS the program at a defined point (core-semantics.md §A Trap Occurs Only Where Its Computation

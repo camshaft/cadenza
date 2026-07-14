@@ -40,6 +40,13 @@ fn cdz_smith_never_panics() {
                 info.message.lines().next().unwrap_or(""),
                 program.source
             ),
+            // The compiler reported success but emitted wasm that doesn't validate — a backend
+            // miscompile. Also a bug: fail so the seed is saved as a crash artifact + shrunk.
+            Verdict::InvalidWasm { detail, .. } => panic!(
+                "compiler emitted INVALID wasm: {}\nprogram:\n{}",
+                detail.lines().next().unwrap_or(""),
+                program.source
+            ),
             // Everything else is expected output — not a finding.
             Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_) => {}
         }

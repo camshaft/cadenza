@@ -14162,16 +14162,14 @@ mod match_engine {
 
     #[test]
     fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
-        // `(Color 5)` / `(Option 5)` / `(Int64 5)` apply a TYPE name in call position. The head reduces to
+        // `(Option 5)` / `(Int64 5)` apply a TYPE name where a function was expected. The head reduces to
         // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
         // list — the no-keys-outside-the-prelude rule) and the message names the CATEGORY + where a type
-        // belongs: "`Color` is a type, not a function — a type appears in an annotation `(: value Color)`,
-        // not in call position". Covers a USER type (Color) and PRELUDE types (Option/Int64).
+        // belongs: "`Option` is a type, not a function — a type appears in an annotation `(: value Option)`,
+        // not in call position". `Option` (a GENERIC type, params > 0) and `Int64` (a prelude type with no
+        // sum/nominal decl) both take this generic message. A MONOMORPHIC USER SUM applied to arguments
+        // takes the more precise "takes no type parameters" message — see the sibling test below.
         for (src, name) in [
-            (
-                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
-                "Color",
-            ),
             ("(module m (def (main) (Option 5)) (export main))", "Option"),
             ("(module m (def (main) (Int64 5)) (export main))", "Int64"),
         ] {
@@ -14181,6 +14179,40 @@ mod match_engine {
                     .contains(&format!("`{name}` is a type, not a function"))
                     && d.message.contains("appears in an annotation"),
                 "names the type category + annotation position for {name}: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters() {
+        // The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) …)` is MONOMORPHIC
+        // (takes no type parameters). The reader parses `(T Int64)` as applying `T` to `Int64`; since `T`
+        // reduces to a type-value with ZERO declared params, the message names the exact fix — write `T`,
+        // not `(T …)` — rather than the generic "not in call position" (which reads wrong when the type is
+        // in annotation position, just over-applied). A user `(Color 5)` in value call position takes the
+        // same precise message (a nullary sum can't be applied to anything, and the fix is the same). A
+        // GENERIC sum given args is a different (correct) path; a prelude scalar like `Int64` has no decl
+        // and keeps the generic message (the sibling test above).
+        for (src, name) in [
+            (
+                "(module m (type T (Leaf Int64) (Node Int64)) \
+                   (def (f (: t (T Int64))) (match t ((T.Leaf n) n) ((T.Node n) n))) \
+                   (def (main) (f (T.Leaf 5))) (export main))",
+                "T",
+            ),
+            (
+                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
+                "Color",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
+            assert!(
+                d.message
+                    .contains(&format!("`{name}` is a type that takes no type parameters"))
+                    && d.message
+                        .contains(&format!("write `{name}`, not `({name} …)`")),
+                "names the no-type-parameters fix for {name}: {}",
                 d.message
             );
         }
@@ -21800,6 +21832,39 @@ mod diagnostics {
             "no spurious suggestion for a far typo: {}",
             far.message
         );
+
+        // A BARE (unqualified) pattern head `((Alph) …)` where `Alph` is not a variant resolves as an
+        // UNBOUND NAME (CDZ0101), not a member "no field" — but the scrutinee's sum still gives the
+        // candidate set, so it ALSO suggests the nearest variant + carries the replace fix (the bare twin
+        // of the qualified case above). A far bare typo keeps the plain "unbound name" with no suggestion.
+        let bare = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Alph) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            bare.code.as_deref(),
+            Some("CDZ0101"),
+            "got: {}",
+            bare.message
+        );
+        assert!(
+            bare.message.contains("`Alph`") && bare.message.contains("did you mean `Alpha`?"),
+            "a bare non-variant pattern head suggests the nearest variant: {}",
+            bare.message
+        );
+        assert_eq!(
+            bare.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Alpha"),
+            "the bare-head suggestion carries the replace fix: {}",
+            bare.message
+        );
+        let bare_far = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Zzz) 1) (_ 2))) (export main))",
+        );
+        assert!(
+            !bare_far.message.contains("did you mean"),
+            "no spurious suggestion for a far bare typo: {}",
+            bare_far.message
+        );
     }
 
     #[test]
@@ -23521,17 +23586,53 @@ mod stage1 {
     }
 
     #[test]
-    fn a_field_with_no_close_match_carries_no_suggestion() {
-        // No field is within the edit-distance cutoff of `zzzzzz` — the plain "no field" message, no
-        // misleading fix.
+    fn a_field_with_no_close_match_lists_the_available_fields() {
+        // No field is within the edit-distance cutoff of `zzzzzz` — so instead of a CONFIDENT "did you
+        // mean?" (which would be a baseless guess) OR a bare dead-end "no field" message, the diagnostic
+        // LISTS the record's actual fields ("closest matches: `height`, `width`") — rustc's "available
+        // fields are: …". A record/module is a CLOSED, small field set, so listing them is signal an agent
+        // acts on (it no longer has to read the type/prelude to learn what exists), not noise. No FIX (a
+        // list of options is not one mechanical edit) and no false "did you mean" (there is no near typo).
         let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
             !d.message.contains("did you mean"),
-            "no suggestion: {}",
+            "no confident single suggestion (nothing is a plausible typo): {}",
             d.message
         );
-        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+        assert!(
+            d.message.contains("closest matches:")
+                && d.message.contains("`height`")
+                && d.message.contains("`width`"),
+            "lists the available fields: {}",
+            d.message
+        );
+        assert!(
+            d.fix.is_none(),
+            "no fix carried for a list of options: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
+    fn an_unknown_module_operation_lists_the_available_operations() {
+        // The flagship "match the Rust bar" case: `((. List get) …)` — `List` has no `get` operation
+        // (it is `at`) and `get` is too far to be a confident typo, so the diagnostic LISTS the closest
+        // real operations. Before, an agent got only "record has no field `get`" and had to read the
+        // prelude to discover the real names; now the fix route is in the message itself. A prelude module
+        // IS a record of operations, so this rides the same `no_field_reject` a user-record field takes.
+        let d = expect_error("(. List get)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("closest matches:") && d.message.contains("`at`"),
+            "lists the real List operations (incl. `at`): {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("did you mean"),
+            "`get` is too far from any op for a confident single: {}",
+            d.message
+        );
     }
 
     #[test]

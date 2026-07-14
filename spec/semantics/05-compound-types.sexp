@@ -1027,6 +1027,50 @@
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
 
+(case "a map with a user-sum VALUE looks up and matches the stored variant"
+  (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
+           1, `Map.lookup 1` returns `(Option.Some (C.R))`, and the nested match deconstructs the stored
+           sum → 0 (the `C.R` arm). Pins that a sum value composes as a map value: it is stored, retrieved
+           through the `Option` lookup result, and matched — the collection carries the sum's heap value
+           unchanged. The sum companion of the scalar-valued map cases.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (R) (G))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty 1 (C.R)) 1)
+                ((Option.Some c) (match c ((C.R) 0) ((C.G) 1)))
+                ((Option.None) -1)))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a map KEYED by a user sum looks up by the variant"
+  (doc    "A user sum used as a Map KEY — `(Map.insert Map.empty (C.R) 42)` keys the entry by the variant
+           `C.R`, and `(Map.lookup … (C.R))` finds it by structural key equality (the same equality that
+           deconstructs a sum), yielding `(Option.Some 42)` → 42. Pins that a sum value is a well-formed
+           map key: it hashes/compares by its canonical structure, so two equal variants address the same
+           entry. The key companion of the sum-value case above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (R) (G))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty (C.R) 42) (C.R))
+                ((Option.Some v) v)
+                ((Option.None) -1)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a set of user-sum elements tests membership by variant"
+  (doc    "A user sum used as a Set ELEMENT — `(Set.of (list (C.R) (C.G)))` holds the two variants, and
+           `(Set.contains … (C.G))` is true by the same structural equality a sum match uses. Pins that a
+           sum value is a well-formed set element (membership is total, never a trap), the set companion of
+           the map key/value cases. Returns 1 when the queried variant is present.")
+  (needs  sets)
+  (input  (do
+            (type C (R) (G) (B))
+            (def (main) (if (Set.contains (Set.of (list (C.R) (C.G))) (C.G)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
            the host boundary. The value-encode walker already recurses over the nested-list element

@@ -182,9 +182,10 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
     match driver::run(&cfg) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] done: {} programs | {} crashes ({} new buckets, {} dup hits) | {} timeouts",
+                "[cdz-smith] done: {} programs | {} crashes, {} invalid-wasm ({} new buckets, {} dup hits) | {} timeouts",
                 stats.total(),
                 stats.crashes,
+                stats.invalid_wasm,
                 stats.new_buckets,
                 stats.duplicate_hits,
                 stats.timeouts
@@ -289,6 +290,16 @@ fn report(v: &Verdict) -> ExitCode {
                 "CRASH — a bug\n  site:    {}\n  message: {}",
                 info.site.as_deref().unwrap_or("<unknown>"),
                 info.message.lines().next().unwrap_or("")
+            );
+            ExitCode::from(1)
+        }
+        Verdict::InvalidWasm {
+            detail,
+            component_len,
+        } => {
+            println!(
+                "INVALID WASM — a backend miscompile\n  component: {component_len} bytes\n  validator: {}",
+                detail.lines().next().unwrap_or("")
             );
             ExitCode::from(1)
         }

@@ -4,9 +4,10 @@
 //! `Diagnostic` (a coded rejection) or an uncoded decline, and `compile_component` never returns a
 //! `Result::Err` by panicking — it returns the error. So the oracle is sharp:
 //!
-//! * `Ok(component)`         → [`Verdict::Compiled`]   (not a bug)
-//! * `Err(diagnostic)`       → [`Verdict::Declined`]   (not a bug — expected output)
-//! * an unwinding **panic**  → [`Verdict::Crash`]      (**a bug**)
+//! * `Ok(component)` that VALIDATES → [`Verdict::Compiled`]   (not a bug)
+//! * `Ok(component)` that FAILS to validate → [`Verdict::InvalidWasm`] (**a bug — a miscompile**)
+//! * `Err(diagnostic)`              → [`Verdict::Declined`]   (not a bug — expected output)
+//! * an unwinding **panic**         → [`Verdict::Crash`]      (**a bug**)
 //!
 //! A panic means an internal invariant (`.unwrap()` / `.expect(` / `unreachable!` / `panic!` / an
 //! index or overflow) fired — the compiler is never supposed to do that on any input. We catch it
@@ -16,15 +17,23 @@
 //! stack means a deep-but-finite recursion hits the semantic depth limit and DECLINES rather than
 //! overflowing, so a legitimately deep program is not a false crash.
 //!
+//! **Wasm-output validation.** A compile that returns `Ok` only means the backend didn't panic — it
+//! says nothing about whether the emitted component is well-formed. We therefore run every emitted
+//! component through `wasmparser`'s component validator (the SAME `WasmFeatures::all()` check
+//! rcdzc's own tests assert emitted components pass). A component that fails to validate is a
+//! **backend miscompile** — the compiler produced structurally-invalid wasm and reported success.
+//! This catches an entire bug class the crash/hang oracle is blind to, with no execution required.
+//!
 //! Timeouts (a runaway loop in the compiler) can't be caught by `catch_unwind` — unwinding never
 //! begins. Those are the driver's job: it runs a suspect program in a subprocess under a wall-clock
-//! budget ([`crate::driver`]). This module is purely the in-process crash oracle.
+//! budget ([`crate::driver`]). This module is purely the in-process compile oracle.
 //!
 //! ## Differential oracle (planned)
 //!
-//! A second oracle will compile a program to two backends (`Target::Wasm` and `Target::Rust`), run
-//! both, and compare the canonical result strings; a disagreement is a miscompile. That needs the
-//! wasmtime host + `rustc`, so it lives behind the subprocess path, layered on later.
+//! A further oracle will compile a program to two backends (`Target::Wasm` and `Target::Rust`), run
+//! both, and compare the canonical result strings; a disagreement is a miscompile of a DIFFERENT
+//! kind (valid wasm, wrong value). That needs the wasmtime host + `rustc`, so it lives behind the
+//! subprocess path, layered on later.
 
 use std::any::Any;
 use std::backtrace::Backtrace;
@@ -49,6 +58,13 @@ pub enum Verdict {
     /// parseable text); surfaced separately so the driver can count it as a generator-quality
     /// signal rather than a crash.
     ParseError(String),
+    /// The compiler reported success but the emitted component FAILED wasm validation. **A bug** —
+    /// a backend miscompile that produced structurally-invalid wasm. `detail` is the validator's
+    /// error (used for dedup + the triage note).
+    InvalidWasm {
+        detail: String,
+        component_len: usize,
+    },
     /// A panic escaped the compile path. **A bug.**
     Crash(CrashInfo),
 }
@@ -69,10 +85,21 @@ pub struct CrashInfo {
 }
 
 impl Verdict {
-    /// True iff this verdict is a filable finding (a crash — timeouts are produced by the driver).
+    /// True iff this verdict is a filable finding (a crash or invalid-wasm miscompile — timeouts are
+    /// produced by the driver).
     pub fn is_finding(&self) -> bool {
-        matches!(self, Verdict::Crash(_))
+        matches!(self, Verdict::Crash(_) | Verdict::InvalidWasm { .. })
     }
+}
+
+/// Validate an emitted component the way rcdzc's own tests do — `WasmFeatures::all()`, whole-module.
+/// `Ok(())` = well-formed; `Err(msg)` = the validator's rejection (a backend miscompile).
+pub fn validate_component(bytes: &[u8]) -> Result<(), String> {
+    let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    validator
+        .validate_all(bytes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 // ── panic capture ───────────────────────────────────────────────────────────────────────────
@@ -149,8 +176,15 @@ pub fn compile_catching(source: &str) -> Verdict {
     let result = panic::catch_unwind(AssertUnwindSafe(|| rcdzc::compile_component(&bytes)));
 
     match result {
-        Ok(Ok(component)) => Verdict::Compiled {
-            component_len: component.len(),
+        Ok(Ok(component)) => match validate_component(&component) {
+            Ok(()) => Verdict::Compiled {
+                component_len: component.len(),
+            },
+            // Compiled "successfully" but the bytes don't validate — a backend miscompile.
+            Err(detail) => Verdict::InvalidWasm {
+                detail,
+                component_len: component.len(),
+            },
         },
         Ok(Err(diag)) => Verdict::Declined {
             code: diag.code.clone(),
@@ -187,6 +221,24 @@ mod tests {
             Verdict::Compiled { .. } => {}
             other => panic!("expected Compiled, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_real_compile_produces_validating_wasm() {
+        // A genuinely-compiling program must reach Compiled (validation passed) — i.e. the compiler
+        // emits well-formed wasm, so validation does NOT spuriously flag good output.
+        let v = compile_catching("(do (def (main) (+ 1 2)) (export main))");
+        assert!(
+            matches!(v, Verdict::Compiled { .. }),
+            "expected Compiled, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn garbage_bytes_do_not_validate() {
+        // The validator rejects non-wasm — the mechanism behind the InvalidWasm verdict works.
+        assert!(validate_component(b"not a wasm component").is_err());
+        assert!(validate_component(&[]).is_err());
     }
 
     #[test]
