@@ -88,6 +88,8 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 /// the one import that is NOT a host capability and never appears in this manifest.)
 //= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
 //# An import of the value-heap runtime interface MUST NOT be a host capability and MUST NOT appear in the manifest, so that reaching the runtime is an internal linkage the compiler controls rather than an effect that escapes to the host, and capability-safety stays auditable as "every import other than the one well-known runtime interface is a capability the manifest enumerates."
+//= spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error
+//# The compiler MUST determine a program's required capabilities from the operations its entrypoints actually reach and delegate, rather than from a separately-asserted list that could understate them.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The set of host operations a component imports MUST equal the set of capabilities its manifest enumerates.
 //= constitution.md#iv-no-ambient-authority

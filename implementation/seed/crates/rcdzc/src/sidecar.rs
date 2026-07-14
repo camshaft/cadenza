@@ -1169,13 +1169,15 @@ fn uses_of(db: &mut Db, name: &str) -> Vec<StructId> {
     // DECLARATION-SITE name occurrences are not uses. A def's signature name (`helper` in `(def
     // (helper) …)`) resolves to a `Ref` to its own body — but it is where the name is DECLARED, not a
     // reference to it — so exclude every def's signature-name head. (The body/synth target occurrences
-    // are already excluded below.)
-    let mut decl_sites: Vec<StructId> = Vec::new();
+    // are already excluded below.) A HASH SET, not a `Vec`: the per-node membership test below runs once
+    // per node, so an O(defs) linear `Vec::contains` made the whole walk O(nodes × defs) = O(N²) for a
+    // program with N defs (`cdz uses` over a wide module: ~84% self in this walk); the set is O(1).
+    let mut decl_sites: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for def in &db.defs {
         if let crate::ast::Struct::List(children) = db.ast.get(def.sig_occ)
             && let Some(&name_occ) = children.first()
         {
-            decl_sites.push(name_occ);
+            decl_sites.insert(name_occ);
         }
     }
 

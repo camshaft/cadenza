@@ -1425,6 +1425,32 @@ fn emit_closure_resource(
             ));
         }
     }
+    // A MAKE-TIME host call in the EXPORT BODY (not the lifted closure) — the build-time-delegated case
+    // `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`: `ask.ask` is discharged WHILE the delegation
+    // is in scope and the closure merely captures the plain result `v` (NOT an escape — the CDZ0406 scan
+    // above correctly left it alone). But the closure-resource emit path does not yet build the host-import
+    // boundary (`resource_escape_build` fixes `import_base` from runtime ops + resource intrinsics only, and
+    // `assemble_closure_resource` imports no `host` interface), so the make-time `Core::HostCall` would fall
+    // through to `select`'s internal "not in the host-import set" message (documented "a compiler bug").
+    // Decline HONESTLY instead, naming the feature — the closure-export host-import composition is a later
+    // increment (it needs the same host+runtime fusion `assemble_host_runtime` applied to the closure
+    // resource envelope). Scans the export body's make-time code for a discharged host call.
+    {
+        let mut make_time = Vec::new();
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            host::collect_host_imports(db, body, &mut make_time);
+        }
+        if let Some(h) = make_time.first() {
+            return Err(Reject::decline(format!(
+                "a closure export whose build-time code delegates a host effect ({}.{}) is not yet emitted \
+                 (the closure resource envelope does not import the host interface yet — a later \
+                 increment); the effect is discharged in scope and the closure captures only the plain \
+                 result, so this is valid, just unimplemented",
+                h.effect, h.op
+            )));
+        }
+    }
     // Boundary bytes (component valtypes) for the `call` method's ARGS — always aliased scalar widths (a
     // compound closure arg is the host→guest DECODE direction, not yet supported).
     let arg_bytes: Vec<u8> = arg_tys
@@ -3291,6 +3317,7 @@ fn emit_distinct_sig_roundtrip_resource(
         result_byte: u8,
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
+        ret_descriptor: Option<Vec<u8>>,
     }
     struct PlainS {
         def: usize,
@@ -3369,7 +3396,8 @@ fn emit_distinct_sig_roundtrip_resource(
             let ret_vt = valtype_of(&e.result)
                 .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
             // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (raw payload); a scalar
-            // takes its inline byte; a fixed-shape COMPOUND crosses as `list<u8>` carrying the value form.
+            // takes its inline byte; a fixed-shape COMPOUND crosses as `list<u8>` carrying the value form; a
+            // VARIABLE-LENGTH collection (List/Map/Set) crosses as `list<u8>` rendered via `value-encode`.
             let ret_is_bytes = matches!(
                 e.result.strip_nominal(),
                 crate::ty::Ty::Bytes | crate::ty::Ty::String
@@ -3379,7 +3407,21 @@ fn emit_distinct_sig_roundtrip_resource(
             } else {
                 crate::lower::runtime_value_form_template(e.result.strip_nominal())
             };
-            let result_byte = if ret_is_bytes || ret_template.is_some() {
+            let ret_descriptor = if ret_is_bytes
+                || ret_template.is_some()
+                || closure_boundary_byte(&e.result).is_some()
+            {
+                None
+            } else if matches!(
+                e.result.strip_nominal(),
+                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+            ) {
+                crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
+            } else {
+                None
+            };
+            let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some()
+            {
                 0 // unused by the list-returning paths; the consumer returns list<u8>
             } else {
                 closure_boundary_byte(&e.result)
@@ -3395,6 +3437,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 result_byte,
                 ret_is_bytes,
                 ret_template,
+                ret_descriptor,
             });
         }
     }
@@ -3425,6 +3468,7 @@ fn emit_distinct_sig_roundtrip_resource(
     let intrinsics = (2 * sigs.len()) as u32;
     let any_bytes = cons.iter().any(|c| c.ret_is_bytes);
     let any_compound = cons.iter().any(|c| c.ret_template.is_some());
+    let any_collection = cons.iter().any(|c| c.ret_descriptor.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -3438,6 +3482,19 @@ fn emit_distinct_sig_roundtrip_resource(
             // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
             // `get-bool` (int + nested `arr-get` already covered).
             used.insert("get-bool");
+        }
+        if any_collection {
+            // A collection consumer renders via `value-encode(rep, desc)` (build the descriptor Bytes + copy
+            // the doc out).
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -3490,16 +3547,17 @@ fn emit_distinct_sig_roundtrip_resource(
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
                 ret_template: c.ret_template.clone(),
-                // A COLLECTION result on the DISTINCT-SIG round-trip is a later widening; that path's
-                // consumer classification never builds a descriptor.
-                ret_descriptor: None,
+                ret_descriptor: c.ret_descriptor.clone(),
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
                 params: c.abi_params.clone(),
                 result_byte: c.result_byte,
-                // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
-                ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
+                // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound OR
+                // collection.
+                ret_is_bytes: c.ret_is_bytes
+                    || c.ret_template.is_some()
+                    || c.ret_descriptor.is_some(),
             });
         }
         ser_groups.push(serialize::RtSigGroup {
