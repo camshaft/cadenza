@@ -12354,6 +12354,42 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0202")
         );
+        // ACTIONABLE FIX (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix): the
+        // message says "unwrap the nominal", and for an ERASABLE SINGLE-VARIANT newtype the unwrap is the
+        // total, unambiguous `(match <it> ((<Variant> n) n))` — so it now carries that WRAP fix on the
+        // newtype operand. Wraps whichever operand IS the newtype, either order.
+        let d = reject_full(
+            "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= u 5)) (export f))",
+        )
+        .expect("newtype-vs-inner comparison rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0202"), "got: {}", d.message);
+        let fix = d.fix.as_ref().expect("the unwrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert!(
+            fix.replacement.contains("match") && fix.replacement.contains("((Mk n) n)"),
+            "the fix unwraps via a `(match … ((Mk n) n))`: {:?}",
+            fix.replacement
+        );
+        // The unwrap-applied program compiles (the unwrap is total for a single-variant newtype).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= (match u ((Mk n) n)) 5)) (export f))"
+            )))
+            .is_ok(),
+            "the suggested unwrap type-checks"
+        );
+        // NO FIX for a MULTI-variant sum vs a bare value — no single, unambiguous unwrap exists (and it is
+        // not an erasable newtype), so it stays the generic mismatch with no misleading unwrap.
+        let multi = reject_full(
+            "(module m (type W (A Int64) (B Int64)) (def (f (: w W)) (= w 5)) (export f))",
+        )
+        .expect("a multi-variant sum vs a bare value rejects");
+        assert!(
+            multi.fix.is_none(),
+            "a multi-variant sum offers no unwrap fix: {} fix={:?}",
+            multi.message,
+            multi.fix
+        );
     }
 
     #[test]

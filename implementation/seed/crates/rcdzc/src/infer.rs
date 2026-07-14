@@ -3846,6 +3846,24 @@ fn float_literal_retype_fix(
     Some(crate::diag::Fix::replace_heuristic(elem, format!("{n}.0")))
 }
 
+/// The sole variant NAME of an ERASABLE SINGLE-VARIANT NEWTYPE `ty` (a `Ty::Nominal` whose declaration
+/// has exactly one variant) — the constructor to UNWRAP it by, `(match v ((<Name> n) n))`. The INVERSE of
+/// `wrap_variant_for`: where that names the ctor to WRAP a bare value into a newtype, this names the ctor
+/// to UNWRAP a newtype back to its underlying value (the repair for a nominal-boundary comparison
+/// `(= u 5)` — unwrap `u` to compare the `Int64` inside). `None` unless `ty` is a nominal whose decl has
+/// EXACTLY ONE variant (a multi-variant sum has no single unwrap; a non-nominal has nothing to unwrap).
+fn newtype_unwrap_variant(db: &mut Db, ty: &Ty) -> Option<String> {
+    let decl = match ty {
+        Ty::Nominal { decl, .. } => *decl,
+        _ => return None,
+    };
+    let t = db.type_decl_by_occ(decl)?;
+    match t.variants.as_slice() {
+        [only] => Some(only.name.clone()),
+        _ => None,
+    }
+}
+
 /// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
 /// instantiation) agrees with `actual`, the variant's constructor NAME — the "try wrapping the
 /// expression in `Some`" suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
@@ -5861,7 +5879,7 @@ fn check_application(
         };
         if nominal_inner_vs(db, &a, &b) || nominal_inner_vs(db, &b, &a) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a newtype to its underlying type across the nominal boundary (CDZ0202)");
-            out.push(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::NominalMismatch,
                 format!(
                     "{} and {} are not comparable across the nominal boundary (unwrap the nominal to \
@@ -5869,7 +5887,26 @@ fn check_application(
                     a.render_name(),
                     b.render_name()
                 ),
-            ));
+            );
+            // The MECHANICAL unwrap: the newtype operand is `(match <it> ((<Variant> n) n))`, which strips
+            // the tag to the underlying value the other side is comparing against. Offer it when the
+            // newtype is an ERASABLE SINGLE-VARIANT one (its unwrap is total + unambiguous — one variant,
+            // one payload binder). Wrap whichever operand IS the newtype (`a` → `args[0]`, `b` → `args[1]`);
+            // if both are (a nominal-vs-nominal never reaches here, guarded above), prefer the first.
+            let unwrap_target = if nominal_inner_vs(db, &a, &b) {
+                newtype_unwrap_variant(db, &a).map(|v| (args[0], v))
+            } else {
+                newtype_unwrap_variant(db, &b).map(|v| (args[1], v))
+            };
+            if let Some((operand, variant)) = unwrap_target {
+                reject = reject.with_fix(Fix::wrap_heuristic(
+                    operand,
+                    "(match ",
+                    format!(" (({variant} n) n))"),
+                    format!("unwrap the nominal with `(match … (({variant} n) n))`"),
+                ));
+            }
+            out.push(reject);
             return;
         }
     }
