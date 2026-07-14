@@ -2274,6 +2274,21 @@
             (def (main) (sum (list 10 20 30))) (export main)))
   (output (: 60 Int64)))
 
+(case "a tail list fold reads its scrutinee handle from its own parameter slot"
+  (doc    "`(def (go (: xs (List Int64)) (: acc Int64)) (match xs ((list) acc) ((list h .. rest) (go rest (+
+           acc (* h 2))))))` — a tail-recursive head+rest fold over the list PARAMETER `xs`. The cons arm
+           reads the head `h` (`vec-get`, a BORROW) AND the rest `rest` (`vec-drop`, guarded by a `dup`)
+           off the SAME scrutinee handle, which is resident in its own parameter slot for the whole loop. The
+           compiler reads that slot DIRECTLY — no per-match copy of the handle into a scratch slot (the
+           reference discipline is unchanged: `emit(scrutinee)` is a borrowing `local.get`, and the arm's
+           `dup`-before-`vec-drop` keeps the owner reference intact). Value parity is the observable proof:
+           2*(1+2+3+4+5) = 30.")
+  (input  (do
+            (def (go (: xs (List Int64)) (: acc Int64))
+              (match xs ((list) acc) ((list h .. rest) (go rest (+ acc (* h 2))))))
+            (def (main) (go (list 1 2 3 4 5) 0)) (export main)))
+  (output (: 30 Int64)))
+
 (case "a two-arm list match with constant arms dispatches branchlessly on the length — empty"
   (doc    "`(def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1)))` — an empty-vs-nonempty
            list match with CONSTANT arm bodies (0, 1) is `(if (len == 0) 0 1)`, so the compiler dispatches

@@ -3486,29 +3486,9 @@ fn emit_tail(
                     }
                 },
             };
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
+            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+                db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
-            out.push(Lir::LocalSet(handle_slot));
-            let len_slot = *high;
-            *high = len_slot + 1;
-            scratch_ty.insert(len_slot, ValType::I32);
-            out.push(Lir::LocalGet(handle_slot));
-            out.push(Lir::CallImport(OP_VEC_LEN));
-            out.push(Lir::LocalSet(len_slot));
-            let mut arm_slots = slots.clone();
-            arm_slots.insert(scrutinee, handle_slot);
-            let arm_base = *high;
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -5962,29 +5942,9 @@ fn emit(
                     }
                 },
             };
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
+            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+                db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
-            out.push(Lir::LocalSet(handle_slot));
-            let len_slot = *high;
-            *high = len_slot + 1;
-            scratch_ty.insert(len_slot, ValType::I32);
-            out.push(Lir::LocalGet(handle_slot));
-            out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
-            out.push(Lir::LocalSet(len_slot));
-            let mut arm_slots = slots.clone();
-            arm_slots.insert(scrutinee, handle_slot);
-            let arm_base = *high;
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -7005,6 +6965,64 @@ fn reusable_handle_slot(
         Core::Param { binder } | Core::LocalRef { binder } => slots.get(&binder).copied(),
         _ => None,
     }
+}
+
+/// Prepare a `MatchList` scrutinee for its arm bodies: bind the list HANDLE to a slot the arms read
+/// (`arm_slots[scrutinee]`), compute the `vec-len` ONCE into a `len_slot` (the arms' length dispatch reads
+/// it), and return the scratch floor `arm_base` past both. Returns `(arm_slots, len_slot, arm_base)`.
+///
+/// HANDLE SLOT REUSE (mirrors `MatchSum`'s scrutinee discipline + the `List.at` reuse): a REUSABLE handle —
+/// a `Param` / kept `let`-`LocalRef` already resident in a stable slot — is read from its OWN slot; the arm
+/// bodies' element reads (`vec-get`, BORROWING) and the rest read (`vec-drop`, which `dup`s the handle
+/// before consuming — see the `SumPayload` `RestFrom` emit) keep that owner reference intact, so no copy is
+/// needed. `emit(scrutinee)` for such a handle is a plain borrowing `local.get`, so the previous
+/// copy-into-scratch was pure waste. A COMPUTED scrutinee (a call result, an `if`, a fresh construction) is
+/// evaluated ONCE into a fresh i32 slot as before (re-emitting it would recompute + its scratch would clash
+/// with the arm bodies').
+#[allow(clippy::too_many_arguments)]
+fn materialize_list_match_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    slots: &HashMap<StructId, u32>,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(HashMap<StructId, u32>, u32, u32), Reject> {
+    let (arm_slots, handle_slot) = match reusable_handle_slot(db, scrutinee, slots) {
+        // Resident handle: the arms read the owner slot directly; `slots` already maps the binder there,
+        // so `emit(scrutinee)` (a `Param`/`LocalRef`) resolves to it. No copy, no fresh handle scratch.
+        Some(owner) => (slots.clone(), owner),
+        None => {
+            let handle_slot = *high;
+            *high = handle_slot + 1;
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                handle_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(handle_slot));
+            let mut m = slots.clone();
+            m.insert(scrutinee, handle_slot);
+            (m, handle_slot)
+        }
+    };
+    // The list length is a derived SCALAR read once into its own slot regardless (the length dispatch reads
+    // it per arm; recomputing `vec-len` per arm would be a repeated borrow).
+    let len_slot = *high;
+    *high = len_slot + 1;
+    scratch_ty.insert(len_slot, ValType::I32);
+    out.push(Lir::LocalGet(handle_slot));
+    out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
+    out.push(Lir::LocalSet(len_slot));
+    let arm_base = *high;
+    Ok((arm_slots, len_slot, arm_base))
 }
 
 /// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
@@ -11559,6 +11577,43 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
             "the bytes param slot 0 is never written (no handle copy); got {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_list_match_on_a_param_reads_the_scrutinee_slot_directly_no_handle_copy() {
+        // (def (hd (: xs (List Int64))) (match xs ((list) 0) ((list h .. rest) h))) — the scrutinee is a
+        // parameter, resident in slot 0. The match reads its handle for `vec-len` (length dispatch) and the
+        // arm bodies' element reads (`vec-get`, BORROW) + rest read (`vec-drop`, `dup`-guarded); all read
+        // slot 0 DIRECTLY — the handle is NOT copied into a scratch slot first (the c180 reuse, matching the
+        // `MatchSum`/`List.at` discipline). So the FIRST `vec-len` reads `LocalGet(0)`, and slot 0 is never
+        // written (a param — the reuse removes the would-be `local.set handle_slot` copy).
+        let ast = crate::testkit::parse(
+            "(module m (def (hd (: xs (List Int64))) (match xs ((list) 0) ((list h .. rest) h))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "hd");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The length dispatch's `vec-len` reads the scrutinee param slot 0 directly (no prior copy).
+        let vec_len_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_LEN))
+            .expect("a length-dispatch vec-len");
+        assert_eq!(
+            f.code[vec_len_pos - 1],
+            Lir::LocalGet(0),
+            "the list match's vec-len reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[..=vec_len_pos]
+        );
+        // The scrutinee param slot 0 is never written — the handle-copy `local.set` is gone.
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the scrutinee param slot 0 is never copied (no handle stash); got {:?}",
             f.code
         );
     }
