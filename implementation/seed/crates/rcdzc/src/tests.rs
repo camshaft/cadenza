@@ -40561,6 +40561,141 @@ mod closure_host_resource {
             .expect("closure-resource core module validates");
     }
 
+    /// BRICK B (compound closure ARG, DIRECT-CALL path): the production serializer's `call` rebuilds a
+    /// FLATTENED fixed-shape scalar tuple argument into the single value-heap CELL its lifted closure body
+    /// expects — `arr-alloc N` + per field (index, the flattened core param, box, `arr-set`) — then dispatches
+    /// `call_indirect`, and drops the rebuilt cell afterward (an owned per-call temporary). Models
+    /// `(def (mk) (fn (p) (+ (. p 0) (. p 1))))` whose closure arg `(Tuple Int64 Int64)` crosses the boundary
+    /// FLATTENED into two `s64` core params (`arg_vts = [I64, I64]`) — the `a_fixed_shape_tuple_closure_arg_
+    /// crosses_by_native_flattening` oracle proved that ABI runs. This pins the serializer's byte shape
+    /// (validated by `wasmparser`); the runnable end-to-end path wires this core into the tuple-typed
+    /// envelope (Brick C) + `emit_closure_resource` routing (Brick D). `TupleArgRebuild = None` is byte-
+    /// identical to the scalar path (the 53 closure tests above prove that).
+    #[test]
+    fn closure_tuple_arg_resource_core_rebuilds_the_cell_and_validates() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{
+            ClosureMake, TupleArgRebuild, multi_closure_resource_core_module_with_host_borrow,
+        };
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let tuple_ty = Ty::Tuple(vec![s64.clone(), s64.clone()].into());
+        // The closure is `(-> (Tuple Int64 Int64) Int64)`; the lifted body reads its arg (a tuple cell) via
+        // two projections. Imports (SORTED, as `collect_used_ops` produces): arr-alloc, arr-get, arr-set,
+        // box-int, drop, get-int. The `call` rebuild uses arr-alloc/box-int/arr-set/drop; the lifted body's
+        // projections use arr-get/get-int; the make cell build arr-alloc/box-int/arr-set.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `mk : () -> own<closure>` — build the 1-slot code cell (slot 0),
+        // returning the cell handle (no captures). Uses arr-alloc/box-int/arr-set.
+        let fn_ty = Ty::Fn(Box::new(tuple_ty.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, p: i32) -> i64` = `(. p 0) + (. p 1)` — two tuple
+        // projections over the REBUILT cell `call` hands it: arr-get(p,i) → get-int, added.
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I32], // env cell, the tuple arg cell
+            ret: s64.clone(),
+            code: vec![
+                Lir::LocalGet(1),
+                Lir::ConstI32(0),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::LocalGet(1),
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::I64Add,
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        let export = ExportPlan {
+            name: "mk".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        // The lifted lambda takes ONE param — the tuple cell (an i32 handle) — NOT the two flattened fields;
+        // the `call` wrapper does the reassembly, so the `call_indirect` functype is `(env i32, p i32) -> i64`.
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), tuple_ty.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        // The tuple `(Tuple Int64 Int64)` crosses FLATTENED as two s64 core params; each field boxes with
+        // `box-int` (which takes an i64). A 64-bit field's core param is ALREADY i64, so NO i32→i64 extend
+        // (`field_extend_signed = None`); the extend is only for a NARROW int field (an i32-width core param).
+        // The `call`'s boundary/core arg list is thus `[I64, I64]` (the flattened fields), NOT one i32 handle.
+        let rebuild = TupleArgRebuild {
+            field_box_ops: vec![Some("box-int"), Some("box-int")],
+            field_extend_signed: vec![None, None],
+        };
+        let core = multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64, ValType::I64], // the FLATTENED tuple fields
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(&rebuild),
+        )
+        .expect("tuple-arg closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("tuple-arg closure-resource core module validates");
+    }
+
     /// HOST-COMPOSED closure-resource core (`multi_closure_resource_core_module_with_host`): the build-time-
     /// delegated closure-capture shape — a closure export whose `make` body performs a host call
     /// (`(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`). Host ops are laid FIRST (core funcs `0..h`),
