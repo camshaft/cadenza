@@ -4668,6 +4668,35 @@ fn numeric_text_coercion_fix(
     None
 }
 
+/// The coercion [`Fix`] that repairs a BARE NUMBER passed where a QUANTITY is expected — a plain `Int`/
+/// `Float` `arg` against a `(Qty inner unit)` `expected` — by wrapping it in `(Qty.of <n> <unit>)` with the
+/// unit read from the EXPECTED quantity type (`Unit::render` is the re-parseable `(Unit.base #"…")`
+/// surface). This is the ARGUMENT-position twin of the dimensional-mismatch site's `Qty.of` wrap (which
+/// offers the same repair for `(+ q 5)`): the same "give the bare number the required unit" fix wherever a
+/// bare number meets a quantity. The bare number's INNER numeric type must match the quantity's inner type
+/// (`Qty.of` grounds the value but does not convert its numeric type — an `Int64` bare into an `(Qty Int64
+/// …)` param; a numeric mix would still fault after the wrap, so decline it and let the numeric-coercion
+/// path speak). HEURISTIC — the author may have meant the magnitude of an existing quantity, but supplying
+/// the required unit is the direct resolution. `None` unless `expected` is a `Qty` and `actual` a bare
+/// matching-inner scalar.
+fn qty_coercion_fix(expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let Ty::Qty { inner, unit } = expected else {
+        return None;
+    };
+    // The bare value must already be the quantity's inner numeric type — `Qty.of` grounds it to the unit,
+    // it does not also convert Int↔Float / widen (that would still mismatch after the wrap).
+    if !actual.agrees_with(inner) || matches!(actual, Ty::Qty { .. }) {
+        return None;
+    }
+    let unit_src = unit.render();
+    Some(Fix::wrap_heuristic(
+        arg,
+        "(Qty.of ",
+        format!(" {unit_src})"),
+        format!("give the number the required unit: `(Qty.of … {unit_src})`"),
+    ))
+}
+
 /// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
 /// an erasable newtype (so it stays an ordinary boxed `Ty::Sum`). A newtype is a SINGLE-variant sum
 /// whose runtime box is erased — the realization of `type-system.md §Nominal Is An Orthogonal Modifier`
@@ -8040,6 +8069,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ")",
                                 format!("wrap the value in `{variant}`"),
                             ));
+                        } else if let Some(fix) = qty_coercion_fix(&annot_ty, &value_ty, value) {
+                            // A bare number bound to a `(Qty …)`-annotated binder → wrap it in `(Qty.of …
+                            // <unit>)` with the unit from the annotation, the let-binder twin of the value/
+                            // argument `Qty.of` wrap.
+                            r = r.with_fix(fix);
                         }
                     }
                     out.push(r);
@@ -8980,6 +9014,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // A BARE NUMBER where a QUANTITY is annotated — `(: 5 (Qty Int64 meter))`, or a
+                            // bare `5` passed to a `(Qty …)` parameter — gets the `(Qty.of <n> <unit>)` wrap
+                            // (unit read from the EXPECTED quantity type), the annotation twin of the
+                            // dimensional-mismatch site's `Qty.of` wrap. The MECHANICAL fix is offered ONLY
+                            // for a CALL ARGUMENT (`is_call_arg`): its `expr` is the user-written argument
+                            // node, whose wrap payload the parse-based `fix_edits` builder splices cleanly. A
+                            // DIRECT value annotation `(: 5 (Qty …))` gets the TAIL only — its wrap payload
+                            // (carrying a nested `(Unit.base …)` surface) mis-splices the WRAP_HOLE into the
+                            // nested member access, so the fix is withheld there (message still points the way).
+                            let qty_fix = if wrap.is_none() && is_call_arg {
+                                qty_coercion_fix(&annot_ty, &expr_ty, expr)
+                            } else {
+                                None
+                            };
+                            let qty_tail = if wrap.is_none()
+                                && let Ty::Qty { inner, unit } = &annot_ty
+                                && expr_ty.agrees_with(inner)
+                                && !matches!(&expr_ty, Ty::Qty { .. })
+                            {
+                                format!(
+                                    " — give the number the required unit, e.g. `(Qty.of … {})`",
+                                    unit.render()
+                                )
+                            } else {
+                                String::new()
+                            };
                             // When NO conversion wrap bridges the mismatch, one common shape still has an
                             // actionable explanation: the value is an `(Option T)` used where its PAYLOAD
                             // `T` is expected — a fallible read (`List.at`, `String.at`) whose optional
@@ -9072,12 +9132,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(collection_tail.clone())
                                 .or(sum_tail.clone())
                                 .or(fn_sig_tail)
+                                .or((!qty_tail.is_empty()).then(|| qty_tail.clone()))
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
+                            } else if let Some(fix) = qty_fix {
+                                // A CALL ARGUMENT's bare-number→quantity `(Qty.of … <unit>)` wrap (built via
+                                // `qty_coercion_fix`, not the `wrap` tuple; the arg node splices cleanly).
+                                reject = reject.with_fix(fix);
                             } else if record_tail.is_some()
                                 || collection_tail.is_some()
                                 || sum_tail.is_some()
