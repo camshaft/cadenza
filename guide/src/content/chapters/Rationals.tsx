@@ -20,8 +20,9 @@ export default function Rationals() {
       </P>
       <Runnable source={`(Rational.of 1 2)`} />
       <P>
-        The result prints as <C>1/2</C>. A whole number is just a denominator of one — <C>Rational.of-int</C>{" "}
-        makes that explicit:
+        The value comes back as <C>1/2</C>, tagged with its type — <C>1/2 : Rational</C> in the conventional
+        surface, <C>(: 1/2 Rational)</C> in s-expressions. A whole number is just a denominator of one —{" "}
+        <C>Rational.of-int</C> makes that explicit:
       </P>
       <Runnable source={`(Rational.of-int 5)`} />
 
