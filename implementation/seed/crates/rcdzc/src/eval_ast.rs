@@ -35,10 +35,28 @@
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
-/// A pending eval rewrite: overwrite the `(eval …)` node's structure entry with `replacement`.
+/// A pending eval rewrite: overwrite the `(eval …)` node's structure entry with `replacement`, then blank
+/// the dead reified-argument wrapper nodes (`arg`'s subtree minus what the reconstruction still references).
 struct EvalPlan {
     eval: StructId,
+    arg: StructId,
     replacement: StructId,
+}
+
+/// Every node id reachable from `root` through the structure child lists (inclusive). Used to diff the
+/// dead reified-argument subtree against the live reconstruction so the dead wrapper nodes can be blanked.
+fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n.0) {
+            continue;
+        }
+        if let Struct::List(children) = ast.get(n) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    seen
 }
 
 /// Desugar every `(eval AST)` whose argument is a compile-time-visible `Ast` construction into the source
@@ -70,13 +88,49 @@ pub fn desugar_eval(ast: &mut Arenas) {
         if let Some(replacement) = reconstruct(ast, arg) {
             plans.push(EvalPlan {
                 eval: id,
+                arg,
                 replacement,
             });
         }
     }
-    for EvalPlan { eval, replacement } in plans {
+    for EvalPlan {
+        eval,
+        arg,
+        replacement,
+    } in plans
+    {
+        // The nodes the LIVE reconstruction references — the copy about to be written into `eval` shares
+        // them, so they must stay intact. Computed BEFORE the overwrite (the reconstruction root's subtree),
+        // and it includes any REUSED live splice operand (a let-bound name `,x`, a param) `reconstruct`
+        // carried over from the eval argument.
+        let live = reachable(ast, replacement);
+        // The dead reified-ARGUMENT wrapper subtree: every `(Ast.List …)`/`(Ast.Int …)`/`(list …)`/`(. Ast
+        // …)` node the eval's argument built (by `reify_quotes` or a hand-written `Ast.*`). Once the eval
+        // node is overwritten with the reconstructed source, this whole tree is unreachable EXCEPT for the
+        // live splice operands the reconstruction reused. Blank each dead wrapper: `parent_index` records
+        // the LAST (highest-id) parent per child, and a reified `(Ast.Int x)` wrapper (higher id than the
+        // eval node) would otherwise remain `x`'s recorded parent — an orphan whose own parent is `None`,
+        // so a scope walk from `x` dead-ends and a lexically-scoped `,x` resolves as a spurious "unbound
+        // name". Blanking the dead wrappers leaves the reconstruction (at the eval position) the sole parent
+        // of each shared splice operand, so it resolves against the eval's enclosing `let`/`def`.
+        for dead in reachable(ast, arg) {
+            if !live.contains(&dead) && dead != eval.0 {
+                ast.structure[dead as usize] = Struct::List(Vec::new());
+            }
+        }
+        // Overwrite the `(eval …)` node with a COPY of the reconstruction root's structure, so the eval's
+        // own `StructId` (and span) is preserved as the spliced-in form's node.
         let entry = ast.get(replacement).clone();
         ast.structure[eval.0 as usize] = entry;
+        // BLANK the reconstruction root when it is a FRESH appended node (a `push_*`-built compound) — it is
+        // now a duplicate of the copy written into `eval`, and (higher-id) would otherwise out-rank the eval
+        // copy as the shared children's parent (the same orphan hazard, mirrored from `reify_quotes`). A
+        // reconstruction returning an ORIGINAL node directly (id < original_len — the whole eval arg was a
+        // single `(Ast.Int <payload>)`, so `reconstruct` returns `payload` live) is the live spliced value,
+        // still reachable through the eval copy; the `live`-set diff above already kept it, so don't blank.
+        if replacement.0 >= original_len {
+            ast.structure[replacement.0 as usize] = Struct::List(Vec::new());
+        }
     }
 }
 
@@ -88,17 +142,19 @@ pub fn desugar_eval(ast: &mut Arenas) {
 /// AST")`: eval of a malformed AST is a runtime halt (`metaprogramming.md` §Eval Is Optional: "eval on
 /// malformed AST traps"), not a value.
 fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
-    // `(Ast.Int payload)` -> the integer payload verbatim. The head is the projection `(. Ast Int)`.
+    // `(Ast.Int payload)` -> the payload AS SOURCE. `Ast.Int` arises two ways, both reconstructing to the
+    // payload node itself: (a) a reified INTEGER LITERAL `(Ast.Int 42)` — payload is the literal `42`, whose
+    // source is `42`; (b) an ACTIVE-UNQUOTE lift `(Ast.Int <e>)` where `reify_active` wrapped the unquote's
+    // LIVE operand `<e>` (a name `,x`, a computed `,(+ 1 2)`) — its source is `<e>` itself. So unwrapping the
+    // `Ast.Int` back to `payload` reconstructs both: a splice of a compile-time-known VARIABLE or expression
+    // (the core macro idiom — `(eval `(+ ,x 4))` with `x`=3 → `(+ x 4)` → folds to 7) reconstructs like a
+    // literal splice, rather than leaving the `(eval …)` un-desugared (its head `eval` then a misleading
+    // "unbound name `eval`"). The payload node is REUSED live: for (b) it is the evaluated code, which must
+    // resolve against the `(eval …)`'s enclosing scope, so it is spliced in unchanged (not copied). The
+    // reconstructed source folds through the ordinary compile-time path; a payload that is NOT compile-time-
+    // known then declines/errors there as ordinary code would, not here.
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
-        // The payload must be an integer literal (a constant AST leaf); anything else is not reconstructable.
-        if matches!(ast.get(payload), Struct::Atom(l) if matches!(ast.leaf(*l), Leaf::Int { .. })) {
-            let leaf = match ast.get(payload) {
-                Struct::Atom(l) => ast.leaf(*l).clone(),
-                _ => unreachable!(),
-            };
-            return Some(push_atom(ast, leaf));
-        }
-        return None;
+        return Some(payload);
     }
     // `(Ast.Name payload)` -> the bare name the String payload spells. `Ast.Name` carries the identifier
     // as a String (the reifier turned a `Leaf::Name` into a `Leaf::Str`); reconstruction turns it back.
