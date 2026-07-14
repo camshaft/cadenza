@@ -5293,6 +5293,29 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 {
                     out.push(reject);
                 }
+                // VALIDATE the binder annotation TYPE itself — the let-binding analogue of
+                // `param_annotation_faults` (and the value-annotation / variant-payload / effect-op checks).
+                // `check_binding_pattern` above only checks the annotation AGREES with the value's type; an
+                // UNKNOWN annotation type (`(let (((: x Nonesuch) 5)) …)`) resolves to nothing and agrees
+                // vacuously, so it slipped through and typed `x` as `Any`. A garbage annotation type — an
+                // unbound name (→ CDZ0101, recursing into `(List Nonesuch)`), or a well-formed non-type (a
+                // literal `(: x 5)` → CDZ0203) — must be rejected here, exactly as a parameter annotation is.
+                if let Some(ann) = db.ast.as_form(lhs, ":").map(<[_]>::to_vec)
+                    && ann.len() == 2
+                    && crate::eval::typeval_of(db, ann[1]).is_none()
+                {
+                    let before = out.len();
+                    collect(db, ann[1], out);
+                    if out.len() == before {
+                        out.push(
+                            Reject::coded(
+                                Code::TypeMismatch,
+                                "a binder's annotation requires a type, but found a non-type",
+                            )
+                            .at(ann[1]),
+                        );
+                    }
+                }
                 collect(db, value, out);
             }
             collect(db, body, out);
