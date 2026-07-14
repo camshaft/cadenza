@@ -86,12 +86,12 @@ top. Current `src/` modules (each with same-file `@test`s — 102 tests total ac
   arrow decomposition, and an Int64-keyed compound-valued `Map`.
 
 - `src/decode.cdz` — reconstructs a recursive `Ast` from a flat byte buffer at RUN TIME (the stage
-  blocked since iteration 1). Now viable: the slot-alias bug's invalid-wasm face is fixed, and this
-  decoder threads its cursor SEPARATELY (a node's byte size is recomputed by `nsize`, so `buildc`
-  advances via `pos + nsize(…)` rather than projecting a `(tuple ast pos)` through a self-tail loop —
-  the shape that still miscompiles to a wrong value). Reconstructs the full tree STRUCTURE + every
-  Int/Bool leaf value EXACTLY (verified: nested lists, deep nesting, Int-value round-trip); Name/Str
-  leaf CONTENT is still a placeholder `""` (runtime `String.from-bytes` decline). 10 `@test`s.
+  blocked since iteration 1). Now fully viable: BOTH faces of the slot-alias/projected-sum family are
+  fixed, so a `(tuple ast pos)` may be threaded through a self-tail loop directly. This decoder still
+  threads its cursor SEPARATELY (a node's byte size is recomputed by `nsize`, so `buildc` advances via
+  `pos + nsize(…)`) — a valid alternative, no longer a work-around. Reconstructs the full tree STRUCTURE
+  + every Int/Bool leaf value EXACTLY (verified: nested lists, deep nesting, Int-value round-trip);
+  Name/Str leaf CONTENT is still a placeholder `""` (runtime `String.from-bytes` decline). 10 `@test`s.
 - `src/traverse.cdz` — higher-order combinators the prelude lacks: `map-list`/`filter-list`/`fold-list`
   over `Int64` lists, plus Ast traversals `count-where` (count nodes matching a predicate) and
   `int-total` (fold every Int leaf). Exercises closures passed to self-recursive HOFs (each fn param
@@ -269,18 +269,22 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   ✅ **PARTIALLY FIXED (2026-07-14): the INVALID-WASM face is GONE** — a sibling fixed the slot-typing so
   `miscompile-slot-alias-i32i64-loop-tupleproj.sexp`, `miscompile-if-tuple-sum-nontail-recursion.sexp`,
   and `miscompile-two-sibling-ifs-invalid-wasm.sexp` all now COMPILE to valid wasm AND return correct
-  values. ⚠ **the SILENT WRONG-VALUE face SURVIVES** — new sharpened repro
-  `repros/miscompile-tail-loop-projected-sum-wrong-value.sexp` (compiles clean, `main 0` returns 0 not
-  5). Re-bisected against the fixed compiler, the surviving trigger is: (1) a self-tail loop threading a
-  BOXED-SUM handle projected from a tuple (`(. r 0)`) as a param, (2) the loop ALSO advances position
-  from the OTHER projection of the SAME tuple (`(. r 1)`) — advancing via `(+ pos 1)` instead returns 5,
-  (3) an `if` inside the builder (branch need not be taken). **BROADER than the old framing:** the sum
-  need only be a SCALAR-payload boxed sum now (`Atom Int64 | Zero`) — a compound-payload variant is NOT
-  required for the wrong-value face (it WAS for the old invalid-wasm face). Controls (return 5): remove
-  the `if`; advance pos via `(+ pos 1)`; or thread a plain unboxed `Int64`. 🔑 **UNBLOCK for `decode`:**
-  since the invalid-wasm face is fixed and the wrong-value face needs BOTH-fields-projected, a decoder
-  that threads POSITION SEPARATELY (recompute the cursor, project only the value) now sidesteps this —
-  worth re-attempting the decode stage.
+  values. ✅ **the SILENT WRONG-VALUE face is now ALSO FIXED (2026-07-14, seed rcdzc)** — repro
+  `repros/miscompile-tail-loop-projected-sum-wrong-value.sexp` (`main 0` now returns 5). The surviving
+  trigger was: (1) a self-tail loop threading a BOXED-SUM handle projected from a tuple (`(. r 0)`) as a
+  param, (2) the loop ALSO advances position from the OTHER projection of the SAME tuple (`(. r 1)`) —
+  advancing via `(+ pos 1)` instead returned 5, (3) an `if` inside the builder (branch need not be
+  taken). **BROADER than the old framing:** the sum need only be a SCALAR-payload boxed sum
+  (`Atom Int64 | Zero`) — a compound-payload variant was NOT required. 🔬 **ROOT CAUSE was NOT
+  slot-aliasing** (that was the invalid-wasm sibling); it was a PERCEUS use-after-free in
+  `backend/wasm/select.rs` `binding_escapes`. `(. r 0)` projects a nested-compound child (the boxed sum)
+  OUT of the `let`-bound tuple and threads it into the recursive call; the escape analysis saw only the
+  SCALAR sibling projection `(. r 1)` (copies its i64 out), judged `r` fully borrowed, and DROPPED it —
+  cascading to FREE the escaped boxed-sum child → garbage 0. FIX: a nested-compound projection ESCAPES
+  its operand, so the aggregate is not reclaimed while its extracted child is live. Migrated to the
+  corpus (`spec/semantics/10-bytes.sexp`) + a seed unit test. 🔑 **`decode` is now fully UNBLOCKED** —
+  both faces of the family are fixed; a decoder may thread a `(node, cursor)` pair with both fields
+  projected directly, no work-around needed.
 
 **Confirmed WORKING (stress-swept 2026-07-14):** recursive sum types (build + fold, const + runtime),
 HOFs (fn args, closures capturing env, curried/partial application, recursive HOF), Map insert/lookup,

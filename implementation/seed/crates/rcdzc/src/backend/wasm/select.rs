@@ -326,11 +326,24 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // `Proj`, which `arr-get`-borrows). `tail_borrowed` is set by the `Proj` arm below for its
         // operand; every other occurrence (the result, a tuple element, a call arg) is consuming.
         Core::LocalRef { binder: b } => b == binder && !tail_borrowed,
-        // A projection BORROWS its operand — so a `LocalRef` directly under a `Proj` does not escape
-        // through it. Recurse with the borrow flag set for the operand. `List.len` (`vec-len`) reads its
-        // operand without consuming it — a borrow, like a projection.
-        Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
+        // A projection of a SCALAR element BORROWS its operand — `arr-get` then `get-int`/`get-bool` COPIES
+        // the value out, retaining nothing from the aggregate — so a `LocalRef` directly under such a `Proj`
+        // does not escape through it (recurse with the borrow flag). But a projection of a NESTED-COMPOUND
+        // element returns the CHILD HANDLE, a live reference INTO the aggregate that TRANSFERS OUT to the
+        // consumer (a call arg, a constructor element, or the return); if the aggregate were then dropped,
+        // that drop would cascade to free the extracted child — a use-after-free (the byte-decode `(let ((r
+        // (one …))) (loop … (. r 0)))` threading a boxed-sum `(. r 0)` into a param returned garbage). So a
+        // nested-compound projection ESCAPES its operand: the operand must NOT be reclaimed (its child left
+        // through the projection). Conservative — the aggregate's array + its other children leak rather
+        // than risk the UAF (the analysis's stated bias: a false "escapes" only leaks). `get_op(id)` is
+        // `Some` for a scalar element (borrow), `None` for a nested-compound (escape). `List.len`/`Bytes.len`
+        // (`vec-len`/`bytes-len`) read a scalar count — always a borrow.
+        Core::ListLen { operand } | Core::BytesLen { operand } => {
             binding_escapes(db, operand, binder, true)
+        }
+        Core::Proj { operand, .. } => {
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            binding_escapes(db, operand, binder, scalar_element)
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
@@ -916,7 +929,6 @@ pub fn collect_used_ops(
             // RECLAMATION (U13/U14): a projection off an OWNED-temporary aggregate reclaims it after the
             // borrowing read — mirror the emit's reclaim condition so the ops are imported. A SCALAR element
             // `drop`s the parent; a NESTED-COMPOUND element `dup`s the returned child then `drop`s the parent.
-            // (A borrowed-operand projection reclaims nothing, matching the emit.)
             if matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -5216,7 +5228,10 @@ fn emit(
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
             // A scalar element unboxes (`get-int`/`get-bool`, then a NARROW int narrows i64→i32); a
-            // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
+            // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is. (A
+            // nested-compound projection of a BORROWED aggregate is kept alive by the aggregate's owner not
+            // being dropped while the projection escapes — see `binding_escapes`'s nested-compound Proj arm,
+            // which treats such a projection as an ESCAPE of the operand so its owner is not reclaimed.)
             if let Some(op) = scalar_elem {
                 out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
                 if needs_get_int_narrow(db, id) {
