@@ -14739,6 +14739,17 @@ mod match_engine {
             "unsigned widens to UInt16: {}",
             u.message
         );
+        // A magnitude beyond every fixed width (past Int64/UInt64) retypes to BigInt — the unbounded
+        // integer type holds any value, so the widen fix continues past the fixed widths.
+        let huge =
+            reject_full("(module m (def (main) (: 99999999999999999999999 Int8)) (export main))")
+                .expect("a huge literal overflows Int8");
+        assert_eq!(
+            huge.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("BigInt"),
+            "a value past every fixed width retypes to BigInt: {}",
+            huge.message
+        );
     }
 
     #[test]
@@ -14766,14 +14777,17 @@ mod match_engine {
             "-200 needs Int16 (outside Int8's -128..=127): {}",
             big.message
         );
-        // A value too large for even Int64 has no signed width → the honest bare reject, no fix.
+        // A value too large for even Int64/UInt64 has no fixed aliased width → retype to `BigInt`, the
+        // UNBOUNDED integer type (which holds any magnitude), rather than the honest-but-dead-end bare
+        // reject. The retype clears the range fault and type-checks (a literal grounds to BigInt losslessly).
         let huge =
             reject_full("(module m (def (main) (: -99999999999999999999999 UInt8)) (export main))")
                 .expect("a huge negative does not fit UInt8");
-        assert!(
-            huge.fix.is_none(),
-            "no signed width holds a value beyond Int64: {:?}",
-            huge.fix
+        assert_eq!(
+            huge.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("BigInt"),
+            "a value beyond every fixed width retypes to BigInt: {}",
+            huge.message
         );
     }
 
