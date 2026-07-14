@@ -35,6 +35,11 @@ pub enum Format {
     /// a markdown document, it is data, not a program; it preserves duplicate/non-identifier keys, key
     /// order, heterogeneous arrays, and exact numbers rather than coercing to native `record`/`list`.
     Json,
+    /// The TOML surface: a source-faithful config document (`(toml-document …)`). Reads any TOML to a
+    /// decor-in-arena value document (comments, whitespace, and each scalar's raw spelling stored as
+    /// nodes) and prints it back BYTE-EXACT for an unmutated doc. Data, not a program; interconverts
+    /// with JSON.
+    Toml,
     /// A readable debug view of the arena structure as an indented TREE — OUTPUT ONLY (not a
     /// re-readable surface). Shows the raw shape the compiler sees, for inspecting a binary AST.
     Debug,
@@ -44,8 +49,8 @@ pub enum Format {
 }
 
 impl Format {
-    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `json`, `debug`,
-    /// `flat`). Case-insensitive.
+    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `json`, `toml`,
+    /// `debug`, `flat`). Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
@@ -53,6 +58,7 @@ impl Format {
             "ml" => Some(Format::Ml),
             "markdown" | "md" => Some(Format::Markdown),
             "json" => Some(Format::Json),
+            "toml" => Some(Format::Toml),
             "debug" => Some(Format::Debug),
             "flat" => Some(Format::Flat),
             _ => None,
@@ -66,15 +72,16 @@ impl Format {
             Format::Ml => "ml",
             Format::Markdown => "markdown",
             Format::Json => "json",
+            Format::Toml => "toml",
             Format::Debug => "debug",
             Format::Flat => "flat",
         }
     }
 
     /// Infer the surface format from a file path's extension: `.cdz`/`.ml` → ML, `.sexp`/`.sexpr` →
-    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown, `.json` → JSON. The output-only
-    /// `debug`/`flat` views have no extension. `None` if the path has no recognized extension (the
-    /// caller then requires an explicit format).
+    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown, `.json` → JSON, `.toml` → TOML.
+    /// The output-only `debug`/`flat` views have no extension. `None` if the path has no recognized
+    /// extension (the caller then requires an explicit format).
     pub fn from_extension(path: &str) -> Option<Format> {
         let ext = std::path::Path::new(path)
             .extension()?
@@ -86,6 +93,7 @@ impl Format {
             "bin" | "cdzb" => Some(Format::Binary),
             "md" | "markdown" => Some(Format::Markdown),
             "json" => Some(Format::Json),
+            "toml" => Some(Format::Toml),
             _ => None,
         }
     }
@@ -184,6 +192,16 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
                 ))
             })
         }
+        Format::Toml => {
+            // TOML can fail too — surface the parse error with its byte offset mapped to line:col.
+            let text = utf8(input)?;
+            crate::toml_surface::read(text).map_err(|e| {
+                ConvertError(format!(
+                    "TOML parse error: {}",
+                    locate_byte_in_message(&e.0, text)
+                ))
+            })
+        }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError(
@@ -232,6 +250,9 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // becomes a single JSON string over its ML rendering (see `json::print`), so `--to json` stays
         // total.
         Format::Json => Ok(crate::json::print(arenas, opts.width).into_bytes()),
+        // A `(toml-document …)` arena prints back BYTE-EXACT (unmutated); a NON-TOML root becomes a
+        // single `program = "<ml>"` key (see `toml_surface::print`), so `--to toml` stays total.
+        Format::Toml => Ok(crate::toml_surface::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }
@@ -315,6 +336,7 @@ mod tests {
         assert_eq!(Format::parse("SEXPR"), Some(Format::Sexpr));
         assert_eq!(Format::parse("ml"), Some(Format::Ml));
         assert_eq!(Format::parse("JSON"), Some(Format::Json));
+        assert_eq!(Format::parse("toml"), Some(Format::Toml));
         assert_eq!(Format::parse("nope"), None);
     }
 
@@ -326,6 +348,7 @@ mod tests {
         assert_eq!(Format::from_extension("prog.sexpr"), Some(Format::Sexpr));
         assert_eq!(Format::from_extension("prog.bin"), Some(Format::Binary));
         assert_eq!(Format::from_extension("data.json"), Some(Format::Json));
+        assert_eq!(Format::from_extension("Cargo.toml"), Some(Format::Toml));
         assert_eq!(Format::from_extension("PROG.CDZ"), Some(Format::Ml)); // case-insensitive
         assert_eq!(Format::from_extension("prog"), None); // no extension
         assert_eq!(Format::from_extension("prog.txt"), None); // unknown extension
@@ -349,6 +372,40 @@ mod tests {
         assert!(
             err.0.contains("JSON parse error") && !err.0.contains("byte"),
             "expected a JSON parse error with line:col, got {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn toml_to_binary_to_toml_is_byte_exact() {
+        // A TOML doc reads to a decor-in-arena document, encodes to canonical binary, and prints back
+        // BYTE-EXACT (the stronger TOML contract) through the binary form.
+        let src = "# cfg\n[server]\nhost = \"127.0.0.1\"\nports = [8000, 8001]\n";
+        let bin = convert(src.as_bytes(), Format::Toml, Format::Binary).unwrap();
+        let back = convert(&bin, Format::Binary, Format::Toml).unwrap();
+        assert_eq!(String::from_utf8(back).unwrap(), src);
+    }
+
+    #[test]
+    fn toml_to_json_is_total() {
+        // `--to json` over a TOML arena is TOTAL (never errors) — but note it does NOT translate the
+        // DATA: each surface prints only its own vocabulary, so the JSON printer takes its non-JSON
+        // fallback and emits the TOML tree as a JSON string. We assert only that the pipe runs and
+        // yields well-formed JSON (a real cross-format data transform would be separate).
+        let out = convert(b"a = 1\nb = \"x\"\n", Format::Toml, Format::Json).unwrap();
+        let json = String::from_utf8(out).unwrap();
+        assert!(
+            convert(json.as_bytes(), Format::Json, Format::Binary).is_ok(),
+            "got {json}"
+        );
+    }
+
+    #[test]
+    fn toml_parse_error_reports_line_col() {
+        let err = convert(b"a = 1\na = 2\n", Format::Toml, Format::Sexpr).unwrap_err();
+        assert!(
+            err.0.contains("TOML parse error"),
+            "expected a TOML parse error, got {}",
             err.0
         );
     }

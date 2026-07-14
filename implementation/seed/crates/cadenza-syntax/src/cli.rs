@@ -259,6 +259,7 @@ pub enum Fmt {
     Ml,
     Markdown,
     Json,
+    Toml,
     Debug,
     Flat,
 }
@@ -271,6 +272,7 @@ impl From<Fmt> for Format {
             Fmt::Ml => Format::Ml,
             Fmt::Markdown => Format::Markdown,
             Fmt::Json => Format::Json,
+            Fmt::Toml => Format::Toml,
             Fmt::Debug => Format::Debug,
             Fmt::Flat => Format::Flat,
         }
@@ -435,14 +437,16 @@ fn collect_dir(
         } else {
             let path_str = path.to_string_lossy().into_owned();
             // Only recognized CODE surfaces. `--from` picks the format; the extension gates inclusion.
-            // Markdown and JSON are excluded from a directory SWEEP on purpose: a `.md` is a literate
-            // DOCUMENT (READMEs, docs) and a `.json` is DATA (configs, fixtures — and a repo's
-            // `tsconfig.json`/JSONC that isn't even strict JSON), not code to query/rewrite in bulk, so
-            // pointing a codemod at a tree must not slurp them in. An explicitly-NAMED `.md`/`.json`
-            // still works — that path is in `collect_targets`, which honors any recognized extension.
+            // Markdown, JSON, and TOML are excluded from a directory SWEEP on purpose: a `.md` is a
+            // literate DOCUMENT (READMEs, docs) and `.json`/`.toml` are DATA (configs, fixtures,
+            // manifests like `Cargo.toml` — and JSONC that isn't even strict JSON), not code to
+            // query/rewrite in bulk, so pointing a codemod at a tree must not slurp them in. An
+            // explicitly-NAMED `.md`/`.json`/`.toml` still works — that path is in `collect_targets`,
+            // which honors any recognized extension.
             if let Some(inferred) = Format::from_extension(&path_str)
                 && inferred != Format::Markdown
                 && inferred != Format::Json
+                && inferred != Format::Toml
             {
                 out.push(TargetSpec {
                     path: Some(path_str),

@@ -40,5 +40,11 @@ pub mod sexpr;
 pub mod span;
 pub mod spans;
 pub mod token;
+/// The TOML surface: a source-faithful config document (`(toml-document …)` — comments, whitespace,
+/// and each scalar's raw spelling stored as `Str`-leaf "decor" nodes) is a projection of the same
+/// arena the code surfaces use. Byte-exact round-trip for an unmutated doc, and fully rewritable (the
+/// arena stays the representation). Named `toml_surface` so `toml_edit::` remains the unambiguous crate
+/// path.
+pub mod toml_surface;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};

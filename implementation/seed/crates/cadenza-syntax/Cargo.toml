@@ -25,5 +25,10 @@ num-bigint = "0.4"               # arbitrary-precision Int and the Decimal signi
 # rewritten in Cadenza, at which point the block/inline scanner is hand-rolled. The durable artifact
 # is the `document` node vocabulary + round-trip, not this parser.
 pulldown-cmark = { version = "0.13", default-features = false }
+# The format-preserving TOML parser/encoder for the `toml` surface (the library Cargo uses to edit
+# `Cargo.toml`). Same REFERENCE-only rationale as pulldown-cmark: the durable artifact is the
+# decor-in-arena node vocabulary + byte-exact round-trip, not this parser. Lean feature set — only
+# `parse`+`display` (serde/kstring/serde_spanned are off), so the transitive deps stay small.
+toml_edit = { version = "0.22", default-features = false, features = ["parse", "display"] }
 # Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
 clap = { version = "4", features = ["derive"] }
