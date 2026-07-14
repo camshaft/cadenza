@@ -17709,6 +17709,81 @@ mod match_engine {
     }
 
     #[test]
+    fn arithmetic_on_two_text_operands_names_the_real_type_and_plus_offers_concat() {
+        // `(+ s t)` on two Strings (the Python/JS reflex) used to report the GENERIC scheme-unify's phantom
+        // "type mismatch: Int64 and String must be the same type here" — an `Int64` the author never wrote,
+        // reading as an internal clash. It now names the REAL situation ("arithmetic is not defined on
+        // String") and — for `+`, whose intent is concatenation — carries the actionable `String.concat`
+        // rewrite (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Bytes too.
+        // Comparison on two texts stays VALID (lexical order / equality) — the guard is arithmetic-only.
+
+        // `+` on two Strings → honest message + a `((. String concat) …)` replace on the operator head, and
+        // NO leftover phantom `Int64`.
+        let plus = reject_full("(module m (def (f (: a String) (: b String)) (+ a b)) (export f))")
+            .expect("(+ String String) rejects");
+        assert_eq!(
+            plus.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            plus.message
+        );
+        assert!(
+            plus.message.contains("arithmetic is not defined on String")
+                && !plus.message.contains("Int64"),
+            "names the real type, no phantom Int64: {}",
+            plus.message
+        );
+        let fix = plus.fix.expect("`+` on text carries the concat rewrite");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "(. String concat)",
+            "rewrites `+` to String.concat"
+        );
+
+        // Bytes gets the Bytes.concat rewrite.
+        let bytes = reject_full("(module m (def (f (: a Bytes) (: b Bytes)) (+ a b)) (export f))")
+            .expect("(+ Bytes Bytes) rejects");
+        assert_eq!(
+            bytes.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(. Bytes concat)"),
+            "Bytes `+` rewrites to Bytes.concat: {}",
+            bytes.message
+        );
+
+        // `-`/`*`/`/` on two texts: honest message, but NO concat fix (subtraction is not concatenation).
+        for op in ["-", "*", "/"] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: a String) (: b String)) ({op} a b)) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("({op} String String) must reject"));
+            assert!(
+                d.message.contains("arithmetic is not defined on String"),
+                "`{op}` names the real type: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "`{op}` on text offers no (mis)concat fix: {:?}",
+                d.fix
+            );
+        }
+
+        // NO false fire: comparison on two Strings is VALID (lexical order / equality).
+        assert!(run_returns::<bool>(
+            &component("(module m (def (main) (< \"a\" \"b\")) (export main))"),
+            "main"
+        ));
+        // NO false fire: a String against an Int is the DISTINCT cross-kind message (unchanged).
+        let cross = reject_full("(module m (def (f (: a String)) (+ a 1)) (export f))")
+            .expect("(+ String Int) rejects");
+        assert!(
+            cross.message.contains("kind boundary"),
+            "text-vs-scalar keeps the kind-boundary message: {}",
+            cross.message
+        );
+    }
+
+    #[test]
     fn a_compound_operand_against_a_scalar_names_the_kind_boundary() {
         // A COMPOUND value (record/tuple/list/map/set) held against a SCALAR or TEXT operand is the same
         // cross-kind clash the text-vs-scalar case is — `(= r 5)` compares a record to an integer. It now
@@ -28577,6 +28652,45 @@ mod diagnostics {
         assert!(
             !fix.verified,
             "removing vs renaming is the author's call → heuristic"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form() {
+        // A record TYPE `(Record (x Int64) (x Bool))` names field `x` twice. A record's field names are a
+        // fixed SET (the same rule the record VALUE `(record (a 1) (a 2))` is rejected for), but the type
+        // form built its field map by last-wins insert, SILENTLY accepting the duplicate (`x` became
+        // `Bool`). It is now CDZ0201, anchored at the redundant `(name Type)` entry with a delete fix — in
+        // both an annotation and a variant payload.
+        for src in [
+            "(module m (def (f (: r (Record (x Int64) (x Bool)))) r) (export f))",
+            "(module m (type P (Mk (Record (x Int64) (x Bool)))) (def (f) 1) (export f))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .unwrap_or_else(|| panic!("a record-type dup field must reject: {src}"));
+            assert!(
+                d.message
+                    .contains("record type names field `x` more than once"),
+                "names the duplicate field: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-duplicate fix: {:?}",
+                d.fix
+            );
+        }
+        // NO REGRESSION: a valid record type (distinct fields) is clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: r (Record (x Int64) (y Bool)))) r) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a record type with distinct fields is accepted"
         );
     }
 
