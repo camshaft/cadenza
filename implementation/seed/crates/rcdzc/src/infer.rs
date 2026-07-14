@@ -1009,6 +1009,18 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         }
         return;
     }
+    // A bare name that IS a DECLARED TYPE whose `typeval_of` failed only because that type's OWN
+    // declaration is MALFORMED — e.g. `(: c C)` where `(type C (Red) (Red))` has a duplicate variant — is
+    // NOT "a value, not a type": `C` genuinely names a type, just a broken one. The duplicate-variant (or
+    // other declaration-site) reject is the primary, actionable "no"; adding "`C` is a value, not a type"
+    // here is a MISLEADING consequent (it is a type, and the phrasing blames the annotation, not the real
+    // defect). Suppress it — defer to the declaration-site error. (`type_decl_by_name` covers a top-level
+    // sum/newtype; a well-formed type reduces via `typeval_of` and never reaches this branch.)
+    if let Some(name) = db.ast.as_name(ty_expr)
+        && db.type_decl_by_name(name).is_some()
+    {
+        return;
+    }
     let before = out.len();
     collect(db, ty_expr, out);
     if out.len() == before {

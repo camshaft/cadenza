@@ -205,6 +205,27 @@
   (call   main (: 2 Int64))
   (output (: 30 Int64)))
 
+(case "a loop whose bound is an invariant computation runs correctly (the bound is hoisted)"
+  (doc    "`(def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc))`
+           — the loop bound `(* n 2)` is loop-INVARIANT (n threads unchanged), so the compiler hoists it
+           out of the loop, computing it ONCE before the loop instead of every iteration. Called via
+           `(go 0 x 0)` with x = 4: the loop runs for i in [0, 8), summing 0+1+…+7 = 28. Pins that a
+           hoisted invariant loop-bound still drives the loop correctly.")
+  (input  (do (def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc)) (def (main (: x Int64)) (go 0 x 0)) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 28 Int64)))
+
+(case "a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations"
+  (doc    "The same invariant-bound loop `(if (< i (* n 2)) …)`, but called with x so large that `x * 2`
+           overflows Int64. The loop would run ZERO body iterations (i=0 is not < a would-be-huge bound),
+           yet the program MUST still trap: the loop CONDITION evaluates `(* n 2)` on the entry check
+           regardless, and that checked multiply overflows. Pins that hoisting the trapping invariant out
+           of the loop is TRAP-EQUIVALENT — it traps on the entry check exactly as the un-hoisted form
+           would, so the zero-iteration case is not silently spared its overflow trap.")
+  (input  (do (def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc)) (def (main (: x Int64)) (go 0 x 0)) (export main)))
+  (call   main (: 5000000000000000000 Int64))
+  (trap   "integer overflow"))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`

@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 161 tests total across 18 modules):
+top. Current `src/` modules (each with same-file `@test`s — 169 tests total across 19 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -129,6 +129,12 @@ top. Current `src/` modules (each with same-file `@test`s — 161 tests total ac
   canonical ordering a compiler uses to sort / dedup / hash-cons terms. Fully recursive; returns scalars
   (dodges the runtime-String pitfall). 12 `@test`s incl. an antisymmetry invariant (`cmp(a,b) ==
   -cmp(b,a)`) and deep-leaf differences. Confirmed WORKING (no new bug).
+- `src/validate.cdz` — a validation pass that PARTITIONS a node list into successes + diagnostics in one
+  traversal (not fail-fast), returning both as lists inside a `Report.Mk(List Int64, List String)` sum.
+  The error-collection shape a real front-end has. Stresses a SUM variant carrying TWO `List` payloads
+  grown in PARALLEL across the recursion, then each projected. 8 `@test`s incl. a partition invariant
+  (`good-count + error-count = length`) and order preservation. Confirmed WORKING (no new bug): both
+  lists' values survive the recursion exactly.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -205,6 +211,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
+  `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/
+  `take` and `Set` has `of`/`contains`/`insert`/`remove`/`len`/`union`/`intersection`/`difference` — but
+  NEITHER has `keys`/`values`/`entries`/`to-list`/`fold` (all → CDZ0201 "no member"). A program can BUILD
+  and QUERY a collection but cannot VISIT its contents — so a symbol table can't be walked to emit every
+  binding, a free-var set can't be rendered, etc. `collections-and-text.md` §"Map Iteration Is
+  Deterministic" describes iteration as a capability (constraining its order), and the canonical form
+  already renders the entries, but no PROGRAM op exposes it. 🔑 TRACTABLE: the runtime ALREADY has the
+  cursor ops (`map-iter`/`-next`/`-key`/`-val`, `set-iter`/`-next`/`-elem` in `runtime.wit`) used for
+  rendering/equality — the gap is purely a front-end `to-list` field + scheme + a `lower`/backend cursor
+  loop. No new runtime op needed; a dedicated increment.
 
 - **✅ LEAK FIXED (seed `rcdzc`, 2026-07-14 — landed by THIS loop) → now a clean DECLINE (feature still a
   Todo): a mutually-recursive effectful group where the perform is in a DIFFERENT branch from the mutual

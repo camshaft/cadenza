@@ -6451,6 +6451,43 @@
             (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
 
+(case "the value-yielding insert reports None when the key is new"
+  (doc    "The None arm the `Map.swap` case above only describes: swapping a value into a key the map does
+           NOT hold reports `(None unit)` as the prior-value optional (there was no prior value), not a
+           trap — the direct companion of the `(Some 10)` replace case. `(Map.swap {1↦10} 2 99)` adds key
+           2, so its first tuple element is `(None unit)`. Pins the absent-prior form as a constant, the
+           form the runtime-key swap case reaches only through a match.")
+  (input  (do
+            (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 0)) (export main)))
+  (output (: (None unit) (Option Int64))))
+
+(case "the value-yielding insert of a new key adds the entry"
+  (doc    "The second tuple element of the new-key `Map.swap` is the map with the new entry added: swapping
+           into absent key 2 grows `{1↦10}` to size 2 (an add, not a replace), agreeing with a plain
+           `Map.insert` of a new key. Pins that the None-prior swap still produces the updated map — the
+           value-yielding insert adds when the key is new, exactly as it replaces when the key is present.")
+  (input  (do
+            (def (main) (Map.size (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 1))) (export main)))
+  (output (: 2 Int64)))
+
+(case "the value-yielding remove reports None when the key is absent"
+  (doc    "The None arm the `Map.take` case above only describes: taking a key the map does NOT hold reports
+           `(None unit)` as the dropped-value optional (nothing was dropped) — removal is total, never a
+           trap. `(Map.take {1↦10} 2)` drops nothing, so its first tuple element is `(None unit)`. Pins the
+           absent-dropped form as a constant, the companion of the `(Some 10)` present-key take.")
+  (input  (do
+            (def (main) (. (Map.take (Map.insert Map.empty 1 10) 2) 0)) (export main)))
+  (output (: (None unit) (Option Int64))))
+
+(case "the value-yielding remove of an absent key leaves the map unchanged"
+  (doc    "The second tuple element of the absent-key `Map.take` is the map itself, unchanged: taking absent
+           key 2 from `{1↦10}` leaves size 1 (removal is total — an absent key is a no-op). Pins that the
+           None-dropped take still produces a usable map handle equal to the input, the take companion of
+           the new-key-swap-adds case.")
+  (input  (do
+            (def (main) (Map.size (. (Map.take (Map.insert Map.empty 1 10) 2) 1))) (export main)))
+  (output (: 1 Int64)))
+
 ; --- Map operations at a RUNTIME key: lookup / swap / take / insert / remove on the value heap ----------
 ; The map cases above use CONSTANT keys, so the lookup/swap/take/size results fold at compile time. A
 ; RUNTIME key — a boundary parameter — cannot fold: the key is boxed and the CHAMP is probed at run time,

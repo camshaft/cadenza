@@ -95,6 +95,19 @@ thread_local! {
     /// signal (a wall-clock ratio is diluted by the rest of check) — see
     /// `a_wide_runtime_map_match_resolves_synth_names_in_bounded_time`.
     pub(crate) static BINDER_IN_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// Test-only: total LEADING elements enumerated by `resolve::find_leading_binder_in_list_pattern`
+    /// since the last reset — the elements examined while building a list pattern's binder index PLUS any
+    /// visited by the linear fallback (a non-simple pattern). Resolving a name against a `(list p… .. r)`
+    /// arm re-scanned the pattern's leading positions from 0 on EVERY reference (positive to the binder's
+    /// position, negative — a prelude/outer name the pattern does not bind — over the whole pattern), so a
+    /// wide `(list a0 … aN .. r)` destructure (or the synth `(list __le0 … __leN .. r)` the refutable-
+    /// literal-element desugar builds) referenced from N sites was O(N²). The per-pattern binder index
+    /// (`Db::simple_list_binders`, built once per pattern) makes each lookup O(1), so the total elements
+    /// enumerated is O(N) regardless of reference count. Noise-free regression signal — see
+    /// `a_wide_list_pattern_resolves_element_binders_in_bounded_time`.
+    pub(crate) static LIST_PATTERN_BINDER_ELEMS_SCANNED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -581,6 +594,20 @@ pub(crate) struct RecordFieldIndex {
     pub(crate) index: crate::fxhash::FxHashMap<crate::resolved::Symbol, usize>,
 }
 
+/// A cached SIMPLE list-pattern binder index (`Db::simple_list_binders`): for a `(list p0 … .. rest)`
+/// pattern whose every leading element is a bare-name binder (`_` and `..` excluded), the `binder-name →
+/// its access path` from the list scrutinee. A leading binder `pi` reads element `i` (`[Elem(i)]`); the
+/// rest binder reads the tail sublist from `lead` onward (`[RestFrom(lead)]`). No leading binder carries
+/// a variant head (a bare name is not a variant payload), so a heads vector is never needed — the paths
+/// are pure `Elem`/`RestFrom` steps. Built once per pattern; `get` is an O(1) `FxHashMap` read replacing
+/// the O(leading) per-reference scan. A pattern with ANY nested (tuple/variant/list) leading element is
+/// NOT simple — it is absent from `Db::simple_list_binders` as `None` and the caller falls back to the
+/// exact linear descent (`find_binder_in_*`), so this fast index never replicates the nested enumeration.
+pub(crate) struct SimpleListBinders {
+    /// `binder-name → the access-path steps` for every leading bare-name binder and the rest binder.
+    pub(crate) by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>>,
+}
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -1059,6 +1086,29 @@ pub struct Db {
     /// per-projection scan. The stored `guard` `Rc` keeps that allocation alive, so its `as_ptr` address
     /// cannot be reused by a different `BTreeMap` while the entry is cached (ABA safety).
     pub(crate) record_field_index: crate::fxhash::FxHashMap<usize, RecordFieldIndex>,
+
+    /// Memo of a LIST PATTERN's leading-element BINDER index (`resolve::list_pattern_binders`), keyed by
+    /// the pattern's `(list …)` occurrence. `resolve::find_leading_binder_in_list_pattern` answered "does
+    /// this list pattern bind `name`, and at what access path?" by re-scanning the pattern's LEADING
+    /// element positions from 0 on EVERY reference — a positive lookup to the binder's position, a NEGATIVE
+    /// one (a prelude/outer name — `+`, `Int64`, a callee — the pattern does not bind) over the WHOLE
+    /// pattern — so a wide `(match xs ((list a0 … aN .. r) body) …)` destructure whose body references each
+    /// binder (or the synth `(list __le0 … __leN .. r)` the refutable-literal-element desugar builds, each
+    /// `__le` referenced by its guard test) was O(N) per reference × O(N) references = O(N²) (measured: the
+    /// `flat`-body shape N=1600 ~140ms, ~4×/dbl, `find_leading_binder_in_list_pattern` ~37% self + its
+    /// per-element path `Vec` alloc ~45% of malloc). The pattern's binder set is a pure function of the
+    /// (immutable, append-only) arena, so building the whole `name → (path, heads)` map ONCE per pattern
+    /// and reading it O(1) removes the per-reference scan. Built lazily via a `RefCell` (resolution runs
+    /// behind `&Db`; the compiler is single-threaded / `!Send`, so interior mutation here is sound). Only a
+    /// SIMPLE pattern — every leading element a bare-name/`_`/`..` binder, no nested tuple/variant/list
+    /// element — is indexed (`Some(map)`); a pattern with a nested element caches `None` and the caller
+    /// falls back to the exact linear descent (whose verdict is byte-identical), so the fast index never
+    /// has to replicate the nested-payload path enumeration. The two demonstrated explosions are both
+    /// all-bare-leading, so the fast path covers them; a nested-element wide list arm declines at lowering
+    /// (`more than one refutable constructor element`) long before it could matter.
+    pub(crate) simple_list_binders: std::cell::RefCell<
+        crate::fxhash::FxHashMap<StructId, Option<std::rc::Rc<SimpleListBinders>>>,
+    >,
 
     /// Memo for the wasm backend's `mutual_loop_group(self_def)` — the tail-recursive SCC a def compiles
     /// its shared loop over. `select_function_of` computes it for EVERY def, and the computation is a
@@ -1819,6 +1869,7 @@ impl Db {
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
             record_field_index: crate::fxhash::FxHashMap::default(),
+            simple_list_binders: std::cell::RefCell::new(crate::fxhash::FxHashMap::default()),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),
