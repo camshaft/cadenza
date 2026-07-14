@@ -2441,6 +2441,48 @@ fn runtime_value_eq_leaves_no_live_objects() {
     );
 }
 
+/// A RUNTIME STRING ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq`, so a
+/// rope and its flat twin compare EQUAL — the miscompile fix — AND the compact-then-drop leaves NO live
+/// heap cells. `value-eq` is `champ_eq`, a PHYSICAL-byte compare; a `String.concat` produces a ROPE whose
+/// bytes differ from a flat leaf of identical content, so the compiler compacts an OWNED String operand
+/// first. That compact CONSUMES the owned rope and yields a fresh owned flat leaf the emit drops after the
+/// borrowing compare. Two shapes:
+///   (a) VALUE — `(= (rep "hi" 3) "hixxx")`: the rope's content is "hixxx", so `=` is true → 1 (was 0, a
+///       miscompile: rope-bytes ≠ flat-bytes under champ_eq without the compact).
+///   (b) LEAK — the owned rope operand + its compacted leaf must net to 0 live cells (the literal "hixxx"
+///       side folds to a flat leaf, also compacted+dropped; nothing survives the scalar-returning `main`).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[rope-eq] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `rep` appends "x" three times via `String.concat` → an OWNED rope whose content is "hixxx".
+    let src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (if (= (rep \"hi\" 3) \"hixxx\") 1 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a runtime string rope must compare EQUAL to its flat twin (was 0 — a champ_eq physical-byte \
+         miscompile before the compiler compacts the rope operand)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "rope-eq leak: the owned rope operand + its compacted flat leaf must net to 0 live cells after \
+         the borrowing value-eq (the compact consumes the rope; the emit drops the compacted result)"
+    );
+}
+
 /// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
 /// ops. The runtime `bigint-add`/…/`to-i64-checked` BORROW their operands (`unbox_bigint` reads without
 /// consuming) and return a FRESH box (or a scalar), the `value-eq` shape — NOT the consuming

@@ -21,6 +21,35 @@
               (export main)))
   (output (: "hixxx" String)))
 
+(case "a runtime string rope compares equal to its flat twin"
+  (doc    "The equality companion of the rope-escape case above: `(= (rep \"hi\" 3) \"hixxx\")` is TRUE →
+           1. `rep` appends \"x\" three times via `String.concat`, building a genuinely RUNTIME String ROPE
+           whose content IS \"hixxx\" (it renders as \"hixxx\", byte-len 5). `=` lowers to `value-eq` =
+           `champ_eq`, a PHYSICAL-byte compare — and a `String.concat` rope's bytes differ from a flat
+           leaf's of identical content, so the rope compared UNEQUAL to the flat literal (returned 0, a
+           silent MISCOMPILE) until the compiler CANONICALIZES an owned String operand with `bytes-compact`
+           before the compare. A flat runtime string (n=0, no concat) already compared correctly; only a
+           rope operand needed compaction. Also fixes a string `match` against a literal (it desugars to
+           the same `value-eq` chain). Pins that a runtime rope and its flat twin are `=`-equal.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (rep "hi" 3) "hixxx") 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime string rope matches a string-literal arm"
+  (doc    "The `match` sibling: `(match (rep \"hi\" 3) (\"hixxx\" 1) (_ 0))` takes the \"hixxx\" arm → 1. A
+           string `match` desugars to a chain of `(= scrutinee <literal>)` value-eq tests, so it hit the
+           same rope-vs-flat physical-byte miscompile (took the `_` arm, returning 0) until the rope operand
+           is compacted before the compare. Confirms the fix covers the match-desugar path, not only `=`.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (match (rep "hi" 3) ("hixxx" 1) (_ 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "string length"
   (input  (String.scalar-len "hello"))
   (output (: 5 Int64)))
