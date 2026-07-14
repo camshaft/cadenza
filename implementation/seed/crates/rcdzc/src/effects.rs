@@ -2692,26 +2692,20 @@ fn thread_bounded(
                 cur = next;
             }
             // EFFECT-DUPLICATION GUARD. The arm body β-reduces by SUBSTITUTING each argument for its
-            // parameter, so a param used more than once COPIES its argument. If that argument is not
-            // strongly pure — it (still) reaches a perform, as `(E.op (tuple (A.get) (A.get)))` where the
-            // rewritten tuple arg carries two foreign gets — duplicating it would run the effect once per
-            // use (`(. p 0)` AND `(. p 1)` → four gets threaded, not two; a miscompile). Decline instead:
-            // when any param whose rewritten arg is NOT strongly pure is referenced more than once in the
-            // arm body, this fold cannot represent it without a let-binding the tail surface does not model.
-            // (A strongly-pure arg — a literal, a name — duplicates no effect, so multi-use is fine; a
-            // single-use param likewise runs its arg exactly once. This mirrors the applied-lambda
-            // pre-reduction's pure-args soundness guard.)
-            // "Carries an effect" = reaches a perform of THIS handler's op (`!strongly_pure`) OR a FOREIGN
-            // one (`body_reaches_foreign_perform` — an outer handler's op or a host call, which
-            // `strongly_pure` does not flag since it is ctx-relative to the discharged set). Either kind
-            // must not be duplicated: the miscompiling `(Add.sum (tuple (Ask.get) (Ask.get)))` carries
-            // FOREIGN `Ask` gets in the `Add`-discharged arm.
+            // parameter, so a param used more than once COPIES its argument. If that argument reaches a
+            // perform — of THIS handler's op OR a FOREIGN one (`arg_reaches_any_perform`) — duplicating it
+            // would run the effect once per use: `(E.op (tuple (A.get) (A.get)))` whose arm reads `(. p 0)`
+            // AND `(. p 1)` would thread four gets, not two (a miscompile). Decline instead — this fold
+            // cannot represent it without a let-binding the tail surface does not model. A param whose arg
+            // reaches NO perform (a literal, a name, a PURE compound like `(record (a 3) (b 4))`) duplicates
+            // no effect, so multi-use is fine; a single-use param likewise runs its arg exactly once. This
+            // mirrors the applied-lambda pre-reduction's pure-args soundness guard. (`arg_reaches_any_perform`
+            // is used, NOT `body_reaches_foreign_perform`, because the latter over-reports a record literal's
+            // field-pair as an unresolvable call — spuriously declining a pure record argument.)
             if arm.params.len() == rewritten_args.len() {
                 for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
-                    let arg_carries_effect =
-                        !strongly_pure(db, a, ctx) || body_reaches_foreign_perform(db, a, ctx);
                     if !is_unit_param(db, p)
-                        && arg_carries_effect
+                        && arg_reaches_any_perform(db, a, ctx)
                         && count_param_refs(db, arm.body, p) > 1
                     {
                         return None;
@@ -4068,6 +4062,55 @@ fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
         Struct::Atom(_) => 0,
     };
     here + below
+}
+
+/// Whether the argument subtree at `node` reaches ANY perform — of THIS handler's op (discharged) OR a
+/// FOREIGN one (an outer handler's / host op) — following NON-RECURSIVE callee bodies (bounded depth). The
+/// duplication guard's precise "does this argument carry an effect that must not be copied" test. UNLIKE
+/// `body_reaches_foreign_perform`, it does NOT over-report an unresolvable/record-field-pair head as an
+/// effect: a record literal `(record (a 3) (b 4))` resolves its field pairs as `Apply` nodes whose "head"
+/// is the label `a` (no `meta_apply`, no lambda body), which the conservative foreign-walk misreads as an
+/// unresolvable call and flags — spuriously declining a PURE record argument. Here an `Apply` whose head is
+/// not an effect op and not a followable function simply DESCENDS into its args (a perform can only hide in
+/// a sub-expression, never in a bare label head), so a pure compound argument is correctly effect-free. A
+/// recursive callee is over-reported (it may perform; bounded, safe — a recursive performing arg is rare
+/// and declining it is sound). Combines the discharged-op detection (`is_perform`) with the foreign-op one
+/// (`effect_op_of` outside `ctx.arms`).
+fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+        if depth > 32 {
+            return true; // too deep — assume it may perform (safe over-report)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            // A perform of ANY effect operation — this handler's (discharged) or another's (foreign).
+            if crate::eval::effect_op_of(db, head).is_some() {
+                return true;
+            }
+            // A user function call: follow a NON-RECURSIVE callee body; a recursive one over-reports.
+            // (A non-function head — a compound constructor, a record field-pair label — is NOT followed:
+            // it hides no perform in the head, only its args, which the descent below covers.)
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            {
+                if crate::eval::is_recursive(db, callee) {
+                    return true;
+                }
+                if walk(db, callee, ctx, depth + 1) {
+                    return true;
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, ctx, depth + 1));
+        }
+        // A bare `resume` reached in an argument is an effect too.
+        if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, ctx, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, ctx, 0)
 }
 
 /// Whether the subtree at `node` transitively reaches a FOREIGN perform — an effect operation NOT

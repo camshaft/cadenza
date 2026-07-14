@@ -1258,6 +1258,7 @@ pass	an intra-program handler interposes on a delegated effect, counts it, and f
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an operation on mismatched types is rejected at compile time
+pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it
 pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash

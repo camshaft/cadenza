@@ -1537,6 +1537,23 @@
                 (Add.sum (tuple 3 4)))) (export main)))
   (output (: 7 Int64)))
 
+(case "an operation with a RECORD parameter binds the compound and the arm reads its fields"
+  (doc    "The record companion of the tuple-parameter case: an operation whose declared PARAMETER is a
+           `(Record (a Int64) (b Int64))` binds the whole record to the arm's parameter, whose fields the arm
+           reads by member access. `Add.sum : (-> (Record (a Int64) (b Int64)) Int64)`; performed as
+           `(Add.sum (record (a 3) (b 4)))`, the arm binds `p` and resumes with `(+ (. p a) (. p b))` = 7.
+           The arm references `p` TWICE (once per field), but the argument is a PURE record — it reaches no
+           perform — so substituting it into both uses duplicates no effect and the fold serves it (the
+           effect-duplication guard only declines a param whose argument REACHES A PERFORM, not a pure
+           compound; the precise perform-detector does not misread a record's field pairs as a call). Pins
+           that a record OP parameter threads and is field-readable, matching the tuple parameter.")
+  (input  (do
+            (effect Add (op sum (-> (Record (a Int64) (b Int64)) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (resume (+ (. p a) (. p b)) s)))
+                (Add.sum (record (a 3) (b 4))))) (export main)))
+  (output (: 7 Int64)))
+
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
 ; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).
 ; A handler arm resumes the continuation with the value the operation yields — `(resume <value> <state>)`
