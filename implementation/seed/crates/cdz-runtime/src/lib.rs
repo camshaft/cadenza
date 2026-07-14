@@ -11456,6 +11456,42 @@ mod tests {
         assert_eq!(live_object_count(), before, "no BigInt leak");
     }
 
+    /// `bigint-div` by ZERO TRAPS (numeric-model.md — an unbounded range gives `n/0` no value). The
+    /// zero-divisor trap was covered only implicitly (via the `Big::divmod` differential returning `None`);
+    /// no test asserted the OP itself traps. This matters especially since `op_bigint_div` gained an i128
+    /// FAST PATH (`spec@9bcfb04e`): a zero divisor makes `checked_div` return `None`, so it falls THROUGH
+    /// to the `Big` path — which traps. This pins that the fast path does NOT swallow the trap (return a
+    /// bogus value); a regression that mis-handled `y==0` in the fast path would return instead of panic.
+    #[test]
+    #[should_panic]
+    fn bigint_div_by_zero_traps() {
+        reset();
+        let (a, b) = (op_bigint_of_i64(10), op_bigint_of_i64(0));
+        let _ = op_bigint_div(a, b); // fail-fast: division by zero
+    }
+
+    /// `bigint-rem` by ZERO TRAPS (the `%` companion of div — same `divmod`-`None` origin, same i128
+    /// fast-path fall-through). Pins the op-level trap for the remainder path independently of div.
+    #[test]
+    #[should_panic]
+    fn bigint_rem_by_zero_traps() {
+        reset();
+        let (a, b) = (op_bigint_of_i64(10), op_bigint_of_i64(0));
+        let _ = op_bigint_rem(a, b); // fail-fast: remainder by zero
+    }
+
+    /// `rational-of` with a ZERO DENOMINATOR TRAPS (a rational `n/0` has no value — the rational analogue
+    /// of ÷0). The trap fires BEFORE normalization (`op_rational_of` checks `den.is_zero()` after reading
+    /// both operands). Pins the construction-time trap the port hits building a Rational from computed
+    /// components.
+    #[test]
+    #[should_panic]
+    fn rational_of_zero_denominator_traps() {
+        reset();
+        let (n, d) = (op_bigint_of_i64(1), op_bigint_of_i64(0));
+        let _ = op_rational_of(n, d); // fail-fast: zero denominator (consumes n, d)
+    }
+
     #[test]
     fn rational_ops_normalize_and_compute_over_bigint_children() {
         reset();
@@ -18722,6 +18758,36 @@ mod tests {
                 "membership of {e} matches"
             );
         }
+        // CURSOR completeness: walk `op_set_iter` to exhaustion and collect every element it visits. The
+        // cursor walks CHAMP HASH order (NOT sorted), so compare as a SET — it must visit EXACTLY the
+        // reference's elements, each once. This is the property a future `Set.to-list`/`fold` rests on,
+        // over a CHAMP shaped by the random insert/remove/fork churn above (collapsed collision nodes,
+        // sparse bitmaps, in-place-drained subtrees) — states fixed-shape cursor tests don't reach. The
+        // set fuzzer previously verified membership only via `scontains` point probes, never the cursor
+        // (the same gap the map fuzzer had before `spec@1cdf6fb7`). The cursor BORROWS each element (read
+        // via `op_get_int`, never dropped); it is dropped when exhausted; the `live_nodes()==before`
+        // balance below still holds. A missing/extra/duplicate element diverges from the reference here.
+        let mut visited: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut cur = op_set_iter(s);
+        loop {
+            let e = op_set_iter_elem(cur);
+            if e == Handle::NULL {
+                break; // exhausted
+            }
+            let fresh = visited.insert(op_get_int(e));
+            assert!(
+                fresh,
+                "the set cursor visits element {} at most once (no duplicate emission)",
+                op_get_int(e)
+            );
+            cur = op_set_iter_next(cur);
+        }
+        op_drop(cur);
+        assert_eq!(
+            visited, reference,
+            "the set cursor visits EXACTLY the reference's elements — complete + correct enumeration over \
+             a churned CHAMP (the Set.to-list/fold property; hash order, compared as a set)"
+        );
         let twin = set_of_reference(&reference);
         assert!(
             champ_eq(s, twin),

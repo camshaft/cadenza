@@ -9428,6 +9428,74 @@ mod runtime_ops {
     }
 
     #[test]
+    fn project_meta_reads_a_meta_field_without_scanning_the_wide_user_block() {
+        // REGRESSION (perf): `eval::project_meta` reads a `meta`-namespace field (`apply`/`variant`/`t`/…)
+        // off a value's record on the HOT per-node meta-dispatch path (`meta_apply_of`/`variant_disc_of`
+        // run for every application/pattern during `collect`/`type_errors`). It used a
+        // `BTreeMap::get(&Symbol{Some("meta".to_string()), key.to_string()})` — allocating TWO `String`s per
+        // call (a top allocation source; a realistic module A/B'd ~1.13× faster once removed). The
+        // alloc-free replacement must NOT reintroduce the O(N)-field forward scan `203f8588` fixed for a
+        // WIDE record. Field keys sort `(namespace, name)` with a USER field (`None`) BELOW `Some("meta")`,
+        // so the meta fields are a contiguous block at the TOP — a REVERSE scan reaches them in
+        // O(meta-fields) and BREAKS on descending below the block, never touching the O(width) user fields.
+        //
+        // The NOISE-FREE signal is `PROJECT_META_FIELDS_VISITED` — the MAX field entries a SINGLE scan
+        // touches (a running max), a pure function of the program. Reading `(meta t)` etc. off a wide record
+        // must visit O(meta-fields) = bounded PER CALL, NOT O(width). Widen the record 8× and require the
+        // MAX per-call depth stays CONSTANT (a forward/no-break scan grows ~linearly with width; the
+        // reverse-scan-with-break is flat at ~3). (A TOTAL-visits signal would conflate this with the
+        // per-node meta-dispatch CALL count, which scales with the program independently — so track the max
+        // per-call depth, which isolates the scan-length regression this fix is about.)
+        // A WIDE EFFECT builds a wide `(meta …)` interface record — width-N ops → an N-field meta record
+        // `project_meta` reads (`meta_apply_of`/`variant_disc_of` per op reference/pattern). The meta fields
+        // sort at the TOP (namespace `Some("meta")` > a `None` user field), so the reverse-scan reaches them
+        // in O(1)-ish regardless of N; a forward scan would walk all N.
+        fn wide_effect_src(n_ops: usize) -> String {
+            let ops: String = (0..n_ops)
+                .map(|i| format!("(op tick{i} (-> Unit Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let arms: String = (0..n_ops)
+                .map(|i| format!("(tick{i} (u) s (resume s (+ s {i})))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(do (effect E {ops}) (def (main) (handle E 0 ({arms}) (E.tick0 ()))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_effect_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a small effect compiles with no error diagnostics: {diags:?}"
+        );
+        fn max_depth(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::PROJECT_META_FIELDS_VISITED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::PROJECT_META_FIELDS_VISITED.with(|c| c.get())
+            })
+        }
+        // 40 ops → 320 ops is 8×. A reverse scan that breaks below the meta block touches O(meta-fields) per
+        // call REGARDLESS of width, so the MAX per-call scan depth is CONSTANT (~3). A forward/no-break scan
+        // would walk the whole N-field meta record → the max depth would grow ~linearly with N. Require the
+        // 8×-wider effect's max depth to stay BELOW 2× the narrow one's (constant, with margin) AND small in
+        // absolute terms. `> 0` proves the reverse scan ran (a revert to the built-key `BTreeMap::get` never
+        // touches this counter → 0 → the test fails, catching the per-call-`Symbol`-alloc regression).
+        let d40 = max_depth(&wide_effect_src(40));
+        let d320 = max_depth(&wide_effect_src(320));
+        assert!(
+            d40 > 0 && d320 < d40 * 2 && d320 < 32,
+            "project_meta must read a meta field in O(meta-fields) PER CALL, not O(record-width) (the \
+             alloc-free replacement must REVERSE-scan the top meta block and BREAK, not forward-scan the \
+             wide meta record — the `203f8588` O(N²)): max per-call scan depth at 40 ops = {d40}, at 320 \
+             ops = {d320} (must stay constant/small — a width-proportional scan would grow ~8×)"
+        );
+    }
+
+    #[test]
     fn a_multi_use_binding_of_a_comparison_names_the_bool() {
         // The named value need not be an integer — a runtime comparison used twice is named too (its
         // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
@@ -12285,6 +12353,42 @@ mod match_engine {
             reject_code("(module m (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main))")
                 .as_deref(),
             Some("CDZ0202")
+        );
+        // ACTIONABLE FIX (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix): the
+        // message says "unwrap the nominal", and for an ERASABLE SINGLE-VARIANT newtype the unwrap is the
+        // total, unambiguous `(match <it> ((<Variant> n) n))` — so it now carries that WRAP fix on the
+        // newtype operand. Wraps whichever operand IS the newtype, either order.
+        let d = reject_full(
+            "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= u 5)) (export f))",
+        )
+        .expect("newtype-vs-inner comparison rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0202"), "got: {}", d.message);
+        let fix = d.fix.as_ref().expect("the unwrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert!(
+            fix.replacement.contains("match") && fix.replacement.contains("((Mk n) n)"),
+            "the fix unwraps via a `(match … ((Mk n) n))`: {:?}",
+            fix.replacement
+        );
+        // The unwrap-applied program compiles (the unwrap is total for a single-variant newtype).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= (match u ((Mk n) n)) 5)) (export f))"
+            )))
+            .is_ok(),
+            "the suggested unwrap type-checks"
+        );
+        // NO FIX for a MULTI-variant sum vs a bare value — no single, unambiguous unwrap exists (and it is
+        // not an erasable newtype), so it stays the generic mismatch with no misleading unwrap.
+        let multi = reject_full(
+            "(module m (type W (A Int64) (B Int64)) (def (f (: w W)) (= w 5)) (export f))",
+        )
+        .expect("a multi-variant sum vs a bare value rejects");
+        assert!(
+            multi.fix.is_none(),
+            "a multi-variant sum offers no unwrap fix: {} fix={:?}",
+            multi.message,
+            multi.fix
         );
     }
 
@@ -30203,6 +30307,58 @@ mod diagnostics {
             Some("Alpha"),
             "a near-miss wrong-sum ctor suggests + fixes to the matched sum's variant: {}",
             wrong_near.message
+        );
+    }
+
+    #[test]
+    fn a_wrong_ctor_over_a_single_variant_newtype_scrutinee_is_enriched_too() {
+        // A single-variant `(type T (Mk …))` erases to a `Ty::Nominal` newtype, whose wrong-ctor pattern
+        // took a SEPARATE reject path from the boxed `Ty::Sum` — it named "not the constructor of the
+        // matched type T" with NO suggestion and NO fix, while the multi-variant path already carried the
+        // "did you mean?" / closest-variants enrichment. Both now share `enrich_pattern_head_suggestion`
+        // (which reads the `decl`'s variants for either kind), so a newtype scrutinee gets the same route.
+
+        // NEAR miss → a confident "did you mean" + a replace fix to the newtype's sole variant.
+        let near = first_error(
+            "(module m (type A (Xyz)) (type B (Xyw)) (def (f (: a A)) (match a ((Xyw) 1))) (export f))",
+        );
+        assert_eq!(
+            near.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            near.message
+        );
+        assert!(
+            near.message.contains("not a variant of the matched type A"),
+            "the newtype wrong-ctor uses the variant wording: {}",
+            near.message
+        );
+        assert!(
+            near.message.contains("did you mean `Xyz`?")
+                && near
+                    .fix
+                    .as_ref()
+                    .is_some_and(|f| f.replacement.contains("Xyz")),
+            "a near-miss ctor over a newtype suggests + fixes to its sole variant: {} fix={:?}",
+            near.message,
+            near.fix
+        );
+        // FAR miss → lists the newtype's variant (no baseless fix), the same two-tier the sum path gives.
+        let far = first_error(
+            "(module m (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f))",
+        );
+        assert!(
+            far.message.contains("closest matches:") && far.message.contains("`Xyz`"),
+            "a far-miss ctor over a newtype lists its variant: {}",
+            far.message
+        );
+        // NO false reject: the newtype's REAL ctor still matches and binds.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
+            )))
+            .is_ok(),
+            "the newtype's own ctor pattern still matches"
         );
     }
 

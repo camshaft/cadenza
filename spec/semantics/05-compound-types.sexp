@@ -1528,6 +1528,39 @@
   (input  (do (def (main) (List.len (List.concat (list 7 8 9) (list)))) (export main)))
   (output (: 3 Int64)))
 
+(case "concatenating with the empty list on the right yields the operand by value"
+  (doc    "The right-identity by VALUE, strengthening the length-only case above (which only counts to 3):
+           `(List.concat (list 7 8 9) (list))` EQUALS `(list 7 8 9)` — same elements in the same order, not
+           merely the same length (collections-and-text.md §A List Is Grown By Functional Construction).
+           Pins that the empty right operand is the identity element-for-element.")
+  (input  (= (List.concat (list 7 8 9) (list)) (list 7 8 9)))
+  (output (: true Bool)))
+
+(case "concatenating with the empty list on the left is the identity"
+  (doc    "The left side: `(List.concat (list) (list 7 8 9))` equals `(list 7 8 9)` — the empty list is the
+           identity on the left as well as the right, so a concat with an empty operand on either side is
+           a no-op on value. The companion the right-identity case does not cover (concat is not assumed
+           symmetric until pinned), matching the empty-on-both-sides bytes/string cases.")
+  (input  (= (List.concat (list) (list 7 8 9)) (list 7 8 9)))
+  (output (: true Bool)))
+
+(case "concatenating two empty lists is the empty list"
+  (doc    "The degenerate boundary: `(List.concat (list) (list))` joins nothing to nothing, yielding the
+           empty list. Pins that concat handles the zero+zero case (not underflowing or producing a novel
+           form), the list companion of the empty+empty bytes/string/tuple cases.")
+  (input  (= (List.concat (list) (list)) (list)))
+  (output (: true Bool)))
+
+(case "list concatenation is associative by content"
+  (doc    "`(List.concat (List.concat a b) c)` and `(List.concat a (List.concat b c))` denote the same list
+           — concat depends only on the elements in order, not on grouping. For a={1,2}, b={3,4}, c={5,6}
+           both are {1,2,3,4,5,6}. Pins the associativity law (matching the bytes concat-associative case),
+           so a builder that regroups its concatenations — e.g. a self-hosted emitter joining code
+           fragments — produces the same list whichever way the tree is nested.")
+  (input  (= (List.concat (List.concat (list 1 2) (list 3 4)) (list 5 6))
+             (List.concat (list 1 2) (List.concat (list 3 4) (list 5 6)))))
+  (output (: true Bool)))
+
 (case "a list-concatenating helper threads lists through a call"
   (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
            PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper
@@ -2195,6 +2228,27 @@
                             ((list x .. rest) (+ x (sum rest)))))
             (def (main) (sum (list 10 20 30))) (export main)))
   (output (: 60 Int64)))
+
+(case "a two-arm list match with constant arms dispatches branchlessly on the length — empty"
+  (doc    "`(def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1)))` — an empty-vs-nonempty
+           list match with CONSTANT arm bodies (0, 1) is `(if (len == 0) 0 1)`, so the compiler dispatches
+           branchlessly on the length (a `select`), not a structured `if`. The wildcard `(list a .. r)` arm
+           binds `a`/`r` but its body does NOT read them (it is the constant 1), so the branchless select
+           is safe (no speculative element read). Called via a runtime-selected `[]` → 0. Pins the list
+           analogue of the scalar/sum two-arm select.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "a two-arm list match reading an element binder keeps the branch — no speculative empty read"
+  (doc    "`(match xs ((list) -1) ((list a .. r) a))` — the cons arm READS the element binder `a`. This must
+           NOT become a branchless select: a select evaluates both arms, so it would read element 0 even on
+           an EMPTY list. The compiler keeps the length `if`. Called with a runtime-selected non-empty list
+           `[42]` → a = 42, and the empty path → -1 (pinned by the companion). Confirms the element-read arm
+           is evaluated only when the list is non-empty.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list) -1) ((list a .. r) a))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
 
 (case "a list element position composes with a nested tuple pattern"
   (doc    "A list ELEMENT position is a *Patterns Compose* binder position (`core-semantics.md` §A List Is
@@ -5193,7 +5247,7 @@
            resolves against T's variant set FIRST — reaching T's `Int` variant, not the prelude `Int` —
            exactly as a non-colliding name (`Foo`) and the qualified form (`T.Int`) already do. Without
            this, the bare pattern head resolved (scope→def→prelude) to the prelude `Int` and the ctor
-           check rejected CDZ0203 'this constructor pattern is not the constructor of the matched type T',
+           check rejected CDZ0203 'this variant pattern is not a variant of the matched type T',
            breaking bare pattern-matching on an AST sum whose variants (`Int`/`Name`/`List`) collide with
            prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The construct position still writes
            the qualified `T.Int`: a bare `(Int 42)` in value position has no scrutinee to disambiguate it

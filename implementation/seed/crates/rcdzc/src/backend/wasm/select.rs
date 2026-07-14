@@ -7532,6 +7532,53 @@ fn emit_list_arms_tailable(
             db, first.body, result_it, arm_slots, arm_base, high, scratch_ty, layout, out, tail,
         );
     }
+    // BRANCHLESS 2-ARM LIST SELECT: a list match of exactly TWO arms — a LENGTH-test arm then a single
+    // unconditional cover (an `Any`/final rest arm) — is `(if (len ⋈ k) body0 body1)`, the list analogue of
+    // the scalar/sum 2-arm select. When both are UNGUARDED with cheap trap-free `is_select_arm` bodies and
+    // the result is a scalar, emit `body0 ; body1 ; (len ⋈ k) ; select` instead of an `if`/`else` block —
+    // so `(match xs ((list) 0) ((list a .. r) 1))` (dispatch on `len == 0`) goes branchless. Only for
+    // NON-self-loop position (`select` cannot carry a loop `br`; a trap-free body is never a tail call).
+    // A body that reads an ELEMENT/REST binder does so via `SumPayload` — NOT trap-free — so `is_select_arm`
+    // declines and the structured `if` survives (no speculative out-of-bounds element read on the wrong
+    // arm), exactly as a payload-reading sum arm keeps its `if`.
+    // `rest` is a single UNGUARDED arm: it is the last arm of an exhaustive match, so it is the
+    // UNCONDITIONAL cover — the fall-through emits its body with NO cond re-test (the `is_tail_arm` rule),
+    // so its own `cond` (whether `Any` or a now-redundant length like `LenGe(1)` complementing the first
+    // arm's `LenEq(0)`) is irrelevant. Any single unguarded `rest` arm qualifies.
+    if !matches!(tail, TailPos::Tail(Some(_)))
+        && matches!(block_ty, BlockType::Val(_))
+        && first.guard.is_none()
+        && !matches!(first.cond, crate::core::ListArmCond::Any)
+        && let [cover] = rest
+        && cover.guard.is_none()
+        && is_select_arm(db, first.body)
+        && is_select_arm(db, cover.body)
+    {
+        let res_ty = match result_it {
+            Some(rit) => Ty::Int(rit),
+            None => type_of(db, first.body),
+        };
+        emit_branch(
+            db, first.body, &res_ty, arm_slots, arm_base, high, scratch_ty, layout, out,
+        )?;
+        emit_branch(
+            db, cover.body, &res_ty, arm_slots, arm_base, high, scratch_ty, layout, out,
+        )?;
+        out.push(Lir::LocalGet(len_slot));
+        match first.cond {
+            crate::core::ListArmCond::LenEq(n) => {
+                out.push(Lir::ConstI32(n as i32));
+                out.push(Lir::I32Eq);
+            }
+            crate::core::ListArmCond::LenGe(k) => {
+                out.push(Lir::ConstI32(k as i32));
+                out.push(Lir::I32GeU);
+            }
+            crate::core::ListArmCond::Any => unreachable!("guarded by the matches! above"),
+        }
+        out.push(Lir::Select);
+        return Ok(());
+    }
     // Open the LENGTH test — except for an `Any` cond (a guarded catch-all/rest), whose length always holds
     // so its only gate is the guard. For a length-carrying cond, `if (len ⋈ k)` wraps the arm.
     let has_len_test = !matches!(first.cond, crate::core::ListArmCond::Any);
@@ -12362,6 +12409,51 @@ mod tests {
         assert!(
             !f.code.contains(&Lir::Select),
             "a payload-reading Option arm keeps the if (no speculative select): {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_two_arm_list_match_with_leaf_bodies_selects_branchlessly() {
+        // A 2-arm list match — a LENGTH-test arm then a single unconditional cover — with cheap trap-free
+        // LEAF bodies is `(if (len ⋈ k) A B)`, the list analogue of the scalar/sum 2-arm select.
+        // `(match xs ((list) 0) ((list a .. r) 1))` dispatches on `len == 0` → `0 ; 1 ; (len==0) ; select`,
+        // not an `if`/`else` block.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.contains(&Lir::Select)
+                && !f.code.iter().any(|i| matches!(i, Lir::If(_) | Lir::Else)),
+            "a 2-arm list match with leaf bodies selects branchlessly (no if/else): {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_list_match_reading_an_element_binder_keeps_its_if() {
+        // A 2-arm list match whose cons arm READS an element binder — `(match xs ((list) -1) ((list a .. r)
+        // a))` — must NOT become a `select`: `select` evaluates BOTH arms, so it would read element 0 even
+        // on an EMPTY list (a `SumPayload` out-of-bounds). `is_select_arm` (via `is_trap_free`) excludes a
+        // `SumPayload`, so the length `if` survives.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) -1) ((list a .. r) a))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.contains(&Lir::Select),
+            "an element-binder-reading list arm keeps the if (no speculative empty-list read): {:?}",
             f.code
         );
     }
