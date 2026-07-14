@@ -51037,7 +51037,10 @@ mod cross_component_oracle {
             // P.pair(9) returned the tuple (9,9) as a handle over the shared runtime; the consumer read
             // element 0 → 9. A COMPOUND value crossed via a peer-bound EFFECT, from source.
             cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "9", "a compound crosses over the effects surface as a shared handle")
+                assert_eq!(
+                    s, "9",
+                    "a compound crosses over the effects surface as a shared handle"
+                )
             }
             cdz_run::Outcome::Trap(t) => panic!("compound-over-effects run trapped: {t}"),
         }
