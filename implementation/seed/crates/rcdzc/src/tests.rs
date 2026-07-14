@@ -10703,6 +10703,51 @@ mod match_engine {
     }
 
     #[test]
+    fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
+        // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
+        // declared, just not a value. The old "export `Color` names no definition" misled (it reads as
+        // "unknown name"); it now names the CATEGORY — a type / an effect is not a value definition, and
+        // only definitions are exported (core-semantics.md §a module's exports are its definitions' values).
+        let ty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type Color R G B) (export Color))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `Color`"))
+        .expect("exporting a type is rejected");
+        assert_eq!(ty.code.as_deref(), Some("CDZ0101"), "got: {}", ty.message);
+        assert!(
+            ty.message.contains("names a type, not a value definition"),
+            "names the category (a type), not the misleading 'no definition': {}",
+            ty.message
+        );
+        let eff = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op foo (-> Int64))) (export E))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `E`"))
+        .expect("exporting an effect is rejected");
+        assert!(
+            eff.message
+                .contains("names an effect, not a value definition"),
+            "names the category (an effect): {}",
+            eff.message
+        );
+        // A GENUINELY unknown export name (no type/effect/def) keeps the plain "names no definition".
+        let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export zzzz))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("export `zzzz`"))
+        .expect("an unknown export is rejected");
+        assert!(
+            unknown.message.contains("names no definition")
+                && !unknown.message.contains("not a value"),
+            "an unknown name keeps the plain message: {}",
+            unknown.message
+        );
+    }
+
+    #[test]
     fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
         // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
         // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.

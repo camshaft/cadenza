@@ -966,13 +966,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 faults.push(reject);
             }
             None => {
-                faults.push(
-                    Reject::coded(
-                        Code::Unbound,
-                        format!("export `{name}` names no definition"),
-                    )
-                    .at(occ),
-                );
+                // No near-miss DEFINITION. But the name may be a declared TYPE or EFFECT — a real
+                // declaration, just not an exportable one: a module's exports are its DEFINITIONS' values
+                // (core-semantics.md §Evaluating a module produces a record of its definitions' values), and
+                // a type/effect is not a value. Saying "names no definition" misleads (the name IS
+                // declared); name the real reason instead, so the author knows the export is not a typo but
+                // a category error (there is no mechanical fix — removing the export or defining a value of
+                // that name is the author's choice).
+                let kind = if db.type_decl_by_name(&name).is_some() {
+                    Some("a type")
+                } else if db.effect_decl_by_name(&name).is_some() {
+                    Some("an effect")
+                } else {
+                    None
+                };
+                let message = match kind {
+                    Some(k) => format!(
+                        "export `{name}` names {k}, not a value definition — only definitions are exported \
+                         (a module's exports are the values its definitions bind)"
+                    ),
+                    None => format!("export `{name}` names no definition"),
+                };
+                faults.push(Reject::coded(Code::Unbound, message).at(occ));
             }
         }
     }
