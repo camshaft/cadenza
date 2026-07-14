@@ -37824,39 +37824,48 @@ mod closure_host_resource {
     }
 
     /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
-    /// (fn (x) (+ x v))))` — is VALID (the `ask.ask` is discharged while the delegation is in scope; the
-    /// returned closure is effect-free, capturing only the plain result). It is NOT the CDZ0406 escape (the
-    /// perform is make-time, not in the lifted body). But the closure-resource emit path does not yet import
-    /// the host interface, so it declines — now HONESTLY, naming the feature, NOT with the internal "not in
-    /// the host-import set" message (documented "a compiler bug"). A plain capturing closure (no host) still
-    /// emits, and the CDZ0406 escape (perform IN the closure body) still fires — the make-time decline must
-    /// not swallow either.
+    /// (fn (x) (+ x v))))` — now COMPILES to a VALID component (brick d: the closure-resource emit composes
+    /// the host interface via `multi_closure_resource_core_module_with_host` +
+    /// `assemble_closure_host_runtime_resource`). The `ask.ask` is discharged make-time while the delegation
+    /// is in scope; the returned closure captures only the plain result. Verified across capture positions
+    /// (let-init, operand-feeding-a-capture, one-of-several-captures) — all emit valid components. The
+    /// CDZ0406 ESCAPE (perform IN the lifted body) still REJECTS — the closure-capture emit only composes a
+    /// make-time host call, never a call-time one. (The end-to-end value — `call(3)` = 13 with `ask.ask`→10
+    /// — is the corpus case "a build-time delegated effect whose result a returned closure captures does not
+    /// escape".)
     #[test]
-    fn a_closure_export_delegating_a_build_time_effect_declines_honestly() {
+    fn a_closure_export_delegating_a_build_time_effect_emits_a_valid_component() {
         use crate::testkit::parse;
-        let src = "(do (effect ask (op ask (-> Unit Int64))) \
-                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a closure export with a build-time host effect is not yet emitted — must decline",
+        let engine = wasmtime::Engine::default();
+        let emits_valid = |src: &str, what: &str| {
+            let bytes = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("{what} must emit, got decline: {}", e.message));
+            wasmtime::component::Component::from_binary(&engine, &bytes)
+                .unwrap_or_else(|e| panic!("{what} must be a VALID component: {e}"));
+        };
+        // The canonical case + two other capture positions — all now emit valid components.
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))",
+            "a let-init build-time host capture",
         );
-        assert!(
-            err.message.contains("ask.ask")
-                && err.message.contains("closure export")
-                && err.message.contains("not yet emitted"),
-            "expected an honest feature-limitation decline naming the op, got: {}",
-            err.message
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((v (+ (ask.ask) 1))) (fn ((: x Int64)) (+ x v))))) (export main))",
+            "a host call in an operand feeding a capture",
         );
-        assert!(
-            !err.message.contains("not in the host-import set"),
-            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
-            err.message
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((a (ask.ask)) (b 5)) (fn ((: x Int64)) (+ (+ x a) b))))) (export main))",
+            "one of several captures performing",
         );
-        // A PLAIN capturing closure (no host) still emits.
-        let plain = "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
-        crate::compile::compile_component(&crate::codec::encode(&parse(plain)))
-            .expect("a plain capturing closure still emits (the make-time decline is host-gated)");
-        // The CDZ0406 ESCAPE (perform INSIDE the closure body) still fires — not swallowed by the make-time
-        // decline (which scans the EXPORT body; the escape scans the LIFTED body).
+        // A PLAIN capturing closure (no host) still emits (unaffected by the host route).
+        emits_valid(
+            "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))",
+            "a plain capturing closure",
+        );
+        // The CDZ0406 ESCAPE (perform INSIDE the closure BODY) still REJECTS — the host-composition route
+        // only fires for a make-time (export-body) host call, never a call-time (lifted-body) one.
         let escape = "(do (effect ask (op ask (-> Unit Int64))) \
                    (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
         let esc_err = crate::compile::compile_component(&crate::codec::encode(&parse(escape)))
@@ -37868,37 +37877,6 @@ mod closure_host_resource {
             esc_err.code,
             esc_err.message
         );
-        // The honest decline covers the make-time host call in ANY capture position — the export-body scan
-        // is a structural AST descent, so a host call nested in an operand feeding a capture, or one of
-        // several captures, is caught just as a bare let-init is. Regression guard: none may leak the
-        // internal "not in the host-import set" message.
-        for (what, src) in [
-            (
-                "a host call in an operand feeding a capture",
-                "(do (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (let ((v (+ (ask.ask) 1))) (fn ((: x Int64)) (+ x v))))) (export main))",
-            ),
-            (
-                "one of several captures performing",
-                "(do (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (let ((a (ask.ask)) (b 5)) (fn ((: x Int64)) (+ (+ x a) b))))) (export main))",
-            ),
-        ] {
-            let e = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err(
-                    "a make-time host call in a closure export is not yet emitted — must decline",
-                );
-            assert!(
-                !e.message.contains("not in the host-import set"),
-                "{what} must decline honestly, not with the internal message, got: {}",
-                e.message
-            );
-            assert!(
-                e.message.contains("ask.ask") && e.message.contains("not yet emitted"),
-                "{what} must name the op + feature limitation, got: {}",
-                e.message
-            );
-        }
     }
 
     /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler

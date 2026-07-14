@@ -1427,29 +1427,13 @@ fn emit_closure_resource(
     }
     // A MAKE-TIME host call in the EXPORT BODY (not the lifted closure) — the build-time-delegated case
     // `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`: `ask.ask` is discharged WHILE the delegation
-    // is in scope and the closure merely captures the plain result `v` (NOT an escape — the CDZ0406 scan
-    // above correctly left it alone). But the closure-resource emit path does not yet build the host-import
-    // boundary (`resource_escape_build` fixes `import_base` from runtime ops + resource intrinsics only, and
-    // `assemble_closure_resource` imports no `host` interface), so the make-time `Core::HostCall` would fall
-    // through to `select`'s internal "not in the host-import set" message (documented "a compiler bug").
-    // Decline HONESTLY instead, naming the feature — the closure-export host-import composition is a later
-    // increment (it needs the same host+runtime fusion `assemble_host_runtime` applied to the closure
-    // resource envelope). Scans the export body's make-time code for a discharged host call.
-    {
-        let mut make_time = Vec::new();
-        for &def in &layout.order {
-            let body = def_body(db, def)?;
-            host::collect_host_imports(db, body, &mut make_time);
-        }
-        if let Some(h) = make_time.first() {
-            return Err(Reject::decline(format!(
-                "a closure export whose build-time code delegates a host effect ({}.{}) is not yet emitted \
-                 (the closure resource envelope does not import the host interface yet — a later \
-                 increment); the effect is discharged in scope and the closure captures only the plain \
-                 result, so this is valid, just unimplemented",
-                h.effect, h.op
-            )));
-        }
+    // is in scope and the closure captures only the plain result `v` (NOT the CDZ0406 escape — that scans
+    // the lifted body). Collect these make-time host imports; the actual host-composition emit is routed
+    // AFTER the boundary bytes (`arg_bytes`/`result_byte`/`ret_is_*`) are computed below.
+    let mut host_imports: Vec<host::HostImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_host_imports(db, body, &mut host_imports);
     }
     // Boundary bytes (component valtypes) for the `call` method's ARGS — always aliased scalar widths (a
     // compound closure arg is the host→guest DECODE direction, not yet supported).
@@ -1501,6 +1485,42 @@ fn emit_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
+    // BRICK (d): a closure export whose build-time `make` code delegates a host effect (`host_imports`
+    // non-empty, collected above) composes the host interface into the closure resource. This increment
+    // handles a SCALAR closure result + a single scalar/unit host effect; other shapes decline cleanly.
+    if !host_imports.is_empty() {
+        if ret_is_bytes || ret_is_compound || ret_is_collection {
+            return Err(Reject::decline(
+                "a closure export that BOTH delegates a build-time host effect AND returns a \
+                 byte-rope/compound/collection is not yet emitted (the host-composed closure core supports \
+                 a scalar result this increment)",
+            ));
+        }
+        let iface = host_imports[0].effect.clone();
+        if host_imports.iter().any(|hi| hi.effect != iface) {
+            return Err(Reject::decline(
+                "a closure export delegating more than one host effect is not yet emitted (one interface \
+                 per closure envelope)",
+            ));
+        }
+        if host::set_needs_memory(&host_imports) {
+            return Err(Reject::decline(
+                "a closure export delegating a host op with a string parameter is not yet emitted (the \
+                 shared-memory host shape and the closure resource envelope compose in a later increment)",
+            ));
+        }
+        return emit_closure_host_resource(
+            db,
+            layout,
+            export_def,
+            &host_imports,
+            &iface,
+            &arg_bytes,
+            result_byte,
+            &arg_tys,
+            &ret_ty,
+        );
+    }
     // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
     // the `call_indirect` lifted functype shape). A `Bytes` result is an i32 heap handle.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
@@ -1696,6 +1716,183 @@ fn emit_closure_resource(
         &arg_bytes,
         result_byte,
     ))
+}
+
+/// Emit a SCALAR-result closure-resource component whose build-time `make` code delegates a host effect
+/// (the closure-capture feature, brick d): `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`. Composes
+/// the host interface into the closure resource, mirroring the scalar tail of [`emit_closure_resource`] but
+/// threading `host_imports`: the layout records `host_order` (so `select` emits each `Core::HostCall` as a
+/// `CallHostImport(raw position)`) and shifts `import_base` by `h` (host funcs occupy core `0..h`, ahead of
+/// the runtime ops + resource intrinsics — matching `multi_closure_resource_core_module_with_host`'s
+/// host-first layout). The core is built by that `_with_host` serializer; the component by
+/// `assemble_closure_host_runtime_resource`. Caller has verified: scalar closure result, single effect,
+/// scalar/unit host ops (no shared memory).
+#[allow(clippy::too_many_arguments)]
+fn emit_closure_host_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    host_imports: &[host::HostImport],
+    iface: &str,
+    arg_bytes: &[u8],
+    result_byte: u8,
+    arg_tys: &[crate::ty::Ty],
+    ret_ty: &crate::ty::Ty,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    let h = host_imports.len();
+    // The host-import ORDER — its `(effect, op)` name pairs, so `select` resolves each `Core::HostCall` to
+    // its raw position (= its core-func index 0..h, host-first). Recorded on the layout BEFORE selection.
+    let host_order: Vec<(String, String)> = host_imports
+        .iter()
+        .map(|hi| (hi.effect.clone(), hi.op.clone()))
+        .collect();
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
+        .iter()
+        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+        .collect::<Result<_, _>>()?;
+    let ret_vt = valtype_of(ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+    let export_params: Vec<(crate::ast::StructId, crate::ty::Ty)> = layout
+        .exports
+        .iter()
+        .find(|e| e.def == export_def)
+        .map(|e| e.params.clone())
+        .unwrap_or_default();
+    let make_param_vts: Vec<crate::backend::wasm::lir::ValType> = export_params
+        .iter()
+        .map(|(_, t)| {
+            valtype_of(t)
+                .ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+        })
+        .collect::<Result<_, _>>()?;
+    let make_param_bytes: Vec<u8> = export_params
+        .iter()
+        .map(|(_, t)| {
+            closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+        })
+        .collect::<Result<_, _>>()?;
+    // Lifted closure bodies' ops (a capturing body reads its env), as `emit_closure_resource` does.
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    // Build the runtime-import set + select, with `host_order` set + `import_base` shifted by `h` (host
+    // funcs 0..h, then k runtime ops, then 2 resource intrinsics = the closure escape's `intrinsics`).
+    let layout_ho = layout.with_host_order(host_order);
+    let (imports, mut funcs, built) =
+        resource_escape_build_host(db, &layout_ho, h as u32, |used| {
+            used.insert("arr-get");
+            used.insert("get-int");
+            used.insert("drop");
+            used.extend(lifted_ops.iter().copied());
+        })?;
+    let layout = built;
+    let export_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the closure export is not in the emission order"))?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a closure export produced no lifted lambda (the closure did not survive as a runtime value)",
+        ));
+    }
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    let host_fns: Vec<envelope::HostFn> = host_imports
+        .iter()
+        .map(|hi| envelope::HostFn {
+            op: hi.op.clone(),
+            comp_functype: host_op_comp_functype(hi),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    let main_core = serialize::multi_closure_resource_core_module_with_host(
+        &funcs,
+        &imports,
+        host_imports,
+        &[serialize::ClosureMake {
+            export_name: "make".to_string(),
+            export_abs,
+            param_vts: make_param_vts.clone(),
+        }],
+        &[],
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    Ok(envelope::assemble_closure_host_runtime_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        iface,
+        &host_fns,
+        &make_param_bytes,
+        arg_bytes,
+        result_byte,
+    ))
+}
+
+/// [`resource_escape_build_n`] with a HOST-import prefix: shifts `import_base` by `host_count` beyond the
+/// runtime ops + resource intrinsics (host funcs occupy core `0..host_count`, ahead of the runtime import
+/// section — the host-first layout `multi_closure_resource_core_module_with_host` + `CallHostImport` rely
+/// on). Otherwise identical to `resource_escape_build_n` (collect runtime ops from the order bodies, select
+/// with the shifted base). The layout passed in MUST already carry `host_order` (so selection resolves the
+/// `Core::HostCall`s). `intrinsics` is the resource-intrinsic count (2 for one resource type).
+fn resource_escape_build_host(
+    db: &mut Db,
+    layout: &Layout,
+    host_count: u32,
+    extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
+) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    extra(&mut used);
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+    // import_base = host funcs + runtime ops + 2 resource intrinsics.
+    let layout = layout.with_import_base(host_count + imports.len() as u32 + 2);
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(ep) => ep.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function_of(db, body, &params, &layout, Some(def))?);
+    }
+    Ok((imports, funcs, layout))
 }
 
 /// Emit the MULTI-EXPORT closure-resource component: several exports whose results are all closures of the
