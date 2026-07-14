@@ -1737,7 +1737,9 @@ fn fold_const_sum_path(
     while i < path.len() {
         let step = &path[i];
         match (step, crate::lower::core_of(db, cur)) {
-            (crate::core::PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
+            (crate::core::PathStep::Payload, Core::SumNew { payloads, .. })
+                if payloads.len() == 1 =>
+            {
                 cur = payloads[0];
                 i += 1;
             }
@@ -1797,18 +1799,17 @@ fn emit_sum_payload(
             return emit(db, node, env, ctx);
         }
         // A `[…, Payload]` ending on a MULTI-payload variant is the tuple of its payloads (no single node).
-        if let (Some((last, prefix)), _) = (path.split_last(), ()) {
-            if matches!(last, crate::core::PathStep::Payload)
-                && let Some(parent) = fold_const_sum_path(db, scrutinee, prefix)
-                && let Core::SumNew { payloads, .. } = crate::lower::core_of(db, parent)
-                && payloads.len() != 1
-            {
-                let mut parts = Vec::with_capacity(payloads.len());
-                for &p in &payloads {
-                    parts.push(emit(db, p, env, ctx)?);
-                }
-                return Ok(format!("({})", parts.join(", ")));
+        if let Some((last, prefix)) = path.split_last()
+            && matches!(last, crate::core::PathStep::Payload)
+            && let Some(parent) = fold_const_sum_path(db, scrutinee, prefix)
+            && let Core::SumNew { payloads, .. } = crate::lower::core_of(db, parent)
+            && payloads.len() != 1
+        {
+            let mut parts = Vec::with_capacity(payloads.len());
+            for &p in &payloads {
+                parts.push(emit(db, p, env, ctx)?);
             }
+            return Ok(format!("({})", parts.join(", ")));
         }
     }
     // The binding covers the arm's direct payload (path prefix `[Payload]`); any trailing `Elem(i)` steps

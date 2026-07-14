@@ -1108,8 +1108,14 @@ fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
                                   ((W.A h) h) ((W.U (Option.Some n)) n) ((W.U (Option.None)) -1) \
                                   ((W.V (Result.Ok o)) o) ((W.V (Result.Err e)) e))) (export f))",
     );
-    assert!(rs.contains("Option::Some(__pay"), "U's inner Option switch:\n{rs}");
-    assert!(rs.contains("Result::Ok(__pay"), "V's inner Result switch:\n{rs}");
+    assert!(
+        rs.contains("Option::Some(__pay"),
+        "U's inner Option switch:\n{rs}"
+    );
+    assert!(
+        rs.contains("Result::Ok(__pay"),
+        "V's inner Result switch:\n{rs}"
+    );
     if let Some(out) = rustc_run(&rs, "f(5)") {
         assert_eq!(out, "5");
     }
@@ -1134,7 +1140,10 @@ fn rustc_roundtrip_three_level_nested_sum_match_folds_through_known_constructors
                                   ((Outer.Q (Inner.Y (Result.Ok o))) o) \
                                   ((Outer.Q (Inner.Y (Result.Err e))) e))) (export f))",
     );
-    assert!(rs.contains("Result::Ok(__pay"), "dispatches on the innermost Result:\n{rs}");
+    assert!(
+        rs.contains("Result::Ok(__pay"),
+        "dispatches on the innermost Result:\n{rs}"
+    );
     if let Some(out) = rustc_run(&rs, "f(6)") {
         assert_eq!(out, "6");
     }

@@ -1715,6 +1715,7 @@ pub fn closure_bytes_resource_core_module_borrow(
 /// walking `arr-get`/`get-int` paths from the dispatched compound handle. The closure's compound result is
 /// a plain heap rep (the `call_indirect` result), so `emit_hole_fill` walks it exactly as the escape walks
 /// a resource rep — the ONLY difference is the rep is a local (the dispatch result), not `resource.rep`'d.
+#[allow(clippy::too_many_arguments)]
 pub fn closure_value_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
@@ -2035,6 +2036,7 @@ pub fn closure_value_resource_core_module_borrow(
 /// release `rep`/`desc`/`doc`. No data section (the descriptor bytes are baked into the code as constants).
 /// The imports must include `value-encode`/`bytes-alloc`/`bytes-set`/`bytes-len`/`bytes-get`/`drop`/
 /// `arr-get`/`get-int`.
+#[allow(clippy::too_many_arguments)]
 pub fn closure_value_encode_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
