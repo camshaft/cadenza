@@ -730,6 +730,35 @@ impl<'a> Parser<'a> {
                 self.bracketed_bars(Self::map_literal)
             }
             Kind::Hash => self.bracketed_bars(Self::hash_list),
+            // A lexer ERROR token — an unterminated literal (`"…` / `b"…` / `#"…` / `` `… `` / `#\`) run
+            // to end-of-input, or an otherwise-unrecognized character. The generic "expected an
+            // expression" here misdirects (the token IS where an expression should start; the real defect
+            // is that the literal never closed), so name the specific cause from the token's opening
+            // characters — the lexer merged the error token's span from the opener to EOF, so `cur_text`
+            // begins with the opener. This is the ML-surface twin of the s-expr reader's "unterminated
+            // string" message; without it an unterminated string in ML read as a bare "expected an
+            // expression" at the quote.
+            Kind::Error => {
+                let t = self.cur_text();
+                let msg = if t.starts_with("b\"") {
+                    "unterminated byte-string literal (missing closing `\"`)"
+                } else if t.starts_with("#\"") {
+                    "unterminated symbol literal (missing closing `\"`)"
+                } else if t.starts_with('"') {
+                    "unterminated string literal (missing closing `\"`)"
+                } else if t.starts_with('`') {
+                    "unterminated backtick name (missing closing `` ` ``)"
+                } else if t.starts_with("#\\") {
+                    "unterminated character literal"
+                } else {
+                    "unexpected character"
+                };
+                self.error(msg);
+                if !self.at_expr_stop() {
+                    self.bump();
+                }
+                self.error_node(span)
+            }
             _ => {
                 self.error("expected an expression");
                 // Consume the offending token so we make progress — UNLESS it belongs to an
@@ -2579,6 +2608,40 @@ mod tests {
         assert_eq!(call.len(), 2, "both args recovered");
         assert_eq!(a.as_name(call[0]), Some("a"));
         assert_eq!(a.as_name(call[1]), Some("b"));
+    }
+
+    #[test]
+    fn an_unterminated_literal_names_its_specific_cause() {
+        // A lexer ERROR token in expression position (an unterminated literal run to end-of-input) used
+        // to read as the generic "expected an expression" — misdirecting, since the token IS where an
+        // expression starts; the real defect is the unclosed literal. Each opener now names its cause,
+        // the ML-surface twin of the s-expr reader's "unterminated string".
+        for (src, needle) in [
+            ("def f() = \"abc", "unterminated string literal"),
+            ("def f() = b\"abc", "unterminated byte-string literal"),
+            ("def f() = #\"abc", "unterminated symbol literal"),
+            ("def f() = `abc", "unterminated backtick name"),
+        ] {
+            let p = read_ml(src);
+            assert!(!p.ok(), "{src:?} is rejected");
+            assert!(
+                p.errors.iter().any(|e| e.message.contains(needle)),
+                "{src:?} names {needle:?}, not the generic message: {:?}",
+                p.errors
+            );
+            assert!(
+                !p.errors
+                    .iter()
+                    .any(|e| e.message == "expected an expression"),
+                "{src:?} does not fall back to the generic message: {:?}",
+                p.errors
+            );
+        }
+        // A well-terminated string is unaffected (no spurious error).
+        assert!(
+            read_ml("def f() = \"abc\"").ok(),
+            "a closed string parses clean"
+        );
     }
 
     #[test]

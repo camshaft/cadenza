@@ -46,24 +46,32 @@ pub fn emit_enum_decls(db: &mut Db) -> String {
 /// a `match` that renders a user-sum value to cdz-run's bare form (`(Sm 42)`, `(Nn unit)`), keyed by the
 /// enum ident so it composes with the `cdz-return` type note.
 ///
-/// Only MONOMORPHIC user sums get a descriptor: a built-in `Option`/`Result` renders via the driver's
-/// head-type path (it maps to std's, not an emitted enum), and a GENERIC user sum's payload is a type
-/// PARAMETER (`T0`) whose concrete type is not known per-declaration — an escape of one is a gap the
-/// driver declines (no corpus case escapes a generic user sum yet), not a wrong render.
+/// A built-in `Option`/`Result` renders via the driver's head-type path (it maps to std's, not an emitted
+/// enum). A GENERIC user sum's payload is a type PARAMETER, rendered here as the parameter placeholder
+/// `T{k}` (via `render_payload_ty` at the sentinel instantiation); the gate driver substitutes the result
+/// type's concrete args (`(Box Int64)` → `T0 = Int64`) when it renders, so a generic-sum escape renders
+/// like a monomorphic one — a `T{k}`-parameterized descriptor plus a `// cdz-sum-params[Ident]: N` note
+/// giving the parameter count so the driver knows how many args to bind.
 pub fn emit_sum_descriptors(db: &mut Db) -> String {
     let mut out = String::new();
     let n = db.type_decls.len();
     for i in 0..n {
         let decl = db.type_decls[i].clone();
-        // Only a sum whose enum actually emits (non-built-in, non-recursive, native payloads) and that is
-        // MONOMORPHIC (no type params — a param payload has no concrete render form here).
-        if !decl.params.is_empty() || emit_one_enum(db, i).is_err() {
+        // Only a sum whose enum actually emits (non-built-in, non-recursive, native payloads). A GENERIC
+        // sum now gets a descriptor too (payloads as `T{k}` placeholders); a monomorphic one has no params.
+        if emit_one_enum(db, i).is_err() {
             continue;
         }
         let ident = types::sum_ident(&decl.name);
         let mut groups = Vec::with_capacity(decl.variants.len());
         for variant in &decl.variants {
-            let payloads = variant_payload_renders(db, variant);
+            let payloads = if decl.params.is_empty() {
+                variant_payload_renders(db, variant)
+            } else {
+                // A generic sum: render each payload at the sentinel instantiation so a type parameter
+                // (bare or nested, `(Option a)`) shows as `T{k}` — the placeholder the driver substitutes.
+                variant_payload_renders_generic(db, &decl, variant)
+            };
             // One token per payload: `(Name)` nullary, `(Name T)` single, `(Name T0 T1 …)` multi-payload
             // (the token COUNT is the arity, so the harness spreads a multi-payload variant flat).
             if payloads.is_empty() {
@@ -73,8 +81,50 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
             }
         }
         out.push_str(&format!("// cdz-sum[{ident}]: {}\n", groups.join(" ")));
+        // A generic sum records its parameter COUNT so the driver knows how many `T{k}` placeholders to
+        // substitute from the result type's args. A monomorphic sum (no params) needs no such note.
+        if !decl.params.is_empty() {
+            out.push_str(&format!(
+                "// cdz-sum-params[{ident}]: {}\n",
+                decl.params.len()
+            ));
+        }
     }
     out
+}
+
+/// The payload render tokens of a GENERIC sum's variant IN CADENZA TYPE SYNTAX, with each type PARAMETER
+/// shown as its placeholder `T{k}`. A payload is rendered at the sum's SENTINEL instantiation (so a
+/// parameter appearing anywhere becomes `Ty::Var(PARAM_SENTINEL_BASE+k)`), then `render_name` (the SAME
+/// Cadenza-syntax render the monomorphic descriptors use — `(Option Int64)`, not Rust `Option<T0>`) is
+/// post-processed to rewrite each sentinel var `?{BASE+k}` to `T{k}`. So `(W a)` → `T0`, `(W (Option a))` →
+/// `(Option T0)` — placeholders the gate driver parses with `parse_head_type` and substitutes with the
+/// result type's concrete args. A payload that does not resolve is dropped, matching the monomorphic path.
+fn variant_payload_renders_generic(
+    db: &mut Db,
+    decl: &crate::db::TypeDecl,
+    variant: &crate::db::Variant,
+) -> Vec<String> {
+    variant
+        .payloads
+        .iter()
+        .filter_map(|&occ| {
+            let ty = sentinel_payload_ty(db, decl, occ)?;
+            Some(rewrite_sentinel_vars(&ty.render_name(), decl.params.len()))
+        })
+        .collect()
+}
+
+/// Rewrite each sentinel param var `?{PARAM_SENTINEL_BASE+k}` in a `render_name` string to the placeholder
+/// `T{k}` (`k` in `0..nparams`). The sentinel base is far above any real inference var, so a genuine free
+/// `?N` in a payload (there should be none at a resolved sentinel instantiation) is untouched.
+fn rewrite_sentinel_vars(rendered: &str, nparams: usize) -> String {
+    let mut s = rendered.to_string();
+    for k in 0..nparams {
+        let from = format!("?{}", PARAM_SENTINEL_BASE + k as u32);
+        s = s.replace(&from, &format!("T{k}"));
+    }
+    s
 }
 
 /// Emit a machine-readable DESCRIPTOR note per erased NEWTYPE — the inner type its name erases to, so the

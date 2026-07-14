@@ -1264,6 +1264,29 @@
                 (do (Diag.emit 1) 0))) (export main)))
   (error  CDZ0405))
 
+(case "a resume outside any handler arm is rejected"
+  (doc    "A `resume` hands a value back to the point that performed a handler arm's operation, so it is
+           meaningful ONLY inside a handler arm's body (capabilities-and-effects.md #A Handler Arm May
+           Resume). A `resume` in a plain definition body — with no enclosing handler arm to return into —
+           is a malformed use of the control form, rejected at compile time (CDZ0201) rather than silently
+           accepted and declined only at lowering. Pins that `cdz check` surfaces a stray resume (a
+           well-formedness fault visible without emitting), not just the backend.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (resume 1 0)) (export main)))
+  (error  CDZ0201))
+
+(case "a host delegating a value definition rather than an effect is rejected"
+  (doc    "A `host` delegates EFFECTS to the boundary — it grants exactly the effects its body reaches
+           (capabilities-and-effects.md #Host Delegation Is An Entrypoint's Prerogative). `(host (foo) …)`
+           where `foo` is a value definition names a VALUE, not an effect: there is nothing to delegate, so
+           it is a malformed grant, rejected at compile time (CDZ0201) rather than silently accepted as a
+           no-op that computes an empty manifest. Pins that a delegation names a declared effect.")
+  (input  (do
+            (def foo 5)
+            (def (main) (host (foo) 5)) (export main)))
+  (error  CDZ0201))
+
 (case "an effect operation reached with neither a handler nor a delegation is rejected"
   (doc    "`Ask` is a routing-agnostic effect; `main` performs `(Ask.ask)` with no enclosing handler and
            no enclosing entrypoint `host` delegation, so the effect would escape ungranted — rejected at

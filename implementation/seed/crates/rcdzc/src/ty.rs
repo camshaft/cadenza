@@ -788,7 +788,13 @@ pub enum Ty {
     /// The type of a type VALUE — the type of `Bool`, of `(Int 64)`, of the result of `(-> A B)`.
     /// Because a type is a first-class value, it has a type, and that type is `Type`. It is
     /// compile-time-only (a value of type `Type` is erased before the runtime boundary, like any
-    /// type-value).
+    /// type-value). A type is an ORDINARY value — bound to a name (`Int64`, a prelude type ctor), passed,
+    /// and returned — so the language needs no separate term-and-type syntax; and its type being `Type`
+    /// makes the kind level itself a type in the system rather than an untyped meta-level.
+    //= spec/capabilities/type-system.md#types-are-first-class-values-whose-type-is-the-type-of-types
+    //# A type MUST be expressible as an ordinary first-class value that can be bound, passed, and returned, so that the language needs no separate term-and-type syntax to name a type.
+    //= spec/capabilities/type-system.md#types-are-first-class-values-whose-type-is-the-type-of-types
+    //# The type of a type-value MUST be the type of types, so that the kind level is itself a type in the system rather than an untyped meta-level.
     Type,
     /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
     /// type before it is constrained). Resolved to a concrete type by the Hindley-Milner solve in
@@ -1003,6 +1009,46 @@ impl Ty {
             },
             // Leaves and other determined shapes keep themselves (no hole to fill).
             _ => self.clone(),
+        }
+    }
+
+    /// Whether this type is fully GROUND — contains NO substitutable variable of ANY kind (a type `Var`,
+    /// an integer/float `Width::Var`, or a `Sign::Var`). A ground type is a FIXPOINT of `Subst::apply`
+    /// (applying any substitution returns it unchanged), so `apply` short-circuits on it — cloning the
+    /// (Arc-shared) type is then a refcount bump, not a deep rebuild of a wide `Record`/`Tuple`/`Sum`.
+    /// STRONGER than `!has_free_var()`: that ignores width/sign vars (a `Ty::Int` with a `Width::Var` has
+    /// no free TYPE var yet is not ground), which would make an `apply` fast-path keyed on it INCORRECT.
+    pub fn is_ground(&self) -> bool {
+        match self {
+            Ty::Var(_) => false,
+            Ty::Int(it) => {
+                !matches!(it.width, crate::ty::Width::Var(_))
+                    && !matches!(it.sign, crate::ty::Sign::Var(_))
+            }
+            Ty::Float(ft) => !matches!(ft.width, crate::ty::Width::Var(_)),
+            Ty::Fn(p, r) => p.is_ground() && r.is_ground(),
+            Ty::Tuple(elems) => elems.iter().all(|t| t.is_ground()),
+            Ty::List(elem) => elem.is_ground(),
+            Ty::Map(k, v) => k.is_ground() && v.is_ground(),
+            Ty::Set(elem) => elem.is_ground(),
+            Ty::Record(fields) => fields.values().all(|t| t.is_ground()),
+            Ty::Sum { args, .. } => args.iter().all(|t| t.is_ground()),
+            Ty::Qty { inner, .. } => inner.is_ground(),
+            // `Nominal` mirrors `Subst::apply`: it substitutes into BOTH `args` and the `inner` machine-rep
+            // hint, so both must be ground for the type to be an `apply` fixpoint.
+            Ty::Nominal { args, inner, .. } => {
+                args.iter().all(|t| t.is_ground()) && inner.is_ground()
+            }
+            Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Any
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational => true,
         }
     }
 

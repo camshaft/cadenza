@@ -60,6 +60,16 @@ impl Subst {
     /// chains (a variable solved to another variable resolves through). Total and terminating: the
     /// occurs-check keeps the variable graph acyclic.
     pub fn apply(&self, ty: &Ty) -> Ty {
+        // GROUND FAST-PATH: a type with no substitutable variable of any kind is an `apply` fixpoint, so
+        // returning `ty.clone()` is correct — and for an Arc-shared `Record`/`Tuple`/`Sum` that clone is a
+        // refcount bump, NOT the deep `.iter().map(apply).collect()` rebuild (+ its BTreeMap drop) the arms
+        // below would do. `unify` applies BOTH operands on entry, so a wide GROUND record unified per call
+        // site (a wide-record arg passed to a function called N times) rebuilt its whole field map every
+        // call → O(width × calls); this makes it O(1) per call. `is_ground` walks once (O(width)) and
+        // short-circuits, replacing an allocate-and-rebuild with a read-only check + pointer clone.
+        if ty.is_ground() {
+            return ty.clone();
+        }
         match ty {
             Ty::Var(v) => match self.tys.get(v) {
                 Some(t) => self.apply(t),
@@ -897,6 +907,47 @@ mod tests {
         let i64t = Ty::int64();
         let mut s = Subst::new();
         assert!(unify(&mut s, &i32t, &i64t).is_err());
+    }
+
+    #[test]
+    fn apply_ground_fast_path_is_identity_and_correct() {
+        // `apply` has a ground fast-path (returns the input unchanged) — pin its CORRECTNESS. A ground type
+        // (no ty/width/sign var) must come back equal under ANY substitution, and a NON-ground type must
+        // still be fully applied (the fast-path must not swallow a substitutable var). The subtle case:
+        // `is_ground` must be FALSE for a `Ty::Int` carrying a `Width::Var` (else the fast-path would skip
+        // the width solve) — `width_var_unifies_then_fixes` above covers the apply, this pins the classify.
+        // A ground compound is a fixpoint: applying a populated subst returns an EQUAL type.
+        let ground = Ty::Tuple(vec![Ty::Bool, Ty::int64(), Ty::String].into());
+        assert!(ground.is_ground(), "a tuple of concrete leaves is ground");
+        let mut s = Subst::new();
+        unify(&mut s, &Ty::Var(7), &Ty::Bool).unwrap(); // a non-empty subst
+        assert_eq!(
+            s.apply(&ground),
+            ground,
+            "apply is identity on a ground type"
+        );
+        // A `Width::Var` int is NOT ground (must still be applied) — the fast-path must not claim it.
+        let width_var = Ty::Int(IntTy {
+            sign: Sign::Fixed(true),
+            width: Width::Var(9),
+        });
+        assert!(
+            !width_var.is_ground(),
+            "an int with a Width::Var is NOT ground (apply must still solve the width)"
+        );
+        // A tuple CONTAINING a var is not ground, and apply still substitutes into it.
+        let mixed = Ty::Tuple(vec![Ty::Bool, Ty::Var(3)].into());
+        assert!(
+            !mixed.is_ground(),
+            "a tuple with a var element is not ground"
+        );
+        let mut s2 = Subst::new();
+        unify(&mut s2, &Ty::Var(3), &Ty::int64()).unwrap();
+        assert_eq!(
+            s2.apply(&mixed),
+            Ty::Tuple(vec![Ty::Bool, Ty::int64()].into()),
+            "apply substitutes into a non-ground compound"
+        );
     }
 
     #[test]

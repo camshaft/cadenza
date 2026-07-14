@@ -1387,6 +1387,32 @@ pub(crate) fn is_handle_arm(db: &Db, arm: StructId) -> bool {
         == Some(arms_list)
 }
 
+/// Whether the `resume` at `node` is STRAY — a LIVE source `resume` that is NOT inside a handler arm's
+/// body. A `resume` hands a value back to the point that performed the arm's operation, so it is meaningful
+/// ONLY inside a handler arm's BODY; anywhere else it has no arm to return into and is rejected (a coded
+/// diagnostic, not a silent lowering decline). Walking UP the parent chain: (a) if an ancestor we came from
+/// is element 3 (the body) of a 4-element list `is_handle_arm` recognizes, the `resume` is well-placed (not
+/// stray); (b) the chain must reach the arena ROOT — a SYNTHESIZED fold copy (a `push_list`/`beta_reduce`
+/// node the reduction produced, root-parent `None`) is NOT a live source node and must NOT be flagged (its
+/// chain dead-ends before the root). So a `resume` is stray iff its chain reaches the root WITHOUT passing
+/// through a handler-arm body. Bounded by the finite parent chain.
+pub(crate) fn is_stray_resume(db: &Db, node: StructId) -> bool {
+    let mut child = node;
+    while let Some(parent) = db.parent_of(child) {
+        if let Struct::List(parts) = db.ast.get(parent)
+            && parts.len() == 4
+            && parts[3] == child
+            && is_handle_arm(db, parent)
+        {
+            return false; // well-placed inside a handler arm body
+        }
+        child = parent;
+    }
+    // The chain ended. If it reached the arena root, this is a LIVE source `resume` with no enclosing arm →
+    // stray. If it dead-ended before the root, it is a synthesized fold copy — NOT flagged.
+    child == db.ast.root
+}
+
 /// If `form` is a guard `(guard <binder> <cond>)` ascended from its `<cond>`, and `<binder>` is a bare
 /// binder name equal to `name`, and the guard is the pattern of an enclosing match arm, the match's
 /// SCRUTINEE occurrence — the value the binder binds (a guard reads the pattern's binder). `None`

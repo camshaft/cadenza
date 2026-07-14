@@ -1053,6 +1053,37 @@ fn check_no_home_walk(
                     host_effect_decl(db, e).map(|d| (e, d))
                 })
                 .collect();
+            // A DELEGATED NAME THAT RESOLVES TO A VALUE DEFINITION. `(host (foo) …)` where `foo` is a
+            // top-level `(def foo …)` names a VALUE, not an effect — a malformed grant (a `host` delegates
+            // EFFECTS, `capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative), not a
+            // silently-ignored no-op. Reject it CDZ0201, anchored at the name. ⚠ CONSERVATIVE — flags ONLY a
+            // name that is UNAMBIGUOUSLY a value def (`def_by_name`): a nested-module effect
+            // (`(module m (effect log …) (def (main) (host (log) …)))`) is NOT in the TOP-LEVEL
+            // `effect_decls`/`def_by_name` registries (it lives in the module's own scope), so testing "is a
+            // declared effect" would false-flag it; testing "is a value def" instead only fires on a genuine
+            // non-effect binding. An unbound delegated name is left to the resolver's own unbound-name check.
+            for &e in effects.iter() {
+                let names_a_value_def = db
+                    .ast
+                    .as_name(e)
+                    .is_some_and(|n| db.def_by_name(n).is_some());
+                if names_a_value_def {
+                    let named = db
+                        .ast
+                        .as_name(e)
+                        .map(|n| format!(" `{n}`"))
+                        .unwrap_or_default();
+                    out.push(crate::diag::Reject::coded(
+                        crate::diag::Code::Malformed,
+                        format!(
+                            "a host delegates EFFECTS to the boundary, but this delegated name{named} \
+                             is a value definition, not an effect — a `host` grants a declared effect, \
+                             e.g. `(effect E …)`"
+                        ),
+                    )
+                    .at(e));
+                }
+            }
             // LATENT AUTHORITY (CDZ0404). A delegation must grant EXACTLY the effects that escape — an
             // effect the body never reaches is a granted-but-unexercised capability, rejected
             // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). Check each

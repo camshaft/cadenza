@@ -10861,6 +10861,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_deeply_nested_option_pattern_lowers_in_bounded_time() {
+        // REGRESSION (perf): the match decision-tree builder (`lower::build_tree`) threads a `PathTypes`
+        // map (path → the sub-value's `Ty`) that `extend_path_types` CLONED whole at every nesting level so
+        // sibling arms don't share a mutation. A deeply-NESTED pattern `(Some (Some … x))` descends `depth`
+        // levels with a map that grows one entry per level, each value a `Ty` itself O(depth) deep — so the
+        // per-level clone was O(depth²) and the whole build O(depth³) (depth-400: 7.5s, 52% in `Ty::clone`).
+        // Two fixes: (1) `PathTypes` values are `Arc<Ty>` (the per-level map clone is a pointer-bump per
+        // entry, not a deep `Ty` copy); (2) `const_at_path`'s per-step nominal-newtype check reads only the
+        // type KIND via `infer::type_is_nominal` instead of cloning the whole `Ty`. Depth 60 would have been
+        // well into the superlinear regime; that it lowers AND evaluates correctly is the gate.
+        let mut val = String::from("0");
+        let mut pat = String::from("x");
+        for _ in 0..60 {
+            val = format!("(Some {val})");
+            pat = format!("(Some {pat})");
+        }
+        let src = format!("(module m (def (main) (match {val} ({pat} x) (_ -1))) (export main))");
+        // The pattern matches the value exactly (60 `Some` layers around `0`), binding `x` to the innermost
+        // `0` — so the result is `0`, NOT the `-1` fallback. Diagnostics must be clean and return quickly.
+        // Through the host-stack guard the bin uses (`host.rs`): the decision-tree/fold walk recurses ~per
+        // nesting level (60 deep), which SIGABRTs a default `cargo test` worker's ≈2 MB stack (EXIT=101,
+        // 0 FAILED) even though it TERMINATES — deep-but-finite, not a loop (`RUST_MIN_STACK=64M` passes).
+        // `&src` is borrowed (the scoped-thread guard permits it); `src` is still used by the run below.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested Option match lowers with no error diagnostics: {diags:?}"
+        );
+        assert_eq!(
+            run_heap_value(&src, vec![]).unwrap_or_else(|| "0".to_string()),
+            "0",
+            "the 60-deep nested Some pattern binds the innermost 0"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
         // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
         // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and
@@ -12119,6 +12159,55 @@ mod match_engine {
     }
 
     #[test]
+    fn using_an_option_where_its_payload_is_expected_says_to_match_it() {
+        // The INVERSE of "wrap in `Some`": a fallible read returns `(Option T)` and the author uses it
+        // directly where the bare payload `T` is expected — `(+ ((. List at) xs 0) 1)`, `(f opt)` for an
+        // `Int64` param. An `Option` has NO total unwrap (it is eliminated only by matching its `None`
+        // case), so there is no mechanical fix — but the message must say HOW to fix it (match it), not
+        // only name two types. Both the ANNOTATION/arg site and the BINOP unify site carry the hint.
+        let ann = reject_full(
+            "(module m (def (h (: n Int64)) n) (def (g (: o (Option Int64))) (h o)) (export g))",
+        )
+        .expect("using an Option where Int64 is expected rejects");
+        assert_eq!(ann.code.as_deref(), Some("CDZ0203"), "got: {}", ann.message);
+        assert!(
+            ann.message.contains("the value is optional")
+                && ann.message.contains("match it")
+                && ann.message.contains("(Some x)"),
+            "names the match-it route: {}",
+            ann.message
+        );
+        assert!(
+            ann.fix.is_none(),
+            "no mechanical fix (Option has no total unwrap): {:?}",
+            ann.fix
+        );
+
+        // The BINOP unify site (`(+ (Option Int64) Int64)`) carries the same hint.
+        let binop = reject_full(
+            "(module m (def (g (: xs (List Int64))) (+ ((. List at) xs 0) 1)) (export g))",
+        )
+        .expect("adding an optional read result rejects");
+        assert!(
+            binop.message.contains("the value is optional") && binop.message.contains("match it"),
+            "the binop mismatch also names the match-it route: {}",
+            binop.message
+        );
+
+        // NO false positive: a GENUINELY unrelated mismatch (payload does NOT match the expected type) gets
+        // no Option hint — `(Option Int64)` where `Bool` is expected is not an unwrap-needed shape.
+        let unrelated = reject_full(
+            "(module m (def (h (: b Bool)) b) (def (g (: o (Option Int64))) (h o)) (export g))",
+        )
+        .expect("Option Int64 vs Bool rejects");
+        assert!(
+            !unrelated.message.contains("the value is optional"),
+            "an unrelated-payload mismatch gets no unwrap hint: {}",
+            unrelated.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -12324,17 +12413,38 @@ mod match_engine {
     }
 
     #[test]
-    fn a_negative_into_unsigned_gets_no_widen_fix() {
-        // Widening never rescues a NEGATIVE literal in an UNSIGNED type (no unsigned width holds a
-        // negative), so CDZ0302 stays the honest bare reject — no misleading widen fix. (Switching to a
-        // signed type is a larger intent guess the compiler must not make.)
+    fn a_negative_into_unsigned_offers_the_smallest_signed_type() {
+        // A NEGATIVE literal in an UNSIGNED type cannot fit ANY unsigned width — so the fit is
+        // UNAMBIGUOUS: the value must be SIGNED (rustc makes exactly this suggestion). CDZ0302 now carries
+        // the retype fix to the smallest SIGNED width that holds it — `(: -5 UInt8)` → `Int8`. This is not
+        // a speculative signedness guess: a negative literal has no unsigned reading, so the signed type is
+        // forced. (Contrast the same-sign WIDEN case `(: 300 Int8)` → `Int16` below.)
         let d = reject_full("(module m (def (main) (: -5 UInt8)) (export main))")
             .expect("-5 does not fit UInt8");
         assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int8"),
+            "the smallest signed type holding -5: {}",
+            d.message
+        );
+        // A magnitude too large for Int8 escalates to the next signed width: -200 → Int16.
+        let big = reject_full("(module m (def (main) (: -200 UInt8)) (export main))")
+            .expect("-200 does not fit UInt8");
+        assert_eq!(
+            big.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int16"),
+            "-200 needs Int16 (outside Int8's -128..=127): {}",
+            big.message
+        );
+        // A value too large for even Int64 has no signed width → the honest bare reject, no fix.
+        let huge =
+            reject_full("(module m (def (main) (: -99999999999999999999999 UInt8)) (export main))")
+                .expect("a huge negative does not fit UInt8");
         assert!(
-            d.fix.is_none(),
-            "no widen fix for a negative into unsigned: {:?}",
-            d.fix
+            huge.fix.is_none(),
+            "no signed width holds a value beyond Int64: {:?}",
+            huge.fix
         );
     }
 
@@ -19718,6 +19828,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_data_constructor_colliding_variant_constructs_and_matches_as_the_local_variant() {
+        // A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
+        // distinct from a prelude TYPE/MODULE name (`Int`/`List`) — is reachable BARE in BOTH construct
+        // and match position, binding to the LOCAL variant, not the built-in Option/Result ctor. The
+        // built-in sums inject their data-ctor names into `prelude` AFTER `variant_ctor_index`'s
+        // `prelude_type_module_names` snapshot is taken (db.rs), so a user variant of that name IS indexed
+        // and resolves via step 3c (before the prelude) — whereas a variant colliding with a type/module
+        // name is deliberately SKIPPED from the index (so bare `Int` stays the width constructor) and can
+        // only be constructed qualified. These two behaviors share one injection-order mechanism; this
+        // test locks in the DATA-ctor half (the corpus pattern test above locks the match half for `Int`).
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Bare `Some` construct + bare `Some` pattern on a user sum reusing the prelude `Some`.
+        ok(
+            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Some 5))) (export main))",
+        );
+        // `Ok` (a Result data ctor) reused the same way.
+        ok(
+            "(module m (type T (Ok Int64) (Bad)) (def (f (: t T)) (match t ((Ok n) n) ((Bad) 0))) (def (main) (f (Ok 7))) (export main))",
+        );
+        // The bare `Some` construct genuinely builds T's OWN discriminant (not the built-in Option's): the
+        // `Some` arm (+100) fires on `(Some 5)` → 105, and the `Other` arm fires on `(Other 5)` → 5. A
+        // regression re-shadowing the user variant with the built-in Option would flip one of these.
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Some 5))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "105", "bare Some construct is T's own Some arm");
+        }
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Other 5))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "5", "bare Other construct is T's own Other arm");
+        }
+    }
+
+    #[test]
     fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
         // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
         // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List
@@ -23875,6 +24022,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
+        // 09-functions "a recursive function over a generic recursive sum is monomorphized per element
+        // type": the canonical idiom — a polymorphic linked list `(type Lst Nil (Cons a (Lst a)))` and a
+        // `len` that recurses on the tail without fixing the element type. Called on a `Lst Int64` (len 2)
+        // and a `Lst String` (len 3), `len` is monomorphized into one function per element type — the
+        // recursive-DATA analogue of the scalar `loopn` case. Uses the value heap (the sum boxes + the
+        // String leaves), so it SKIPS (not fails) when the runtime store is absent. 2 + 3 = 5.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Lst Nil (Cons a (Lst a))) \
+               (def (len l) (match l ((Lst.Nil) 0) ((Lst.Cons h t) (+ 1 (len t))))) \
+               (def (main) (+ (len (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                              (len (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
+               (export main))",
+        )))
+        .expect("a recursive generic function over a generic recursive sum compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found; skipping generic-recursive-sum monomorphization run"
+            );
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => {
+                assert_eq!(
+                    v, "5",
+                    "len monomorphized over Lst Int64 (2) + Lst String (3)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
@@ -24429,6 +24616,64 @@ mod stage1 {
         assert!(expect_decline("frobnicate").contains("unbound name"));
         // A well-formed literal is unaffected.
         assert_eq!(run_main("0x2A"), 42);
+    }
+
+    #[test]
+    fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
+        // A LEXICAL well-formedness poison a bare leaf resolves to — a malformed numeric literal
+        // (CDZ0201), an out-of-range float (CDZ0201), an unrecognized string escape (CDZ0001), a char
+        // naming a non-scalar (CDZ0002) — is a defect of the TOKEN, independent of reachability, like an
+        // unbound name. But `collect_node`'s poison arm surfaced ONLY `Unbound`, so a malformed literal in
+        // a PARAMETERIZED or non-exported body PASSED `cdz check` (the resolve poison reached only the
+        // emit-path walk, which runs on nullary-exported bodies) while `compile` rejected it on a reached
+        // body — the same "check misses a resolve/lower-only reject on an unreached body" hole M81's
+        // pattern accessor and the `(do)`-block poison close. Now `check` (the Diagnostics query) surfaces
+        // it in EVERY body.
+        let find = |src: &str, code: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("no {code} for {src}"))
+        };
+        // In a PARAMETERIZED body (never lowered standalone by the emit walk):
+        find(
+            "(module m (def (g (: n Int64)) (+ n 0o17)) (export g))",
+            "CDZ0201",
+        );
+        find(
+            "(module m (def (g (: n Int64)) (+. 1.0e400 2.0)) (export g))",
+            "CDZ0201",
+        );
+        find(
+            "(module m (def (g (: n Int64)) (if (= n 0) #\\u+D800 #\\a)) (export g))",
+            "CDZ0002",
+        );
+        // In a NON-EXPORTED nullary def body (also not reached by the standalone emit walk):
+        find(
+            "(module m (def (f) 0o17) (def (main) 1) (export main))",
+            "CDZ0201",
+        );
+        // NO false positive: a well-formed literal in a parameterized body stays clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: n Int64)) (+ n 42)) (export g))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid literal in a parameterized body produces no fault"
+        );
+        // Reachable-body case still reports EXACTLY ONCE (the infer copy + any emit copy dedup).
+        let reached: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 0o17) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+        assert_eq!(
+            reached.len(),
+            1,
+            "reachable body reports once, not doubled: {reached:?}"
+        );
     }
 
     #[test]
@@ -26162,6 +26407,49 @@ mod stage1 {
             ),
             7
         );
+    }
+
+    #[test]
+    fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
+        // REGRESSION (perf): `unify` applies the substitution to BOTH operands on entry, and `Subst::apply`
+        // REBUILT a `Ty::Record`'s whole field map (`.iter().map(apply).collect()` into a fresh `Arc`) even
+        // when the type held no substitutable variable. So passing a WIDE (W-field) GROUND record argument
+        // to a function called N times rebuilt the W-field map at every call site → O(W × calls). FIX: a
+        // GROUND fast-path in `apply` (`Ty::is_ground` → return the input's cheap Arc clone), turning the
+        // per-call cost from an allocate-and-rebuild into a read-only check. This binds one wide record and
+        // passes it through a function W=N=200 times — well into the old quadratic regime; it must type,
+        // compile, and RETURN the projected field (k0 = 0), in bounded time.
+        let w = 200;
+        let fields = (0..w)
+            .map(|i| format!("(k{i} {i})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut calls = String::from("0");
+        for _ in 0..w {
+            calls = format!("(+ {calls} (f r))");
+        }
+        let src = format!(
+            "(module m (def (f x) (. x k0)) (def (main) (let ((r (record {fields}))) {calls})) (export main))"
+        );
+        // Every `(f r)` projects k0 = 0, so the sum is 0 — a well-typed program. The perf-relevant part is
+        // that type-checking (the per-call `unify` → `apply` over the wide record) and full compilation
+        // both COMPLETE in bounded time; the record's runtime value is covered by the record-read tests.
+        // Through the host-stack guard the bin uses (`host.rs`): the per-call unify/fold walk recurses deep
+        // over the wide record, SIGABRTing a default `cargo test` worker's ≈2 MB stack (EXIT=101, 0 FAILED)
+        // even though it TERMINATES — deep-but-finite, not a loop (`RUST_MIN_STACK=64M` passes). `&src` is
+        // borrowed (the scoped guard permits it); `src` is still used by the `compile_component` below,
+        // which self-guards. Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide record passed through many calls type-checks cleanly: {diags:?}"
+        );
+        compile_component(&crate::codec::encode(&parse(&src)))
+            .expect("wide-record-arg program compiles in bounded time");
     }
 
     #[test]
@@ -28171,6 +28459,83 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
+        );
+    }
+
+    #[test]
+    fn a_stray_resume_outside_a_handler_arm_is_a_coded_diagnostic() {
+        // A `resume` hands a value back to the point that performed a handler arm's operation, so it is
+        // meaningful ONLY inside a handler arm's body. A `resume` in a plain def body — no enclosing arm to
+        // return into — is malformed. It used to resolve to a valid `Resolved::Resume`, type-check leniently
+        // (a resume is `Ty::Any`), and DECLINE silently at lowering with NO coded diagnostic (`cdz check`
+        // reported nothing — a check≡compile gap). Now `collect_faults` rejects a STRAY resume CDZ0201, so
+        // `cdz check` surfaces it. The check is reachability-guarded: a synthesized fold-copy `resume` (a
+        // `push_list` node the reduction produced, not reachable from the arena root) is NOT flagged — only a
+        // LIVE source resume with no enclosing arm.
+        for stray in [
+            "(module m (effect Amb (op flip (-> Unit Int64))) (def (main) (resume 1 0)) (export main))",
+            "(module m (effect Amb (op flip (-> Unit Int64))) (def (main) (+ 1 (resume 2 0))) (export main))",
+        ] {
+            let d = compile_component(&crate::codec::encode(&parse(stray)))
+                .expect_err("a stray resume must be rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("resume"),
+                "the message names the resume form: {}",
+                d.message
+            );
+        }
+        // A `resume` INSIDE a handler arm body (bare, nested, and multi-shot) is well-placed — it must NOT be
+        // flagged and the handler folds normally.
+        for ok in [
+            "(do (effect Amb (op flip (-> Unit Int64))) (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))",
+            "(do (effect Amb (op flip (-> Unit Int64))) (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a resume inside a handler arm body must compile: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_delegating_a_value_definition_is_rejected() {
+        // A `host` delegates EFFECTS to the boundary (capabilities-and-effects.md §Host Delegation Is An
+        // Entrypoint's Prerogative). `(host (foo) …)` where `foo` is a top-level `(def foo …)` names a VALUE,
+        // not an effect — a malformed grant. It used to compile and run silently (the bogus delegation was
+        // dropped by a `filter_map` in `check_no_home`, computing an empty manifest). Now `check_no_home`
+        // rejects a delegated name that resolves to a value def CDZ0201. CONSERVATIVE: it flags only an
+        // unambiguous value def (`def_by_name`), never a nested-module effect (which is absent from the
+        // top-level registries), so a valid delegation is never false-flagged.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def foo 5) (def (main) (host (foo) 5)) (export main))",
+        )))
+        .expect_err("delegating a value definition to the host must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("foo") && d.message.contains("effect"),
+            "the message names the offending value and explains a host delegates effects: {}",
+            d.message
+        );
+        // A valid effect delegation still compiles (regression): the effect's op is reached in the body, so
+        // it is neither latent nor a non-effect.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (ask.ask))) (export main))",
+            )))
+            .is_ok(),
+            "a valid host delegation of a declared effect must compile"
+        );
+        // A nested-module effect delegated inside that module is NOT false-flagged (its effect decl is not in
+        // the top-level registry — the check must not treat it as a non-effect).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                 (def (main) (host (log) ((. log emit) \"hi\")))) 0)) (export main))",
+            )))
+            .is_ok(),
+            "a nested-module effect delegation must not be false-flagged as a non-effect"
         );
     }
 
@@ -38129,6 +38494,291 @@ mod closure_host_resource {
         call.post_return(&mut store).expect("call post_return 2");
         assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
         // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
+    }
+
+    /// COMPOUND-**ARGUMENT** oracle core (the byte anchor for a closure whose closure-argument is a
+    /// FIXED-SHAPE SCALAR tuple `(Tuple Int64 Int64)`, supplied by the host over the DIRECT-CALL boundary).
+    /// THE HYPOTHESIS UNDER TEST (attacking "needs a nonexistent value-decode runtime op"): a fixed-shape
+    /// scalar tuple can cross as a NATIVE component `tuple<s64,s64>` type. The canonical ABI FLATTENS a small
+    /// tuple (≤16 scalar fields) into its scalar core params — so the guest `call` receives the fields as
+    /// plain core `i64`s (NO memory, NO realloc, NO runtime decode), rebuilds the tuple cell in-guest with
+    /// the ORDINARY tuple-build ops (here modelled directly: the closure body sums the two fields), and
+    /// dispatches `call_indirect`. If wasmtime lifts `tuple<s64,s64>` → two core i64 params, this validates
+    /// AND runs, proving the direct-call compound-ARG decline is an implementation gap, not an ABI wall.
+    ///
+    /// Standalone (no heap runtime): the closure "cell" is the funcref table slot; the lifted closure is
+    /// `lifted(e0: i64, e1: i64) -> i64 = e0 + e1` (the body of `(fn (p) (+ (. p 0) (. p 1)))` once `p` is
+    /// flattened to its two fields). `call(self, e0, e1)` = recover the slot from the rep, push `e0`,`e1`,
+    /// `call_indirect` the `(i64,i64)->i64` lifted functype.
+    fn closure_tuple_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/resource-rep (i32)->i32; 1 = lifted (i64,i64)->i64 (call_indirect);
+        // 2 = make ()->i32; 3 = call (i32 self, i64 e0, i64 e1)->i64 (self + the two FLATTENED tuple fields).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types
+            .ty()
+            .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]); // 1 lifted / indirect
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 3 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(e0, e1) = e0 + e1  (the closure `(fn (p) (+ (. p 0) (. p 1)))` over the flattened fields)
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::LocalGet(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, e0, e1) = call_indirect[type 1](e0, e1, slot = resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // e0
+        call.instruction(&Instruction::LocalGet(2)); // e1
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → rep (table slot)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the tuple-ARG closure: like `inner_reexport_component` but `call`'s
+    /// argument is a `tuple<s64,s64>` DEFINED TYPE (not a bare scalar). Proves the component-level type of a
+    /// fixed-shape-scalar compound argument is expressible and re-exportable.
+    fn inner_reexport_component_tuple_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // the tuple<s64,s64> argument defined type (import side).
+        let (tup_imp, td) = c.type_defined();
+        td.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        // call : (self: own<0>, p: tuple<s64,s64>) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("p", ComponentValType::Type(tup_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        // RE-EXPORT the resource type + funcs.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (tup_exp, td2) = c.type_defined();
+        td2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("p", ComponentValType::Type(tup_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the tuple-ARG closure: like `oracle_closure_component` but `call` is
+    /// lifted against `(self: own<t>, p: tuple<s64,s64>) -> s64`. NO Memory/Realloc canon options — the
+    /// HYPOTHESIS is that wasmtime FLATTENS the small tuple into scalar core params on lift, so the core
+    /// `call` receives `(i32 self, i64 e0, i64 e1)` directly. If the lift required indirect (memory) passing,
+    /// this would fail to instantiate — the test IS the refutation attempt.
+    fn oracle_closure_tuple_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, p: tuple<s64,s64>) -> s64  — NO canon options (flatten hypothesis).
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (tup_t, tdef) = c.type_defined();
+        tdef.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("p", ComponentValType::Type(tup_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_tuple_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT: does a fixed-shape scalar `tuple<s64,s64>` closure ARGUMENT cross the
+    /// direct-call boundary by NATIVE tuple flattening (no runtime decode)? Build the oracle, `make()` the
+    /// closure handle, then `call(handle, (3, 4))` supplying the tuple as a `Val::Tuple` — expect 7. If this
+    /// validates + runs, the direct-call compound-ARG decline is an implementation gap (the compiler can
+    /// hand-emit this shape), NOT an ABI wall requiring a `value-decode` op.
+    #[test]
+    fn a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_tuple_arg_component(&closure_tuple_arg_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("tuple-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
+
+        // call(handle, (3, 4)) → 3 + 4 = 7. The tuple crosses as a Val::Tuple; wasmtime flattens it to two
+        // core i64 params for the guest `call`.
+        let tuple_arg = Val::Tuple(vec![Val::S64(3), Val::S64(4)]);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), tuple_arg], &mut out)
+            .expect("call(handle, (3,4))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(7),
+            "closure (fn (p) (+ (. p 0) (. p 1))) applied to (3,4) = 7"
+        );
     }
 
     /// COMPOUND-RESULT oracle core (the byte anchor for a closure whose result is a `list<u8>` / a compound
