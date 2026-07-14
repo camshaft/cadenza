@@ -2394,11 +2394,11 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
         // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). PEEL one
         // nominal layer off the type cursor and leave `cur` unchanged (a following `Payload` reads a wrapped
         // sum, a following `Elem` reads a multi-payload newtype's tuple).
-        if matches!(step, PathStep::Payload) {
-            if let crate::ty::Ty::Nominal { inner, .. } = &ty {
-                ty = (**inner).clone();
-                continue;
-            }
+        if matches!(step, PathStep::Payload)
+            && let crate::ty::Ty::Nominal { inner, .. } = &ty
+        {
+            ty = (**inner).clone();
+            continue;
         }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
