@@ -31,8 +31,9 @@ export default function WhatsNext() {
         <Ch to="/symbols">symbols</Ch>. You handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
         Cadenza's numbers behave — checked <Ch to="/numbers">integers</Ch>,{" "}
-        <Ch to="/sized-integers">sized integers</Ch>, and{" "}
-        <Ch to="/floats">floating-point numbers</Ch>, none of them ever converting silently.
+        <Ch to="/sized-integers">sized integers</Ch>,{" "}
+        <Ch to="/floats">floating-point numbers</Ch>, and{" "}
+        <Ch to="/rationals">exact fractions</Ch>, none of them ever converting silently.
       </P>
       <P>
         And you've seen what makes Cadenza its own language:{" "}
