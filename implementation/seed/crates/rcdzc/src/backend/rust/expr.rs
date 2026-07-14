@@ -899,10 +899,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::Closure { .. }
         | Core::CallClosure { .. }
         | Core::Captured { .. }
-        // A host call crosses the component boundary — the Rust backend emits no component imports, so it
-        // declines (the wasm backend is the host-boundary target). A sequencing block only ever holds a
-        // host-call statement today, so the Rust backend declines it too.
+        // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
+        // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
+        // only ever holds a host-call statement today, so the Rust backend declines it too.
         | Core::HostCall { .. }
+        | Core::ExternCall { .. }
         | Core::Seq { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),

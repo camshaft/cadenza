@@ -10028,7 +10028,10 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
 /// shielded in the connective's guarded rhs exactly as in the `if`'s branch).
 fn tail_positions_have_call(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::Call { .. } | Core::CallClosure { .. } | Core::HostCall { .. } => true,
+        Core::Call { .. }
+        | Core::CallClosure { .. }
+        | Core::HostCall { .. }
+        | Core::ExternCall { .. } => true,
         Core::If { then_, else_, .. } => {
             tail_positions_have_call(db, then_) || tail_positions_have_call(db, else_)
         }

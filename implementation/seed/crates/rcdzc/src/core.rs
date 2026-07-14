@@ -886,6 +886,22 @@ pub enum Core {
         args: Vec<StructId>,
         result: crate::ty::Ty,
     },
+    /// A CROSS-COMPONENT call — an application of a definition a PEER Cadenza component exports, bound
+    /// across a live component boundary (component-abi.md §Cross-Component Value Exchange;
+    /// cross-component-interop.md). `interface` is the peer interface the call is imported from and `op`
+    /// the exported operation's boundary name; `args` are the argument occurrences and `result` the
+    /// operation's monomorphic declared result type. It is the peer analogue of `HostCall`: the backend
+    /// records the (interface, op) in a deterministic import set and resolves the pair to the imported
+    /// core-function index once the set is laid out; unlike a `Core::Call` it is NEVER inlined (the peer
+    /// is a separate artifact, not a sibling def in this arena). This variant is the IR foundation
+    /// (X2) — the emit envelope (X3) and the front-end binding surface (X4) arrive in later increments,
+    /// so for now every backend DECLINES it (decline-don't-miscompile).
+    ExternCall {
+        interface: String,
+        op: String,
+        args: Vec<StructId>,
+        result: crate::ty::Ty,
+    },
     /// A SEQUENCING block — evaluate each `stmt` FOR ITS SIDE EFFECT (discarding its value), then evaluate
     /// `tail` as the block's value. The core form of a `(do S… tail)` whose non-final statements have
     /// OBSERVABLE side effects that must run (a host call — its call crosses the boundary even though its

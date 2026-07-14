@@ -188,13 +188,20 @@ used at every seam (`C-HOST-1 ORACLE`, round-trip oracle, distinct-sig oracle) �
 runtime-sharing mechanism *before* any compiler change. Scalar-arg/scalar-result first, then a `value`-arg
 variant. **This brick alone answers "does the shared-instance model actually work under wasmtime."**
 
-**X2 — external-symbol resolution (front-end + IR, backend declines).** Teach the resolver a cross-*
-component* `(import "comp" (f))`: `f` resolves to an **external symbol** carrying a monomorphized signature
-(supplied from the imported component's interface), NOT an inlined sibling `Def`. New `Core::ExternCall
-{ interface, op, args, result }` (mirror `Core::HostCall`). Every exhaustive `Core` match gets an arm
-(descend args; backends DECLINE initially). Byte-neutral where no cross-component import is present. Cyclic
-cross-component imports rejected (reuse `find_import_cycle` shape, `link.rs:536`). ⚠ This is exactly the
-external-symbol notion `DESIGN-package-linking.md §0` deliberately avoided — it does not exist yet.
+**X2 — the `Core::ExternCall` IR foundation. ✅ DONE (`spec`).** New `Core::ExternCall { interface, op,
+args, result }` (mirror of `Core::HostCall`), threaded through every exhaustive `Core` match: the six
+compiler-forced arg-descending sites (`compile.rs` reached-poisons, `layout.rs` closure-codes + callees,
+`select.rs` `binding_escapes` + `collect_used_ops`) descend into its args like a call; the wasm `select`
+emit and the Rust backend both DECLINE cleanly ("a cross-component call to `iface.op` is not yet emitted
+(X3/X4)"); `tail_positions_have_call` counts it as a call. The host-import collectors (`collect_host_imports`,
+`first_unrepresentable_host_op`, `collect_host_arg_strings`) and the `subtree_reaches_host_call` predicate
+correctly leave it out — a peer call is NOT a host effect. **Byte-neutral** (nothing constructs an
+`ExternCall` on the normal path yet — gate 1876 pass / 0 fail / 0 regressions / 0 newly-passing). The
+resolver front-end that CONSTRUCTS one — a cross-component `(import "comp" (f))` resolving to an external
+symbol (a `Resolved::Extern`, an external `link::Import`) rather than an inlined sibling `Def`, cyclic-import
+rejection reusing `find_import_cycle` — moves to **X4** alongside the runner (so the trigger, the envelope,
+and the composition land together and are testable end-to-end). ⚠ This is exactly the external-symbol notion
+`DESIGN-package-linking.md §0` deliberately avoided.
 
 **X3 — the IMPORT envelope shape (scalar first).** The **fourth** envelope shape: emit a component that
 IMPORTS a peer Cadenza interface (A's monomorphized exports) as a component-model instance import, aliased

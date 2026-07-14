@@ -500,7 +500,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::Not { operand }
         | Core::ListLen { operand }
         | Core::BytesLen { operand } => collect_closure_codes(db, operand, out),
-        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
             for a in args {
                 collect_closure_codes(db, a, out);
             }
@@ -815,9 +815,9 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, arg, out);
             }
         }
-        // A host call dispatches to a component IMPORT (not a `db.defs` function), so no static callee to
-        // add; its arguments may still reach callees.
-        crate::core::Core::HostCall { args, .. } => {
+        // A host call OR a cross-component call dispatches to a component IMPORT (not a `db.defs`
+        // function), so no static callee to add; its arguments may still reach callees.
+        crate::core::Core::HostCall { args, .. } | crate::core::Core::ExternCall { args, .. } => {
             for arg in args {
                 collect_call_callees(db, arg, out);
             }

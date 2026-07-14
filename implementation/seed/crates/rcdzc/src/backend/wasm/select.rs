@@ -461,8 +461,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::SetAlgebra { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
-        // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
-        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+        // A call CONSUMES its arguments; a host call OR a cross-component call likewise consumes its
+        // arguments across the boundary.
+        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
         // A sequencing block: the binding escapes if it escapes any statement or the tail.
@@ -1305,6 +1306,14 @@ pub fn collect_used_ops(
                     Ty::String | Ty::Unit => {}
                     _ => collect_used_ops(db, arg, out),
                 }
+            }
+        }
+        // A CROSS-COMPONENT call: its arguments are evaluated before crossing the boundary, so recurse
+        // to collect any runtime op an argument's construction needs (the call itself is a peer import,
+        // not a runtime op). X2 declines the emit; this keeps the used-op walk complete for later.
+        Core::ExternCall { args, .. } => {
+            for arg in args {
+                collect_used_ops(db, arg, out);
             }
         }
         Core::Seq { stmts, tail } => {
@@ -5286,6 +5295,13 @@ fn emit(
             out.push(Lir::CallHostImport(index));
             Ok(())
         }
+        // A CROSS-COMPONENT call — X2 lands the IR foundation only; the peer-interface import envelope
+        // (X3) and the front-end binding that CONSTRUCTS an ExternCall (X4) arrive in later increments,
+        // so nothing produces one on the normal path yet and the emit DECLINES cleanly
+        // (decline-don't-miscompile; component-abi.md §Cross-Component Value Exchange).
+        Core::ExternCall { interface, op, .. } => Err(Reject::decline(format!(
+            "a cross-component call to `{interface}.{op}` is not yet emitted (X3/X4)"
+        ))),
         // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
         // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
         // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced

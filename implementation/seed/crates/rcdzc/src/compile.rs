@@ -2308,9 +2308,10 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
                 collect_reached_poisons(db, arg, out);
             }
         }
-        // A host call unconditionally evaluates its arguments before crossing the boundary — descend into
-        // each (the call itself is a boundary import, not a def whose body could fault).
-        Core::HostCall { args, .. } => {
+        // A host call OR a cross-component call unconditionally evaluates its arguments before crossing
+        // the boundary — descend into each (the call itself is a boundary import, not a def whose body
+        // could fault).
+        Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
             for arg in args {
                 collect_reached_poisons(db, arg, out);
             }
