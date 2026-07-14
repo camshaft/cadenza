@@ -14286,6 +14286,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tuple_row_op_over_a_non_tuple_names_the_kind() {
+        // The tuple twin of the record-row-op kind check: `Tuple.cat`/`split-at`/`pop` over a definite
+        // non-tuple operand (`(Tuple.pop n)` for `n : Int64`) was check-invisible and compiled to a
+        // misleading "Tuple.<op> over a runtime tuple is not yet built" (the operand is not a tuple at
+        // all). Now CDZ0201 names the op + the non-tuple type.
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("requires a tuple"))
+                .unwrap_or_else(|| panic!("no non-tuple-operand fault for {src}"))
+                .message
+        };
+        for (op, rest) in [("cat", "n"), ("pop", ""), ("split-at", "1")] {
+            let src = format!("(module m (def (g (: n Int64)) (Tuple.{op} n {rest})) (export g))");
+            let m = msg(&src);
+            assert!(
+                m.contains(&format!("`Tuple.{op}` requires a tuple")) && m.contains("Int64"),
+                "{op}: {m}"
+            );
+        }
+        // NO false positive: a real tuple operand, and a bare (unconstrained `Any`) parameter, are clean.
+        for ok in [
+            "(module m (def (g (: t (Tuple Int64 Int64))) (Tuple.pop t)) (export g))",
+            "(module m (def (f t) (Tuple.pop t)) (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("requires a tuple")),
+                "a tuple / unconstrained operand is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn record_project_with_a_duplicate_label_is_cdz0201() {
         // 15-rows "projecting a record with a duplicate label is rejected": a projection label list that
         // names a field TWICE `(a a)` is the same malformedness a record LITERAL with a duplicate field

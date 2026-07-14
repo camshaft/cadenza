@@ -3820,6 +3820,24 @@ fn record_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static st
     }
 }
 
+/// Whether `ty` is DEFINITELY not a tuple — the tuple twin of [`definite_non_record`]. A tuple row op
+/// (`cat`/`split-at`/`pop`) over it is a kind error. `Any`/`Var` (an unconstrained param) is not definite.
+/// (A tuple is structural, never nominal, so no `strip_nominal` is needed here.)
+fn definite_non_tuple(ty: &Ty) -> bool {
+    !matches!(ty, Ty::Tuple(_) | Ty::Any | Ty::Var(_))
+}
+
+/// The surface NAME of a TUPLE row-operation prim (`cat`/`split-at`/`pop`) whose operand(s) must be a
+/// `Ty::Tuple`; `None` otherwise. `cat` takes two tuple operands, `split-at`/`pop` one.
+fn tuple_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
+    match prim {
+        Some(crate::resolved::Prim::TupleCat) => Some("cat"),
+        Some(crate::resolved::Prim::TupleSplitAt) => Some("split-at"),
+        Some(crate::resolved::Prim::TuplePop) => Some("pop"),
+        _ => None,
+    }
+}
+
 /// Whether the match PATTERN at `pat` is headed by a VARIANT CONSTRUCTOR — `(C.Red)`, `(Some x)`, a bare
 /// nullary variant name `None`, or such a pattern under a `(guard <pat> <cond>)` wrapper. Peels the guard,
 /// then reads the pattern's constructor head the way the binding-pattern classifier does (a bare atom /
@@ -6826,6 +6844,39 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         "the second operand is a field name, e.g. `z`",
                     )),
                     _ => {}
+                }
+            } else if let Some(tup_op) = tuple_row_op_name(crate::eval::meta_apply_of(db, head))
+                && !args.is_empty()
+                && {
+                    // A tuple row op over a DEFINITE NON-TUPLE operand — `(Tuple.pop n)` for `n : Int64` —
+                    // is a kind error, the tuple twin of the record-row-op check. It was check-INVISIBLE
+                    // and compiled to a MISLEADING "Tuple.<op> over a runtime tuple is not yet built" (the
+                    // operand is not a tuple at all). `cat` checks BOTH operands; `split-at`/`pop` check
+                    // `args[0]` (`split-at`'s `args[1]` is a position literal, not a tuple). Report
+                    // "requires a tuple, found <T>" (the tuple-projection message already exists for `(. n
+                    // N)`); `Any`/`Var` (an unconstrained param) is not flagged.
+                    let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                    operands
+                        .iter()
+                        .any(|&o| definite_non_tuple(&type_of(db, o)))
+                }
+            {
+                let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                for &o in operands {
+                    let ot = type_of(db, o);
+                    if definite_non_tuple(&ot) {
+                        out.push(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "`Tuple.{tup_op}` requires a tuple, found {}",
+                                    ot.render_name()
+                                ),
+                            )
+                            .at(o),
+                        );
+                    }
+                    collect(db, o, out);
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
