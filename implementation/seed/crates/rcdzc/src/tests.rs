@@ -47391,4 +47391,45 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("run_with_peers trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-1 — the `(extern "iface" (op sig)…)` SCAN. A distinct cross-component binding form (not
+    // overloading intra-package `(import …)`) is scanned into `Db::extern_decls`. Byte-neutral: the
+    // table is populated but nothing consumes it yet (resolve→ExternCall + emit are later bricks).
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4b1_an_extern_form_scans_into_the_db_extern_table() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        // A consumer that BINDS a peer's `add`/`neg` via `(extern …)` and calls them. (Nothing consumes
+        // the binding yet — this brick only proves the scan populates the table.)
+        let src = "(do \
+            (extern \"cadenza:math/api\" \
+                (add (-> Int64 Int64 Int64)) \
+                (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (add x (neg x))) \
+            (export main))";
+        let db = Db::load(parse(src));
+        assert_eq!(db.extern_decls.len(), 1, "one extern declaration");
+        let d = &db.extern_decls[0];
+        assert_eq!(d.interface, "cadenza:math/api");
+        let ops: Vec<&str> = d.ops.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(ops, ["add", "neg"], "both peer ops bound, in order");
+        assert!(
+            d.ops.iter().all(|o| o.ty.is_some()),
+            "each bound op carries its declared monomorphic signature"
+        );
+    }
+
+    #[test]
+    fn x4b1_no_extern_form_leaves_the_table_empty() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        let db = Db::load(parse("(do (def (main) 42) (export main))"));
+        assert!(
+            db.extern_decls.is_empty(),
+            "a program binding no peer has an empty extern table (byte-neutral common case)"
+        );
+    }
 }

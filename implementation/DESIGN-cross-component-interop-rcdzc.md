@@ -235,17 +235,35 @@ validator per component; `wasm-tools validate` confirmed both standalone. ⚠ st
 fresh worktree — `cargo xtask build` before gating (515 false regressions → 0). SCOPE: scalar peer ops, a
 runtime-free peer; sharing ONE runtime instance across consumer + peers is X5.
 
-**X4b — the front-end trigger (source → `Core::ExternCall` → `assemble_extern` → run e2e).** NEXT. The
-resolver classifies a cross-component `(import "comp" (f))` (a peer, not a sibling `ast` file) → a
-`Resolved::Extern`/external `link::Import`; an applied extern lowers to `Core::ExternCall`; `select` emits
-it as `call <extern-import-index>` (a new `Lir` + a `layout.extern_order` analogous to `host_order`);
-`emit` collects the extern-import set, records the order, and wraps the core with `assemble_extern` (X3);
-`cdz-run`/CLI delivers the peer set (a `Peer` per imported component) to `run_with_peers` (X4a). Then a
-source program calling a peer runs end-to-end. Needs a multi-component gate/corpus shape (the corpus is
-single-`(input)` — `DESIGN-package-linking.md §8.1` names the same gap; a Rust integration test first, like
-package-linking's 12 tests). Absorbs the resolver half deferred from X2. ⚠ interface param NAMES must match
-across the boundary (the X3 finding) — the front-end emits both the peer's export sig and the consumer's
-import decl with the `p0,p1,…` convention.
+**X4b — the front-end trigger (source → `Core::ExternCall` → `assemble_extern` → run e2e), IN SUB-BRICKS.**
+🔑 SURFACE DECISION (operator, 2026-07-14): a DISTINCT form `(extern "iface" (op (-> …)) …)` — NOT an
+overload of `(import …)` (which means intra-package source splice) — with the peer's monomorphic
+signatures declared INLINE (the declared sig IS the contract; a peer whose export mismatches declines at
+composition; no wasmparser in the compile path, no external interface artifact needed). Sub-bricks:
+- **X4b-1 — the `extern` SCAN. ✅ DONE (`spec`).** `db::ExternDecl { interface, occ, ops: Vec<ExternOp{
+  name, name_occ, ty }> }` + `scan_extern_decl` (the `scan_effect_decl` analogue; each clause `(NAME
+  TYPE)`, no `op` keyword); `Db::extern_decls` populated at load; `extern` registered in
+  `TOP_LEVEL_FORMS`/`TOP_LEVEL_KEYWORDS`. Byte-neutral (table populated, nothing consumes it — gate 1894
+  pass / 0 fail / 0 regressions; tests `x4b1_*`).
+- **X4b-2 — resolve → `Core::ExternCall`.** An extern op resolves to a `Resolved::Extern { interface, op,
+  ty }` (a new `Resolved` variant), typed from the declared sig; an applied extern lowers to
+  `Core::ExternCall` (X2's IR node). Not inlined (no sibling `Def`).
+- **X4b-3 — backend emit.** `emit` collects the extern-import set from `Core::ExternCall`s, records
+  `layout.extern_order` (the `host_order` analogue), `select` emits each as `call <extern-index>` (a new
+  `Lir` or reuse `CallHostImport`-style), the core imports the peer ops from `"peer"`, route the whole to
+  `assemble_extern` (X3). ⚠ interface param NAMES must match across the boundary (the X3 finding) — emit
+  the consumer import decl with the `p0,p1,…` convention `assemble_extern` uses. ⚠ MISCOMPILE-PRONE
+  (`wasm-tools validate` is the oracle) — probe an extern-call-into-a-slot like the BigInt lesson.
+- **X4b-provider — the component's OWN interface name.** 🔑 (operator, 2026-07-14): the PROVIDER must
+  publish its exports under the interface name the consumer's `(extern "cadenza:math/api" …)` binds to, so
+  the compile REQUEST needs to specify it — a `KIND_COMPONENT_NAME` input artifact (the `KIND_ENTRY`
+  pattern). Provider emit wraps its boundary exports as that named interface instance (the X3 provider
+  oracle's `provider_interface_component` shape) instead of bare top-level funcs.
+- **X4b-4 — runner/CLI delivery + e2e.** `cdz-run`/CLI delivers the peer set (a `Peer` per bound
+  interface) to `run_with_peers` (X4a). Then a SOURCE program calling a peer runs end-to-end. Multi-
+  component gate/corpus shape (corpus is single-`(input)` — `DESIGN-package-linking.md §8.1` names the same
+  gap; a Rust integration test first, like package-linking's 12 tests). Absorbs the resolver half deferred
+  from X2.
 
 **X5 — COMPOUND values cross as shared `value` handles (the payoff).** Extend X3/X4: a compound arg crosses
 as `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap, hands the
