@@ -4507,3 +4507,17 @@
   (input  (do (def (main (: x Int64)) (+ (. (tuple x (/ 100 x)) 0) (. (tuple x (/ 100 x)) 1))) (export main)))
   (call   main (: 0 Int64))
   (trap   "division by zero"))
+
+(case "an unused let-init that does not reduce to a value is eliminated, so it does not diverge"
+  (doc    "The elision covers a computation with NO VALUE, not only a trapping one: a non-normalizing
+           self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal form — each β-step
+           grows the term) bound to an UNUSED let-binder is dead code, so it is eliminated and the program
+           yields its body — `main` returns 0. Exactly as an un-observed trapping element is elided (above),
+           an un-observed non-normalizing binding is too — a compiler DCE's dead code rather than reducing
+           it. The SAME term USED (`(let ((y <it>)) y)`) is a hard error (CDZ0999, the reduction bound),
+           just as an observed trap is CDZ0304; dropped, both are dead code. A CDZ0305 warning flags the
+           dead non-normalizing binding as a likely bug (it rides alongside the artifact, not graded here).")
+  (input  (do
+            (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0))
+            (export main)))
+  (output (: 0 Int64)))

@@ -574,6 +574,7 @@ pass	an unrecognized string escape is rejected
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error

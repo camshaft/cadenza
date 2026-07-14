@@ -1778,14 +1778,27 @@ fn walk_for_dead_traps(
     let discarded = |db: &mut Db, child: StructId, out: &mut Vec<Diagnostic>, seen: &mut _| {
         if is_dropped_const_trap(db, child) {
             // Attribute the warning to a USER node — a synthesized/prelude origin has no span. Prefer
-            // the trap's own anchor; fall back to the discarding child occurrence.
+            // the dropped computation's own anchor; fall back to the discarding child occurrence.
             let at = dropped_trap_anchor(db, child).filter(|&n| db.is_user_node(n));
-            out.push(Diagnostic::warning(
-                Code::DeadTrap,
-                "this computation always traps but its value is never used, so it was eliminated \
-                 (an unused element, binding, or argument) — likely a bug",
-                at,
-            ));
+            // A dropped computation that has NO VALUE was elided by the fold: either it always TRAPS
+            // (`ConstTrap`) or it does not REDUCE to a value — a non-normalizing / explosively-growing
+            // term the reduction-work budget stopped (`RecursionBound`). The SAME term whose value is
+            // USED is a hard error (CDZ0304 / CDZ0999); dropped, it is dead code, so warn (the likely
+            // bug) rather than reject — the DCE consistency the dead-trap warning already applies, now
+            // extended to a dead non-normalizing binding (an unused `let` init / discarded argument
+            // whose term diverges). One message covers both "no value" reasons.
+            let msg = match core_of(db, child) {
+                Core::Poison(r) if r.code == Some(Code::RecursionBound) => {
+                    "this computation does not reduce to a value (a non-terminating or \
+                     explosively-growing reduction) but its value is never used, so it was \
+                     eliminated (an unused element, binding, or argument) — likely a bug"
+                }
+                _ => {
+                    "this computation always traps but its value is never used, so it was eliminated \
+                     (an unused element, binding, or argument) — likely a bug"
+                }
+            };
+            out.push(Diagnostic::warning(Code::DeadTrap, msg, at));
         } else {
             walk_for_dead_traps(db, child, out, seen);
         }
@@ -1876,7 +1889,10 @@ fn walk_for_dead_traps(
 /// discarded-value test: a child in a value-dropping position that folds to a `ConstTrap` had its trap
 /// eliminated (a reached one would have faulted the build in `collect_faults`).
 fn is_dropped_const_trap(db: &mut Db, id: StructId) -> bool {
-    matches!(core_of(db, id), Core::Poison(r) if r.code == Some(Code::ConstTrap))
+    matches!(
+        core_of(db, id),
+        Core::Poison(r) if matches!(r.code, Some(Code::ConstTrap) | Some(Code::RecursionBound))
+    )
 }
 
 /// The node a dropped `ConstTrap` at `id` should be attributed to — the trap's own recorded anchor if
