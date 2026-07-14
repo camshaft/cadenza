@@ -3242,6 +3242,19 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
+    // TOO MANY operands — `(host (E) body extra)`. A host is exactly `(host (<effect>…) <body>)`; a
+    // surplus operand after the body was SILENTLY IGNORED (the resolver read only `tail[0]`/`tail[1]`),
+    // compiling to code that dropped the extra — a silent miscompile, the `host` analogue of the too-many
+    // `resume` gap. Reject it CDZ0201 with a delete-the-surplus fix (the shared `fixed_arity_reject`), so
+    // a too-many host reports the arity defect + how to fix it rather than compiling wrong.
+    if tail.len() > 2 {
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            &format!("this host has too many operands — {SHAPE}"),
+        ));
+    }
     Resolved::Host { effects, body }
 }
 

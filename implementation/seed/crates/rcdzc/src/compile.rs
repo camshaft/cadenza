@@ -1191,9 +1191,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         faults.push(Reject::coded(Code::Malformed, msg).at(head_occ));
     }
     let mut non_arrow_op_types: Vec<StructId> = Vec::new();
+    // An operation declared with NO type at all — `(op get)` — has `op.ty == None`. It was SILENTLY
+    // ACCEPTED (this loop `continue`d past it), and performing it later leaked the internal op-record type
+    // `(Record (apply Any) (effect-op Any) (t Type))` at the user (the leaky-representation anti-pattern) —
+    // the missing-type companion of the non-arrow `(op get Int64)` case below. Collect each such op's NAME
+    // occurrence to reject after the borrow (the same defer-then-report shape as `non_arrow_op_types`).
+    let mut missing_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
         for op in &e.ops {
-            let Some(ty) = op.ty else { continue };
+            let Some(ty) = op.ty else {
+                missing_op_types.push(op.name_occ);
+                continue;
+            };
             match db.ast.get(ty) {
                 // `(-> A B …)` — each element after the arrow head is a type position (record-split).
                 crate::ast::Struct::List(children)
@@ -1241,6 +1250,22 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 )),
             );
         }
+    }
+    // An operation declared with NO type — `(op get)`. Reject it CDZ0201 at the op NAME (the companion of
+    // the non-arrow reject above). NO mechanical fix: the non-arrow case WRAPS an existing type it can see,
+    // but here there is no type at all — the operation's actual signature is a semantic choice only the
+    // author knows (a `(-> Result)` guess would compile but is almost certainly wrong), so this is
+    // honestly message-only (like a "retype the value" fault). The message spells the exact shape a
+    // well-formed op takes, so the author knows precisely what to write.
+    for &name_occ in &missing_op_types {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "this operation has no type — an operation is declared `(op <name> (-> Arg… Result))` \
+                 and performed like a function (a nullary operation is `(op <name> (-> Result))`)",
+            )
+            .at(name_occ),
+        );
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
@@ -1903,6 +1928,24 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
         r.code == Some(Code::Malformed)
             && r.message.starts_with(crate::diag::NON_ARROW_OP_TYPE_PREFIX)
     });
+    // Likewise: an operation declared with NO type (`(op get)`) is rejected CDZ0201 at the op name.
+    // Performing it leaks BOTH the internal op-record (`OP_VALUE_RECORD_LEAK`) into a "TYPE, not a runtime
+    // value" export fault AND a CDZ0401 no-home (the untyped op has no valid perform semantics) — both
+    // CONSEQUENCES of the untyped declaration. Drop them for the declaration-site reject (with its
+    // add-a-type fix), the missing-type companion of the non-arrow suppression.
+    let has_missing_op_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::MISSING_OP_TYPE_PREFIX)
+    });
+    // Likewise: a MALFORMED `host` (missing effect-list/body, non-list effects, or too many operands) is
+    // rejected CDZ0201 at the form. The malformed host never resolved as a delegation, so its body's
+    // perform is seen by the entrypoint no-home walk as un-delegated → a CONSEQUENT CDZ0401 that misdirects
+    // (the author DID write a `host`). Drop that CDZ0401 whenever a malformed-host reject is present,
+    // keeping the CDZ0201 that says how to fix the host — the `host` analogue of the noncanonical-handle
+    // CDZ0401 suppression.
+    let has_malformed_host_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
+    });
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
     // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
@@ -2134,9 +2177,22 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             }
             // A perform-site type mismatch that LEAKS the internal op-value record (`(effect-op Any)` — a
             // synthesized meta-channel field no user type spells) is the CONSEQUENCE of a malformed
-            // non-arrow op type; drop it in favor of the declaration-site CDZ0201 (with its wrap fix).
-            if has_non_arrow_op_type_reject && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            // non-arrow OR untyped op declaration; drop it in favor of the declaration-site CDZ0201.
+            if (has_non_arrow_op_type_reject || has_missing_op_type_reject)
+                && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
             {
+                return false;
+            }
+            // An untyped op declaration (`(op get)`) additionally makes its perform reach the entrypoint
+            // with no valid home — a consequent CDZ0401. Drop it for the declaration-site reject (the real,
+            // fixable defect is the missing type, not a missing handler).
+            if has_missing_op_type_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A malformed `host` never resolved as a delegation, so its body's perform looks un-delegated
+            // to the no-home walk — a consequent CDZ0401. Drop it for the malformed-host CDZ0201 (the real,
+            // fixable defect is the host's shape, not a missing handler).
+            if has_malformed_host_reject && r.code == Some(Code::EffectNoHome) {
                 return false;
             }
             // A `handle` whose HEAD names a value leaks two consequents from the desugared `(. foo op)`

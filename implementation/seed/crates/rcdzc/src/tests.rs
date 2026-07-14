@@ -23302,6 +23302,49 @@ mod match_engine {
         );
     }
 
+    /// An operation declared with NO type at all — `(op get)`, `op.ty == None` — is the missing-type
+    /// companion of the non-arrow `(op get Int64)` case above. It was SILENTLY ACCEPTED: `collect_faults`'
+    /// op-type loop `continue`d past a typeless op, and performing it leaked the internal op-record
+    /// `(Record (apply Any) (effect-op Any) (t Type))` at the user (a "TYPE, not a runtime value" export
+    /// fault) plus a CDZ0401 no-home. Now it is CDZ0201 "this operation has no type" at the op name — one
+    /// primary error (the consequent record-leak AND CDZ0401 are deduped via `MISSING_OP_TYPE_PREFIX`).
+    /// Message-only (no mechanical fix): the operation's actual signature is a semantic choice only the
+    /// author knows, so — unlike the non-arrow case which wraps an existing type — a `(-> Result)` guess
+    /// would be wrong; the message spells the exact shape.
+    #[test]
+    fn an_operation_declared_with_no_type_is_rejected_cdz0201() {
+        use crate::testkit::parse;
+        // (a) declared but not performed — the declaration-site reject fires on its own.
+        let declared = "(module m (effect E (op get)) (def (main) 1) (export main))";
+        let ddecl = crate::diagnostics(&mut crate::db::Db::load(parse(declared)));
+        let d = ddecl
+            .iter()
+            .find(|d| d.message.contains("this operation has no type"))
+            .expect("an operation with no type must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        // (b) performed — the leaky op-record + CDZ0401 consequents are DEDUPED; ONE primary remains.
+        let performed = "(module m (effect E (op get)) (def (main) (E.get)) (export main))";
+        let dperf = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
+        assert!(
+            dperf
+                .iter()
+                .any(|d| d.message.contains("this operation has no type")),
+            "the declaration-site reject is present: {:?}",
+            dperf.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !dperf
+                .iter()
+                .any(|d| d.message.contains("(effect-op Any)")
+                    || d.code.as_deref() == Some("CDZ0401")),
+            "the internal op-record leak and the no-home CDZ0401 are deduped: {:?}",
+            dperf
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
@@ -31154,6 +31197,63 @@ mod stage1 {
             )))
             .is_ok(),
             "a well-formed effect declaration must compile"
+        );
+    }
+
+    /// A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands —
+    /// `(host (E) body extra)` — was SILENTLY ACCEPTED: `resolve_host` read only the effect list and body,
+    /// dropping the surplus (a silent miscompile, the `host` analogue of the too-many `resume`/fixed-arity
+    /// forms). Now it is CDZ0201 "this host has too many operands" with a delete-the-surplus fix, and the
+    /// consequent CDZ0401 (the malformed host's body-perform looks un-delegated to the no-home walk) is
+    /// deduped via `MALFORMED_HOST_PREFIX` so it is ONE primary error. The dedup covers every malformed-host
+    /// shape (non-list effects, missing body), not just too-many.
+    #[test]
+    fn a_host_with_too_many_operands_is_cdz0201() {
+        use crate::testkit::parse;
+        let too_many = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (host (E) (E.get) 99)) (export main))";
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(too_many)));
+        let arity = diags
+            .iter()
+            .find(|d| d.message.contains("too many operands"))
+            .expect("a host with a surplus operand must be rejected");
+        assert_eq!(
+            arity.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            arity.message
+        );
+        assert_eq!(
+            arity.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries a delete-the-surplus fix: {:?}",
+            arity.fix
+        );
+        // The consequent CDZ0401 (body-perform looks un-delegated because the host is malformed) is DEDUPED.
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
+            "the malformed-host no-home CDZ0401 is deduped: {:?}",
+            diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        // NO REGRESSION: a valid host compiles; a GENUINE no-home perform (no host at all) is still CDZ0401.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (host (E) (E.get))) (export main))",
+            )))
+            .is_ok(),
+            "a well-formed host must compile"
+        );
+        let no_home = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op get (-> Unit Int64))) (def (main) (E.get)) (export main))",
+        )));
+        assert!(
+            no_home.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
+            "a genuine ungranted perform is still CDZ0401 (no over-suppression): {:?}",
+            no_home.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

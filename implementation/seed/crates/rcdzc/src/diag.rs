@@ -697,6 +697,23 @@ pub const NON_ARROW_OP_TYPE_PREFIX: &str = "an operation's type must be an arrow
 /// recognize (and drop) the consequent leak when the primary malformed-op-type reject is present.
 pub const OP_VALUE_RECORD_LEAK: &str = "(effect-op Any)";
 
+/// A stable PREFIX of the coded CDZ0201 "this operation has no type" reject — an operation declared with
+/// NO type at all (`(op get)`, `op.ty == None`). Like the non-arrow case, PERFORMING such an op leaks the
+/// internal op-record (`OP_VALUE_RECORD_LEAK`) into a consequent, AND the perform reaches the entrypoint
+/// with no home (a consequent CDZ0401) — both CONSEQUENCES of the untyped declaration. `dedup_faults`
+/// drops that cascade whenever this reject is present, so an untyped op is ONE primary `error:` at the
+/// declaration (carrying the add-a-type fix), not shadowed by faults the author cannot act on.
+pub const MISSING_OP_TYPE_PREFIX: &str = "this operation has no type";
+
+/// A stable PREFIX shared by every coded CDZ0201 a MALFORMED `host` form produces (`resolve_host`): a
+/// missing effect-list/body, a non-list effect slot, or too many operands — every message begins "this
+/// host". Because the malformed host never resolved as a delegation, its body's perform is seen by the
+/// entrypoint no-home walk as reached with NO delegation → a CONSEQUENT CDZ0401 that misdirects (the
+/// author DID write a `host`, it is just malformed). `dedup_faults` drops that CDZ0401 whenever any
+/// malformed-host reject is present, keeping the CDZ0201 that says how to fix the host as the ONE primary
+/// error — the `host` analogue of the noncanonical-handle CDZ0401 suppression.
+pub const MALFORMED_HOST_PREFIX: &str = "this host";
+
 /// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
 /// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
 /// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this
