@@ -115,12 +115,14 @@ fn triage_one(
                 category: Category::Timeout,
                 program,
                 crash: None,
+                detail: None,
                 commit: commit.to_string(),
             };
             Ok(Some(store.file(&finding)?))
         }
-        // A crash is safe to replay (a panic unwinds; the in-process oracle catches it) and gives us
-        // the exact site + backtrace for a good dedup key + triage note.
+        // A crash artifact is safe to replay (a panic unwinds; the in-process oracle catches it).
+        // The replay may reproduce as a panic OR — since the oracle now validates output — as an
+        // invalid-wasm miscompile; file whichever it is.
         ArtifactKind::Crash => match compile_catching(&program) {
             Verdict::Crash(info) => {
                 let target = info.site.as_deref().map(crate::finding::normalize_site);
@@ -129,11 +131,23 @@ fn triage_one(
                     category: Category::Crash,
                     program: shrunk,
                     crash: Some(info),
+                    detail: None,
                     commit: commit.to_string(),
                 };
                 Ok(Some(store.file(&finding)?))
             }
-            // Didn't reproduce as a crash on replay — likely already fixed since the campaign, or a
+            Verdict::InvalidWasm { detail, .. } => {
+                let shrunk = crate::finding::shrink_invalid_wasm(&program);
+                let finding = Finding {
+                    category: Category::InvalidWasm,
+                    program: shrunk,
+                    crash: None,
+                    detail: Some(detail),
+                    commit: commit.to_string(),
+                };
+                Ok(Some(store.file(&finding)?))
+            }
+            // Didn't reproduce as a finding on replay — likely already fixed since the campaign, or a
             // sanitizer-only / nondeterministic fault. Count it but don't file a misleading bucket.
             _ => {
                 stats.not_reproduced += 1;

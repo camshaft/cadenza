@@ -54,6 +54,21 @@
   (input  (do (def (main) (: true (Int64 Int64))) (export main)))
   (error  CDZ0203))
 
+(case "a monomorphic user sum applied to a type argument in an annotation is rejected"
+  (doc    "The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) (Node Int64))` is
+           MONOMORPHIC — it takes no type parameters, so `(T Int64)` over-applies it. The reader parses
+           `(T Int64)` as applying `T` to `Int64`; `T` reduces to a type-value with zero declared params,
+           so it is over-applied and rejects CDZ0203. The bare `T` is the correct annotation (a monomorphic
+           sum's type is just its name). Pins that a monomorphic USER SUM applied to a type argument is a
+           coded rejection (the sum companion of the `(Int64 Int64)` case above — a non-generic type
+           applied to arguments), NOT silently accepted; the diagnostic names the fix (`T`, not `(T …)`).")
+  (input  (do
+            (type T (Leaf Int64) (Node Int64))
+            (def (f (: t (T Int64))) (match t ((T.Leaf n) n) ((T.Node n) n)))
+            (def (main) (f (T.Leaf 5)))
+            (export main)))
+  (error  CDZ0203))
+
 (case "an unbound name as a parameter's annotation type is rejected"
   (doc    "The PARAMETER-annotation companion: `(def (f (: x foo)) x)` annotates the parameter `x` with
            the unbound `foo` in type position. A parameter's type operand must denote a type exactly as a

@@ -759,6 +759,8 @@ pub enum Core {
     /// recursive definition introduces no cycle into the value heap, and the compiler emits no construct
     /// that would form one, which is what lets the reference-count reclamation leave no value uncollected.
     //= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
+    //# A recursive definition MUST refer to itself through a static reference to code rather than through a value that points back into the heap, so that recursion introduces no cycle into the value heap.
+    //= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
     //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
     Call { callee: usize, args: Vec<StructId> },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
@@ -848,9 +850,14 @@ pub enum Core {
     ///
     /// Because the statements are emitted in written order and each host call is a straight-line boundary
     /// call, the host calls a program makes are observed in exactly the order the program made them —
-    /// host-call order is part of the program's observable behavior, fixed by this emission order.
+    /// host-call order is part of the program's observable behavior, fixed by this emission order. The
+    /// block's value is its `tail`; an effect-only `(do S…)` whose statements run for their host calls has
+    /// a Unit-returning host call as its tail, so a program that terminates normally without producing a
+    /// value other than through its host calls yields the unit value.
     //= spec/capabilities/core-semantics.md#host-calls-are-ordered-and-part-of-observable-behavior
     //# The sequence of host calls a program makes MUST be observed in the order the program made them.
+    //= spec/capabilities/core-semantics.md#an-expression-evaluated-only-for-its-effect-yields-the-unit-value
+    //# A program that terminates normally without producing a value other than through the host calls it makes MUST produce the unit value as its normal-termination value.
     Seq {
         stmts: Vec<StructId>,
         tail: StructId,

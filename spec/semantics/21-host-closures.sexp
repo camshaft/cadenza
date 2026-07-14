@@ -257,6 +257,44 @@
   (call   h (: 5 Int64) (: 3 Int64))
   (output (: 11 Int64)))
 
+(case "a closure capturing THREE scalars is made and called"
+  (doc    "`(def (mk (: a Int64) (: b Int64) (: c Int64)) (fn (x) (+ (+ (+ x a) b) c)))` — three captured
+           values in the cell. `make(1, 2, 3)` then `call(10)` = 10 + 1 + 2 + 3 = 16. Extends the two-capture
+           case to a wider environment (each capture read back inside the `call` dispatch).")
+  (input  (do (def (mk (: a Int64) (: b Int64) (: c Int64)) (fn ((: x Int64)) (+ (+ (+ x a) b) c)))
+              (export mk)))
+  (call   mk (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 10 Int64))
+  (output (: 16 Int64)))
+
+(case "a closure capturing values of DIFFERENT types (Float64 + Int64)"
+  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+. x base)))` — the cell captures a Float64 AND an
+           Int64 (the latter unused in the body, but still stored), and the closure returns a Float64.
+           `make(1.5, 7)` then `call(2.5)` = 2.5 +. 1.5 = 4.0. Pins a MIXED-type capture environment (a float
+           and an int share one cell) with a float `call` result.")
+  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+. x base)))
+              (export mk)))
+  (call   mk (: 1.5 Float64) (: 7 Int64) (: 2.5 Float64))
+  (output (: 4.0 Float64)))
+
+; The DIRECT-CALL host→guest boundary: when the HOST must supply a value to `make`/`call` OVER the boundary,
+; only aliased-width scalars cross (the same restriction host-call `abi_val_type` has). A COMPOUND the host
+; supplies — a `make` parameter of type `(List …)`/`(Tuple …)`/a sum — needs a host→guest DECODE into the
+; guest value-heap (a `value-decode` runtime op that does not exist), so it declines. This is the mirror of
+; the round-trip relaxation: an in-GUEST-built compound arg crosses freely (built guest-side), but a
+; host-SUPPLIED compound does not. The compiler DECLINES (a `todo`) rather than emit a component that can't
+; accept the argument.
+
+(case "a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode"
+  (doc    "`(def (mk (: xs (List Int64))) (fn (i) ((. List len) xs)))` returns a closure capturing the List
+           `xs`, but `xs` is a `make` PARAMETER the HOST supplies over the boundary — a `(List Int64)` has no
+           scalar host-boundary representation, and there is no host→guest decode of a compound into the guest
+           heap. Declines (a `todo`). Contrast the round-trip cases, where a compound closure argument is
+           BUILT in-guest and crosses freely.")
+  (input  (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) ((. List len) xs)))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: 3 Int64)))
+
 ; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
 ; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
 ; `ask.ask` runs: INSIDE the returned closure (above — escapes, run later outside the delegation) versus
@@ -2718,3 +2756,44 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
   (output (: (list 1 1) (List Int64))))
+
+; FINAL COMPOSITION WITNESSES — the closure surface composes across all its axes at once. These exercise
+; combinations not covered by the per-feature cases: a higher-order (closure-typed) argument on the
+; DISTINCT-SIG round-trip path; a collection result built by REPEATED closure application; and the mixed
+; shape (closures + a plain export) driving the plain side. All run end-to-end under wasmtime.
+
+(case "distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another"
+  (doc    "`mka : () -> (-> (-> Int64 Int64) Int64)` (applies its function arg to 1 and 2, sums) and `mkb : ()
+           -> (-> Bool Int64)` are distinct sigs → two resource types. `appa` hands `g` a guest-built `(fn (y)
+           (* y x))`. `appa(handle, 5)` → `g((fn y->y*5))` = 5*1 + 5*2 = 15. Composes the higher-order arg with
+           distinct-signature grouping.")
+  (input  (do (def (mka) (fn ((: f (-> Int64 Int64))) (+ (f 1) (f 2))))
+              (def (mkb) (fn ((: b Bool)) (: (if b 9 8) Int64)))
+              (def (appa (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (* y x))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "round-trip: a consumer returns a Set built from REPEATED closure application"
+  (doc    "`mk` multiplies by 10; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list (g x) (g x) x))` —
+           the closure `g` is applied TWICE and its result plus `x` form a set (duplicates collapse).
+           `app(handle, 3)` → `g(3)`=30 twice, so `{3, 30}` → `(: ((. Set of) (list 3 30)) (Set Int64))` in
+           canonical order. Composes repeated in-guest application with a collection value-encode result.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 10)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list (g x) (g x) x)))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: ((. Set of) (list 3 30)) (Set Int64))))
+
+(case "mixed: two closure exports alongside a plain export — driving the plain export"
+  (doc    "`inc`/`dbl` are two same-signature closure exports (crossing via `make-<name>` + a shared borrow
+           `call`) and `two` is a PLAIN (non-closure) export, all in one component. Calling `two` = 2 drives
+           the plain top-level func directly, coexisting with the closure-resource interface. Pins that a
+           plain export rides alongside the (now borrow<t>) multi-export closure shape.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (dbl) (fn ((: x Int64)) (* x 2)))
+              (def (two) 2)
+              (export inc) (export dbl) (export two)))
+  (call   two)
+  (output (: 2 Int64)))

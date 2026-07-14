@@ -18,13 +18,16 @@ use std::path::{Path, PathBuf};
 
 use crate::oracle::{CrashInfo, Verdict, compile_catching};
 
-/// What kind of finding this is. (Differential is reserved for the planned miscompile oracle.)
+/// What kind of finding this is. (Differential is reserved for the planned run-and-compare oracle.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
     /// A panic escaped the compile path.
     Crash,
     /// The compiler did not finish inside the wall-clock budget.
     Timeout,
+    /// The compiler reported success but the emitted component failed wasm validation (a backend
+    /// miscompile — structurally-invalid wasm).
+    InvalidWasm,
 }
 
 impl Category {
@@ -32,6 +35,7 @@ impl Category {
         match self {
             Category::Crash => "crash",
             Category::Timeout => "timeout",
+            Category::InvalidWasm => "invalid-wasm",
         }
     }
 }
@@ -42,8 +46,11 @@ pub struct Finding {
     pub category: Category,
     /// The (already shrunk) reproducer source, in the runnable export shape.
     pub program: String,
-    /// Crash details. `None` for a timeout (there is no panic site).
+    /// Crash details. `None` for a timeout or invalid-wasm (there is no panic site).
     pub crash: Option<CrashInfo>,
+    /// For `InvalidWasm`: the validator's rejection message (dedup key + triage detail). `None`
+    /// otherwise.
+    pub detail: Option<String>,
     /// The compiler commit the finding was produced against (short SHA, or "unknown").
     pub commit: String,
 }
@@ -62,6 +69,12 @@ impl Finding {
                     .unwrap_or_else(|| "nosite".into());
                 format!("{site}::{}", mask_message(&c.message))
             }
+            // Bucket invalid-wasm findings by the validator's (masked) error, so distinct backend
+            // faults get distinct buckets rather than collapsing like timeouts do.
+            (None, Category::InvalidWasm) => {
+                let d = self.detail.as_deref().unwrap_or("invalid-wasm");
+                format!("invalid-wasm::{}", mask_message(d))
+            }
             (None, Category::Timeout) => "timeout".to_string(),
             (None, _) => "unknown".to_string(),
         };
@@ -79,6 +92,10 @@ impl Finding {
                     .unwrap_or_else(|| "unknown site".into());
                 format!("compiler panic at {site}: {}", first_line(&c.message))
             }
+            (None, Category::InvalidWasm) => format!(
+                "backend emitted INVALID wasm: {}",
+                first_line(self.detail.as_deref().unwrap_or("validation failed"))
+            ),
             (None, Category::Timeout) => {
                 "compiler timeout (no result inside the budget)".to_string()
             }
@@ -166,10 +183,11 @@ impl FindingStore {
             "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
         );
         s.push_str(
-            "generated program made the compiler PANIC or HANG — never valid behavior, since the\n",
+            "generated program made the compiler PANIC, HANG, or emit INVALID wasm — never valid\n",
         );
-        s.push_str("compiler reports every legitimate \"no\" as a diagnostic. Triage, fix, then rename this\n");
-        s.push_str("file `.RESOLVED.md` (or `.REJECTED.md` with a rationale) so it is not re-triaged._\n\n");
+        s.push_str("behavior, since the compiler reports every legitimate \"no\" as a diagnostic. Triage, fix,\n");
+        s.push_str("then rename this file `.RESOLVED.md` (or `.REJECTED.md` with a rationale) so it is not\n");
+        s.push_str("re-triaged._\n\n");
         s.push_str(&format!("- **Category:** {}\n", finding.category.tag()));
         s.push_str(&format!("- **Compiler commit:** `{}`\n", finding.commit));
         s.push_str("- **Hits:** 1\n");
@@ -194,6 +212,20 @@ impl FindingStore {
             s.push_str("<details><summary>Backtrace</summary>\n\n```\n");
             s.push_str(c.backtrace.trim_end());
             s.push_str("\n```\n\n</details>\n");
+        } else if finding.category == Category::InvalidWasm {
+            s.push_str("## Invalid wasm (backend miscompile)\n\n");
+            s.push_str(
+                "The compiler reported SUCCESS, but the emitted component failed wasm validation\n",
+            );
+            s.push_str(
+                "(`wasmparser` with `WasmFeatures::all()` — the same check rcdzc's own tests assert\n",
+            );
+            s.push_str(
+                "emitted components pass). The backend produced structurally-invalid wasm.\n\n",
+            );
+            if let Some(d) = &finding.detail {
+                s.push_str(&format!("- **Validator error:** {}\n", first_line(d)));
+            }
         } else if finding.category == Category::Timeout {
             s.push_str("## Timeout\n\n");
             s.push_str(
@@ -217,7 +249,19 @@ pub fn shrink(source: &str, target_site: Option<&str>) -> String {
         (Verdict::Crash(_), None) => true,
         _ => false,
     };
+    shrink_while(source, same_site)
+}
 
+/// Minimize an invalid-wasm reproducer, preserving that the shrunk program STILL compiles to a
+/// component that fails validation (any validation failure — we don't require the identical
+/// validator message, since shrinking may legitimately surface a different first error).
+pub fn shrink_invalid_wasm(source: &str) -> String {
+    shrink_while(source, |v| matches!(v, Verdict::InvalidWasm { .. }))
+}
+
+/// The shared shrink loop: greedily delete balanced sub-forms, keeping any deletion whose result
+/// still satisfies `keep` (and still parses — a `ParseError` fails `keep` for every caller).
+fn shrink_while(source: &str, keep: impl Fn(&Verdict) -> bool) -> String {
     let mut best = source.to_string();
     // Bound the passes so a pathological input can't loop; each pass is O(n^2) in sub-forms.
     for _ in 0..12 {
@@ -237,7 +281,7 @@ pub fn shrink(source: &str, target_site: Option<&str>) -> String {
             if candidate.len() >= best.len() {
                 continue;
             }
-            if same_site(&compile_catching(&candidate)) {
+            if keep(&compile_catching(&candidate)) {
                 best = candidate;
                 improved = true;
                 break; // re-derive spans on the smaller program
@@ -393,6 +437,7 @@ mod tests {
                 message: msg.into(),
                 backtrace: String::new(),
             }),
+            detail: None,
             commit: "abc123".into(),
         };
         let s1 = mk("crates/rcdzc/src/lower.rs:766:9", "position 3 not found").signature();
@@ -400,6 +445,24 @@ mod tests {
         let s3 = mk("crates/rcdzc/src/select.rs:1266:5", "position 3 not found").signature();
         assert_eq!(s1, s2, "same site + masked message → same bucket");
         assert_ne!(s1, s3, "different site → different bucket");
+    }
+
+    #[test]
+    fn invalid_wasm_buckets_by_validator_error() {
+        let mk = |detail: &str| Finding {
+            category: Category::InvalidWasm,
+            program: "(do (def (main) 0) (export main))".into(),
+            crash: None,
+            detail: Some(detail.into()),
+            commit: "abc".into(),
+        };
+        // Same error shape (differing only in offsets) → one bucket; a different error → another.
+        let a = mk("type mismatch: expected i32, found i64 (at offset 128)").signature();
+        let b = mk("type mismatch: expected i32, found i64 (at offset 992)").signature();
+        let c = mk("unknown function 7").signature();
+        assert_eq!(a, b, "same masked validator error → same bucket");
+        assert_ne!(a, c, "different validator error → different bucket");
+        assert!(a.starts_with("invalid-wasm"), "sig namespaced: {a}");
     }
 
     #[test]
@@ -414,6 +477,7 @@ mod tests {
                 message: "boom 7".into(),
                 backtrace: String::new(),
             }),
+            detail: None,
             commit: "deadbeef".into(),
         };
         let first = store.file(&f).unwrap();

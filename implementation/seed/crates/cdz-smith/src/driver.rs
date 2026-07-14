@@ -70,6 +70,7 @@ pub struct Stats {
     pub declined: u64,
     pub parse_errors: u64,
     pub crashes: u64,
+    pub invalid_wasm: u64,
     pub timeouts: u64,
     pub new_buckets: u64,
     pub duplicate_hits: u64,
@@ -77,7 +78,12 @@ pub struct Stats {
 
 impl Stats {
     pub fn total(&self) -> u64 {
-        self.compiled + self.declined + self.parse_errors + self.crashes + self.timeouts
+        self.compiled
+            + self.declined
+            + self.parse_errors
+            + self.crashes
+            + self.invalid_wasm
+            + self.timeouts
     }
 }
 
@@ -135,8 +141,13 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
         i += 1;
         if cfg.progress_every != 0 && i.is_multiple_of(cfg.progress_every) {
             eprintln!(
-                "[cdz-smith] {i} programs | {} compiled, {} declined, {} crashes ({} buckets), {} timeouts",
-                stats.compiled, stats.declined, stats.crashes, stats.new_buckets, stats.timeouts
+                "[cdz-smith] {i} programs | {} compiled, {} declined, {} crashes, {} invalid-wasm ({} buckets), {} timeouts",
+                stats.compiled,
+                stats.declined,
+                stats.crashes,
+                stats.invalid_wasm,
+                stats.new_buckets,
+                stats.timeouts
             );
         }
     }
@@ -157,6 +168,10 @@ fn classify(verdict: &Verdict, seed: u64, cfg: &Config, store: &FindingStore, st
             stats.crashes += 1;
             file_crash(seed, info, cfg, store, stats);
         }
+        Verdict::InvalidWasm { detail, .. } => {
+            stats.invalid_wasm += 1;
+            file_invalid_wasm(seed, detail, cfg, store, stats);
+        }
     }
 }
 
@@ -169,6 +184,7 @@ fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, s
         category: Category::Crash,
         program,
         crash: Some(info.clone()),
+        detail: None,
         commit: cfg.commit.clone(),
     };
     match store.file(&finding) {
@@ -176,6 +192,36 @@ fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, s
             stats.new_buckets += 1;
             eprintln!(
                 "[cdz-smith] NEW crash bucket → {} (seed {seed})",
+                path.display()
+            );
+        }
+        Ok(crate::finding::Filed::Duplicate(_)) => stats.duplicate_hits += 1,
+        Err(e) => eprintln!("[cdz-smith] failed to file finding: {e}"),
+    }
+}
+
+fn file_invalid_wasm(
+    seed: u64,
+    detail: &str,
+    cfg: &Config,
+    store: &FindingStore,
+    stats: &mut Stats,
+) {
+    let raw = program_for_seed(seed);
+    // Shrink while preserving that the emitted component still fails to validate.
+    let program = crate::finding::shrink_invalid_wasm(&raw);
+    let finding = Finding {
+        category: Category::InvalidWasm,
+        program,
+        crash: None,
+        detail: Some(detail.to_string()),
+        commit: cfg.commit.clone(),
+    };
+    match store.file(&finding) {
+        Ok(crate::finding::Filed::New(path)) => {
+            stats.new_buckets += 1;
+            eprintln!(
+                "[cdz-smith] NEW invalid-wasm bucket → {} (seed {seed})",
                 path.display()
             );
         }
@@ -232,6 +278,7 @@ fn file_timeout(seed: u64, cfg: &Config) {
             category: Category::Timeout,
             program,
             crash: None,
+            detail: None,
             commit: cfg.commit.clone(),
         };
         let _ = store.file(&finding);
