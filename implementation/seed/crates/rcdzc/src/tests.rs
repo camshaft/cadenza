@@ -18069,6 +18069,33 @@ mod match_engine {
             "a computed int second operand wraps in Float64.of-int: {:?}",
             computed.fix
         );
+        // SYMMETRIC coverage: an int LITERAL FIRST operand against a NON-LITERAL float second (`(+ 5 y)`,
+        // `y : Float64`). Conforming the second operand yields no one-shot (a runtime float has no int
+        // spelling), so the fix falls back to conforming the FIRST operand — retype the literal `5` →
+        // `5.0`. Without the fallback this offered NO fix while the mirror `(+ y 5)` did (an order
+        // asymmetry for the identical slip).
+        let lit_first = reject_full(
+            "(module m (def (g (: y Float64)) (+ 5 y)) (def (main) (g 1.0)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(lit_first.code.as_deref(), Some("CDZ0301"));
+        assert_eq!(
+            lit_first.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "an int literal FIRST against a non-literal float retypes the literal up: {}",
+            lit_first.message
+        );
+        // The mirror `(+ y 5)` retypes the same literal — both orders now offer the identical repair.
+        let lit_second = reject_full(
+            "(module m (def (g (: y Float64)) (+ y 5)) (def (main) (g 1.0)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            lit_second.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "the mirror order retypes the literal too: {}",
+            lit_second.message
+        );
         // `%` is integer-only (no float form) — a `(% 5.0 2.0)` falls through to the scheme, which rejects
         // a float operand; still CDZ0301, but no float-arithmetic fold.
         let rem = reject_full("(module m (def (main) (% 5.0 2.0)) (export main))").expect("reject");

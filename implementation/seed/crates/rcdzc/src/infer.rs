@@ -6383,7 +6383,18 @@ fn check_application(
                     )
                 };
                 let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
-                if let Some(fix) = numeric_text_coercion_fix(db, &expected, actual, fix_arg) {
+                // Prefer conforming the SECOND operand to the first (the first establishes the intended
+                // type). But when that operand has no clean one-shot — a NON-LITERAL float against an int
+                // context (`(+ 5 y)`, `y : Float64`: `numeric_text_coercion_fix(Int64, Float64, y)` is
+                // `None`, since a runtime float has no int spelling) — the SYMMETRIC repair often IS
+                // available: conform the FIRST operand to the second's type (retype the LITERAL `5` → `5.0`).
+                // Without this, `(+ 5 y)` offered NO fix while `(+ y 5)` did — an order asymmetry for the
+                // identical slip. Try the second-operand coercion first, then fall back to the first, so a
+                // literal-int-on-either-side/float-param mix always gets the retype. Deterministic (second
+                // preferred, then first); a fix on neither leaves the bare CDZ0301.
+                let fix = numeric_text_coercion_fix(db, &expected, actual, fix_arg)
+                    .or_else(|| numeric_text_coercion_fix(db, &b0, &a0, args[0]));
+                if let Some(fix) = fix {
                     reject = reject.with_fix(fix);
                 }
                 out.push(reject);
