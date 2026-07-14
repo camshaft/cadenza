@@ -4777,6 +4777,26 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a sum value is threaded through a multi-binding let chain, flipping variant each step"
+  (doc    "A state-machine idiom: a sum `St = (A Int64) | (B Int64)` is stepped through a chain of `let`
+           bindings, each `(step s)` MATCHING the current variant and building the OTHER — `A n → B (n+1)`,
+           `B n → A (n*2)`. Starting `(A k)`, `s1 = step s0`, `s2 = step s1`, then a final match reads it.
+           `(A 5) → (B 6) → (A 12)`, final match's `A` arm → 12. Pins that a sum value flows through
+           successive let bindings as an ordinary first-class value — constructed, matched-and-rebuilt into
+           a different variant, and re-bound — the state-machine shape a fold/interpreter loop uses.")
+  (input  (do
+            (type St (A Int64) (B Int64))
+            (def (step (: s St)) (match s ((St.A n) (St.B (+ n 1))) ((St.B n) (St.A (* n 2)))))
+            (def (main (: k Int64))
+              (let ((s0 (St.A k)))
+                (let ((s1 (step s0)))
+                  (let ((s2 (step s1)))
+                    (match s2 ((St.A n) n) ((St.B n) (+ n 1000)))))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 12 Int64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
