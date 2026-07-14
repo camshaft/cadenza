@@ -745,18 +745,25 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
                         }
                     }
                 }
-                // A match ARM `(pattern body)` ascended from `body`, pattern a bare binder → it binds.
+                // A match ARM `(pattern body)` ascended from `body` → the names its PATTERN binds. A bare
+                // binder (`n`) binds itself; a COMPOUND pattern — `(Some p)`, `(tuple a b)`, `(list x ..
+                // rest)` — binds every bare-name leaf inside it. Without the compound case a typo of an
+                // element/rest binder (`rst` for `rest`) had NO in-scope candidate and mis-suggested a
+                // far prelude name (`Ast`); collecting the pattern's binders makes it suggest `rest`. The
+                // pool is generous (a ctor name inside the pattern may slip in), which is harmless for a
+                // did-you-mean — a wrong candidate only surfaces if it is the NEAREST, and a pattern's
+                // own names are exactly what is in scope in the arm body.
                 if let Struct::List(arm) = db.ast.get(form)
                     && arm.len() == 2
                     && Some(from) == arm.get(1).copied()
-                    && let Some(n) = db.ast.as_name(arm[0])
-                    && n != "_"
                     && db
                         .parent_of(form)
                         .and_then(|p| db.ast.as_form(p, "match"))
                         .is_some()
                 {
-                    push(n, arm[0], &mut out);
+                    for (n, occ) in arm_pattern_binders(db, arm[0]) {
+                        push(&n, occ, &mut out);
+                    }
                 }
             }
         }
@@ -764,6 +771,44 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
         cursor = db.parent_of(form);
     }
     out
+}
+
+/// The `(name, occurrence)` binders a match-arm PATTERN introduces — used to seed `visible_bindings`'s
+/// did-you-mean candidate pool for a reference in the arm body. A bare name binds itself; a COMPOUND
+/// pattern (`(Some p)`, `(tuple a b)`, `(list x .. rest)`, `(map (k v) .. rest)`) binds every bare-name
+/// LEAF inside it. Deliberately SYNTACTIC and immutable (`&Db`) — it does NOT resolve ctor-vs-binder (a
+/// `&mut Db` operation `collect_pattern_binders` in `lower` does that for linearity), so a nullary-ctor
+/// name inside the pattern may slip into the pool; that is harmless for a suggestion (a candidate only
+/// surfaces if it is the NEAREST to the typo, and the arm's own names are exactly what is in scope). The
+/// separators `_` (wildcard) and `..` (rest marker) bind nothing and are skipped. Bounded recursion over
+/// the pattern tree; a pattern is shallow, so no depth guard is needed.
+fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
+    let mut out: Vec<(String, StructId)> = Vec::new();
+    collect_arm_binder_leaves(db, pat, &mut out);
+    out
+}
+
+fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, StructId)>) {
+    match db.ast.get(pat) {
+        // A bare name is a binder unless it is a separator (`_`/`..`). A literal atom has no name, so
+        // `as_name` yields `None` and it is skipped.
+        Struct::Atom(_) => {
+            if let Some(n) = db.ast.as_name(pat)
+                && n != "_"
+                && n != ".."
+            {
+                out.push((n.to_string(), pat));
+            }
+        }
+        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `.`
+        // member / `guard`), recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the
+        // recursion reaches its `k`/`v` leaves naturally.
+        Struct::List(children) => {
+            for &arg in children.iter().skip(1) {
+                collect_arm_binder_leaves(db, arg, out);
+            }
+        }
+    }
 }
 
 /// Walk parents from `id` to the nearest enclosing binding of `name`, returning the value occurrence

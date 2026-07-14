@@ -21072,6 +21072,50 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unbound_name_close_to_a_match_arm_pattern_binder_suggests_it() {
+        // A COMPOUND match-arm pattern binds names in the arm BODY's scope — a `(list … .. rest)` element
+        // or rest binder, a `(Some p)` payload, a `(tuple a b)` element. A typo of one is CDZ0101, and the
+        // candidate pool now includes the pattern's binders (before, a compound pattern contributed NONE,
+        // so a rest-binder typo mis-suggested a far prelude name). Each below near-misses a real binder.
+        let find = |body: &str| {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected an unbound-name fault for {body}"))
+        };
+        // A list REST binder `rest`, typo'd `reest` in the body → suggests `rest` (`rest` is a
+        // `(List Int64)`, so passing it to `List.len` type-checks; the only unbound name is the typo).
+        let r = find("(match xs ((list) 0) ((list x .. rest) ((. List len) reest)))");
+        assert_eq!(
+            r.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("rest"),
+            "list rest binder is a candidate: {}",
+            r.message
+        );
+        // A list ELEMENT binder `elem`, typo'd `elm`.
+        let e = find("(match xs ((list elem) elm) (_ 0))");
+        assert_eq!(
+            e.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("elem"),
+            "list element binder is a candidate: {}",
+            e.message
+        );
+        // A variant PAYLOAD binder `payload`, typo'd `payloed` — over an Option scrutinee.
+        let src = "(module m (def (g (: o (Option Int64))) (match o ((Some payload) payloed) ((None) 0))) (export g))";
+        let p = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .expect("expected an unbound-name fault");
+        assert_eq!(
+            p.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("payload"),
+            "variant payload binder is a candidate: {}",
+            p.message
+        );
+    }
+
+    #[test]
     fn an_unbound_name_close_to_a_prelude_builtin_suggests_it() {
         // The prelude's names are candidates — `List` misspelled `Lst` (a module head). `Lst` is
         // distance-1 from BOTH `List` (insert `i`) and the built-in `Ast` (substitute `L`→`A`), so the
