@@ -544,6 +544,7 @@ pass	a mutually-recursive decoder returns a heap value and cursor and its heap s
 pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
 pass	a mutually-recursive group performs through a shared non-recursive helper
+pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding

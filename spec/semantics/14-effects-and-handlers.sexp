@@ -1132,6 +1132,31 @@
               (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
 
+(case "a mutually-recursive group threads two nested handlers' states at once"
+  (doc    "The two-nested-handler state-threading of the case above, but over a MUTUALLY-RECURSIVE group
+           rather than a single self-recursive `loop` — composing merge (two effects, two handler contexts)
+           WITH mutual specialization (`ev`/`od`, each performing a DIFFERENT effect). `ev` performs `A.tick`
+           and recurses through `od`; `od` performs `B.bump` and recurses through `ev`; both handler
+           contexts must thread INDEPENDENTLY across the alternation. `A` is a countdown seeded 3 (`tick`
+           hands back `s`, threads `s - 1`), `B` an accumulator seeded 0 (`bump` hands back `s`, threads
+           `s + 10`). Along `ev(4) → od(3) → ev(2) → od(1) → ev(0)=0`, the A-ticks read 3 then 2 (in `ev`)
+           and the B-bumps read 0 then 10 (in `od`), so the strict-spine sum is `3 + 0 + 2 + 10 + 0` = 15.
+           Each specialized function (`ev#ctx`/`od#ctx`) must carry BOTH threaded states as distinct hidden
+           slots — a shared per-effect slot would clobber when the mutual recursion re-enters — pinning
+           that merge (`merged_nested_ctx`) and mutual-group specialization cooperate. Recursive-while-
+           performing across two effects, so it needs effect-context monomorphization
+           (`DESIGN-effects-rcdzc.md` §4.2, §4.3).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op bump (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (A.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (+ (B.bump) (ev (- n 1))))
+            (def (main)
+              (handle A 3 ((tick (u) s (resume s (- s 1))))
+                (handle B 0 ((bump (u) s (resume s (+ s 10))))
+                  (ev 4)))) (export main)))
+  (output (: 15 Int64)))
+
 (case "a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold"
   (doc    "Nested handlers of DISTINCT effects where the OUTER handler's arm resumes NON-tail. The
            inside-out reduction reduces the inner handle only while THREADING the outer body — which
