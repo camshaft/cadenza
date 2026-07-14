@@ -4571,6 +4571,27 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a constructor STORED in a tuple is extracted and applied as a first-class closure"
+  (doc    "A bare constructor `W.Mk` is stored in a TUPLE `(tuple W.Mk 5)` — a heap data structure — then
+           extracted `(. pair 0)` and applied to the sibling element `(. pair 1)`. Unlike a constructor
+           passed straight to an inlined HOF (which folds), a constructor held in a heap value cannot be
+           inlined away: it must exist as a genuine first-class CLOSURE (a funcref, exactly as a `(fn …)` or
+           a named function stored in a tuple does). The constructor eta-expands to `(fn (p) (W.Mk p))`,
+           lifted to a closure. `(. pair 0)` reads it back, `((. pair 0) 5)` builds `(W.Mk 5)` → 5. Pins that
+           a payload constructor is a first-class closure value storable in a data structure, not only an
+           apply-head or a HOF argument. (Realizable on the wasm backend, which stores closures on the heap;
+           the Rust backend does not yet render a closure inside a tuple — a closures-as-tuple-elements
+           vertical, not sum-specific — so this is a wasm-oracle witness.)")
+  (input  (do
+            (type W (Mk Int64) (N))
+            (def (main (: k Int64))
+              (let ((pair (tuple W.Mk 5)))
+                (match ((. pair 0) (. pair 1)) ((W.Mk n) n) ((W.N) -1))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
 (case "nullary constructor patterns are uniform with unary"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (4th sentence): patterns are uniform `(Ctor binder)`. A nullary variant

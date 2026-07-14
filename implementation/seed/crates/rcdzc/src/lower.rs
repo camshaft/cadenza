@@ -316,10 +316,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // as `The`) — erased to its underlying Unit (no box, no disc). The node's type is
                 // `Ty::Nominal { inner: Unit }`, which occupies no runtime slot, exactly as `Core::Unit`.
                 crate::ty::Ty::Nominal { .. } => Core::Unit,
-                // A payload variant used bare is a partial application (a function value).
-                _ => Core::Poison(Reject::decline(
-                    "a variant constructor with payloads must be applied to its arguments",
-                )),
+                // A payload variant used BARE as a first-class VALUE (`W.Mk` stored in a tuple/list, or
+                // returned) — ETA-EXPAND it to a runtime closure `(fn (p…) (W.Mk p…))` lifted like any
+                // lambda value, so a constructor is a first-class function even when it cannot be inlined
+                // away. (The inline-fold path — a bare ctor applied via an inlined HOF — is handled earlier
+                // by `ctor_spine`; this is the genuine-runtime-closure case.) Falls back to declining if the
+                // ctor scheme or a payload/result type has no machine representation.
+                _ => eta_ctor_closure(db, id).unwrap_or_else(|| {
+                    Core::Poison(Reject::decline(
+                        "a variant constructor with payloads must be applied to its arguments",
+                    ))
+                }),
             }
         }
         // `Map.empty` used as a VALUE — an operator record whose `(meta apply)` is `Prim::MapEmpty`.
@@ -4970,6 +4977,67 @@ fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
         }
     }
     cur
+}
+
+/// ETA-EXPAND a bare payload constructor `ctor_head` (a `(. Sum V)` record whose scheme is `(-> p0 … Sum)`)
+/// into a genuine runtime CLOSURE — `(fn (__eta0 … __eta{n-1}) (ctor_head __eta0 … __eta{n-1}))` lifted to a
+/// funcref-table slot via `lower_lambda_value`. This is needed when the constructor VALUE cannot be inlined
+/// away — it is stored in a heap data structure (a tuple/list/record) and applied later — so, unlike the
+/// `ctor_spine` inline-fold path, a real first-class function value must exist (the same lift a `(fn …)` or a
+/// named function value gets). A lambda / named fn stored in a tuple already lifts; a bare constructor did
+/// not, declining "a runtime closure application has no matching function type".
+///
+/// The constructor's arrow is FULLY KNOWN from its scheme (`scheme_of`), so the synthesized lambda needs no
+/// inference context: each `__eta{k}` param's type is SEEDED into `db.param_types` from the k-th arrow
+/// parameter, and the body `(ctor __eta…)` lowers to `SumNew` typed as the sum. `None` if the scheme is
+/// unavailable or a payload/result type has no machine representation (declines cleanly, as before).
+fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
+    // The ctor's curried scheme `(-> p0 (-> p1 … Sum))` — peel each parameter type + the final sum.
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;
+    let inst = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut payload_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = inst;
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        payload_tys.push(*p);
+        cur = *r;
+    }
+    if payload_tys.is_empty() {
+        return None; // a nullary variant is a value, not a function — no closure needed.
+    }
+    // Synthesize `(fn (__eta0 …) (ctor_head __eta0 …))`. A distinct binder occurrence per param, and a
+    // distinct reference occurrence per body use (both `push_name` the same spelling; scope resolution ties
+    // the body ref to the param binder). The `__` prefix cannot collide with a source name.
+    let n = payload_tys.len();
+    let param_occs: Vec<StructId> = (0..n).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + n);
+    body_children.push(ctor_head);
+    for k in 0..n {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(param_occs.clone());
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    // SEED each synthesized param's machine type from the ctor scheme, so `lower_lambda_value`'s
+    // `type_of(param)` (which reads `db.param_types`) and the body's `SumNew` typing resolve without any
+    // inference context on the synthesized nodes. `param_name_occ` maps the binder to its name occurrence
+    // (the key `type_of`/`db.param_types` use).
+    let (params, ty_body_ok) = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => (params, body),
+        _ => return None, // synthesis did not classify as a lambda — bail (declines below)
+    };
+    let _ = ty_body_ok;
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types.entry(occ).or_insert_with(|| payload_tys[k].clone());
+    }
+    // Lower the synthesized lambda as a runtime closure value.
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
 }
 
 fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {
