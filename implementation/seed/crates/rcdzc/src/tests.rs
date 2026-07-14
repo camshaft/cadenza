@@ -27076,6 +27076,77 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_scalar_match_desugars_to_an_if_and_goes_branchless() {
+        // A GUARDED scalar match is `(if guard body else)` — so it must get the same branchless treatment
+        // the plain `if` does (bool-materialization / select), not a structured `if`/`else` block.
+        // `(match x ((guard n (> n 100)) 1) (_ 0))` is `(if (> x 100) 1 0)` → bool-materialization:
+        // `gt_s ; extend`, no `If`/`Else`/`End`. (A match with a guard cannot use `br_table`, so the
+        // desugar loses no dispatch table.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (match x ((guard n (> n 100)) 1) (_ 0))) (export f))",
+        ));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &params, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::If(_) | Lir::Else | Lir::End)),
+            "a guarded scalar match with constant arms bool-materializes — no if/else block: {code:?}"
+        );
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::I64GtS)),
+            "the guard condition `(> n 100)` emits its comparison: {code:?}"
+        );
+        // The recursive guarded-wildcard `find` loop still tail-loops through the desugar (no stack blowup).
+        let mut db2 = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (find (: n Int64)) (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) \
+               (def (main) 0) (export main))",
+        ));
+        let layout2 = crate::layout::compute(&mut db2).expect("layout");
+        let df = db2.def_by_name("find").expect("find");
+        let (fp, fb) = {
+            let sig = db2.defs[df].params.clone();
+            let ps: Vec<_> = sig
+                .into_iter()
+                .map(|p| {
+                    let b = db2
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db2, b))
+                })
+                .collect();
+            (ps, db2.defs[df].body.expect("body"))
+        };
+        let fcode = select_function_of(&mut db2, fb, &fp, &layout2, Some(df))
+            .expect("select find")
+            .code;
+        assert!(
+            fcode.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "a guarded-wildcard tail-recursive match still compiles to a loop: {fcode:?}"
+        );
+    }
+
+    #[test]
     fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
         // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
         // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only

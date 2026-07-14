@@ -3034,6 +3034,73 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             "matching a compound value needs a heap walk (not yet built)",
         ));
     }
+    // GUARDED SCALAR MATCH → nested `if`-chain (the scalar analogue of the string desugar above). A match
+    // with ANY guard cannot use the `br_table` jump (both `try_emit_*_br_table` bail on a guard) and its
+    // `Core::Match` emit lowers a guarded arm to `if guard body else <rest>` — which does NOT get the
+    // `if`→select / bool-materialization the plain `Core::If` does. So `(match x ((guard n (> n 100)) 1)
+    // (_ 0))` emitted a structured `if/else` block where the equivalent `(if (> x 100) 1 0)` branchlessly
+    // materializes to `gt_s ; extend`. Desugar to `(if (= scrutinee lit) (if guard body <else>) <else>)`
+    // (a literal-probe arm) / `(if guard body <else>)` (a guarded WILDCARD, no `=` test) and re-lower —
+    // the ordinary `Resolved::If` path then applies every branchless conversion. Built from the AST
+    // pattern/guard/body nodes exactly as the string path, so a binder resolves through its arm as before.
+    // Only for a match that HAS a guard (an unguarded scalar match keeps its `Core::Match` → `br_table`/
+    // probe-chain, unchanged); the arms must be Int/Bool literal or wildcard probes (the type check above
+    // rejected a mismatch, and a guarded compound-pattern arm went to the sum path).
+    if probes.iter().any(|(_, guard, _)| guard.is_some())
+        && probes.iter().all(|(p, _, _)| {
+            matches!(
+                p,
+                crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) | crate::core::Probe::Wild
+            )
+        })
+    {
+        // The unconditional tail = the first UNGUARDED wildcard arm's body (exhaustiveness guarantees one;
+        // a guarded arm never covers unconditionally). Arms after it are unreachable and dropped.
+        let tail_ix = arms.iter().position(|&(pat, _)| {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+        });
+        let Some(tail_ix) = tail_ix else {
+            return Core::Poison(Reject::decline(
+                "a guarded scalar match needs an unguarded wildcard tail",
+            ));
+        };
+        let mut else_node = arms[tail_ix].1;
+        // Fold the leading arms (0..tail_ix) from LAST backward into nested `if`s.
+        for &(pat, body) in arms[..tail_ix].iter().rev() {
+            let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (pat, None),
+            };
+            // A LITERAL probe adds a `(= scrutinee <literal>)` test (scalar `=` → `i*.eq`); a WILDCARD
+            // inner pattern (a bare name / `_`) has NO literal test — the guard alone gates it.
+            let is_wild = db.ast.as_name(inner_pat).is_some();
+            // A guarded arm nests its guard INSIDE the matched branch: `(if guard body <else>)`, so a false
+            // guard falls through to the same `else` as a non-matching literal.
+            let then_branch = match guard {
+                Some(g) => {
+                    let if_head = db.push_name("if");
+                    db.push_list(vec![if_head, g, body, else_node])
+                }
+                None => body,
+            };
+            else_node = if is_wild {
+                // A guarded wildcard: the guard IS the whole test — `(if guard body <else>)` (already built
+                // as `then_branch`; an UNguarded wildcard before the tail is unreachable but harmless).
+                then_branch
+            } else {
+                let eq_head = db.push_name("=");
+                let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
+                let if_head = db.push_name("if");
+                db.push_list(vec![if_head, eq, then_branch, else_node])
+            };
+        }
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "guarded scalar match → if-chain (unlocks branchless if→select)");
+        return core_of(db, else_node);
+    }
     // ALL-SAME-BODY COLLAPSE: if every arm is UNGUARDED and all their bodies lower to the SAME core, the
     // match computes that value for every scrutinee — so it collapses to the body, dropping the probe
     // chain (the match analogue of `(if c x x)` → `x`). Guarded arms are excluded: a guard may fail, so
