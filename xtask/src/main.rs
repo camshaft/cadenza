@@ -961,15 +961,30 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // …and the per-generic-sum parameter COUNT (`// cdz-sum-params[Box]: 1`) — the driver substitutes a
     // generic sum's `T{k}` payload placeholders with the result type's concrete args when it renders one.
     let sum_params = cdz_sum_params(&module);
-    let body = match ret_ty
+    // A DIVERGING export — its Cadenza result type is `Never`, which the `cdz-return` note renders as the
+    // fresh var/`Any` a `(trap …)` / never-returning body carries: either `Any` (a grounded hole) or a bare
+    // type variable `?N` (an unconstrained result var — e.g. `Option.expect` on a statically-None value,
+    // whose result never materializes). The backend emits `-> !` for such a body; the driver must just CALL
+    // the export (letting it trap) with NO `let __r`/`println!` — binding a `!` value and printing it is an
+    // `unreachable statement` + `()`-isn't-`Display` build error. The gate observes the panic as the
+    // recorded `(trap …)` outcome. (A `?N` return means the body diverges; a genuinely-polymorphic non-
+    // diverging export is not producible here — the backend would have declined its unrepresentable result.)
+    let diverging = ret_ty
         .as_deref()
-        .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params))
-    {
-        Some(render) => {
-            format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
+        .is_some_and(|t| t == "Any" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit())));
+    let body = if diverging {
+        format!("fn main() {{ {call_or_await}; }}\n")
+    } else {
+        match ret_ty
+            .as_deref()
+            .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params))
+        {
+            Some(render) => {
+                format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
+            }
+            // Unknown return type (no emitted signature parsed) — fall back to `{}` (a scalar).
+            None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
         }
-        // Unknown return type (no emitted signature parsed) — fall back to `{}` (a scalar).
-        None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
     };
     // In async mode the driver needs an `Env` impl (a no-limit gas meter — the gate checks ANSWERS, not
     // fuel bounds) and a tiny `block_on` executor, plus `let mut env = …` before the call.
@@ -1050,8 +1065,28 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
             Vec::new(),
         )
     } else {
-        Ran::Trap(first_line(&run.stderr))
+        Ran::Trap(rust_panic_message(&run.stderr))
     }
+}
+
+/// The trap REASON from a Rust process's panic stderr. Rust formats a panic as
+/// `thread '<name>' panicked at <file>:<line>:<col>:` followed by the panic MESSAGE on the NEXT line
+/// (`panic!("unreachable")` → the message line is `unreachable`). The gate's `trap_kind` classifies by
+/// that reason, so the message line — not the `panicked at <loc>` header (which has no reason) — is what
+/// must be returned. Take the line AFTER the `panicked at` header; fall back to the first line if the
+/// format is unexpected (a non-panic non-zero exit).
+fn rust_panic_message(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let mut lines = s.lines();
+    while let Some(line) = lines.next() {
+        if line.contains("panicked at") {
+            // The message is the next non-empty line (Rust prints it immediately after the header).
+            if let Some(msg) = lines.next() {
+                return msg.trim().to_string();
+            }
+        }
+    }
+    first_line(bytes)
 }
 
 /// The async gate driver's harness: a no-limit `GateEnv` implementing the emitted `CdzEnv` (the gate
