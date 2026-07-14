@@ -3284,6 +3284,26 @@
   (call   f (: 7 Int64))
   (output (: 7 Int64)))
 
+(case "two variants past the first each carry a different nested sum, over a runtime discriminant"
+  (doc    "The harder disc-≥1 nested shape: `(type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64)))`
+           — TWO variants past the first (`U` at disc 1, `V` at disc 2) each carrying a DIFFERENT nested
+           sum, and the scrutinee's discriminant is genuinely RUNTIME (an `if` selects `W.U` vs `W.V`, so
+           no statically-known tag). Each nested match must dispatch on ITS variant's payload — `U`'s
+           `Option`, `V`'s `Result` — not on variant 0's `Int64`. `(f 5)` builds `W.U (Option.Some 5)` and
+           the `Some` arm binds 5. Pins the two-compiler agreement when several disc-≥1 variants carry
+           distinct nested sums under a runtime discriminant: the Rust backend records each entered arm's
+           payload type as it descends (the twin of the wasm decision-tree's per-branch path types) so each
+           inner switch resolves its own subject, rather than reading variant 0's payload for all of them.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64)))
+            (def (f (: k Int64)) (match (if (> k 0) (W.U (Option.Some k)) (W.V (Result.Ok 0)))
+                                   ((W.A h) h) ((W.U (Option.Some n)) n) ((W.U (Option.None)) -1)
+                                   ((W.V (Result.Ok o)) o) ((W.V (Result.Err e)) e)))
+            (export f)))
+  (call   f (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a match pattern naming a non-existent variant is a coded rejection"
   (doc    "A match arm whose constructor pattern names a variant the scrutinee's sum does NOT declare —
            `(V.Q)` on `(type V (A Int64) (B))`, where `V` has no variant `Q` — is a rejection that NAMES

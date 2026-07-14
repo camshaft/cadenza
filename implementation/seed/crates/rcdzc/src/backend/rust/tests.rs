@@ -1038,10 +1038,11 @@ fn rustc_roundtrip_nested_match_on_a_variant_at_disc_ge_1() {
     // A NESTED constructor match on a variant that is NOT variant 0 — `(type W (A Int64) (V (Option
     // Int64)))` matched `((W.V (Option.Some n)) …)`, where the nested-sum-carrying variant `V` is at
     // discriminant 1. The backend's nested-switch subject-type walk read variant 0's payload
-    // unconditionally (`sum_disc0_payload_ty`), so the inner switch on `W.V`'s Option resolved to `A`'s
-    // `Int64` (not `Option Int64`) and declined (`sum construction node is not a sum type`). It now reads
-    // the ENTERED variant's payload (via the constant-value disc cursor), so the inner switch dispatches on
-    // the Option: `f(V(Some 7))` = 7, `f(V(None))` = -2, `f(A 3)` = 3 — matching the wasm oracle.
+    // unconditionally, so the inner switch on `W.V`'s Option resolved to `A`'s `Int64` (not `Option Int64`)
+    // and declined (`sum construction node is not a sum type`). It now RECORDS each entered arm's payload
+    // type in the ctx (`sum_path_types`, the twin of `lower`'s `path_types`) and the nested switch looks it
+    // up — so it dispatches on the Option even when the discriminant is RUNTIME (an `if` selecting the
+    // variant): `f(V(Some 7))` = 7, `f(V(None))` = -2. Matches the wasm oracle.
     let rs = compile_rust(
         "(module m (type W (A Int64) (V (Option Int64))) \
            (def (f (: k Int64)) (match (W.V (if (> k 0) (Option.Some k) (Option.None))) \
@@ -1058,6 +1059,55 @@ fn rustc_roundtrip_nested_match_on_a_variant_at_disc_ge_1() {
     }
     if let Some(out) = rustc_run(&rs, "f(-1)") {
         assert_eq!(out, "-2");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
+    // The HARDER disc-≥1 shape: TWO variants past the first each carry a DIFFERENT nested sum, and the
+    // scrutinee's discriminant is genuinely RUNTIME (an `if` chooses `W.U` vs `W.V`, so no constant `disc`
+    // to read). A constant-value cursor can't recover the disc here; the arm-recorded `sum_path_types`
+    // hint can — each arm records ITS variant's payload type, and the two nested switches (`U`'s Option,
+    // `V`'s Result) each resolve their subject by lookup. `f(5)` → `W.U(Some 5)` → 5; `f(-1)` →
+    // `W.V(Ok 0)` → 0. Was a Rust-backend decline (`sum construction node is not a sum type`).
+    let rs = compile_rust(
+        "(module m (type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64))) \
+           (def (f (: k Int64)) (match (if (> k 0) (W.U (Option.Some k)) (W.V (Result.Ok 0))) \
+                                  ((W.A h) h) ((W.U (Option.Some n)) n) ((W.U (Option.None)) -1) \
+                                  ((W.V (Result.Ok o)) o) ((W.V (Result.Err e)) e))) (export f))",
+    );
+    assert!(rs.contains("Option::Some(__pay"), "U's inner Option switch:\n{rs}");
+    assert!(rs.contains("Result::Ok(__pay"), "V's inner Result switch:\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(5)") {
+        assert_eq!(out, "5");
+    }
+    if let Some(out) = rustc_run(&rs, "f(-1)") {
+        assert_eq!(out, "0");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_three_level_nested_sum_match_folds_through_known_constructors() {
+    // THREE sum levels — `Outer.Q → Inner.Y → Result.Ok` — where the two OUTER variants are known
+    // constructors (built inline) and only the innermost `Result` disc is runtime. `lower`'s disc-fold
+    // collapses the two known outer switches, leaving a SINGLE `Result` switch whose subject sits at a deep
+    // path (`[Payload, Payload]`) with NO enclosing binds. The backend reads that subject directly off the
+    // constant value tree (`fold_const_sum_path` walks several `Payload`s deep), so it emits
+    // `match <inner Result> { Ok(p) => p, Err(p) => p }`. `f(6)` = 6, `f(-1)` = 0 (Err payload). Was a
+    // Rust-backend decline (`sum payload has no bound match arm`); matches the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type Inner (X Int64) (Y (Result Int64 Int64))) (type Outer (P Int64) (Q Inner)) \
+           (def (f (: k Int64)) (match (Outer.Q (Inner.Y (if (> k 0) (Result.Ok k) (Result.Err 0)))) \
+                                  ((Outer.P h) h) ((Outer.Q (Inner.X n)) n) \
+                                  ((Outer.Q (Inner.Y (Result.Ok o))) o) \
+                                  ((Outer.Q (Inner.Y (Result.Err e))) e))) (export f))",
+    );
+    assert!(rs.contains("Result::Ok(__pay"), "dispatches on the innermost Result:\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(6)") {
+        assert_eq!(out, "6");
+    }
+    if let Some(out) = rustc_run(&rs, "f(-1)") {
+        assert_eq!(out, "0");
     }
 }
 
