@@ -37,7 +37,7 @@ An operation that derives a dimension MUST produce the dimension the operation's
 
 ### A Dimension Groups Interconvertible Units
 
-A dimension MUST admit more than one named unit, so that several units — such as a metre, a millimetre, and an inch — name measures of one dimension rather than each being a distinct dimension.
+A dimension MUST admit more than one named unit, so that several units — such as a meter, a millimeter, and an inch — name measures of one dimension rather than each being a distinct dimension.
 
 Two units of the same dimension MUST be interconvertible, and two units of different dimension MUST NOT be.
 

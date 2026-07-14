@@ -20,7 +20,7 @@ use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::doc::Doc;
 use crate::lexer::Lexer;
 use crate::literal;
-use crate::token::{self, Kind, PREC_ARROW, PREC_MEMBER, infix_glyph, infix_prec};
+use crate::token::{self, Kind, PREC_ARROW, PREC_AS, PREC_MEMBER, infix_glyph, infix_prec};
 
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
@@ -275,6 +275,29 @@ impl<'a> Printer<'a> {
             self.expr(num, PREC_MEMBER);
             self.doc.word(" ");
             self.doc.word(name);
+            self.doc.end();
+            return;
+        }
+        // A unit conversion `(Unit.in (Unit.of #"name") value)` renders back to `value as name` — the
+        // inverse of the parser's `as_conversion` — when the target is a bare-name family unit. It binds
+        // at `PREC_AS`: the whole expression parenthesizes when the surrounding context binds tighter,
+        // and the value (a left operand) is printed at `PREC_AS` so a looser operator inside it (a
+        // pipeline/ascription/arrow) parenthesizes while tighter arithmetic does not. A COMPOUND or
+        // computed target has no bare-name surface, so it falls through to the `Unit.in(target, value)`
+        // call form — a faithful round-trip either way, exactly as `quantity_literal` falls back.
+        if let Some((value, name)) = self.unit_conversion(items) {
+            let paren = PREC_AS < parent_prec;
+            self.doc.ibox(INDENT);
+            if paren {
+                self.doc.word("(");
+            }
+            self.expr(value, PREC_AS);
+            self.doc.space(); // break BEFORE `as`
+            self.doc.word("as ");
+            self.doc.word(name);
+            if paren {
+                self.doc.word(")");
+            }
             self.doc.end();
             return;
         }
@@ -938,13 +961,22 @@ impl<'a> Printer<'a> {
     /// swallow the following `; rest` on re-parse (`match … | _ => 99` then `; next` becomes the arm body
     /// `(99; next)`). `if` is NOT greedy-tailed (its branches parse at `PREC_SEQ + 1`), so it never needs
     /// this. The LAST statement takes no `;` and so needs no wrapping.
+    ///
+    /// A non-final `def` is the same hazard: a function/value def body is a greedy `expr(0)` sequence
+    /// position, so a NESTED `def fac(n) = <e>` followed by `; fac(x)` in an enclosing body would read
+    /// `fac`'s body as `(do <e> (fac x))`, swallowing the enclosing block's next statement. Unlike a
+    /// top-level def (delimited by wrapping just its `= body`, since a following `def` re-parses as a
+    /// sibling), a body-local def followed by an EXPRESSION must wrap the WHOLE form — `(def fac(n) = <e>)`
+    /// — so the `)` bounds the def body and the `; fac(x)` sequences at the enclosing level. (Wrapping only
+    /// the `= body`, `def fac(n) = (<e>)`, does NOT help: the def body's `expr(0)` continues its `;`-run
+    /// past the group's `)`.)
     fn print_do_stmts(&mut self, stmts: &[StructId]) {
         for (i, &s) in stmts.iter().enumerate() {
             if i > 0 {
                 self.doc.hardbreak();
             }
             let last = i + 1 == stmts.len();
-            if !last && self.has_greedy_tail(s) {
+            if !last && (self.has_greedy_tail(s) || self.form_routes_delimit(s)) {
                 self.doc.word("(");
                 self.expr(s, 0);
                 self.doc.word(")");
@@ -1067,12 +1099,22 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// True if `form` is a `def` (function or value) — a form that routes a pending `delimit_body`
-    /// through `body_after_eq`, parenthesizing just its `= body` rather than taking a trailing `;`
-    /// (which its greedy body would swallow).
+    /// True if `form` is a DECLARATION-keyword form (`def`/`module`/`type`/`effect`) — one the ML reader's
+    /// `;`-sequence loop BREAKS before (`at_declaration_keyword`, from `539f7712`), because at the top level
+    /// a bare declaration after `;` begins the next juxtaposed form. So a NON-FINAL such form inside a `do`
+    /// body must be WRAPPED — `(module Inc { … })` — by [`Self::print_do_stmts`]: the leading `(` makes it an
+    /// EXPRESSION, not a bare declaration keyword, so the reader collects it into the body's sequence
+    /// instead of ending the body and leaking the rest as top-level siblings. Without this a body of two
+    /// adjacent `module`s (`def main() = module A { … }; module B { … }; expr`) truncates after the first
+    /// module — the exact round-trip the printer must not produce (it emits ML the reader then rejects).
+    /// `def` additionally has a greedy `= body`; a wrapping `(def f() = e)` bounds that body too. `import`
+    /// and `export` are top-level-only, never a body statement, so they need not be listed.
     fn form_routes_delimit(&self, form: StructId) -> bool {
         matches!(self.a.get(form), Struct::List(items) if !items.is_empty()
-            && self.head_name(items[0]).as_deref() == Some("def"))
+        && matches!(
+            self.head_name(items[0]).as_deref(),
+            Some("def" | "module" | "type" | "effect")
+        ))
     }
 
     /// True when `id` prints with a leading RESERVED word (a keyword form) or a `///`/`//` comment lead —
@@ -1882,6 +1924,34 @@ impl<'a> Printer<'a> {
         Some((items[1], name))
     }
 
+    /// If `items` is a unit conversion `(Unit.in (Unit.of #"name") value)` whose target is a BARE-NAME
+    /// family unit, return the converted value and the target unit name — so it prints as the concise
+    /// `value as name` surface (the inverse of the parser's `as_conversion`). All must hold, else the
+    /// general call form renders it (a faithful round-trip either way):
+    ///   * head is the member access `(. Unit in)` and there are exactly two arguments;
+    ///   * arg 0 is `(Unit.of #"name")` where `name` is a bare-safe identifier (re-lexes to one `Ident`,
+    ///     which the parser reads back as the same `(Unit.of #"name")` target — a COMPOUND/computed
+    ///     target has no bare-name surface and falls back to the call form).
+    fn unit_conversion(&self, items: &[StructId]) -> Option<(StructId, String)> {
+        if items.len() != 3 || !self.is_member_call(items[0], "Unit", "in") {
+            return None;
+        }
+        let Struct::List(unit) = self.a.get(items[1]) else {
+            return None;
+        };
+        if unit.len() != 2 || !self.is_member_call(unit[0], "Unit", "of") {
+            return None;
+        }
+        let name = match self.a.get(unit[1]) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Sym(s) if name_is_bare_safe(s) => s.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some((items[2], name))
+    }
+
     /// True iff `id` is the member-access head `(. obj key)` with the given object and key names.
     fn is_member_call(&self, id: StructId, obj: &str, key: &str) -> bool {
         matches!(self.a.get(id), Struct::List(m)
@@ -2183,12 +2253,12 @@ mod tests {
     #[test]
     fn symbol_sugar_round_trips() {
         // An identifier-content symbol prints with the unquoted `#name` sugar and re-reads to the same
-        // `Leaf::Sym`. The two surfaces (ML `#metre` and the sugar it prints) agree with the s-expr
-        // oracle's `#"metre"`.
-        assert_eq!(assert_roundtrip("#metre", 80), "#metre");
+        // `Leaf::Sym`. The two surfaces (ML `#meter` and the sugar it prints) agree with the s-expr
+        // oracle's `#"meter"`.
+        assert_eq!(assert_roundtrip("#meter", 80), "#meter");
         assert_eq!(assert_roundtrip("#map-insert", 80), "#map-insert");
         // Both spellings read to the same value, so the quoted input canonicalizes to the sugar.
-        assert_eq!(assert_roundtrip("#\"metre\"", 80), "#metre");
+        assert_eq!(assert_roundtrip("#\"meter\"", 80), "#meter");
         // Non-identifier content keeps the explicit `#"…"` form (a space, an empty symbol, a leading
         // digit, an operator glyph, a `.`): the sugar would not re-lex to the same symbol.
         assert_eq!(assert_roundtrip("#\"foo bar\"", 80), "#\"foo bar\"");
@@ -2207,7 +2277,7 @@ mod tests {
         // A quantity literal `(Qty.of <num> (Unit.of #"name"))` renders as the concise `<num> name`
         // surface and re-parses to the same arena — the inverse of `maybe_quantity_literal`.
         assert_eq!(assert_roundtrip("5 feet", 80), "5 feet");
-        assert_eq!(assert_roundtrip("5.0 metre", 80), "5.0 metre");
+        assert_eq!(assert_roundtrip("5.0 meter", 80), "5.0 meter");
         // It binds tighter than any operator, so `5 feet / 1 second` is a RATE — the division of two
         // quantity literals, not `5 (feet / 1) second`.
         assert_eq!(
@@ -2215,27 +2285,72 @@ mod tests {
             "5 feet / 1 second"
         );
         assert_eq!(
-            assert_roundtrip("3 metre + 2 metre", 80),
-            "3 metre + 2 metre"
+            assert_roundtrip("3 meter + 2 meter", 80),
+            "3 meter + 2 meter"
         );
         assert_eq!(assert_roundtrip("dist(5 feet)", 80), "dist(5 feet)");
         // The independent s-expr reader is the oracle: the canonical `(Qty.of …)` form prints concise.
-        let a = sexpr::read(r#"(Qty.of 5 (Unit.of #"metre"))"#).unwrap();
-        assert_eq!(print(&a, 80), "5 metre");
+        let a = sexpr::read(r#"(Qty.of 5 (Unit.of #"meter"))"#).unwrap();
+        assert_eq!(print(&a, 80), "5 meter");
         // Shapes the concise surface can't express fall back to the round-tripping call form: a
         // computed unit, a non-bare-safe unit name, and `Unit.of` used outside a `Qty.of`.
         let computed =
-            sexpr::read(r#"(Qty.of 5.0 (Unit./ (Unit.of #"metre") (Unit.of #"second")))"#).unwrap();
+            sexpr::read(r#"(Qty.of 5.0 (Unit./ (Unit.of #"meter") (Unit.of #"second")))"#).unwrap();
         // Identifier-content symbols print with the unquoted `#name` sugar.
         assert_eq!(
             print(&computed, 80),
-            "Qty.of(5.0, Unit.of(#metre) / Unit.of(#second))"
+            "Qty.of(5.0, Unit.of(#meter) / Unit.of(#second))"
         );
         // A non-identifier symbol (a space) keeps the explicit `#"…"` form.
         let odd = sexpr::read(r#"(Qty.of 5 (Unit.of #"foo bar"))"#).unwrap();
         assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
-        let bare = sexpr::read(r#"(Unit.of #"metre")"#).unwrap();
-        assert_eq!(print(&bare, 80), "Unit.of(#metre)");
+        let bare = sexpr::read(r#"(Unit.of #"meter")"#).unwrap();
+        assert_eq!(print(&bare, 80), "Unit.of(#meter)");
+    }
+
+    #[test]
+    fn unit_conversion_as_round_trips() {
+        // `value as name` renders `(Unit.in (Unit.of #"name") value)` and re-parses to the same arena
+        // — the inverse of the parser's `as_conversion`.
+        assert_eq!(assert_roundtrip("q as meter", 80), "q as meter");
+        assert_eq!(
+            assert_roundtrip("2.0 kilometer as meter", 80),
+            "2.0 kilometer as meter"
+        );
+        // It binds below arithmetic, so the whole quotient converts: `a / b as u` is `(a / b) as u`.
+        assert_eq!(
+            assert_roundtrip("240.0 meter / 8.0 second as meter", 80),
+            "240.0 meter / 8.0 second as meter"
+        );
+        // …and threads into a pipeline as one converted value.
+        assert_eq!(assert_roundtrip("q as meter |> f", 80), "q as meter |> f");
+        // Left-associative: a chained conversion groups left and needs no parens.
+        assert_eq!(
+            assert_roundtrip("q as meter as foot", 80),
+            "q as meter as foot"
+        );
+        // As a call argument it needs no parens (an argument parses at the loosest precedence), but as
+        // the OPERAND of a tighter context (member access) it does — member/app binds tighter than `as`.
+        assert_eq!(assert_roundtrip("f(q as meter)", 80), "f(q as meter)");
+        assert_eq!(
+            assert_roundtrip("(q as meter).value", 80),
+            "(q as meter).value"
+        );
+        // The s-expr oracle: the canonical `(Unit.in (Unit.of …) …)` prints as the concise `as` surface.
+        let a = sexpr::read(r#"(Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"kilometer")))"#)
+            .unwrap();
+        assert_eq!(print(&a, 80), "2.0 kilometer as meter");
+        // A COMPOUND target has no bare-name surface, so it falls back to the `Unit.in(target, value)`
+        // call form — a faithful round-trip either way.
+        let compound =
+            sexpr::read(r#"(Unit.in (Unit./ (Unit.of #"meter") (Unit.of #"hour")) q)"#).unwrap();
+        assert_eq!(
+            print(&compound, 80),
+            "Unit.in(Unit.of(#meter) / Unit.of(#hour), q)"
+        );
+        // A non-bare-safe target name likewise keeps the call form.
+        let odd = sexpr::read(r#"(Unit.in (Unit.of #"foo bar") q)"#).unwrap();
+        assert_eq!(print(&odd, 80), "Unit.in(Unit.of(#\"foo bar\"), q)");
     }
 
     #[test]

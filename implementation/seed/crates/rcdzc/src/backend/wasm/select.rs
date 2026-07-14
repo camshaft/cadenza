@@ -171,6 +171,18 @@ const OP_BYTES_LEN: &str = "bytes-len";
 const OP_BYTES_GET: &str = "bytes-get";
 /// `bytes-concat(a, b) -> handle` — a then b (consumes both, empty is the identity).
 const OP_BYTES_CONCAT: &str = "bytes-concat";
+/// The runtime BigInt ops (B3a) the compiler emits for RUNTIME-valued BigInt (a constant folds in
+/// `lower`). Boxed sign-magnitude heap leaves; add/sub/mul never trap, div traps on zero, to-i64-checked
+/// traps out of range. Spellings MUST match `runtime.wit` / the generated `runtime_abi.rs` table.
+const OP_BIGINT_OF_I64: &str = "bigint-of-i64";
+const OP_BIGINT_TO_I64_CHECKED: &str = "bigint-to-i64-checked";
+const OP_BIGINT_ADD: &str = "bigint-add";
+const OP_BIGINT_SUB: &str = "bigint-sub";
+const OP_BIGINT_MUL: &str = "bigint-mul";
+const OP_BIGINT_DIV: &str = "bigint-div";
+// (`bigint-cmp` is exposed by the runtime for BigInt comparison; the compiler wires `<`/`>`/`=` to it in
+// the next slice. The op stays in the runtime ABI regardless — it is a runtime capability, not gated on
+// the compiler emitting it yet.)
 /// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
 /// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
 const OP_BYTES_SLICE: &str = "bytes-slice";
@@ -330,6 +342,19 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesConcat { lhs, rhs } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
+        // The runtime BigInt ops BORROW their operand handles (`bigint-add`/…/`to-i64-checked` `unbox_
+        // bigint`-read without consuming, then the `emit_bigint_borrow_*` helpers drop only an OWNED
+        // temporary), so — like `value-eq` — a binding used DIRECTLY as an operand does NOT escape (the
+        // enclosing `let` still drops it). A binding that flows into a CONSTRUCTED/owned operand (e.g.
+        // `(+ (BigInt.of x) y)` where `x` feeds a `BigInt.of`) DOES escape into that owned temporary,
+        // which the op then drops — the `tail_borrowed: true` borrow-in-tail computes exactly this (a
+        // direct `LocalRef` borrows; a producer arm resets to consuming). `bigint-of-i64`'s operand is an
+        // i64 scalar (no heap ref) — always consuming, `false`.
+        Core::BigIntBinOp { lhs, rhs, .. } => {
+            binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
+        }
+        Core::BigIntOfI64 { value } => binding_escapes(db, value, binder, false),
+        Core::BigIntToI64 { operand } => binding_escapes(db, operand, binder, true),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1080,6 +1105,29 @@ pub fn collect_used_ops(
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
+        // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop.
+        Core::BigIntOfI64 { value } => {
+            out.insert(OP_BIGINT_OF_I64);
+            collect_used_ops(db, value, out);
+        }
+        // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
+        // the borrowing call — see the `emit_bigint_borrow_*` helpers).
+        Core::BigIntToI64 { operand } => {
+            out.insert(OP_BIGINT_TO_I64_CHECKED);
+            out.insert(OP_DROP);
+            collect_used_ops(db, operand, out);
+        }
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            out.insert(match op {
+                crate::core::BigIntOp::Add => OP_BIGINT_ADD,
+                crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
+                crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
+                crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+            });
+            out.insert(OP_DROP);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1354,6 +1402,13 @@ fn collect_cont_ops(
                 crate::core::Probe::Str(_) => {
                     unreachable!(
                         "a string-literal probe folds; it is never emitted to a runtime LitTest"
+                    )
+                }
+                // A `ListLen` probe folds against a constant list; a runtime list payload declines at
+                // `build_lit_test`, so it is never emitted to a runtime `LitTest` either.
+                crate::core::Probe::ListLen { .. } => {
+                    unreachable!(
+                        "a list-length probe folds; it is never emitted to a runtime LitTest"
                     )
                 }
                 crate::core::Probe::Wild => false,
@@ -2729,10 +2784,18 @@ fn emit(
         Core::Tuple { elems } => {
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            // Each element starts its scratch ABOVE the high-water the PREVIOUS elements reached, NOT at a
+            // fixed `base`. An element that stashes a value in a scratch slot at a given TYPE (a
+            // `SumExpect`/match materializing an i32 heap handle) fixes that slot's declared type; a LATER
+            // element reusing the same slot number at a DIFFERENT width (`(+ i 1)` → i64) would re-type it,
+            // an invalid module (`expected i64, found i32`). Advancing `elem_base` past each element's
+            // high-water keeps sibling elements on disjoint slots. (A scalar element leaves `*high` where it
+            // was, so this is a no-op for the common all-scalar tuple — byte-identical there.)
             for (i, &elem) in elems.iter().enumerate() {
+                let elem_base = *high;
                 // [arr] ; push index ; push (box, if scalar) the element ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
+                emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
                 // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box.
                 if let Some(op) = box_op(db, elem)? {
@@ -2754,9 +2817,12 @@ fn emit(
         Core::ListNew { elems } => {
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            // Per-element scratch above the running high-water (see `Core::Tuple` — sibling elements of
+            // different widths must not share a slot number).
             for (i, &elem) in elems.iter().enumerate() {
+                let elem_base = *high;
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
+                emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 if let Some(op) = box_op(db, elem)? {
                     emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
@@ -3670,6 +3736,40 @@ fn emit(
             out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
             Ok(())
         }
+        // `BigInt.of x` on a runtime i64 — widen to a BigInt heap leaf (an i32 handle). `x` is an i64
+        // SCALAR (no heap ref), so nothing to drop — a fresh owned handle is left on the stack.
+        Core::BigIntOfI64 { value } => {
+            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
+            Ok(())
+        }
+        // `Int64.of b` on a runtime BigInt — checked narrow back to i64 (traps out of range at run time).
+        // `bigint-to-i64-checked` BORROWS its operand (`unbox_bigint` reads without consuming) and returns
+        // an i64 scalar, so an OWNED-temporary operand must be dropped after the read (a borrowed param/
+        // local is left to its owner) — the `value-eq` reclamation discipline for a borrowing op.
+        Core::BigIntToI64 { operand } => emit_bigint_borrow_unary(
+            db,
+            operand,
+            OP_BIGINT_TO_I64_CHECKED,
+            high,
+            slots,
+            scratch_ty,
+            layout,
+            out,
+        ),
+        // A runtime BigInt `+`/`-`/`*`/`/` — the runtime op BORROWS both operand handles (`unbox_bigint`)
+        // and returns a FRESH owned result handle, so each OWNED-temporary operand is dropped after the
+        // call while the new result is kept. A borrowed param/local operand is NOT dropped (its owner
+        // reclaims it). Same borrow-and-reclaim shape as `value-eq`, but the result is a handle to keep.
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            let import = match op {
+                crate::core::BigIntOp::Add => OP_BIGINT_ADD,
+                crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
+                crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
+                crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+            };
+            emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
+        }
         // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
         Core::BytesCompact { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
@@ -3849,20 +3949,24 @@ fn emit(
             scrutinee,
             disc_present,
         } => {
-            // Reserve slot `base` for the sum handle (i32); emit the scrutinee ABOVE it (`base + 1`, so its
-            // own transient scratch — a `checked-add`'s temps — floats clear), then stash the one handle.
-            // Reading the slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE, whether
-            // it is a reusable param/local or a computed value.
-            let handle_slot = base;
-            if handle_slot + 1 > *high {
-                *high = handle_slot + 1;
-            }
+            // Reserve a fresh i32 slot for the sum handle ABOVE the running high-water (`*high`), NOT at
+            // `base`. When this `SumExpect` is a SUB-EXPRESSION whose SIBLING uses `base` for a different
+            // width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where the i64 `(+ i 1)` sibling also
+            // starts scratch at `base` — reusing `base` for the i32 handle re-types a slot the sibling
+            // `local.set`s at i64, an invalid module (`expected i64, found i32`). A slot at `*high` is
+            // guaranteed never pre-typed, so the handle never clashes with a sibling's scalar slot. This is
+            // the SAME "advance past the reserved handle slot" discipline `MatchSum`/`if`-cond use for a
+            // heap-handle sub-expression (the documented scratch-floor family). Emit the scrutinee ABOVE the
+            // handle slot (its own transient scratch floats clear), then stash the one handle; reading the
+            // slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE.
+            let handle_slot = *high;
+            *high = handle_slot + 1;
             scratch_ty.insert(handle_slot, ValType::I32);
             emit(
                 db,
                 scrutinee,
                 slots,
-                base + 1,
+                handle_slot + 1,
                 high,
                 scratch_ty,
                 layout,
@@ -4452,8 +4556,8 @@ fn emit(
         // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
         // a double-free.
         Core::ValueEq { lhs, rhs } => {
-            let lo = value_eq_operand_ownership(db, lhs)?;
-            let ro = value_eq_operand_ownership(db, rhs)?;
+            let lo = heap_operand_ownership(db, lhs)?;
+            let ro = heap_operand_ownership(db, rhs)?;
             // Two i32 scratch slots for the operand handles, above the running high-water (they must not
             // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
             let slot_l = *high;
@@ -5119,6 +5223,11 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
                 "a string-literal probe folds; it is never emitted as a runtime scalar probe"
             )
         }
+        // A `ListLen` probe folds against a constant list; a runtime list payload declines earlier, so it
+        // never reaches a runtime scalar probe.
+        crate::core::Probe::ListLen { .. } => {
+            unreachable!("a list-length probe folds; it is never emitted as a runtime scalar probe")
+        }
         crate::core::Probe::Wild => {}
     }
 }
@@ -5162,12 +5271,15 @@ enum HandleOwnership {
     Borrowed,
 }
 
-/// Classify a `value-eq` OPERAND's handle ownership, or DECLINE (`Err`) a shape whose ownership this
+/// Classify a BORROWING op's handle OPERAND ownership, or DECLINE (`Err`) a shape whose ownership this
 /// analysis cannot prove — reject-don't-miscompile: a wrong guess would leak or double-free the heap.
-/// A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/`match`/
-/// `let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a mixed
-/// owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
-fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
+/// Used by every op that BORROWS a heap operand and returns a fresh/scalar result (so the emit must drop
+/// each OWNED-temporary operand but leave a borrowed reference to its owner): `value-eq` and the runtime
+/// BigInt ops (`bigint-add`/…/`bigint-cmp`/`bigint-to-i64-checked`, which `unbox_bigint`-BORROW their
+/// operands). A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/
+/// `match`/`let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a
+/// mixed owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
+fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
         // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
         // construction/update (`map-empty`+inserts, `map-insert`, `map-remove`) returns a fresh owned
@@ -5191,6 +5303,13 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         | Core::SetInsert { .. }
         | Core::SetRemove { .. }
         | Core::SetAlgebra { .. }
+        // A BigInt PRODUCER returns a fresh owned handle: `bigint-of-i64` mints a leaf, and each
+        // `bigint-add`/`-sub`/`-mul`/`-div` re-boxes a normalized result (the operands are borrowed, the
+        // result is new). So a BigInt operand that is itself the result of another BigInt op is owned —
+        // the enclosing op drops it after borrowing. (`BigIntToI64` returns an i64 scalar, never a handle,
+        // so it is not a heap operand and never reaches here.)
+        | Core::BigIntOfI64 { .. }
+        | Core::BigIntBinOp { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
@@ -5205,17 +5324,93 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         // Control flow: each result branch must agree on ownership (so the single post-compare drop is
         // correct on every path). `if` — both arms; `let` — its body. A disagreement declines.
         Core::If { then_, else_, .. } => {
-            let t = value_eq_operand_ownership(db, then_)?;
-            let e = value_eq_operand_ownership(db, else_)?;
+            let t = heap_operand_ownership(db, then_)?;
+            let e = heap_operand_ownership(db, else_)?;
             (t == e)
                 .then_some(t)
-                .ok_or_else(|| Reject::decline("value-eq operand's branches disagree on ownership"))
+                .ok_or_else(|| Reject::decline("borrowing op operand's branches disagree on ownership"))
         }
-        Core::Let { body, .. } => value_eq_operand_ownership(db, body),
+        Core::Let { body, .. } => heap_operand_ownership(db, body),
         _ => Err(Reject::decline(
-            "value-eq operand has an ownership this backend cannot yet prove",
+            "borrowing op operand has an ownership this backend cannot yet prove",
         )),
     }
+}
+
+/// Emit a UNARY runtime BigInt op that BORROWS its handle operand and returns a scalar (`bigint-to-i64-
+/// checked`). The op reads the operand without consuming it, so an OWNED-temporary operand must be
+/// DROPPED after the call (a borrowed param/local is left to its owner) — the `value-eq` reclamation
+/// discipline. `tee` the operand into a scratch slot (kept on the stack for the call AND remembered for a
+/// possible drop), call the op (which pops the borrowed handle and pushes the scalar), then drop the
+/// remembered handle if it was owned. Declines (via `heap_operand_ownership`) an operand whose ownership
+/// cannot be proved — reject, never a leak or double-free.
+#[allow(clippy::too_many_arguments)]
+fn emit_bigint_borrow_unary(
+    db: &mut Db,
+    operand: StructId,
+    import: &'static str,
+    high: &mut u32,
+    slots: &HashMap<StructId, u32>,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let o = heap_operand_ownership(db, operand)?;
+    let slot = *high;
+    *high = slot + 1;
+    scratch_ty.insert(slot, ValType::I32);
+    let op_base = *high;
+    emit(db, operand, slots, op_base, high, scratch_ty, layout, out)?; // [h : i32]
+    out.push(Lir::LocalTee(slot));
+    out.push(Lir::CallImport(import)); // pops the borrowed handle → [scalar]
+    if o == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    Ok(())
+}
+
+/// Emit a BINARY runtime BigInt op that BORROWS both handle operands and returns a FRESH owned result
+/// handle (`bigint-add`/`-sub`/`-mul`/`-div`, and — the next slice — `bigint-cmp`, which returns a scalar
+/// instead; both leave the operands to be reclaimed by this emit). Each OWNED-temporary operand is
+/// dropped after the call while the result stays on the stack; a borrowed param/local is left to its
+/// owner. Same shape as the `value-eq` emit, but the result (a handle or a scalar) is kept rather than
+/// discarded. Two i32 scratch slots hold the operand handles for the possible drops; the operands emit
+/// above the running high-water so neither reuses the other's transient scratch at a different width.
+#[allow(clippy::too_many_arguments)]
+fn emit_bigint_borrow_binary(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    import: &'static str,
+    high: &mut u32,
+    slots: &HashMap<StructId, u32>,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let lo = heap_operand_ownership(db, lhs)?;
+    let ro = heap_operand_ownership(db, rhs)?;
+    let slot_l = *high;
+    let slot_r = *high + 1;
+    *high = slot_r + 1;
+    scratch_ty.insert(slot_l, ValType::I32);
+    scratch_ty.insert(slot_r, ValType::I32);
+    let op_base = *high;
+    emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?; // [a : i32]
+    out.push(Lir::LocalTee(slot_l));
+    emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?; // [a, b : i32]
+    out.push(Lir::LocalTee(slot_r));
+    out.push(Lir::CallImport(import)); // pops both borrowed handles → [result]
+    if lo == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot_l));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    if ro == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot_r));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    Ok(())
 }
 
 fn reusable_scalar_src(
@@ -5329,6 +5524,11 @@ fn emit_probe_chain(
             crate::core::Probe::Str(_) => {
                 unreachable!(
                     "a string-literal probe folds; a runtime string match declines at is_scalar"
+                )
+            }
+            crate::core::Probe::ListLen { .. } => {
+                unreachable!(
+                    "a list-length probe folds; a runtime list match declines at build_lit_test"
                 )
             }
             crate::core::Probe::Wild => unreachable!("has_literal_probe"),
@@ -5970,6 +6170,13 @@ fn emit_sum_cont(
                     // reaches this sum-payload literal-test emit. A string-literal probe folds instead.
                     return Err(Reject::decline(
                         "a string-literal payload pattern is not yet emitted at run time",
+                    ));
+                }
+                crate::core::Probe::ListLen { .. } => {
+                    // A `ListLen` payload pattern over a RUNTIME list declines at `build_lit_test` (only a
+                    // constant list folds), so it never reaches this runtime sum-payload literal-test emit.
+                    return Err(Reject::decline(
+                        "a runtime list-pattern payload is not yet emitted at run time",
                     ));
                 }
                 crate::core::Probe::Wild => {
@@ -7979,9 +8186,15 @@ fn emit_shift(
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.
     // ELIDED for a VALID constant count (`0 <= k < N`, established above): the guard's condition is a
-    // compile-time `false`, so it is dead (mirrors `lower`'s const-`if` fold). Only a RUNTIME count needs
-    // the runtime test. (An OOR constant count already returned a bare `unreachable` at the top.)
-    if const_count.is_none() {
+    // compile-time `false`, so it is dead (mirrors `lower`'s const-`if` fold). Also elided for a RUNTIME
+    // count the value-range lattice proves is already in `[0, N-1]` — the common masked-count idiom
+    // `(<< x (& k 63))` / `(>> x (& k 7))`, where `(& k M)` with `M < N` bounds the count to `[0, M]`, so
+    // the `>=ᵤ N` test can never fire. `value_range_within(rhs, 0, N-1)` confirms both bounds (the lower
+    // bound also rules out a negative count reading huge unsigned). Only a count of genuinely unknown range
+    // keeps the runtime test. (An OOR constant count already returned a bare `unreachable` at the top.)
+    let count_in_range =
+        const_count.is_some() || crate::lower::value_range_within(db, rhs, 0, m.width as i64 - 1);
+    if !count_in_range {
         sb.push(out);
         out.push(m.konst(m.width as i64));
         out.push(m.ge_u());
@@ -8000,13 +8213,16 @@ fn emit_shift(
         _ => return Err(Reject::decline("not a shift op")),
     });
     if matches!(op, Prim::Shl) {
-        // GUARD ELISION: a `<<` by a CONSTANT count whose result interval provably stays in the type
-        // (`(<< (& x 15) 2)` = [0,60] fits Int64) needs neither the overflow round-trip nor the
-        // range-check. Only for a constant `k` — interval analysis needs a fixed shift amount.
+        // GUARD ELISION: a `<<` whose result interval provably stays in the type needs neither the overflow
+        // round-trip nor the range-check. For a CONSTANT count `(<< (& x 15) 2)` = [0,60] the fixed shift
+        // amount drives `shl_provably_in_range`. For a RUNTIME count whose RANGE is known — the masked-count
+        // idiom `(<< (& x 15) (& k 3))`, value [0,15] × count [0,7] → max 1920 — the dynamic variant bounds
+        // the result by the count's max shift (`shl_provably_in_range_dynamic`).
         let elide = const_count.is_some_and(|k| {
             (0..m.width as i64).contains(&k)
                 && crate::lower::shl_provably_in_range(db, lhs, k as u32)
-        });
+        }) || (const_count.is_none()
+            && crate::lower::shl_provably_in_range_dynamic(db, lhs, rhs));
         if elide {
             // The machine `shl` result is already on the stack (no round-trip needs `$r`) — nothing to do.
         } else {

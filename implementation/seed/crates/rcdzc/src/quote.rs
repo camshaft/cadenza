@@ -51,6 +51,30 @@
 //! quasiquote is left for `resolve` (so the splice-non-list CDZ0201 check + the decline still fire); a
 //! real list-flattening splice is a later increment.
 //!
+//! ## Quote PATTERNS — the dual direction
+//!
+//! A `` ` ``/`,` template in PATTERN position (a match arm's pattern slot) DESTRUCTURES an `Ast`
+//! scrutinee (`metaprogramming.md` §A Quasiquote In Pattern Position Destructures An AST). It desugars to
+//! the EXACTLY-EQUIVALENT `Ast.*` constructor PATTERN — `` `(+ ,a ,b) `` IS `(Ast.List (list (Ast.Name
+//! "+") a b))` as a pattern — so it reuses the decision-tree matcher's existing `Ast.*` sum-pattern
+//! handling, adding a surface not a mechanism. The reification is the same STRUCTURAL shape as
+//! construction, but an unquote is a BINDER, not an evaluation:
+//!
+//! ```text
+//! integer  N        ->  (Ast.Int N)              -- matches by equality
+//! bare name foo     ->  (Ast.Name "foo")         -- literal head/subterm, matches by equality
+//! (unquote P)       ->  P                         -- the sub-PATTERN (bare name binds; a nested ctor further-matches)
+//! compound (a b c)  ->  (Ast.List (list <pat a> <pat b> <pat c>))   -- fixed arity element-by-element
+//! final (unquote-splicing name) -> a `.. name` rest binder in the list pattern (binds remaining elements)
+//! ```
+//!
+//! A NON-FINAL `,@` is ill-formed → CDZ0221 (a rest binds the tail, meaningful only last). Because the
+//! desugar targets the constructor pattern, exhaustiveness is the ORDINARY rule (a quote pattern never
+//! covers every `Ast` → an all-quote-pattern match needs a catch-all or is CDZ0210) and equality/encoding
+//! are the constructor form's. A pattern-position quote/quasiquote MUST take this path, NOT the
+//! construction reify above (which would evaluate an active unquote's binder as code → a spurious
+//! CDZ0101); [`reify_quotes`] routes by whether the node sits in a match-arm pattern slot.
+//!
 //! ## Scope of this increment
 //!
 //! The built-in `Ast` sum currently has three variants — `Int`/`Name`/`List` — so only a form built
@@ -88,40 +112,68 @@ struct QuotePlan {
 
 /// Desugar every reifiable `(quote FORM)` into the `Ast` constructor application that builds `FORM`'s
 /// value (see the module docs). Runs during `Db::load`, before the parent index — so the emitted
-/// `(. Ast …)` projections and `(list …)` forms resolve like hand-written source.
-pub fn reify_quotes(ast: &mut Arenas) {
+/// `(. Ast …)` projections and `(list …)` forms resolve like hand-written source. Returns the
+/// quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed), which `collect_faults` reports CDZ0221.
+pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // Snapshot the pre-existing node count: only ORIGINAL nodes can be a source quote, and reification
     // APPENDS (ids >= this bound), so the scan must not consider its own output. Descending id order so
     // an outer quote is reified from its body's original structure before its inner quotes are reached
     // (see the ordering note in the module docs).
     let original_len = ast.structure.len() as u32;
+    // The set of PATTERN-POSITION nodes — a match-arm pattern slot and everything under it. A
+    // quote/quasiquote here DESTRUCTURES (desugars to an `Ast.*` PATTERN via `reify_pattern`), it does
+    // not construct. Built from a local parent map because this pass runs before `Db`'s `parent_index`.
+    let pattern_nodes = pattern_position_nodes(ast, original_len);
+    // Quote-pattern nodes carrying a NON-FINAL `,@` splice — ill-formed (a rest binds the tail, meaningful
+    // only last). Collected while scanning + reported CDZ0221 by `collect_faults` (the node is left
+    // un-reified since `reify_pattern` bails on it).
+    let mut nonfinal_splice: Vec<StructId> = Vec::new();
     let mut plans: Vec<QuotePlan> = Vec::new();
     for i in (0..original_len).rev() {
         let id = StructId(i);
-        // A well-formed one-operand `(quote FORM)` reifies INERTLY (everything structural — a quote body
-        // never evaluates); a `(quasiquote TEMPLATE)` reifies ACTIVELY (depth 1 — an `,e` at depth 1
-        // evaluates). Any other arity is left for `resolve_quote`/`resolve_quasiquote` to reject CDZ0201;
-        // a non-quote node is skipped. An INNER quote/quasiquote the enclosing reification already
-        // consumed structurally is orphaned by the time the descending scan reaches it, so re-planning it
-        // is harmless dead work (module docs §Ordering).
+        // A `(quote FORM)`/`(quasiquote TEMPLATE)` in PATTERN position desugars to the equivalent `Ast.*`
+        // PATTERN (`reify_pattern` — an unquote is a BINDER). Elsewhere it CONSTRUCTS: a `quote` reifies
+        // INERTLY (structural — a quote body never evaluates), a `quasiquote` reifies ACTIVELY (depth 1 —
+        // an `,e` at depth 1 evaluates). Any other arity is left for `resolve_quote`/`resolve_quasiquote`
+        // to reject CDZ0201; a non-quote node is skipped. An INNER quote/quasiquote the enclosing
+        // reification already consumed is orphaned by the time the descending scan reaches it, so
+        // re-planning it is harmless dead work (module docs §Ordering).
+        let in_pattern = pattern_nodes.contains(id.0 as usize);
         let reified = if let Some([form]) = ast
             .as_form(id, "quote")
             .map(<[StructId]>::to_vec)
             .as_deref()
         {
-            // Reify INERTLY. `None` = a leaf with no `Ast` variant yet, OR a STRAY unquote (`,x`/`,@x` not
-            // under a quasiquote — a syntax error). Leave the quote for resolve: a missing-variant body
-            // DECLINES (Todo), a stray unquote gets CDZ0003 (`resolve::resolve_unquote`). Never partial.
-            reify(ast, *form, false)
+            if in_pattern {
+                // A `(quote FORM)` pattern is inert structure as a pattern — same desugar as a quasiquote
+                // pattern with no active holes (a literal by equality, a compound as a fixed-arity list).
+                reify_pattern(ast, *form, false)
+            } else {
+                // Reify INERTLY. `None` = a leaf with no `Ast` variant yet, OR a STRAY unquote (`,x`/`,@x`
+                // not under a quasiquote — a syntax error). Leave the quote for resolve: a missing-variant
+                // body DECLINES (Todo), a stray unquote gets CDZ0003 (`resolve::resolve_unquote`).
+                reify(ast, *form, false)
+            }
         } else if let Some([tmpl]) = ast
             .as_form(id, "quasiquote")
             .map(<[StructId]>::to_vec)
             .as_deref()
         {
-            // Reify ACTIVELY at depth 1. `None` = an un-reifiable leaf, an ACTIVE splice (`,@` — deferred),
-            // or an arity fault — leave the quasiquote for `resolve_quasiquote` (a decline / the CDZ0201
-            // splice-non-list check). Never partial.
-            reify_active(ast, *tmpl, 1)
+            if in_pattern {
+                // A NON-FINAL `,@` in this pattern template is ill-formed — record the quasiquote node
+                // for `collect_faults` to reject CDZ0221 (a rest binds the tail, meaningful only last).
+                // Checked before reify so the node is caught even though `reify_pattern` bails on it.
+                if template_has_nonfinal_pattern_splice(ast, *tmpl) {
+                    nonfinal_splice.push(id);
+                }
+                // Desugar to the `Ast.*` PATTERN. `None` = an un-reifiable leaf, a non-final `,@`
+                // (recorded above → CDZ0221), or an arity fault — leave for resolve.
+                reify_pattern(ast, *tmpl, true)
+            } else {
+                // Reify ACTIVELY at depth 1. `None` = an un-reifiable leaf, an ACTIVE splice (`,@` —
+                // deferred), or an arity fault — leave the quasiquote for `resolve_quasiquote`.
+                reify_active(ast, *tmpl, 1)
+            }
         } else {
             continue;
         };
@@ -145,6 +197,110 @@ pub fn reify_quotes(ast: &mut Arenas) {
         // parent of the shared subtree. (`plan.reified` >= original_len and `plan.quote` < original_len,
         // so this never clobbers another plan's quote node.)
         ast.structure[plan.reified.0 as usize] = Struct::List(Vec::new());
+    }
+    nonfinal_splice
+}
+
+/// Whether a quote-PATTERN template contains a NON-FINAL `,@` splice — an `(unquote-splicing …)` that is
+/// not the last element of its enclosing list (`` `(f ,@init ,last) `` — `,@init` before `,last`). A
+/// `,@` binds the tail, so it is meaningful only LAST; a non-final one is ill-formed (CDZ0221). Walks the
+/// template structurally (an `unquote`'s own operand is a sub-pattern, not evaluated here).
+fn template_has_nonfinal_pattern_splice(ast: &Arenas, node: StructId) -> bool {
+    let Struct::List(items) = ast.get(node) else {
+        return false;
+    };
+    let items = items.clone();
+    let last = items.len().saturating_sub(1);
+    for (i, &child) in items.iter().enumerate() {
+        // A `(unquote-splicing …)` child that is not in the final position is the fault.
+        if ast.head_name(child) == Some("unquote-splicing") && i != last {
+            return true;
+        }
+        // Recurse into a nested list child (a deeper template level).
+        if matches!(ast.get(child), Struct::List(_))
+            && template_has_nonfinal_pattern_splice(ast, child)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The set of original node ids that sit in PATTERN position — a match arm's pattern slot and every
+/// descendant of it. A quote/quasiquote in this set DESTRUCTURES (desugars to an `Ast.*` PATTERN), the
+/// rest CONSTRUCT. Returns a bitset over `0..original_len`.
+///
+/// A match is `(match scrutinee (pattern body)…)`: the arm is a 2-element list `(pattern body)` whose
+/// parent's head is `match` and which is NOT the scrutinee (arm index ≥ 1 among `match`'s children —
+/// child 0 is `match`, child 1 the scrutinee, children ≥ 2 the arms). The arm's FIRST child is the
+/// pattern slot; every node reachable under it is pattern position. Runs before `Db`'s `parent_index`,
+/// so it builds its own parent map over the ORIGINAL nodes.
+fn pattern_position_nodes(ast: &Arenas, original_len: u32) -> BitSet {
+    // Local parent + child-index map over the original nodes (mirrors `db::parent_index`).
+    let mut parent = vec![u32::MAX; original_len as usize];
+    let mut child_ix = vec![0u32; original_len as usize];
+    for i in 0..original_len as usize {
+        if let Struct::List(children) = &ast.structure[i] {
+            for (pos, &c) in children.iter().enumerate() {
+                if (c.0) < original_len {
+                    parent[c.0 as usize] = i as u32;
+                    child_ix[c.0 as usize] = pos as u32;
+                }
+            }
+        }
+    }
+    // The pattern-SLOT roots: each match arm's first child. An arm is a 2-list at child-index ≥ 2 of a
+    // `(match …)` node (index 0 = `match`, 1 = scrutinee), so its pattern is that arm's child 0.
+    let mut roots: Vec<StructId> = Vec::new();
+    for i in 0..original_len as usize {
+        if ast.head_name(StructId(i as u32)) != Some("match") {
+            continue;
+        }
+        let Struct::List(children) = &ast.structure[i] else {
+            continue;
+        };
+        // children: [match, scrutinee, arm, arm, …] — arms are index ≥ 2.
+        for &arm in children.iter().skip(2) {
+            if let Struct::List(pb) = &ast.structure[arm.0 as usize]
+                && pb.len() == 2
+            {
+                roots.push(pb[0]); // the pattern slot
+            }
+        }
+    }
+    // Mark each pattern-slot root and everything under it (a downward walk over the child lists).
+    let mut in_pattern = BitSet::new(original_len as usize);
+    let mut stack = roots;
+    while let Some(n) = stack.pop() {
+        if n.0 >= original_len || in_pattern.contains(n.0 as usize) {
+            continue;
+        }
+        in_pattern.insert(n.0 as usize);
+        if let Struct::List(children) = &ast.structure[n.0 as usize] {
+            stack.extend(children.iter().copied());
+        }
+    }
+    in_pattern
+}
+
+/// A tiny fixed-size bitset over `0..n` (a `Vec<u64>` of words) — enough for the pattern-position mark.
+struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    fn new(n: usize) -> BitSet {
+        BitSet {
+            words: vec![0u64; n.div_ceil(64)],
+        }
+    }
+    fn insert(&mut self, i: usize) {
+        self.words[i / 64] |= 1u64 << (i % 64);
+    }
+    fn contains(&self, i: usize) -> bool {
+        self.words
+            .get(i / 64)
+            .is_some_and(|w| w & (1u64 << (i % 64)) != 0)
     }
 }
 
@@ -282,6 +438,82 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
                 reified_children.push(reify_active(ast, child, depth)?);
             }
             Some(wrap_ast_list(ast, reified_children))
+        }
+    }
+}
+
+/// Reify a quote/quasiquote TEMPLATE in PATTERN position into the equivalent `Ast.*` constructor PATTERN
+/// (module docs §Quote PATTERNS). Same STRUCTURAL shape as construction, but an unquote is a BINDER
+/// (its operand is a sub-PATTERN reused live), not an evaluation. `under_qq` is whether we're inside a
+/// quasiquote template (a plain `(quote …)` pattern has no active `,`, so `under_qq=false`). Returns the
+/// pattern root, or `None` (bail — leave for resolve) on an un-reifiable leaf, an arity fault, or a
+/// non-final `,@` (ill-formed — `resolve`/lowering reject it CDZ0221). Selective:
+///  - integer `N` → `(Ast.Int N)`, bare name `foo` → `(Ast.Name "foo")` — literal, matches by equality.
+///  - `(unquote P)` → the sub-pattern `P` reused LIVE (a bare name binds; a nested `(Ast.Int n)` matches).
+///  - `(quasiquote t)` under a template → nest one level: reify `t` structurally (its `,` are deeper).
+///  - `(unquote-splicing name)` as the FINAL element of a compound → a `.. name` REST binder in the list
+///    pattern (binds the remaining elements); anywhere else → bail (a non-final splice is CDZ0221).
+///  - compound `(a b c)` → `(Ast.List (list <pat a> <pat b> <pat c>))` — a fixed-arity list pattern.
+fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
+    let Struct::List(items) = ast.get(node) else {
+        // A leaf: an integer/name literal reifies exactly as construction (matches by equality). A leaf
+        // is never an escape head, so `under_qq` is irrelevant — reuse the structural `reify`.
+        return reify(ast, node, under_qq);
+    };
+    let items = items.clone();
+    let head = items
+        .first()
+        .and_then(|&h| ast.as_name(h))
+        .map(str::to_string);
+    match head.as_deref() {
+        // An `(unquote P)` binds/further-matches: its operand P is the sub-PATTERN, reused LIVE (a bare
+        // name resolves as a match-arm binder, a nested ctor pattern further-matches). Only meaningful in
+        // a quasiquote template; a `,` in a plain-quote pattern is inert structure (falls to the default).
+        Some("unquote") if under_qq => {
+            if items.len() != 2 {
+                return None;
+            }
+            Some(items[1])
+        }
+        // A splice at top of a compound (not as the final element) is handled in the compound arm below;
+        // a bare `(unquote-splicing …)` reached HERE (not inside a parent list) has no enclosing list to
+        // bind the rest of → bail for resolve (CDZ0221 / decline).
+        Some("unquote-splicing") if under_qq => None,
+        // A nested `(quasiquote t)` inside a pattern template: reify `t` structurally one level in. (A
+        // pattern that literally contains a nested quasiquote is exotic; treat it as inert structure.)
+        Some("quasiquote") => {
+            if items.len() != 2 {
+                return None;
+            }
+            let inner = reify_pattern(ast, items[1], true)?;
+            Some(reify_escape_list(ast, "quasiquote", inner))
+        }
+        // A compound `(a b c …)` → `(Ast.List (list <pat…>))`, a fixed-arity list pattern. A FINAL
+        // `(unquote-splicing name)` element becomes a `.. name` REST binder (binds the remaining
+        // elements); a non-final splice bails (CDZ0221 — a rest is meaningful only last).
+        _ => {
+            let mut pat_children: Vec<StructId> = Vec::with_capacity(items.len());
+            for (i, &child) in items.iter().enumerate() {
+                let is_last = i + 1 == items.len();
+                if under_qq
+                    && let Some([spliced]) = ast
+                        .as_form(child, "unquote-splicing")
+                        .map(<[StructId]>::to_vec)
+                        .as_deref()
+                {
+                    if !is_last {
+                        return None; // a non-final `,@` — ill-formed (CDZ0221), bail for resolve
+                    }
+                    // FINAL `,@name` → a `.. name` rest binder: append the `..` marker then the bare
+                    // binder (reused live), so the list pattern is `(list <pat…> .. name)`.
+                    let dotdot = push_atom(ast, Leaf::Name("..".to_string()));
+                    pat_children.push(dotdot);
+                    pat_children.push(*spliced);
+                } else {
+                    pat_children.push(reify_pattern(ast, child, under_qq)?);
+                }
+            }
+            Some(wrap_ast_list(ast, pat_children))
         }
     }
 }

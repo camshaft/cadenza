@@ -760,17 +760,95 @@ the component type. The new work:
   HOF-passed-as-value CDZ0203 decline is unchanged). +2 corpus (an unannotated Tuple inner param; an
   unannotated List inner param). **Every closure ARGUMENT — annotated OR not, scalar/compound/sum/nested/
   String/collection/closure-typed — is now supported on both round-trip paths.**
+- **✅ FLAT multi-argument arrow `(-> A B … R)` curries COMPLETE `@fd232a9a`.** The arrow type constructor
+  handled only arity 1 (`(-> R)` = nullary `Unit -> R`) + arity 2 (`(-> P R)`); a FLAT multi-arg arrow
+  `(-> A B … R)` errored "-> takes one or two type arguments" (`eval::reduce_ctor` + `type_in_env`). So a
+  round-trip consumer whose closure parameter was written flat — `(: g (-> Int64 Int64 Int64))` — solved
+  `Any` and declined "parameter type is ambiguous", though it WAS annotated; only the explicitly-curried
+  `(-> Int64 (-> Int64 Int64))` spelling worked. Fix: both arrow arms now CURRY any arity ≥1
+  right-associatively into `A -> (B -> (… -> R))`. A foundational inference win (not closure-specific — any
+  flat n-ary arrow annotation) that unblocks the idiomatic multi-arg closure signature. +4 corpus (flat 2-arg
+  beside the curried-spelling case; flat 3-arg; flat multi-arg with compound args; flat multi-arg with a
+  compound result).
+- **✅ SUM + nested-collection COMPOUND results cross via `value-encode` COMPLETE `@a3c1485b`.** A closure
+  result crossed as `list<u8>` only for a byte-rope, a FIXED-shape compound (static template), or a bare
+  `List`/`Map`/`Set`; a SUM (`Option`/`Result`/a user sum) or a compound CONTAINING a variable-length element
+  (a tuple/record with a list/map/set inside) declined "no scalar host-boundary representation" — even though
+  the single-export value escape already renders these via the runtime `value-encode` op. Two changes: (1)
+  `lower::sum_shape_descriptor` gains a Tuple/Record arm (it already handled Sum/Nominal/List/Map/Set) —
+  `shape_of` recurses over the elements. (2) The SIX `ret_descriptor` classifications (the `call` result for
+  single/multi/mixed/distinct-sig producers + the round-trip consumer result for single + distinct-sig) now
+  fall back to `sum_shape_descriptor` for ANY result once it is not a scalar / byte-rope / fixed-template,
+  instead of only matching `List`/`Map`/`Set`. Safe general widening (`sum_shape_descriptor` → `None` for a
+  scalar/unrenderable shape; a fixed-shape compound still takes the cheaper static-template path first). An
+  unconstrained sum type arg (an `(Ok …)` whose `Err` type is never pinned) still correctly declines. +7
+  corpus (a `call` returning Option / a user sum / a tuple-of-list; a round-trip consumer returning Option / a
+  Result Err-pinned / a Result reaching both variants / a tuple-of-list). **The closure-RESULT matrix now
+  reaches EVERY value-encodable type — scalar, byte-rope, fixed compound, collection, SUM, and
+  compound-containing-collection — across every closure shape.**
+- **✅ COMPOSED round-trip surface LOCKED IN `@86c9fa0c` (corpus-only).** The argument surface (every
+  machine-representable type, incl. higher-order closure-typed args) and the result surface (every
+  value-encodable type) COMPOSE freely, across single-sig and distinct-sig grouping — verified end-to-end with
+  adversarial cases: a Map whose value is a list; an Option of a tuple; a list of tuples; a higher-order arg
+  composed with a Sum result; a distinct-sig round-trip pairing a Sum-result consumer with a collection-result
+  consumer. +6 corpus. **The ROUND-TRIP closure surface is SATURATED — every remaining gap is DIRECT-CALL
+  host→guest transfer (a closure/compound the HOST supplies over the boundary, blocked on a nonexistent
+  `value-decode` runtime op + a closure-resource-into-a-call ABI) or the `borrow<t>`/transformer frontier.**
+- **✅ C-HOST-6 — a scalar closure crosses as a REPEATABLE `borrow<t>` callback handle `@28b678bd`. The
+  wasmtime-37 borrow trap is DODGED.** A single-export scalar closure's `call` now takes `borrow<t>` instead
+  of `own<t>`, so the host KEEPS the handle across calls (one `make`, MANY `call`s — the natural callback
+  shape), versus `own<t>`'s consume-per-call ("unknown handle index" on a 2nd call). The wasmtime-37 borrow
+  trap (`resource.rep` on a borrowed self traps) is dodged EXACTLY as the value-heap `encode` borrow method
+  does: `lift_borrow` hands the guest the REP DIRECTLY as `call`'s `self`, so the body uses param 0 as the
+  cell rep with NO `resource.rep` and does NOT self-drop — the `t-dtor` reclaims when the host drops the
+  handle. Still leak-free (make allocs, dtor drops). Pieces: `serialize::
+  {multi_closure_resource_core_module_with_host_borrow, closure_resource_core_module_borrow}` (a `call_borrow`
+  flag branches the scalar `call` body); `envelope::{assemble_closure_resource_borrow,
+  resource_inner_component_closure_borrow}` (`call` self = `borrow<t>`, `make` stays `own<t>`);
+  `emit_closure_resource`'s scalar tail routes to borrow. PROVEN e2e under wasmtime 37 by
+  `a_borrow_closure_handle_is_repeatable` (one `adder(10)` handle → `call(5)`=15 then `call(7)`=17 on the SAME
+  handle). +1 corpus witness. This RESOLVES the design's "single biggest known hazard".
+- **✅ C-HOST-6, VALUE-FORM results — the repeatable `borrow<t>` `call` extends to the byte-rope / compound /
+  collection result closures `@c982ea22`.** The scalar `call` became repeatable last increment; this extends
+  the SAME borrow posture to the single-export closures whose `call` returns a `list<u8>` value form — a
+  byte-rope (`Bytes`/`String`), a fixed-shape compound (tuple/record/sum), and a variable-length collection
+  (List/Map/Set value-encode). The host keeps ANY such handle across calls; the `t-dtor` reclaims the cell on
+  drop; the transient result handle is still released each call (guest-owned scratch, separate from the cell).
+  Pieces: a `call_borrow` flag on `serialize::{closure_bytes_resource_core_module,
+  closure_value_resource_core_module, closure_value_encode_resource_core_module}` (via `_borrow` siblings —
+  each branches the cell rep-recovery + release; `false` byte-identical to own); `envelope::
+  {assemble_closure_bytes_resource_borrow, resource_inner_component_closure_bytes_borrow}` (`call` self =
+  `borrow<t>` on the outer lift + the nested re-export re-typing); the three single-export value-form tails of
+  `emit_closure_resource` route to borrow. PROVEN e2e by `a_borrow_compound_result_closure_handle_is_repeatable`
+  (one `pair(100)` handle → two `call(5)`s → the SAME `(tuple 5 105)` value form). +1 corpus witness. **The
+  SINGLE-EXPORT closure `call` is now a repeatable `borrow<t>` handle for EVERY result shape (scalar +
+  value-form).**
+- **✅ C-HOST-6, MULTI-EXPORT/MIXED shared `call` — the shared scalar `call` is a repeatable `borrow<t>`
+  handle `@d8e0fe58`.** The ONE `call` that serves N same-signature closure exports (`make-<name>` per export)
+  now takes `borrow<t>`: each make's handle survives across calls (the host keeps it, invokes the shared `call`
+  repeatedly; the `t-dtor` reclaims). Pieces: `serialize::multi_closure_resource_core_module_borrow` (threads
+  `call_borrow` to the shared scalar `call` body via `_with_host_borrow`); `envelope::
+  {assemble_multi_closure_resource_borrow, assemble_mixed_closure_resource_borrow,
+  resource_inner_component_multi_closure_borrow}` (the shared `call`'s self handle = `borrow<t>` on the outer
+  lift + nested re-export; `make`s + plain exports unaffected); `emit_multi_closure_resource` +
+  `emit_mixed_closure_resource` scalar tails route to borrow. PROVEN e2e by
+  `a_multi_export_shared_borrow_call_is_repeatable` (one `make-inc` handle → shared `call(5)`=6 then
+  `call(40)`=41). +1 corpus witness. **The scalar `call` is now a repeatable `borrow<t>` handle across
+  single-export AND multi-export/mixed. Remaining borrow work: the multi-export VALUE-FORM shared calls +
+  the distinct-sig per-group `call-g<n>` (keep own/self-drop for now).**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope
+  cleanly declined); a borrow<t> `call` for the multi-export VALUE-FORM shared calls + the DISTINCT-SIG
+  per-group `call-g<n>` (single-export all-shapes + multi-export/mixed scalar are done; these keep
+  own/self-drop for now). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
   closure-RESULT matrix is closed. Every MACHINE-REPRESENTABLE closure ARGUMENT (scalar, compound, sum,
-  nested, String, collection, closure-typed — annotated or not) is now supported on BOTH round-trip paths
-  (built in-guest). The remaining gaps are all DIRECT-CALL host→guest transfer + the `borrow<t>`/transformer
-  frontier.**
+  nested, String, collection, closure-typed — annotated or not, flat OR curried multi-arg arrow) is now
+  supported on BOTH round-trip paths (built in-guest). The remaining gaps are all DIRECT-CALL host→guest
+  transfer + the `borrow<t>`/transformer frontier.**
 
 ## Risks / open questions
 

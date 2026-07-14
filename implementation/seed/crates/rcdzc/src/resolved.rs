@@ -165,6 +165,8 @@ pub enum Prim {
     //# A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
     //= spec/capabilities/numeric-model.md#floating-point-follows-the-determinism-contract
     //# A floating-point value MUST serialize under the canonical form fixed by the deterministic-value-form contract.
+    //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
+    //# The compiler MUST emit floating-point operations such that a not-a-number result has a canonical bit pattern rather than a runtime-dependent one.
     FloatNan,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
@@ -493,28 +495,28 @@ pub enum Prim {
     /// `Unit.one` — the dimensionless unit, the group identity (the empty exponent map). Reduces to a
     /// canonical `(unit)` node. Applying it is a no-op (it takes no arguments).
     UnitOne,
-    /// `Unit.base` — a base dimension named by a symbol: `(Unit.base #"metre")` reduces to the unit
-    /// `{metre: 1}`. The one-unit-per-dimension case (Layer 1); the symbol's TEXT is read directly off
+    /// `Unit.base` — a base dimension named by a symbol: `(Unit.base #"meter")` reduces to the unit
+    /// `{meter: 1}`. The one-unit-per-dimension case (Layer 1); the symbol's TEXT is read directly off
     /// its `Leaf::Sym` (resolved to a `Str`).
     UnitBase,
-    /// `Unit.*` — the product of two units (pointwise exponent add, dropping zeros): `(Unit.* metre
-    /// metre)` = `{metre: 2}`. The `*` dimensional rule's builder.
+    /// `Unit.*` — the product of two units (pointwise exponent add, dropping zeros): `(Unit.* meter
+    /// meter)` = `{meter: 2}`. The `*` dimensional rule's builder.
     UnitMul,
     /// `Unit./` — the quotient of two units (pointwise exponent subtract, dropping zeros): `(Unit./
-    /// metre second)` = `{metre: 1, second: -1}` (a velocity). The `/` dimensional rule's builder.
+    /// meter second)` = `{meter: 1, second: -1}` (a velocity). The `/` dimensional rule's builder.
     UnitDiv,
     /// `Unit.^` — a unit raised to a compile-time integer power (each exponent scaled, dropping zeros):
-    /// `(Unit.^ metre 2)` = `{metre: 2}` (area). May be negative (`(Unit.^ second -1)` = frequency).
+    /// `(Unit.^ meter 2)` = `{meter: 2}` (area). May be negative (`(Unit.^ second -1)` = frequency).
     UnitPow,
     /// `Unit.prefix` — SCALE a unit by a prefix's exact factor, producing another unit of the SAME
     /// dimension differing only by that factor (`units-of-measure.md` §A Scaled Unit Is A Unit Scaled By
-    /// An Exact Factor). `(Unit.prefix kilo metre)` = metre at scale 1000; `(Unit.prefix mebi byte)` =
+    /// An Exact Factor). `(Unit.prefix kilo meter)` = meter at scale 1000; `(Unit.prefix mebi byte)` =
     /// byte at scale 2²⁰. The prefix argument (`kilo`/`milli`/`mebi`/…) is a prelude record carrying its
     /// scale ratio on a `(meta scale)` channel (`(num den)`), which this reads and applies via
     /// `Unit::scaled`. The scale is compile-time metadata (a machine-int ratio), NOT a runtime Rational.
     UnitPrefix,
     /// `Unit.of` — name a FAMILY unit: `(Unit.of #"foot")` is a unit of the `length` dimension at foot's
-    /// exact scale to metre (381/1250). Consults a prelude FAMILY REGISTRY (a record mapping each unit
+    /// exact scale to meter (381/1250). Consults a prelude FAMILY REGISTRY (a record mapping each unit
     /// name to its reference-dimension symbol + scale `(num den)`), so the vocabulary is prelude DATA,
     /// not a privileged in-compiler list (`units-of-measure.md` #A Dimension Groups Interconvertible
     /// Units). Builds `Unit.base(dim).scaled(num, den)`. Scales are machine-int metadata (foot 381/1250,
@@ -527,8 +529,8 @@ pub enum Prim {
     /// redeclaration conflicting with the built-in table or another declaration is CDZ0502
     /// (`units-of-measure.md` §A Named Unit's Conversion Is Unique). The user family-declaration surface.
     UnitDefine,
-    /// `Unit.in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in metre (Qty.of 3.0 km))`
-    /// = `(Qty Float64 metre)` with value 3000 (`units-of-measure.md` #A Unit Conversion Is The
+    /// `Unit.in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in meter (Qty.of 3.0 km))`
+    /// = `(Qty Float64 meter)` with value 3000 (`units-of-measure.md` #A Unit Conversion Is The
     /// Arithmetic The Source Denotes; the way a program pins a specific result unit rather than the
     /// auto-chosen reference). Takes a TARGET unit and a quantity of the SAME dimension (else CDZ0501);
     /// the magnitude is multiplied by `source.scale / target.scale` in the inner type T (Float rounds,
@@ -544,7 +546,7 @@ pub enum Prim {
     /// argument's lowering (the quantity's inner value IS its erased value).
     QtyValue,
     /// `Qty.pow q n` — raise a quantity to a compile-time NON-NEGATIVE integer power, composing the unit
-    /// the same way `Unit.^` does: `(Qty.pow (Qty.of 3.0 metre) 2)` = `9.0 : (Qty Float64 metre²)`. The
+    /// the same way `Unit.^` does: `(Qty.pow (Qty.of 3.0 meter) 2)` = `9.0 : (Qty Float64 meter²)`. The
     /// unit's exponents (and scale) are raised to the `n`th power (`Unit::pow`); the numeric magnitude
     /// erases to `value * value * … ` (`n` factors) — `n = 0` is the dimensionless `1`. The exponent `n`
     /// is a compile-time `Int` literal read off arg1 (not an HM variable), exactly as `Unit.^` reads its
@@ -573,8 +575,8 @@ pub enum Prim {
     /// in TYPE positions (annotations, further type-level computation), never returned at runtime.
     TypeOf,
     /// `Type.eq a b` — COMPILE-TIME TYPE EQUALITY: reduce both arguments to their `Ty` (each a type-value —
-    /// a `(Type.of e)` result OR a written type like `Int64`/`(Qty Float64 metre)`, via `typeval_of`) and
-    /// fold to the constant `Bool` of their EXACT STRUCTURAL equality (`Ty`'s `PartialEq`: `metre` ≠
+    /// a `(Type.of e)` result OR a written type like `Int64`/`(Qty Float64 meter)`, via `typeval_of`) and
+    /// fold to the constant `Bool` of their EXACT STRUCTURAL equality (`Ty`'s `PartialEq`: `meter` ≠
     /// `second`, `Int64` ≠ `Int32`, `(Qty T u)` compares inner AND unit). Because it folds to a constant,
     /// `(if (Type.eq (Type.of x) Int64) …)` selects a branch AT COMPILE TIME — reflection that lets a
     /// program branch on types. The `(meta apply)` of the `Type` module's `eq` field. Its result `Bool` is
@@ -845,12 +847,12 @@ pub enum Resolved {
     /// A string literal — its text already normalized to canonical form by the reader (escapes expanded,
     /// NFC). A `Ty::String` constant; folds to a `Core::ConstStr` and escapes as its baked UTF-8 bytes.
     Str(String),
-    /// A SYMBOL literal (`#"metre"`, 17-symbols) — the reader-sugar equivalent of `(Symbol.of "metre")`.
+    /// A SYMBOL literal (`#"meter"`, 17-symbols) — the reader-sugar equivalent of `(Symbol.of "meter")`.
     /// Types as `Ty::Symbol` (DISTINCT from `Ty::String` — the nominal boundary, so `(= #"x" "x")` is a
     /// type error CDZ0202, and `(= #"x" (Symbol.of "x"))` is well-typed and true). Its IDENTITY is its
     /// text (content-derived), so a CONSTANT symbol shares the `Core::ConstStr` REP — it lowers to
     /// `Core::ConstStr` exactly like `Symbol.of` on a constant string, and equality folds via the shared
-    /// constant-string equality. The `Unit.base #"metre"` builder reads its text directly (a base-dimension
+    /// constant-string equality. The `Unit.base #"meter"` builder reads its text directly (a base-dimension
     /// name), so `unit_of` accepts this form as it did the `Str` it used to resolve to.
     SymbolConst(String),
     /// A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes` constant; lowers
@@ -1132,6 +1134,12 @@ pub enum SegKind {
     /// A byte-sequence segment `(bytes b [n])`: splice all of `b` (build) / bind the rest or exactly `n`
     /// bytes (match). `size` is the optional dependent-size occurrence (`n`); `None` = unsized (final).
     Bytes { size: Option<StructId> },
+    /// A UTF-8 string segment `(utf8 s n)`: `size` is the dependent-size occurrence (`n`, an earlier
+    /// integer segment binder). In pattern position it reads exactly `n` bytes and DECODES them as
+    /// strict UTF-8 — a well-formed sequence binds `s : String`, an ill-formed one is a NON-MATCH (never
+    /// a trap: `collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping`). Unlike
+    /// `Bytes`, the size is REQUIRED (always `(utf8 s n)`), so there is no unsized/final form.
+    Utf8 { size: StructId },
 }
 
 /// One `(kind slot [modifier])` segment of a [`Resolved::Bin`]. `slot` is the value/binder/literal

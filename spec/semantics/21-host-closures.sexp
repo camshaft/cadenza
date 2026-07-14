@@ -30,12 +30,46 @@
 ; calls it, showing the resource + its `call` dispatch are reusable, and that the result tracks the input.
 
 (case "a host-called closure applied to a different argument tracks the input"
-  (doc    "The same `(fn (x) (+ x 1))` closure export, called with 41 → 42. The host `make`s a fresh
-           closure handle and `call`s it (each `own<t>` handle is one-shot). Pins that the closure's
-           dispatch is reusable across handles and its result follows the argument.")
+  (doc    "The same `(fn (x) (+ x 1))` closure export, called with 41 → 42. The `call` method takes
+           `borrow<t>`, so the host KEEPS the handle across calls (a repeatable callback — the natural
+           host-closure shape) and the resource dtor reclaims the cell when the host finally drops it; this
+           case still `make`s + `call`s once. Pins that the closure's dispatch is reusable and its result
+           follows the argument.")
   (input  (do (def (main) (fn ((: x Int64)) (+ x 1))) (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64)))
+
+; The `call` method takes `borrow<t>`: the host holds the handle and may invoke it REPEATEDLY (the natural
+; callback shape), versus a consume-per-call `own<t>` where a second call on the same handle would trap
+; "unknown handle index". The gate drives ONE `(call …)` per case, so the REPEATABILITY is pinned by the
+; `a_borrow_closure_handle_is_repeatable` unit test (one `make` handle, two `call`s: `adder(10)` then 5→15,
+; 7→17 on the SAME handle); this case witnesses the borrow `call` runs end-to-end. A capturing closure makes
+; it concrete: the captured `k` survives across calls because the cell is not consumed.
+
+(case "a capturing closure crosses as a repeatable (borrow<t>) callback handle"
+  (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` → `adder : (Int64) -> own<closure-s64-s64>`. The host
+           `make`s a handle capturing k, then `call`s it — `call` borrows the handle (does NOT consume it),
+           so the same handle serves repeated calls (proven twice-over in the unit test). Here `adder(100)` →
+           a handle → `call(handle, 5)` = 105. Pins the borrow<t> repeatable-callback `call` end-to-end.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 100 Int64) (: 5 Int64))
+  (output (: 105 Int64)))
+
+; The repeatable `borrow<t>` `call` extends to the VALUE-FORM result closures too (byte-rope / compound /
+; collection — all cross `call` as `list<u8>`): the cell is kept across calls, the transient result handle is
+; released each call, and the `t-dtor` reclaims the cell on drop. The gate drives one `(call …)`; the
+; repeatability is pinned by `a_borrow_compound_result_closure_handle_is_repeatable` (one `pair(100)` handle,
+; two `call(5)`s, the SAME `(tuple 5 105)` value form both times — the captured k survived).
+
+(case "a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle"
+  (doc    "`(def (pair (: k Int64)) (fn (x) (tuple x (+ x k))))` → a closure whose result is a tuple, crossing
+           `call` as the `list<u8>` value form. `call` borrows the handle (repeatable — the same handle serves
+           many calls, proven in the unit test), and the returned tuple is value-form-encoded out.
+           `pair(100)` → a handle → `call(handle, 5)` = `(: (tuple 5 105) (Tuple Int64 Int64))`. Pins the
+           borrow<t> repeatable `call` on a value-form (compound) result end-to-end.")
+  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair)))
+  (call   pair (: 100 Int64) (: 5 Int64))
+  (output (: (tuple 5 105) (Tuple Int64 Int64))))
 
 ; A closure whose body MULTIPLIES rather than adds — a different lifted code selected through the same
 ; call_indirect boundary, proving the resource carries the RIGHT closure code (its funcref-table slot).
@@ -241,8 +275,10 @@
            this is NOT an escaping effect and must not be rejected CDZ0406 (contrast the escaping case
            above, where `ask.ask` is INSIDE the returned closure). The escape check scans the returned
            closure's body, not the whole export body. With `ask.ask` responding 10 and the call argument 3,
-           the result is 3 + 10 = 13; running it needs the export-time host-call boundary (a later
-           increment), so a generation without it declines rather than over-rejecting CDZ0406.")
+           the result is 3 + 10 = 13. The component imports BOTH the effect interface (`host`) and the
+           value-heap runtime (`heap`, for the closure cell) — the export-time host-call boundary composed
+           with the closure resource, so the host response flows into the captured `v` and the returned
+           closure is a plain callable.")
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
@@ -252,6 +288,57 @@
   (call   main (: 3 Int64))
   (host-responses (respond ask.ask (: 10 Int64)))
   (output (: 13 Int64)))
+
+(case "a closure capturing a build-time host effect preserves the order of two host calls"
+  (doc    "The build-time host-capture composes with MULTIPLE host calls in the make code, consumed in the
+           order made: `(let ((a (ask.ask)) (b (ask.ask))) …)` binds `a` to the first response and `b` to
+           the second. Both are captured as plain values into the returned closure `(fn (x) (+ (+ x a) b))`.
+           With responses 10 then 20 and the call argument 3, the result is 3 + 10 + 20 = 33 — the host-call
+           order is observable through the captured values (host-calls asserts the two calls).")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((a (ask.ask)) (b (ask.ask)))
+                  (fn ((: x Int64)) (+ (+ x a) b))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond ask.ask (: 10 Int64))
+                  (respond ask.ask (: 20 Int64)))
+  (host-calls (call ask.ask) (call ask.ask))
+  (output (: 33 Int64)))
+
+(case "a closure captures the result of a build-time host op called with an argument"
+  (doc    "The build-time host op may take an ARGUMENT: `(calc.dbl 5)` crosses the boundary passing 5, the
+           host returns its response, and the closure captures it as a plain value. With `calc.dbl`
+           responding 10 (the host's answer for input 5) and the call argument 3, the result is 3 + 10 = 13.
+           Exercises a scalar host-op parameter composing with the closure-capture path.")
+  (input  (do
+            (effect calc (op dbl (-> Int64 Int64)))
+            (def (main)
+              (host (calc)
+                (let ((v (calc.dbl 5)))
+                  (fn ((: x Int64)) (+ x v))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond calc.dbl (: 10 Int64)))
+  (host-calls (call calc.dbl))
+  (output (: 13 Int64)))
+
+(case "a Float64 closure captures a Float64 build-time host effect result"
+  (doc    "The build-time host-capture is not Int64-specific: a `Float64` host op result crosses the
+           boundary as `f64`, is captured as a plain value, and the returned closure is a `Float64 ->
+           Float64`. With `ask.ask` responding 2.5 and the call argument 1.5, the result is 1.5 + 2.5 = 4.0.
+           Exercises the f64 boundary primitive on BOTH the host op and the closure arg/result composing
+           with the closure-capture path (a scalar-result shape, just a non-Int scalar).")
+  (input  (do
+            (effect ask (op ask (-> Unit Float64)))
+            (def (main)
+              (host (ask)
+                (let ((v (ask.ask)))
+                  (fn ((: x Float64)) (+. x v))))) (export main)))
+  (call   main (: 1.5 Float64))
+  (host-responses (respond ask.ask (: 2.5 Float64)))
+  (host-calls (call ask.ask))
+  (output (: 4.0 Float64)))
 
 ; MULTI-EXPORT closures — a program that exports SEVERAL closures of the same signature crosses as ONE
 ; resource type with a `make-<name>` per export (`make-inc`, `make-triple`) sharing ONE `call` method. The
@@ -282,6 +369,21 @@
               (export inc) (export triple)))
   (call   triple (: 5 Int64))
   (output (: 15 Int64)))
+
+; The multi-export SHARED `call` is a repeatable `borrow<t>` method too (C-HOST-6): one `make-<name>` handle
+; serves repeated calls through the one shared `call` (the host keeps it; the `t-dtor` reclaims on drop). The
+; gate drives one `(call …)`; the repeatability is pinned by `a_multi_export_shared_borrow_call_is_repeatable`
+; (one `make-inc` handle, shared `call(5)`=6 then `call(40)`=41).
+
+(case "a multi-export shared call is a repeatable (borrow<t>) callback"
+  (doc    "The SAME two-export program witnessed as a borrow<t> shared call: `make-inc()` → a handle the host
+           keeps, then the shared `call(5)` = 6. `call` borrows the handle (does NOT consume it), so the same
+           handle serves repeated calls through the one shared `call` (proven twice-over in the unit test).")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (export inc) (export triple)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
 
 (case "a multi-export set of parameterized capturing closures is driven per export"
   (doc    "Three closure exports that each CAPTURE their param: `add` (+ x k), `mul` (* x k), `sub` (- x k),
@@ -533,6 +635,55 @@
               (export mk) (export app)))
   (call   app (: 3 Int64) (: 4 Int64))
   (output (: 7 Int64)))
+
+; A multi-argument arrow may be written FLAT `(-> A B … R)` (the idiomatic spelling) as well as explicitly
+; CURRIED `(-> A (-> B R))` — both denote the same n-ary function type `A -> (B -> (… -> R))`. The flat form
+; `(-> Int64 Int64 Int64)` used to error "-> takes one or two type arguments" (only arities 1 + 2 were
+; handled), so a round-trip consumer whose closure parameter was written flat solved `Any` and declined
+; "parameter type is ambiguous — annotate it". The arrow constructor now curries any arity ≥1.
+
+(case "a multi-argument closure round-trips through a consumer — FLAT arrow spelling"
+  (doc    "The SAME two-arg round trip as above, but the consumer's closure parameter is written with the
+           FLAT arrow `(: g (-> Int64 Int64 Int64))` instead of the explicitly-curried `(-> Int64 (-> Int64
+           Int64))`. Both denote `Int64 -> (Int64 -> Int64)`. `app(handle, 3, 4)` = 7. Pins that a flat
+           multi-arg arrow annotation curries — previously it errored `-> takes one or two type arguments`
+           and the param declined `parameter type is ambiguous`.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (app (: g (-> Int64 Int64 Int64)) (: a Int64) (: b Int64)) (g a b))
+              (export mk) (export app)))
+  (call   app (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "a THREE-argument closure round-trips — flat arrow spelling"
+  (doc    "A flat three-argument arrow `(-> Int64 Int64 Int64 Int64)` curries to `Int64 -> Int64 -> Int64 ->
+           Int64`. `mk` sums three args; `app` applies the handed-back `g` to `x`, `x+1`, `x+2`. `app(handle,
+           10)` → `g(10, 11, 12)` = 33.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)))
+              (def (app (: g (-> Int64 Int64 Int64 Int64)) (: x Int64)) (g x (+ x 1) (+ x 2)))
+              (export mk) (export app)))
+  (call   app (: 10 Int64))
+  (output (: 33 Int64)))
+
+(case "a multi-argument closure with COMPOUND args round-trips — flat arrow spelling"
+  (doc    "Composes the flat multi-arg arrow with compound closure arguments (both built in-guest): `g : (->
+           (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` reads `p.0 + q.1`; `app` applies it to `(tuple x
+           x)` and `(tuple x (x*2))`. `app(handle, 5)` → `g((tuple 5 5), (tuple 5 10))` = 5 + 10 = 15.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (app (: g (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)) (: x Int64))
+                (g (tuple x x) (tuple x (* x 2))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling"
+  (doc    "A flat two-arg arrow with a compound RESULT: `g : (-> Int64 Int64 (Tuple Int64 Int64))` pairs its
+           two args; `app` applies it to `x` and `x+10` and returns the tuple. `app(handle, 5)` → `g(5, 15)` =
+           `(: (tuple 5 15) (Tuple Int64 Int64))`, value-form-encoded out.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (tuple a b)))
+              (def (app (: g (-> Int64 Int64 (Tuple Int64 Int64))) (: x Int64)) (g x (+ x 10)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (tuple 5 15) (Tuple Int64 Int64))))
 
 (case "a round-trip at a widened scalar width (UInt32)"
   (doc    "The round trip at UInt32, not Int64: `(def (mk (: k UInt32)) (fn (x) (+ x k)))` produces a `(->
@@ -2383,3 +2534,153 @@
               (export mk)))
   (call   mk (: 0 Int64))
   (output (: 10 Int64)))
+
+; A SUM (Option/Result/user sum) result, and a fixed-shape COMPOUND result CONTAINING a variable-length
+; element (a tuple/record with a List/Map/Set inside), cross as `list<u8>` via the runtime `value-encode`
+; op against a compiler-baked shape DESCRIPTOR — the same walker a variable-length collection uses,
+; generalized. Previously only a scalar, a byte-rope, a FIXED-shape compound (static template), or a bare
+; List/Map/Set result crossed; a sum or a nested-collection compound declined "no scalar host-boundary
+; representation". This holds on BOTH the direct-call `call` result and the round-trip consumer result.
+
+(case "a closure whose CALL returns an Option crosses as the value form"
+  (doc    "`mk : () -> (-> Int64 (Option Int64))` returns `(Some (+ n 1))`; `call(handle, 5)` → `(: (Some 6)
+           (Option Int64))`. A SUM closure `call` result renders via the runtime `value-encode` descriptor
+           (the disc-switching walker), not a static template.")
+  (input  (do (def (mk) (fn ((: n Int64)) (Some (+ n 1))))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "a closure whose CALL returns a user sum crosses as the value form"
+  (doc    "A monomorphic user sum: `(type Dir (N) (S))`; `mk`'s closure returns `(N)` when `n>0` else `(S)`.
+           `call(handle, 5)` → `(: (N unit) Dir)` (a nullary variant carries a unit payload in the canonical
+           form). The value-encode walker switches on the runtime discriminant.")
+  (input  (do (type Dir (N) (S))
+              (def (mk) (fn ((: n Int64)) (if (> n 0) (N) (S))))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (N unit) Dir)))
+
+(case "a closure whose CALL returns a tuple CONTAINING a list"
+  (doc    "A fixed-shape compound whose element is VARIABLE-length has no static template, so it escapes via
+           the value-encode descriptor too: `mk`'s closure returns `(tuple (list n n+1) n)`. `call(handle, 5)`
+           → `(: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))`. The descriptor's Tuple node recurses into
+           the List element.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple (list n (+ n 1)) n)))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
+
+(case "round-trip: a consumer returns an Option built from the closure result"
+  (doc    "`mk` adds 1; `app : (own<t>, Int64) -> (Option Int64)` returns `(Some (g x))`. `app(handle, 5)` →
+           `g(5)` = 6, so `(: (Some 6) (Option Int64))`. A SUM consumer result on the round-trip path — the
+           value-encode descriptor, not a static template.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "round-trip: a consumer returns a Result (Err type pinned) from the closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Result Int64 Int64)` returns `(: (Ok (g x)) (Result Int64
+           Int64))` — the `Err` type is fixed by the annotation (an unconstrained `Err` type is genuinely
+           ambiguous and correctly declines). `app(handle, 7)` → `(: (Ok 14) (Result Int64 Int64))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (: (Ok (g x)) (Result Int64 Int64)))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: (Ok 14) (Result Int64 Int64))))
+
+(case "round-trip: a consumer returns a Result reaching BOTH variants"
+  (doc    "Both `Ok` and `Err` are reachable, so the `Result` type is fully determined WITHOUT an annotation:
+           `app` returns `(Ok (g x))` when `x>0` else `(Err 99)`. `app(handle, 7)` → `(: (Ok 7) (Result Int64
+           Int64))`. Confirms a genuinely two-variant sum consumer result renders.")
+  (input  (do (def (mk) (fn ((: n Int64)) n))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (> x 0) (Ok (g x)) (Err 99)))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: (Ok 7) (Result Int64 Int64))))
+
+(case "round-trip: a consumer returns a tuple CONTAINING a list built from the closure result"
+  (doc    "A nested-collection compound consumer result: `app` returns `(tuple (list x (g x)) x)`.
+           `app(handle, 5)` → `g(5)` = 6, so `(: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))`. The tuple's
+           List element crosses via the same value-encode descriptor (no static template for a variable
+           element).")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple (list x (g x)) x))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
+
+; COMPOSED round-trip shapes — the argument surface (every machine type, incl. higher-order) and the result
+; surface (every value-encodable type: scalar, byte-rope, fixed compound, collection, sum, and
+; compound-containing-collection) COMPOSE freely, across single-sig and distinct-sig grouping. These lock in
+; the full round-trip closure surface end-to-end.
+
+(case "round-trip: a consumer returns a Map whose VALUE is a list"
+  (doc    "A `Map Int64 (List Int64)` consumer result — the map's VALUE shape is itself variable-length, so
+           the value-encode descriptor recurses through the map value into the nested list. `app` returns
+           `(map (0 (list x (g x))) (1 (list x)))`. `app(handle, 5)` → `(: (map (0 (list 5 6)) (1 (list 5)))
+           (Map Int64 (List Int64)))` in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 (list x (g x))) (1 (list x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (map (0 (list 5 6)) (1 (list 5))) (Map Int64 (List Int64)))))
+
+(case "round-trip: a consumer returns an Option of a tuple"
+  (doc    "A SUM whose payload is a fixed-shape COMPOUND: `app` returns `(Some (tuple x (g x)))`.
+           `app(handle, 5)` → `(: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))`. The value-encode walker
+           switches on the disc, then renders the tuple payload.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (tuple x (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))))
+
+(case "round-trip: a consumer returns a list of tuples from repeated closure application"
+  (doc    "A `List (Tuple Int64 Int64)` result — a collection whose ELEMENT is a compound. `app` applies `g`
+           to two inputs and pairs each. `mk` doubles; `app(handle, 3)` → `(list (tuple 3 6) (tuple 4 8))`, so
+           `(: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64))
+                (list (tuple x (g x)) (tuple (+ x 1) (g (+ x 1)))))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))))
+
+(case "round-trip: a HIGHER-ORDER closure arg composed with a SUM result"
+  (doc    "The argument and result widenings compose: `app : (own<t>, Int64) -> (Option Int64)` applies a
+           closure-typed arg (a guest-built inner closure) and wraps the result in `Some`. `mk`'s closure
+           applies its function arg to 10; `app(handle, 5)` → `g((fn y -> y+5))` = 15, so `(: (Some 15)
+           (Option Int64))`.")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
+              (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (Some (g (fn (y) (+ y x)))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some 15) (Option Int64))))
+
+(case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one"
+  (doc    "Two distinct signatures, two result MODES: `appa : (own<t0>, Int64) -> (Option Int64)` returns
+           `(Some (g x))`; `appb : (own<t1>, Bool) -> (List Int64)` returns `(list (h y) (h y))`.
+           `appa(handle, 5)` → `(: (Some 6) (Option Int64))`. A sum result and a collection result of DISTINCT
+           signatures coexist, each value-encoded against its own descriptor.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one"
+  (doc    "The SAME two-resource-type program, driving the OTHER (collection-result) consumer of the other
+           signature: `appb(handle, true)` → `h(true)` = 1 twice, so `(: (list 1 1) (List Int64))`. Confirms a
+           sum-result group and a collection-result group render independently.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: (list 1 1) (List Int64))))

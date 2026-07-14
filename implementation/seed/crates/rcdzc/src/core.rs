@@ -75,6 +75,17 @@ pub enum SetAlgebraOp {
     Difference,
 }
 
+/// Which runtime BigInt binary ARITHMETIC op a [`Core::BigIntBinOp`] performs — `+`/`-`/`*`/`/` mapped to
+/// the runtime `bigint-add`/`-sub`/`-mul`/`-div`. (Comparison lowers through `bigint-cmp` + a fixed
+/// compare in `lower`, so it is not one of these — this enum is arithmetic-only, producing a BigInt.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BigIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 /// One arm of a [`Core::MatchList`] — a LENGTH condition on the list scrutinee plus a body. The backend
 /// tests the conditions in arm order against `vec-len(scrutinee)`; the first satisfied arm's body runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,6 +145,14 @@ pub enum Probe {
     /// string scrutinee is not a scalar (`is_scalar` is Int/Bool), so its match declines until the runtime
     /// string-equality probe is emitted (a later increment).
     Str(String),
+    /// A LIST pattern's length test — the list at this path must have `len` elements (`at_least` false, a
+    /// fixed-arity `(list p0 … p{len-1})`) or AT LEAST `len` (`at_least` true, a rest pattern `(list p0 …
+    /// p{len-1} .. rest)` binding the tail). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a
+    /// constant `Core::ListNew` of the right length passes, then each leading element is destructured at
+    /// `Elem(i)` and any rest binder reads `RestFrom(len)`); a RUNTIME list payload is not a scalar, so its
+    /// match declines until the runtime list matcher is wired into the payload path. Carried as DATA, gated
+    /// once the enclosing discriminant constraints are satisfied, exactly like a literal test.
+    ListLen { len: usize, at_least: bool },
     /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }
@@ -363,6 +382,26 @@ pub enum Core {
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
     BytesConcat { lhs: StructId, rhs: StructId },
+    /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
+    /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
+    /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).
+    BigIntOfI64 { value: StructId },
+    /// `Int64.of b` / `(UInt N).of b` on a RUNTIME `BigInt` `b` — the checked narrowing back to a
+    /// fixed width via `bigint-to-i64-checked` (traps out of range at run time). The `width`/`signed` of
+    /// the target refine the range the runtime op checks against once narrower-than-i64 checking lands;
+    /// today the runtime checks the i64 range and a narrower target's over-range constant is already
+    /// rejected at compile time (B1). A constant `BigInt` source folds in `lower`.
+    BigIntToI64 { operand: StructId },
+    /// A runtime BigInt BINARY op — `+`/`-`/`*`/`/` (the runtime `bigint-add`/`-sub`/`-mul`/`-div`) or a
+    /// comparison lowered through `bigint-cmp`. Present when at least one operand is a runtime `BigInt`
+    /// (a constant pair folds via `num-bigint` in `lower`). Produces a `BigInt` handle for arithmetic;
+    /// the comparison forms wrap `bigint-cmp` + a fixed compare (built in `lower`, so this arm is
+    /// arithmetic-only). `div` traps on a zero divisor at run time.
+    BigIntBinOp {
+        op: BigIntOp,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A `(bin <seg>…)` CONSTRUCTION with at least one RUNTIME segment value (an all-constant `(bin …)`
     /// folds to a `Core::BytesOf` in `lower`). Builds a `Bytes` on the rope heap at run time: each
     /// fixed-width integer segment range-checks its value against the segment (trap "binary value does not
@@ -513,9 +552,13 @@ pub enum Core {
     /// variant's discriminant. The emitter carries NO source-level name into the value heap: a sum is a
     /// discriminated payload (`disc` + boxed value) and a record is a positional `arr-alloc` product (its
     /// field NAMES are the compile-time `Symbol` keys, never stored), so the runtime holds only structure
-    /// and data and the position→name association is compile-time knowledge:
+    /// and data and the position→name association is compile-time knowledge. The `disc` a sum carries is
+    /// the runtime datum recording WHICH variant a value is, never the sum's TYPE — the compiler knows the
+    /// static type at every use site (no type erasure) and maps a discriminant to a variant name itself:
     //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
     //# The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a discriminated payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
+    //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
+    //# The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on. The variant discriminant a sum carries is the runtime datum recording WHICH variant a value is, not the sum's type; the compiler maps a discriminant to a variant name.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
@@ -523,9 +566,12 @@ pub enum Core {
     ///
     /// A NULLARY variant is a constructor whose ARGUMENT is the unit value — `None` builds `sum-new(disc,
     /// arr-alloc(0))`, the empty array standing for the unit payload — NOT a value pre-constructed at the
-    /// prelude; `(None unit)` is the application that produces it, uniform with `(Some 5)`.
+    /// prelude; `(None unit)` is the application that produces it, uniform with `(Some 5)`. Every sum value
+    /// is built this way — by APPLICATION of its constructor, in all cases.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
+    //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+    //# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
     SumNew { disc: u32, payloads: Vec<StructId> },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf

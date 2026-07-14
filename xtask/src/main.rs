@@ -1119,16 +1119,35 @@ fn cdz_render_expr(
     ty: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
 ) -> String {
-    cdz_render_at(ty, "__r", sums)
+    let mut helpers = Vec::new();
+    let mut on_path = Vec::new();
+    let expr = cdz_render_at(ty, "__r", sums, &mut helpers, &mut on_path);
+    // The recursive-sum render helpers (if any) are hoisted ahead of the expression, then the expression
+    // is a block that defines them and evaluates. Each helper is a `fn`, so mutual/self recursion works.
+    if helpers.is_empty() {
+        expr
+    } else {
+        format!("{{ {} {expr} }}", helpers.join(" "))
+    }
 }
 
 /// The recursive worker for [`cdz_render_expr`]: `path` is the Rust access path to the value being
 /// rendered (starts at `__r`, descends `.0`/`.1`… into tuple/record elements — a record IS a positional
 /// tuple in sorted-field order, so its `i`th field is `.i`).
+///
+/// `helpers` collects generated recursive render `fn`s (for a RECURSIVE user sum, whose TYPE unfolds
+/// infinitely — `IntList = Cons(Tuple Int64 IntList) | Nil` — so it CANNOT be inlined without the codegen
+/// itself never terminating). `on_path` is the set of user-sum idents currently being unfolded on the
+/// recursion path: re-entering one means a cycle, so emit a CALL to its (runtime-recursive) helper fn
+/// instead of inlining, moving the recursion from gate-codegen-time (over the infinite type) to Rust
+/// runtime (over the FINITE value — a `Nil` leaf terminates it). Mirrors the wasm value-encode, which walks
+/// the value, not the type.
 fn cdz_render_at(
     ty: &str,
     path: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    helpers: &mut Vec<String>,
+    on_path: &mut Vec<String>,
 ) -> String {
     let ty = ty.trim();
     if ty == "Unit" {
@@ -1140,7 +1159,7 @@ fn cdz_render_at(
         let args: Vec<String> = elems
             .iter()
             .enumerate()
-            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}"), sums))
+            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}"), sums, helpers, on_path))
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
@@ -1163,7 +1182,13 @@ fn cdz_render_at(
                 .trim();
             let (fname, fty) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
             args.push(format!("\"{}\"", fname.trim()));
-            args.push(cdz_render_at(fty.trim(), &format!("({path}).{i}"), sums));
+            args.push(cdz_render_at(
+                fty.trim(),
+                &format!("({path}).{i}"),
+                sums,
+                helpers,
+                on_path,
+            ));
         }
         let groups = vec!["({} {})"; fields.len()].join(" ");
         return format!("format!(\"(record {groups})\", {})", args.join(", "));
@@ -1180,14 +1205,26 @@ fn cdz_render_at(
     let vbind = format!("__v{}", path.len());
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
-        let inner = cdz_render_at(payload, &vbind, sums);
+        let inner = cdz_render_at(payload, &vbind, sums, helpers, on_path);
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
         );
     }
     if let Some(args) = parse_head_type(ty, "Result") {
-        let ok = cdz_render_at(args.first().map(String::as_str).unwrap_or(""), &vbind, sums);
-        let err = cdz_render_at(args.get(1).map(String::as_str).unwrap_or(""), &vbind, sums);
+        let ok = cdz_render_at(
+            args.first().map(String::as_str).unwrap_or(""),
+            &vbind,
+            sums,
+            helpers,
+            on_path,
+        );
+        let err = cdz_render_at(
+            args.get(1).map(String::as_str).unwrap_or(""),
+            &vbind,
+            sums,
+            helpers,
+            on_path,
+        );
         return format!(
             "match &{path} {{ Ok({vbind}) => format!(\"(Ok {{}})\", {ok}), Err({vbind}) => format!(\"(Err {{}})\", {err}) }}"
         );
@@ -1204,22 +1241,49 @@ fn cdz_render_at(
         // The enum is defined INSIDE `mod prog { … }` (the driver wraps the emitted module), so the
         // driver's `fn main` names it qualified: `prog::<Enum>::<Variant>`. (A built-in Option/Result is
         // std's, unqualified — handled above.)
-        let mut arms = Vec::with_capacity(variants.len());
-        for (vname, payload) in variants {
-            let vident = rust_ident(vname);
-            match payload {
-                Some(pty) => {
-                    let inner = cdz_render_at(pty, &vbind, sums);
-                    arms.push(format!(
-                        "prog::{ty}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
-                    ));
+        //
+        // A user sum is rendered through a generated recursive helper `fn __render_<Ident>(v: &prog::Ident)
+        // -> String`, NOT inlined. This is what makes a RECURSIVE sum terminate: `IntList = Cons(Tuple Int64
+        // IntList) | Nil` unfolds infinitely as a TYPE, so inlining `cdz_render_at` for each payload never
+        // returns (the codegen itself diverges → stack overflow building the render expression). Routing
+        // through a helper moves the recursion to Rust RUNTIME over the finite value: the helper matches the
+        // variants, and a self-referential payload position emits a CALL to the same helper (because the sum
+        // is on `on_path` when its payloads are rendered), so a `Nil` leaf terminates the runtime walk.
+        let fn_name = format!("__render_{}", rust_ident(ty));
+        if !on_path.iter().any(|s| s == ty) {
+            // First time this sum is unfolded on the path — generate its helper (once; a later occurrence
+            // reuses it). Push the name onto the path so a self-reference inside a payload emits a call.
+            if !helpers
+                .iter()
+                .any(|h| h.contains(&format!("fn {fn_name}(")))
+            {
+                on_path.push(ty.to_string());
+                let mut arms = Vec::with_capacity(variants.len());
+                for (vname, payload) in variants {
+                    let vident = rust_ident(vname);
+                    match payload {
+                        Some(pty) => {
+                            let inner = cdz_render_at(pty, "__p", sums, helpers, on_path);
+                            arms.push(format!(
+                                "prog::{ty}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
+                            ));
+                        }
+                        None => arms.push(format!(
+                            "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
+                        )),
+                    }
                 }
-                None => arms.push(format!(
-                    "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
-                )),
+                on_path.pop();
+                // `#[allow(unused)]` — a mutually-referenced helper may be defined but only reached via
+                // another; the block-hoisting emits every generated fn, some unused on a given path.
+                helpers.push(format!(
+                    "#[allow(unused)] fn {fn_name}(__v: &prog::{ty}) -> String {{ match __v {{ {} }} }}",
+                    arms.join(", ")
+                ));
             }
         }
-        return format!("match &{path} {{ {} }}", arms.join(", "));
+        // A borrow — the value may be used only here; the helper takes `&prog::Ident`.
+        return format!("{fn_name}(&{path})");
     }
     // A FLOAT (`Float32`/`Float64`) renders via cdz-run's canonical `display_float`, NOT Rust's `{}`:
     // a whole float is `N.0` (Rust's `{}` prints `42`, the corpus wants `42.0`), `-0.0` and `NaN` are
@@ -2757,5 +2821,59 @@ mod trap_grading_tests {
             ),
             Grade::Todo
         ));
+    }
+
+    #[test]
+    fn recursive_sum_render_terminates_via_a_helper_fn() {
+        // The rust-gate value renderer is TYPE-DIRECTED. A RECURSIVE user sum's type unfolds infinitely
+        // (`IntList = Cons(Tuple Int64 IntList) | Nil` → Cons → Tuple → IntList → …), so INLINING the render
+        // per payload never terminates — the codegen itself diverges (a native stack overflow building the
+        // render expression, which aborted the whole rust gate). The fix routes a user sum through a
+        // generated recursive helper `fn`, so the recursion is at Rust RUNTIME over the finite value. This
+        // test pins that `cdz_render_expr` TERMINATES on the recursive sum (a regression here reappears as a
+        // hang/overflow, not a wrong string) and emits the helper + a call, not an infinite inline.
+        let mut sums = std::collections::HashMap::new();
+        sums.insert(
+            "IntList".to_string(),
+            vec![
+                (
+                    "Cons".to_string(),
+                    Some("(Tuple Int64 IntList)".to_string()),
+                ),
+                ("Nil".to_string(), None),
+            ],
+        );
+        let expr = cdz_render_expr("IntList", &sums);
+        // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
+        // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
+        assert!(
+            expr.contains("fn __render_IntList("),
+            "a recursive sum must render via a generated helper fn: {expr}"
+        );
+        assert!(
+            expr.contains("__render_IntList(&"),
+            "the render must CALL the helper (runtime recursion over the finite value): {expr}"
+        );
+        // The helper's Cons arm recurses through the tuple to the nested IntList via the SAME helper.
+        assert!(
+            expr.matches("__render_IntList").count() >= 2,
+            "the recursive payload position must re-enter the helper: {expr}"
+        );
+
+        // A NON-recursive user sum still renders (an inline call to its own helper, no infinite unfold).
+        let mut mono = std::collections::HashMap::new();
+        mono.insert(
+            "Sign".to_string(),
+            vec![
+                ("Neg".to_string(), None),
+                ("Zero".to_string(), None),
+                ("Pos".to_string(), None),
+            ],
+        );
+        let s = cdz_render_expr("Sign", &mono);
+        assert!(
+            s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
+            "{s}"
+        );
     }
 }

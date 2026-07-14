@@ -40,6 +40,11 @@ pub enum Format {
     /// nodes) and prints it back BYTE-EXACT for an unmutated doc. Data, not a program; interconverts
     /// with JSON.
     Toml,
+    /// The Cedar surface: an authorization-policy document (`(cedar-policyset …)`, mirroring Cedar's
+    /// `pst`). Reads Cedar policy text to a structured arena and prints it back. Data, not a program
+    /// (no authorization engine); its point is that policies become structurally editable by Cadenza's
+    /// tools. Arena-idempotent (comments/formatting not preserved by the underlying pst).
+    Cedar,
     /// A readable debug view of the arena structure as an indented TREE — OUTPUT ONLY (not a
     /// re-readable surface). Shows the raw shape the compiler sees, for inspecting a binary AST.
     Debug,
@@ -50,7 +55,7 @@ pub enum Format {
 
 impl Format {
     /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `json`, `toml`,
-    /// `debug`, `flat`). Case-insensitive.
+    /// `cedar`, `debug`, `flat`). Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
@@ -59,6 +64,7 @@ impl Format {
             "markdown" | "md" => Some(Format::Markdown),
             "json" => Some(Format::Json),
             "toml" => Some(Format::Toml),
+            "cedar" => Some(Format::Cedar),
             "debug" => Some(Format::Debug),
             "flat" => Some(Format::Flat),
             _ => None,
@@ -73,15 +79,16 @@ impl Format {
             Format::Markdown => "markdown",
             Format::Json => "json",
             Format::Toml => "toml",
+            Format::Cedar => "cedar",
             Format::Debug => "debug",
             Format::Flat => "flat",
         }
     }
 
     /// Infer the surface format from a file path's extension: `.cdz`/`.ml` → ML, `.sexp`/`.sexpr` →
-    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown, `.json` → JSON, `.toml` → TOML.
-    /// The output-only `debug`/`flat` views have no extension. `None` if the path has no recognized
-    /// extension (the caller then requires an explicit format).
+    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown, `.json` → JSON, `.toml` → TOML,
+    /// `.cedar` → Cedar. The output-only `debug`/`flat` views have no extension. `None` if the path has
+    /// no recognized extension (the caller then requires an explicit format).
     pub fn from_extension(path: &str) -> Option<Format> {
         let ext = std::path::Path::new(path)
             .extension()?
@@ -94,6 +101,7 @@ impl Format {
             "md" | "markdown" => Some(Format::Markdown),
             "json" => Some(Format::Json),
             "toml" => Some(Format::Toml),
+            "cedar" => Some(Format::Cedar),
             _ => None,
         }
     }
@@ -202,6 +210,13 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
                 ))
             })
         }
+        Format::Cedar => {
+            // Cedar can fail; its error is a multi-line `ParseErrors` with a source excerpt (not an
+            // `at byte N`), so the reader already reduced it to a headline — surface it as-is.
+            let text = utf8(input)?;
+            crate::cedar::read(text)
+                .map_err(|e| ConvertError(format!("Cedar parse error: {}", e.0)))
+        }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError(
@@ -253,6 +268,10 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // A `(toml-document …)` arena prints back BYTE-EXACT (unmutated); a NON-TOML root becomes a
         // single `program = "<ml>"` key (see `toml_surface::print`), so `--to toml` stays total.
         Format::Toml => Ok(crate::toml_surface::print(arenas, opts.width).into_bytes()),
+        // A `(cedar-policyset …)` arena prints back to Cedar policy text (rebuilding a pst); a NON-Cedar
+        // root becomes a `//`-comment block over its ML rendering (see `cedar::print`), so `--to cedar`
+        // stays total.
+        Format::Cedar => Ok(crate::cedar::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }
@@ -337,6 +356,7 @@ mod tests {
         assert_eq!(Format::parse("ml"), Some(Format::Ml));
         assert_eq!(Format::parse("JSON"), Some(Format::Json));
         assert_eq!(Format::parse("toml"), Some(Format::Toml));
+        assert_eq!(Format::parse("cedar"), Some(Format::Cedar));
         assert_eq!(Format::parse("nope"), None);
     }
 
@@ -349,6 +369,7 @@ mod tests {
         assert_eq!(Format::from_extension("prog.bin"), Some(Format::Binary));
         assert_eq!(Format::from_extension("data.json"), Some(Format::Json));
         assert_eq!(Format::from_extension("Cargo.toml"), Some(Format::Toml));
+        assert_eq!(Format::from_extension("policy.cedar"), Some(Format::Cedar));
         assert_eq!(Format::from_extension("PROG.CDZ"), Some(Format::Ml)); // case-insensitive
         assert_eq!(Format::from_extension("prog"), None); // no extension
         assert_eq!(Format::from_extension("prog.txt"), None); // unknown extension
@@ -406,6 +427,32 @@ mod tests {
         assert!(
             err.0.contains("TOML parse error"),
             "expected a TOML parse error, got {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn cedar_to_binary_to_cedar_round_trips() {
+        // A Cedar policy reads to a `(cedar-policyset …)` arena, encodes to canonical binary, and
+        // re-reads to the same tree (arena-idempotent through the binary form).
+        let src = "permit (principal in Group::\"admins\", action == Action::\"read\", resource) when { resource.public == true };";
+        let bin = convert(src.as_bytes(), Format::Cedar, Format::Binary).unwrap();
+        let back = convert(&bin, Format::Binary, Format::Cedar).unwrap();
+        let again = convert(&back, Format::Cedar, Format::Binary).unwrap();
+        assert_eq!(bin, again);
+    }
+
+    #[test]
+    fn cedar_parse_error_is_surfaced() {
+        let err = convert(
+            b"allow (principal, action, resource);",
+            Format::Cedar,
+            Format::Sexpr,
+        )
+        .unwrap_err();
+        assert!(
+            err.0.contains("Cedar parse error"),
+            "expected a Cedar parse error, got {}",
             err.0
         );
     }

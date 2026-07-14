@@ -201,6 +201,13 @@ pub enum Code {
     /// structural rejection, not a runtime surprise (a value that does not fit its segment traps at run
     /// time instead, "binary value does not fit segment"). The CDZ02xx types-and-patterns band.
     IllFormedBinary,
+    /// A non-final `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts `,@init` (which binds the
+    /// remaining elements) before a fixed `,last`, requiring a variable-length gap flanked by a fixed tail
+    /// (`metaprogramming.md` §A `,@<name>` … MUST appear only as the final element). Ill-formed: a rest
+    /// binds the whole tail, so it is meaningful only LAST. The quote-pattern companion of the binary-form
+    /// `IllFormedBinary` (an unsized `(bytes …)` segment is legal only last), one code down the CDZ02xx
+    /// types-and-patterns band.
+    NonFinalSplice,
     /// A DIMENSIONAL mismatch — combining quantities of incompatible dimension: adding, subtracting, or
     /// comparing a length to a time; annotating a quantity at a dimension the expression does not derive.
     /// Units are checked THEN ERASED before the program runs, so a dimensional inconsistency is ALWAYS a
@@ -291,6 +298,7 @@ impl Code {
             Code::LatentAuthority => "CDZ0404",
             Code::ClosureEscapesEffect => "CDZ0406",
             Code::IllFormedBinary => "CDZ0220",
+            Code::NonFinalSplice => "CDZ0221",
             Code::DimensionMismatch => "CDZ0501",
             Code::UnitConflict => "CDZ0502",
             Code::UnknownDirective => "CDZ0601",
@@ -669,6 +677,17 @@ pub const PRIM_AS_VALUE_DECLINE: &str =
 /// value …`). `dedup_faults` matches this to recognize the reject that makes the type-value decline family
 /// redundant, without pinning the whole (name-bearing) text.
 pub const TYPE_EXPORT_MARKER: &str = "is a TYPE, not a runtime value";
+
+/// A stable SUBSTRING of the coded CDZ0201 EFFECT-valued-export reject (`export <name> is an effect, not a
+/// runtime value …`). Its twin for effects: exporting a bare effect name evaluates the effect's SYNTHESIZED
+/// record, leaking a cascade ("unknown intrinsic", unbound `effect-op`/`effect`, nullary-lambda-no-closure).
+/// `dedup_faults` matches this to drop that cascade, keeping the one clean category reject.
+pub const EFFECT_EXPORT_MARKER: &str = "is an effect, not a runtime value";
+
+/// The uncoded DECLINE the resolver emits for an effect-op/intrinsic name reached as a runtime value (a
+/// bare effect name evaluated). Leaked verbatim when an effect is exported; `dedup_faults` drops it (and
+/// the `effect-op`/`effect` unbound-field CDZ0101s) when the effect-export reject is present.
+pub const UNKNOWN_INTRINSIC_DECLINE: &str = "unknown intrinsic";
 
 /// The shared PREFIX of the CDZ0201 "record has no field `<key>`" reject. A member access `(. r key)`
 /// with an absent field is reported by BOTH the infer-side member check (`infer::no_field_reject`, which

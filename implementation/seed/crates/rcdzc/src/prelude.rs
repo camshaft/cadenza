@@ -972,7 +972,7 @@ fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
 /// — the `unit` value's TYPE and the units module — which coexist because a record carries both a `(meta
 /// t)` and member fields (exactly as `Bytes`/`String` do; the `Bytes` module proved a `(meta t)` and
 /// member access coexist). `Unit.one` is the dimensionless unit (the group identity); `(Unit.base
-/// #"metre")` names a base dimension. Each field is a builder record whose `(meta apply)` is the builder
+/// #"meter")` names a base dimension. Each field is a builder record whose `(meta apply)` is the builder
 /// prim; a unit is a compile-time value reduced by `eval`. `Unit.*`/`Unit./`/`Unit.^` are registered as
 /// TOP-LEVEL names, not fields (the reader keeps them bare — `^`/`*`/`/` aren't alphabetic).
 fn unit_module(ast: &mut Arenas) -> StructId {
@@ -987,22 +987,22 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let one_field = push_atom(ast, Leaf::Name("one".to_string()));
     let one_op = unit_op_ctor(ast, "unit-one");
     children.push(push_list(ast, vec![one_field, one_op]));
-    // `base` — a base dimension named by a symbol: `(Unit.base #"metre")`.
+    // `base` — a base dimension named by a symbol: `(Unit.base #"meter")`.
     let base_field = push_atom(ast, Leaf::Name("base".to_string()));
     let base_op = unit_op_ctor(ast, "unit-base");
     children.push(push_list(ast, vec![base_field, base_op]));
-    // `prefix` — scale a unit by a prefix's factor: `(Unit.prefix kilo (Unit.base #"metre"))`. Member
+    // `prefix` — scale a unit by a prefix's factor: `(Unit.prefix kilo (Unit.base #"meter"))`. Member
     // access (`prefix` is alphabetic → `(. Unit prefix)`), so a field, not a top-level name (unlike
     // `Unit.*`/`^`).
     let prefix_field = push_atom(ast, Leaf::Name("prefix".to_string()));
     let prefix_op = unit_op_ctor(ast, "unit-prefix");
     children.push(push_list(ast, vec![prefix_field, prefix_op]));
     // `of` — name a FAMILY unit from the registry: `(Unit.of #"foot")` = length at foot's scale to
-    // metre. Member access (`(. Unit of)`), a field. Consults `Db::unit_families`.
+    // meter. Member access (`(. Unit of)`), a field. Consults `Db::unit_families`.
     let of_field = push_atom(ast, Leaf::Name("of".to_string()));
     let of_op = unit_op_ctor(ast, "unit-of");
     children.push(push_list(ast, vec![of_field, of_op]));
-    // `in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in metre (Qty.of 3.0 km))`.
+    // `in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in meter (Qty.of 3.0 km))`.
     // Member access (`(. Unit in)`), a field. Takes a target unit + a quantity.
     let in_field = push_atom(ast, Leaf::Name("in".to_string()));
     let in_op = unit_op_ctor(ast, "unit-in");
@@ -1068,37 +1068,37 @@ pub type FamilyRow<'a> = (&'a str, &'a [(&'a str, i64)], i128, i128);
 /// The FAMILY-OF-MEASURE registry — the ONE place the built-in family vocabulary lives (the analogue of
 /// `Prim::from_name` for prim spellings). Maps each named unit to its [`UnitConversion`] (dimension +
 /// exact machine-integer scale to that dimension's reference). `(Unit.of #"foot")` looks its name up
-/// here and builds `Unit.base("metre").scaled(381, 1250)`; `(Unit.of #"mbps")` builds the derived
+/// here and builds `Unit.base("meter").scaled(381, 1250)`; `(Unit.of #"mbps")` builds the derived
 /// `byte/second` dimension scaled by 10⁶/8. Every scale fits a machine int, so a family unit
 /// auto-converts over Float/Int with NO bignum. A build MAY supply its own families; this is the SI +
 /// common imperial/information set plus common data-rate and frequency units.
 ///
-/// A dimension GROUPS its named units: several rows share one dimension (metre, millimetre, foot, inch
+/// A dimension GROUPS its named units: several rows share one dimension (meter, millimeter, foot, inch
 /// are all `length`), so they name measures of one dimension rather than each being distinct. Two units
 /// of the same dimension are interconvertible (each carries an exact scale to the shared reference, so
 /// `Unit.in` composes their ratio); two units of DIFFERENT dimension are not (the `same_dimension` gate
-/// rejects — `metre + second` is CDZ0501).
+/// rejects — `meter + second` is CDZ0501).
 //= spec/capabilities/units-of-measure.md#a-dimension-groups-interconvertible-units
-//# A dimension MUST admit more than one named unit, so that several units — such as a metre, a millimetre, and an inch — name measures of one dimension rather than each being a distinct dimension.
+//# A dimension MUST admit more than one named unit, so that several units — such as a meter, a millimeter, and an inch — name measures of one dimension rather than each being a distinct dimension.
 //= spec/capabilities/units-of-measure.md#a-dimension-groups-interconvertible-units
 //# Two units of the same dimension MUST be interconvertible, and two units of different dimension MUST NOT be.
 pub fn unit_families() -> BTreeMap<String, UnitConversion> {
     // Each row: `(name, dimension, num, den)`. The DIMENSION is a `(base, exponent)` list — one entry for
     // an ATOMIC dimension (length/time/information), several for a DERIVED one (a rate = information/time
     // is `[("byte", 1), ("second", -1)]`). The scale `num/den` is the unit's exact ratio to that
-    // dimension's REFERENCE (metre/second/byte for the atomic ones; byte/second for a rate). A named unit
+    // dimension's REFERENCE (meter/second/byte for the atomic ones; byte/second for a rate). A named unit
     // can thus denote a DERIVED dimension — `mbps` is a unit of `information/time` you convert to/from
     // `byte/second` — not only an atomic one (`units-of-measure.md` §A Dimension Groups Interconvertible
     // Units). All scales fit a machine int, so conversion is bignum-free over Float/Int.
     let rows: &[FamilyRow] = &[
-        // length — reference `metre`.
-        ("metre", &[("metre", 1)], 1, 1),
-        ("millimetre", &[("metre", 1)], 1, 1000),
-        ("centimetre", &[("metre", 1)], 1, 100),
-        ("kilometre", &[("metre", 1)], 1000, 1),
-        ("inch", &[("metre", 1)], 127, 5000),
-        ("foot", &[("metre", 1)], 381, 1250),
-        ("mile", &[("metre", 1)], 201168, 125),
+        // length — reference `meter`.
+        ("meter", &[("meter", 1)], 1, 1),
+        ("millimeter", &[("meter", 1)], 1, 1000),
+        ("centimeter", &[("meter", 1)], 1, 100),
+        ("kilometer", &[("meter", 1)], 1000, 1),
+        ("inch", &[("meter", 1)], 127, 5000),
+        ("foot", &[("meter", 1)], 381, 1250),
+        ("mile", &[("meter", 1)], 201168, 125),
         // time — reference `second`.
         ("second", &[("second", 1)], 1, 1),
         ("millisecond", &[("second", 1)], 1, 1000),
@@ -1219,7 +1219,7 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let value_op = ctor_record(ast, "qty-value");
     children.push(push_list(ast, vec![value_field, value_op]));
     // `pow` — raise a quantity to a compile-time non-negative integer power, composing the unit like
-    // `Unit.^`: `(Qty.pow (Qty.of 3.0 metre) 2)` = `9.0 : (Qty Float64 metre²)`. The exponent is read
+    // `Unit.^`: `(Qty.pow (Qty.of 3.0 meter) 2)` = `9.0 : (Qty Float64 meter²)`. The exponent is read
     // off the second argument at type/lower time (not an HM variable), so `pow` is a plain field op.
     let pow_field = push_atom(ast, Leaf::Name("pow".to_string()));
     let pow_op = ctor_record(ast, "qty-pow");
@@ -1640,6 +1640,8 @@ enum OpShape {
 //# A field of a built-in module whose implementation the language provides MUST hold a **built-in operation value** — a first-class value denoting that operation. A built-in operation value MUST be a value in the sense of *A Function Is A First-Class Value*: projecting it MUST yield the value itself, so that member access on a built-in module evaluates to the operation it names without applying it.
 //= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
 //# Applying a built-in operation value to arguments MUST produce the same result the operation defines for those arguments, so that `(Mod.op args)` — the application of the projected field — is equivalent to invoking the built-in operation directly. Applying it at an argument count the operation does not accept MUST be a compile-time error under *Applying A Function Binds Its Parameter To Its Argument* and the arity rules, exactly as for any other function value, rather than an unspecified result.
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# A built-in operation value used other than by application — bound to a name, stored in a data structure, compared, or partially applied — has no outcome fixed by this document beyond that it MUST NOT produce a wrong result: a compiler that does not realize such a use MUST decline to compile the program rather than emit code that computes an incorrect value. This preserves *reject-don't-miscompile* while leaving the first-class treatment of a built-in operation value (storage, partial application) to be specified as it is realized.
 fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let lambda = match shape {
