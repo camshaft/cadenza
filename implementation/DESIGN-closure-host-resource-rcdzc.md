@@ -1023,10 +1023,19 @@ the component type. The new work:
   `resource_inner_component_multi_closure_bytes_borrow_tuple` gained `tuple_prefix_bytes`/`tuple_suffix_bytes`
   feeding `closure_call_list_tuple_arg_functype_interleaved`. The multi among-scalars decline is GONE. Corpus:
   multi-export among-scalars × List/Bytes/compound, e2e. The MIXED path still detects a SOLE tuple only.
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the MIXED
-  path (any result) and with a list<u8>-crossing result on the distinct-sig path (the single-export/multi
-  interleaving applied to those cores' arg-push + per-group functypes — mechanical, the shared helper +
-  interleaved functype exist); a VARIABLE-LENGTH collection arg
+- **✅ tuple-among-scalars composes with EVERY result shape on the MIXED path** (landed after the multi path).
+  `emit_mixed_closure_resource` switched from the 3-tuple sole-tuple detection to the 5-tuple
+  `single_compound_among_scalars` (like multi-export); `arg_vts` = the full flattened core param list; the
+  scalar tail + the 3 list-result routings pass the tuple's prefix/suffix to
+  `assemble_mixed_closure_resource_borrow_tuple` (already threads them). NO serializer/envelope change. Corpus:
+  scalar-then-tuple closure beside a plain export × scalar/List/compound, e2e. ⚠ a semantic rebase conflict: a
+  sibling's `emit_mixed_closure_resource` edit left a 3-tuple `if let Some((_,_,rebuild))` at the used-ops
+  scan — git didn't flag it textually; caught by the build. Only the distinct-sig list-result among-scalars
+  gap remains.
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple with a
+  list<u8>-crossing result on the distinct-sig path (the single-export/multi interleaving applied to those
+  per-group `call-g` cores' arg-push + per-group functypes — mechanical, the shared helper + interleaved
+  functype exist; distinct-sig SCALAR-result among-scalars already works); a VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope

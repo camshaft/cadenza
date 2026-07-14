@@ -2771,15 +2771,14 @@ fn emit_mixed_closure_resource(
     // DIRECT-CALL COMPOUND ARG (mixed): a single fixed-shape scalar tuple/record arg shared by all closure
     // exports crosses as a native component `tuple<…>` (the shared `call` rebuilds the cell via
     // `TupleArgRebuild`); the plain exports ride alongside. Detected here so the scalar `arg_bytes` decline
-    // below doesn't reject it. SCOPE: EXACTLY one such compound arg, a scalar result.
-    let tuple_arg: Option<(
-        Vec<u8>,
-        Vec<crate::backend::wasm::lir::ValType>,
-        serialize::TupleArgRebuild,
-    )> = if arg_tys.len() == 1 {
+    // below doesn't reject it. The tuple may be the SOLE arg OR sit among aliased-width scalars (prefix/
+    // suffix). 5-tuple = (tuple field bytes, full flattened core vts, prefix scalar bytes, suffix scalar
+    // bytes, rebuild).
+    let tuple_arg: Option<CompoundArgBoundary> = if arg_tys.len() == 1 {
         fixed_shape_scalar_tuple_arg(&arg_tys[0])
+            .map(|(fb, fv, rb)| (fb, fv, Vec::new(), Vec::new(), rb))
     } else {
-        None
+        single_compound_among_scalars(arg_tys.as_slice())
     };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
@@ -2830,11 +2829,12 @@ fn emit_mixed_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+    // Core call-arg valtypes: the FULL flattened core param list when a tuple arg (prefix scalars, tuple
+    // fields, suffix scalars), else each arg's own valtype.
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
-        field_vts.clone()
+        all_vts.clone()
     } else {
         arg_tys
             .iter()
@@ -2959,8 +2959,7 @@ fn emit_mixed_closure_resource(
         // (`emit_tuple_rebuild`): register the ops it emits — `arr-alloc`/`arr-set` + each field's box op
         // (`box-int`/`box-bool`/`box-float`/`box-float32`), which appear only in the synthesized rebuild.
         // Without the box op a Bool/Float field panicked ("rebuild op imported"); see `emit_closure_resource`.
-        // (This function's `tuple_arg` is the 3-tuple `(bytes, vts, rebuild)` shape.)
-        if let Some((_, _, rebuild)) = &tuple_arg {
+        if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
             for bop in rebuild.field_box_ops.iter().flatten() {
@@ -3032,10 +3031,19 @@ fn emit_mixed_closure_resource(
         })
         .collect();
     // A fixed-shape tuple ARG (shared by all closure makes): the shared list-`call` cores rebuild the arg cell
-    // from the flattened fields, the shared list<u8> tuple envelope emits the `tuple<…>` type; plain exports
-    // ride alongside. `None` on the scalar-arg path.
-    let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
-    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
+    // from the flattened fields (interleaving prefix/suffix scalars via `emit_closure_call_args`), the shared
+    // list<u8> tuple envelope emits the `tuple<…>` type; plain exports ride alongside. `None` on the scalar-arg
+    // path. Prefix/suffix scalar bytes are empty for a sole tuple, non-empty when it sits among scalars.
+    let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
+    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+    let tpre = tuple_arg
+        .as_ref()
+        .map(|(_, _, pre, _, _)| pre.as_slice())
+        .unwrap_or(&[]);
+    let tsuf = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, suf, _)| suf.as_slice())
+        .unwrap_or(&[]);
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
@@ -3065,8 +3073,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
-                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
-                &[],
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -3098,8 +3106,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
-                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
-                &[],
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -3130,8 +3138,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
-                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
-                &[],
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -3139,7 +3147,7 @@ fn emit_mixed_closure_resource(
     // The shared `call` receives the FLATTENED fields (`arg_vts`) + rebuilds the cell (`TupleArgRebuild`); the
     // envelope's shared `call` functype takes a `tuple<…>` type, and the plain exports ride alongside as
     // top-level funcs. `own<t>` (single-use) this cut — the rebuilt-arg cell drop is unconditional.
-    if let Some((field_bytes, _field_vts, rebuild)) = &tuple_arg {
+    if let Some((field_bytes, _all_vts, tpre2, tsuf2, rebuild)) = &tuple_arg {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -3165,8 +3173,8 @@ fn emit_mixed_closure_resource(
             &abi_plain,
             false,
             Some(field_bytes),
-            &[], // mixed path detects only a SOLE tuple this increment — no prefix/suffix scalars
-            &[],
+            tpre2,
+            tsuf2,
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across

@@ -474,6 +474,29 @@ fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntT
 /// unify (CDZ0203), and a deferred/Var width imposes no bound.
 fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
     let annot_ty = crate::eval::typeval_of(db, ty_expr)?;
+    // A FLOAT literal annotated to a NARROWER float width it cannot hold — `(: 1.0e300 Float32)`. The
+    // value is finite as `Float64` (the literal's default) but overflows `Float32` to `±inf`, a value with
+    // no written form (numeric-model.md §A Floating-Point Literal That Denotes No Representable Value Is
+    // Malformed) — the float analogue of an out-of-range integer literal (CDZ0302). Only `Float32` is
+    // narrow enough to catch here (a `Float64` overflow is a malformed bare literal, caught earlier); a
+    // non-literal value imposes no compile-time bound. `is_finite_f64` guards the default `Float64`; this
+    // is its `Float32` sibling, promised by that method's own doc-comment ("`(: 1e40 Float32)` … caught at
+    // the annotation").
+    if let Ty::Float(ft) = &annot_ty
+        && ft.ground_width() == 32
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(value)
+        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+        && !dec.fits_f32()
+    {
+        return Some(
+            Reject::coded(
+                Code::IntOutOfRange,
+                "float literal does not fit the annotated type Float32 (it overflows the Float32 \
+                 range to infinity — the largest finite Float32 is about 3.4e38)",
+            )
+            .at(ty_expr),
+        );
+    }
     let Ty::Int(it) = &annot_ty else { return None };
     let crate::ty::Width::Fixed(w) = it.width else {
         return None;
@@ -3124,6 +3147,43 @@ fn variant_ctor_head_name(db: &mut Db, head: StructId) -> Option<String> {
     crate::eval::variant_disc_of(db, head).map(|_| name)
 }
 
+/// The callee's source NAME for a lambda-application head, when it is a plain bare-name function
+/// reference — `(h true)` → `"h"`. Used to name the function in a wrong-typed-argument diagnostic
+/// ("argument to `h` …"). `None` for an anonymous lambda applied directly (`((fn (x) …) 5)`), a
+/// member-access head, or any non-name head — those callers fall back to the un-named phrasing. Reads the
+/// head's source spelling (`db.ast.as_name`), so it works for a top-level def and a scoped local alike.
+fn callee_head_name(db: &Db, head: StructId) -> Option<String> {
+    db.ast.as_name(head).map(str::to_string)
+}
+
+/// The wrong-typed-CALL-ARGUMENT message: the argument's type does not satisfy the parameter's declared
+/// type at a call site. Framed as an ARGUMENT ("this argument is a Bool, but …"), NOT an annotation — the
+/// author wrote no annotation — the same phrasing the synthesized-parameter-annotation path (M106) uses,
+/// so a referenced-param arg (reported by that path) and an UNREFERENCED-param / recursive-callee arg
+/// (reported here at the call-site unify, step 1) read identically instead of the raw "type mismatch: X
+/// and Y must be the same type here" the unify produced. When the callee + parameter NAMES are known
+/// (a bare-name function with a named parameter) it names them — "argument to `h`'s parameter `a`" —
+/// which the synthesized-annotation path cannot (it has only the annotation node). `expected` is the
+/// parameter's declared type, `actual` the argument's type; `tail` carries an optional structural hint.
+fn call_argument_mismatch_message(
+    callee: Option<&str>,
+    param: Option<&str>,
+    expected: &Ty,
+    actual: &Ty,
+    tail: &str,
+) -> String {
+    let subject = match (callee, param) {
+        (Some(f), Some(p)) => format!("the argument for `{f}`'s parameter `{p}`"),
+        (Some(f), None) => format!("the argument to `{f}`"),
+        _ => "this argument".to_string(),
+    };
+    format!(
+        "{subject} is {}, but a value of type {} is expected here{tail}",
+        actual.render_with_article(),
+        expected.render_name(),
+    )
+}
+
 fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     if let Ty::Sum { name, args, .. } = actual
         && name == "Option"
@@ -4998,6 +5058,32 @@ fn check_application(
                 let at = type_of(db, arg);
                 if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
+                    // REWORD to the call-ARGUMENT phrasing (M106): this fault is a wrong-typed call
+                    // argument, but the raw unify gave "type mismatch: Int64 and Bool must be the same type
+                    // here" — the same defect the synthesized-parameter-annotation path (step 2) reports as
+                    // "this argument is a Bool, but a value of type Int64 is expected here". Step (1) is the
+                    // SOLE reporter for an UNREFERENCED param (step 2 is silent) and a RECURSIVE callee (the
+                    // reduction declines), so without this those two cases keep the raw unify wording while a
+                    // referenced-param arg reads nicely — an inconsistency for one defect. Here we ALSO have
+                    // the callee + parameter names (step 2 has only the annotation node), so name them when
+                    // known. Keep the reject's CODE (CDZ0301 for a numeric mix, CDZ0203 otherwise) — only the
+                    // MESSAGE is reworded — and append the structural-delta hint for a same-kind compound.
+                    let callee = callee_head_name(db, head);
+                    let param = db
+                        .ast
+                        .as_name(crate::eval::param_name_occ(db, param_occ))
+                        .map(str::to_string);
+                    let tail = structural_delta_hint(&pt, &at).unwrap_or_default();
+                    let reject = Reject {
+                        message: call_argument_mismatch_message(
+                            callee.as_deref(),
+                            param.as_deref(),
+                            &pt,
+                            &at,
+                            &tail,
+                        ),
+                        ..reject
+                    };
                     // A value of the parameter sum's PAYLOAD type where the SUM is expected — `(f 5)` to a
                     // `(: o (Option Int64))` parameter. Offer the rustc-flagship "wrap in `Some`" repair:
                     // WRAP the argument in the matching constructor `(Some 5)`. General over any sum (reads
@@ -7428,6 +7514,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         ),
                     ));
                 }
+            }
+            // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`
+            // — is finite as the literal's default `Float64` but rounds to `±inf` in `Float32`, a value
+            // with no written form (CDZ0302, `numeric-model.md` §A Floating-Point Literal That Denotes No
+            // Representable Value Is Malformed) — the float analogue of an out-of-range integer literal.
+            // Checked independently of the annot-agreement branches above (a deferred float literal unifies
+            // fine with `Float32`, so the mismatch path never fires), via the shared `literal_width_fault`
+            // (the same fit-check the let-binder runs), so a value annotation surfaces it in `cdz check`.
+            if let Some(reject) = literal_width_fault(db, expr, ty_expr) {
+                out.push(reject);
             }
             collect(db, expr, out);
         }

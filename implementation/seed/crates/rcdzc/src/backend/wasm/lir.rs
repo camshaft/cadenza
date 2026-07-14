@@ -197,6 +197,15 @@ pub enum Lir {
     /// nothing. The overflow guard's trip: it pushes a boolean "did overflow", then this traps if set.
     /// (One fused instruction so the guard is a flat run with no dangling block.)
     IfUnreachableEnd,
+    /// `if (empty) <INT_MIN> <-1> i32.div_s drop end` — trap with wasm's native INTEGER-OVERFLOW reason
+    /// when the i32 condition on the stack is nonzero, leaving nothing. Same trip shape as
+    /// [`Lir::IfUnreachableEnd`], but the trap carries a DISTINGUISHABLE reason: `i32.div_s` of
+    /// `i32::MIN / -1` is the one wasm arithmetic op that traps as "integer overflow" (a bare
+    /// `unreachable` reports only "unreachable"). Used by the arithmetic overflow guards + narrow
+    /// range-checks so a runtime integer overflow surfaces its kind to a debugger / the trap-reason
+    /// gate, per `numeric-model.md #Overflow Is Defined`. The divide result is dropped — it never runs
+    /// (the guard traps first); it exists only to name the trap.
+    IfIntegerOverflowEnd,
     /// `i64.add` / `i64.sub` / `i64.mul` — 64-bit integer arithmetic (operands already on the stack).
     I64Add,
     I64Sub,

@@ -2151,3 +2151,14 @@
             (export main)))
   (call   main (: 1 Int64) (: 3 Int64))
   (output (: 1 Int64)))
+
+(case "a runtime-computed Rational crosses the host boundary as its exact value"
+  (doc    "`(Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000))))` — a Rational built
+           from a RUNTIME value (the BigInt product 1e12 does not fold, so `Rational.of-int` of the
+           narrowed result is a runtime Rational, NOT a constant) crosses to the host rendered `1000000000000/1
+           : Rational`. THE runtime-Rational boundary escape (R3c): the compiler routes the nullary-export
+           Rational result through the runtime `value-encode` walker (a `Shape::Rational` descriptor, tag
+           18), which reads the 2-BigInt-handle node and formats the `num/den` name leaf — the same value
+           form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
+  (input  (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
+  (output (: 1000000000000/1 Rational)))

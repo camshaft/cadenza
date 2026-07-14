@@ -645,6 +645,7 @@ mod wasm_abi {
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),
             op("SELECT", Instruction::Select),
+            op("DROP", Instruction::Drop),
             op("BLOCK", Instruction::Block(wasm_encoder::BlockType::Empty)),
             op("LOOP", Instruction::Loop(wasm_encoder::BlockType::Empty)),
             op("BR", Instruction::Br(0)),

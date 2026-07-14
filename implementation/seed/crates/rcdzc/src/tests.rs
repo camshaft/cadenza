@@ -701,6 +701,33 @@ fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::V
     func.call(&mut store, args, &mut results).is_err()
 }
 
+/// The trap REASON of a call that traps — the `wasmtime::Trap` code's `Display` (`integer overflow`,
+/// `integer divide by zero`, `unreachable`, …), or `None` if the call returned normally / errored
+/// without a `Trap` in the chain. Lets a test assert not just THAT a call traps but WHY: an integer
+/// overflow guard must surface a DISTINGUISHABLE "integer overflow", not a reasonless "unreachable".
+fn call_trap_reason(
+    component_bytes: &[u8],
+    name: &str,
+    args: &[wasmtime::component::Val],
+) -> Option<String> {
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let engine = Engine::default();
+    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let func = instance.get_func(&mut store, name).expect("export present");
+    let mut results = [Val::S64(0)];
+    match func.call(&mut store, args, &mut results) {
+        Ok(()) => None,
+        Err(e) => e.downcast_ref::<wasmtime::Trap>().map(|t| t.to_string()),
+    }
+}
+
 // ── value-heap H2b: a program that IMPORTS the runtime, run COMPOSED with it ─────────────────────
 //
 // A tuple built and projected at run time lowers to the heap ops (`arr-alloc`/`box-*`/`arr-set`/
@@ -3360,6 +3387,39 @@ fn runtime_addition_traps_on_overflow() {
     ));
 }
 
+/// A runtime integer-overflow trap surfaces the DISTINGUISHABLE "integer overflow" reason, not a
+/// reasonless "unreachable". The arithmetic overflow guards + narrow range-checks emit
+/// `Lir::IfIntegerOverflowEnd` (an `i32.div_s` of `i32::MIN / -1` — the one wasm op that traps as
+/// "integer overflow"), so a debugger / the trap-reason gate can tell an overflow from any other trap.
+/// Covers a full-width add's machine guard AND a narrow width's range-check.
+#[test]
+fn a_runtime_overflow_trap_names_integer_overflow() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Full-width add — the machine overflow guard.
+    let add = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))",
+    )))
+    .expect("compile");
+    let add_reason = call_trap_reason(&add, "add", &[Val::S64(i64::MAX), Val::S64(1)])
+        .expect("the overflowing add must trap");
+    assert!(
+        add_reason.contains("integer overflow"),
+        "a full-width add overflow must name integer overflow, not unreachable; got {add_reason:?}"
+    );
+    // Narrow width (Int8) — the range-check on the exact result. `100 + 100 = 200 > 127`.
+    let narrow = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (f (: a Int8) (: b Int8)) (+ a b)) (export f))",
+    )))
+    .expect("compile");
+    let narrow_reason = call_trap_reason(&narrow, "f", &[Val::S8(100), Val::S8(100)])
+        .expect("the overflowing narrow add must trap");
+    assert!(
+        narrow_reason.contains("integer overflow"),
+        "a narrow-width overflow must name integer overflow; got {narrow_reason:?}"
+    );
+}
+
 /// A doubling add `(+ a a)` uses the collapsed single-xor overflow guard (`(r^a)<0`); its VALUE and TRAP
 /// behavior must match the general two-operand add exactly.
 #[test]
@@ -5631,25 +5691,27 @@ mod runtime_ops {
         // cannot arise — the narrow-signed range-check is dead (just `i32.div_s`, no comparison/trap).
         let c = lir("(: x Int8)", "(/ x 3)");
         assert!(
-            c.contains(&Lir::I32DivS) && !c.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            c.contains(&Lir::I32DivS) && !c.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a narrow div by a non-(-1) constant drops its range-check; got {c:?}"
         );
         // A divisor whose range excludes -1 (`(& y 7)` ∈ [0,7]) likewise — the ÷0 native trap stays.
         let masked = lir("(: x Int8) (: y Int8)", "(/ x (& y 7))");
         assert!(
-            !masked.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !masked
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a narrow div by a range-excludes-(-1) divisor drops its range-check; got {masked:?}"
         );
         // SAFETY: a runtime divisor (could be -1) KEEPS the range-check.
         let open = lir("(: x Int8) (: y Int8)", "(/ x y)");
         assert!(
-            open.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            open.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a runtime divisor keeps the range-check; got {open:?}"
         );
         // SAFETY: divisor IS -1 → keep (MIN_8 / -1 overflows).
         let neg1 = lir("(: x Int8)", "(/ x -1)");
         assert!(
-            neg1.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            neg1.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a -1 divisor keeps the range-check; got {neg1:?}"
         );
 
@@ -5704,13 +5766,15 @@ mod runtime_ops {
         let masked = lir("(: x Int8) (: d Int8)", "(/ (& x 7) d)");
         assert!(
             masked.contains(&Lir::I32DivS)
-                && !masked.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+                && !masked
+                    .iter()
+                    .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a nonneg dividend needs no MIN/-1 range-check; got {masked:?}"
         );
         // SAFETY: an unknown-sign dividend with a runtime divisor KEEPS the check.
         let bare = lir("(: x Int8) (: d Int8)", "(/ x d)");
         assert!(
-            bare.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            bare.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an unknown-sign dividend keeps the range-check; got {bare:?}"
         );
         // VALUE/TRAP PARITY. Nonneg dividend: correct quotients, ÷0 still traps, and `a / -1 = -a` fits.
@@ -6536,7 +6600,7 @@ mod runtime_ops {
         };
         let guards = |c: &[Lir]| {
             c.iter()
-                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .filter(|i| matches!(i, Lir::IfIntegerOverflowEnd))
                 .count()
         };
         // A bool-materialized `(if c 1 0)` is [0,1] → `* 5` ∈ [0,5], `+ 5` ∈ [5,6] — NO guard (Int64).
@@ -6664,7 +6728,7 @@ mod runtime_ops {
         };
         let guards = |c: &[Lir]| {
             c.iter()
-                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .filter(|i| matches!(i, Lir::IfIntegerOverflowEnd))
                 .count()
         };
         // Masked binding used twice: [0,255] flows through `y`, both `+` and `*` shed their guards.
@@ -6746,7 +6810,7 @@ mod runtime_ops {
         };
         let guards = |c: &[Lir]| {
             c.iter()
-                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .filter(|i| matches!(i, Lir::IfIntegerOverflowEnd))
                 .count()
         };
         // `%10`∈[-9,9] → *5∈[-45,45] ⊆ Int8; `%100`∈[-99,99] → +1∈[-98,100] ⊆ Int8. No guard.
@@ -6936,7 +7000,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            !elided.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !elided
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the underflow guard on (- n 1) under n>0 is dead and must be elided, got: {elided:?}"
         );
         // CONTRAST: `(+ n 1)` under `n ≥ 1` CAN overflow (n = MAX), so its guard is KEPT.
@@ -6945,7 +7011,7 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            kept.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            kept.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
         );
         // VALUE + TRAP parity. The elided-guard function computes correctly and never falsely traps:
@@ -6984,7 +7050,7 @@ mod runtime_ops {
         assert!(
             !else_refine
                 .iter()
-                .any(|i| matches!(i, Lir::IfUnreachableEnd)),
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the else-branch of (< n 1) knows n>=1, so (- n 1) sheds its guard, got: {else_refine:?}"
         );
         assert_eq!(
@@ -7026,13 +7092,13 @@ mod runtime_ops {
                 .code
         };
         // `(if (= x 5) (+ x 1) 0)` — the `+ x 1` under `x == 5` cannot overflow → its guard (an
-        // `IfUnreachableEnd` round-trip) is elided.
+        // `IfIntegerOverflowEnd` round-trip) is elided.
         let guard = select(
             "(module m (def (f (: x Int64)) (if (= x 5) (+ x 1) 0)) (def (main) 0) (export main))",
             "f",
         );
         assert!(
-            !guard.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !guard.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "(+ x 1) under x==5 sheds its overflow guard, got: {guard:?}"
         );
         // `(if (= x 5) (if (> x 3) 1 2) 0)` — the inner `(> x 3)` is decided true by `x == 5`: only the
@@ -7440,7 +7506,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            !and_sub.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !and_sub
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "n in [1,99] proves (- n 1) cannot underflow — guard elided, got: {and_sub:?}"
         );
         let and_add = select(
@@ -7448,7 +7516,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            !and_add.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !and_add
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "n in [1,99] proves (+ n 1) cannot overflow — guard elided, got: {and_add:?}"
         );
         // `or` ELSE branch refines the same way (De Morgan).
@@ -7457,7 +7527,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            !or_else.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !or_else
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the else of (or (< n 1)(> n 99)) knows n in [1,99] — guard elided, got: {or_else:?}"
         );
         // SOUNDNESS — the WRONG polarity does NOT refine: `(or (> n 0) (< n -100))` in the THEN branch is
@@ -7467,7 +7539,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            or_then.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            or_then
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an or in the THEN branch gives no single-variable bound — guard MUST be kept, got: {or_then:?}"
         );
         // VALUE + TRAP parity. Bounded-range cases compute; the wrong-polarity case still traps at MIN.
@@ -7550,7 +7624,9 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            !refined.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !refined
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "n==5 in the literal arm proves (- n 1) cannot underflow — guard elided, got: {refined:?}"
         );
         // SOUNDNESS: the WILDCARD body `(- n 1)` is NOT refined (n unknown), so its guard is KEPT.
@@ -7559,7 +7635,7 @@ mod runtime_ops {
             "f",
         );
         assert!(
-            wild.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            wild.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the wildcard arm's (- n 1) sees no refinement — guard MUST be kept, got: {wild:?}"
         );
         // VALUE + TRAP parity.
@@ -12941,6 +13017,56 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unreferenced_or_recursive_callees_wrong_argument_names_the_function_and_parameter() {
+        // A wrong-typed argument whose parameter the body does NOT reference (`(h true)` where `h`
+        // ignores `a`), or whose callee is RECURSIVE (its reduction declines), is reported by the
+        // CALL-SITE unify (step 1), not the synthesized-annotation path (step 2, which is silent for
+        // these). Step 1 used to emit the raw "type mismatch: Int64 and Bool must be the same type here"
+        // — the same defect a referenced-param arg reads as "this argument is a Bool…" (M106). Now step 1
+        // gives the SAME argument phrasing AND, having the call head + parameter in hand (step 2 does
+        // not), names them: "the argument for `h`'s parameter `a` is a Bool, but a value of type Int64 is
+        // expected here".
+        // UNREFERENCED parameter — the body `0` never uses `a`.
+        let unref = reject_full("(module m (def (h (: a Int64)) 0) (def (g) (h true)) (export g))")
+            .expect("a wrong argument to an unreferenced parameter rejects");
+        assert!(
+            unref
+                .message
+                .contains("the argument for `h`'s parameter `a` is a Bool, but a value of type Int64 is expected here"),
+            "names the function + parameter, argument phrasing: {}",
+            unref.message
+        );
+        assert!(
+            !unref.message.contains("must be the same type here"),
+            "no raw unify wording: {}",
+            unref.message
+        );
+        // RECURSIVE callee — the reduction declines, so step 2 never runs; step 1 is the sole reporter.
+        let rec = reject_full(
+            "(module m (def (h (: a Int64)) (if (< a 0) 0 (h (- a 1)))) (def (g) (h true)) (export g))",
+        )
+        .expect("a wrong argument to a recursive callee rejects");
+        assert!(
+            rec.message
+                .contains("the argument for `h`'s parameter `a` is a Bool"),
+            "a recursive callee's wrong argument is named too: {}",
+            rec.message
+        );
+        // The sum-wrap fix still rides along at the call site (an unreferenced Option parameter).
+        let wrap =
+            reject_full("(module m (def (h (: o (Option Int64))) 0) (def (g) (h 5)) (export g))")
+                .expect("a bare payload to an unreferenced Option parameter rejects");
+        assert!(
+            wrap.message
+                .contains("the argument for `h`'s parameter `o`")
+                && wrap.fix.as_ref().map(|f| f.kind) == Some(crate::abi::FixKind::Wrap),
+            "the sum-wrap fix rides along the named call-site message: {} / {:?}",
+            wrap.message,
+            wrap.fix
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -13145,6 +13271,31 @@ mod match_engine {
             "UInt64.max renders exactly: {}",
             w.message
         );
+    }
+
+    #[test]
+    fn a_float_literal_that_overflows_float32_is_out_of_range() {
+        // The float analogue of an out-of-range integer literal: `(: 1.0e300 Float32)` is finite as the
+        // default `Float64` but rounds to `±inf` in `Float32` (a value with no written form), so CDZ0302 —
+        // it was silently accepted before (only the `Float64` bare-literal overflow was caught). Fires at
+        // BOTH a value annotation and a let-binder annotation (the shared `literal_width_fault`).
+        for src in [
+            "(module m (def (main) (: 1.0e300 Float32)) (export main))",
+            "(module m (def (main) (let (((: x Float32) 1.0e300)) x)) (export main))",
+        ] {
+            let d = reject_full(src).expect("a Float32-overflowing literal is rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+            assert!(
+                d.message.contains("Float32") && d.message.contains("infinity"),
+                "names Float32 + the overflow-to-inf cause: {}",
+                d.message
+            );
+        }
+        // NO false positive: a value that FITS Float32, and the SAME magnitude annotated Float64 (its
+        // finite range holds it), both compile clean.
+        assert!(reject_full("(module m (def (main) (: 3.0e38 Float32)) (export main))").is_none());
+        assert!(reject_full("(module m (def (main) (: 1.5 Float32)) (export main))").is_none());
+        assert!(reject_full("(module m (def (main) (: 1.0e300 Float64)) (export main))").is_none());
     }
 
     #[test]
@@ -31513,6 +31664,44 @@ mod stage1 {
             matches!(typeval_of(&mut db, int_occ), Some(Ty::Int(_))),
             "Int64 still denotes the Int64 type, not the kind"
         );
+    }
+
+    #[test]
+    fn a_generic_def_takes_the_type_as_a_type_valued_parameter() {
+        // Type-valued-parameter vertical, T2+T3 (09-functions "a generic definition takes the type as a
+        // type-valued parameter"): the spec's generic model — `unbox` takes `(: t Type)` (a type-valued
+        // parameter, the kind of types) and `(: b (Box t))` (an EARLIER param `t` visible in a LATER
+        // param's annotation — in-order signature scoping), and the caller passes the concrete type as an
+        // ordinary argument. `(Box t)` reduces to the generic `(Box ?t)` (the type-valued param → a stable
+        // type var), which the call site monomorphizes per passed type; the type argument is
+        // compile-time-only (erased). Uses the value heap (the String), so it SKIPS if the store is
+        // absent. `(unbox Int64 (Box.Mk 40))` = 40, `(unbox String (Box.Mk "hi"))` = "hi" (byte-len 2);
+        // 40 + 2 = 42.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Box (Mk a)) \
+               (def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v))) \
+               (def (main) (+ (unbox Int64 (Box.Mk 40)) \
+                              (String.byte-len (unbox String (Box.Mk \"hi\"))))) (export main))",
+        )))
+        .expect("a generic def with a type-valued parameter compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping type-valued-parameter run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "42",
+                "unbox monomorphized at Int64 (40) + String (byte-len 2)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
     }
 
     #[test]

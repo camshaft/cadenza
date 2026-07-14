@@ -37,6 +37,7 @@ pub mod op {
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;
     pub const SELECT: u8 = 0x1b;
+    pub const DROP: u8 = 0x1a;
     pub const BLOCK: u8 = 0x02;
     pub const LOOP: u8 = 0x03;
     pub const BR: u8 = 0x0c;
