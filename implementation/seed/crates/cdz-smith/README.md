@@ -55,6 +55,19 @@ from the crate directory, not with `-p` from the repo root.
   hang. No extra toolchain; same findings format. Used automatically when nightly/cargo-bolero
   are absent.
 
+### Fork-mode phantom artifacts (expected, harmless)
+
+Under `-fork=1`, libFuzzer occasionally saves a `crash-<hash>` artifact that is NOT a real fault: a
+fork child killed by the outer backstop or by memory pressure (AddressSanitizer, cargo-bolero's
+default, roughly triples RSS) is recorded as a "crash" against whatever tiny input it last logged.
+These are recognizable — trivial inputs, correlated with low `exec/s`, and they do NOT reproduce
+even under the same instrumented binary. `triage-artifacts` **replays every artifact and files only
+those that reproduce**, so a phantom is counted and discarded, never filed. `fuzz-cycle.sh` minimizes
+them by (a) letting libFuzzer exit on its own `-T` budget with a wide outer backstop, and (b) setting
+`ASAN_OPTIONS` to disable the stack-use-after-return machinery that false-positives on the compiler's
+hand-managed 64 MB guard-stack thread. rcdzc is pure safe Rust, so ASan on the compile path can only
+false-positive anyway; it's kept solely because SanitizerCoverage links against its runtime.
+
 ## Use
 
 ```sh

@@ -1,9 +1,26 @@
 # DESIGN: recursive-generic monomorphization (instantiate a recursive def more than once)
 
-Status: PHASES 0–2 LANDED — a recursive generic function is now instantiated once per distinct
-concrete type, end to end (`loopn` at Int64 + String → two functions, runs to 42; same-type calls
-dedup to one). Gate 1641→1643 (+2 corpus), 1225→1227 rcdzc tests, 0 fail. REMAINING follow-ons at the
-bottom (transitive genericity, mutual/module/do-local groups).
+Status: PHASES 0–2 + TRANSITIVE GENERICITY LANDED — a recursive generic function is instantiated once
+per distinct concrete type, end to end, INCLUDING a generic function that calls another generic and
+threads its param through (`loopn` at Int64+String → two fns; `wrap→idr` and a three-level `top→mid→idr`
+chain at Bool+Int64 → four/six fns; same-type calls dedup). 0 fail. REMAINING follow-ons at the bottom
+(mutual-recursion groups, module/do-local generics, explicit RecursionBound backstop).
+
+## Transitive genericity (LANDED after the initial phases) — generic-calls-generic
+
+A generic recursive fn (`wrap`) that CALLS another generic (`idr`) threading its own param — `wrap`'s
+result IS `idr`'s result IS the threaded param's type — must itself be generic. Two fixes, both in
+`infer.rs`:
+- **Detection propagates through the call graph** (`call_site_distinct_arg_types`): when an argument
+  types as a `Var`/`Any` but is ANOTHER def's parameter (`arg_is_other_def_param`), that caller-param's
+  own distinct-type spread flows through (`seed_transitive`-guarded against a cycle). So `idr`, called at
+  ONE syntactic site with `wrap`'s generic `y`, inherits `{Int64,String}` → detected generic.
+- **The param↔result var connection survives** (`apply_scheme_to_args`): for a GENERIC callee scheme,
+  seed the instantiation `Fresh` counter PAST every var the args carry and SKIP the arg `freshen_free` —
+  so a threaded bare param-var arg flows through the unify untouched and the callee's result var (equal
+  to its param var) resolves to the caller's param var. Without this a chain decoupled `(-> Int64 (-> ?a
+  ?a))` into `(-> Int64 (-> ?a ?b))` → "looped function result has no machine rep". A MONOMORPHIC scheme
+  keeps the exact old freshen path (byte-identical).
 
 ## What landed (the mechanism, as built)
 
@@ -256,12 +273,9 @@ specialization, since each already registers internal defs.
 
 ## Remaining follow-ons (clean rejects today, NOT regressions — each a CDZ0203 Todo, never a miscompile)
 
-1. **Transitive genericity.** A generic function whose RESULT is generic and that CALLS another generic
-   (`(def (wrap m y) (if (= m 0) (idr 2 y) (wrap (- m 1) y)))` — `wrap`'s result = `idr`'s result = `y`'s
-   type) currently solves `wrap`'s result to `Int64` (the inner `idr`, called once, seeds mono before
-   `wrap` generalizes). Genericity must propagate through the call graph: a generic callee called only
-   from a generic caller should stay generic until the OUTERMOST concrete call site. Direct single-level
-   generics (the delivered case) work; a two-level chain declines CDZ0203.
+1. ✅ **Transitive genericity — LANDED** (see the section near the top). A generic-calls-generic chain
+   (`wrap→idr`, and the three-level `top→mid→idr`) now propagates genericity through the call graph and
+   keeps the param↔result var connected, so both/all functions monomorphize per concrete type.
 2. **Mutual-recursion groups.** A mutually-recursive generic group should specialize as a GROUP at the
    connected instantiation (reuse the `register_callable` group paths). Untested; likely declines.
 3. **Module-member / do-local generics.** Verify the `register_callable` / `register_do_local_callables`
