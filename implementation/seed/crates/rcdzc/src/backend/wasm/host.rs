@@ -226,6 +226,15 @@ pub struct ExternImport {
 /// `Core::ExternCall` names, in first-encountered order, deduped by `(interface, op)`. The peer analogue
 /// of [`collect_host_imports`]; the caller runs it over `layout.order`. Descends every sub-position so a
 /// call under a branch is still imported.
+///
+/// A SCALAR value crossing to/from a peer crosses by its component-model scalar representation (`abi_val_type`),
+/// NOT as a handle — only a runtime-owned compound would carry a `value` handle (X5, declined here). And the
+/// peer op's boundary signature is MONOMORPHIC: it is the concrete `(-> P… R)` the `(extern "iface" (op …))`
+/// declaration names, so a consumer binds a peer's export at the fixed instantiation the peer emitted.
+//= spec/contracts/component-abi.md#cadenza-components-composed-against-a-shared-runtime-exchange-values-as-handles
+//# A scalar value that crosses between such components MUST cross by its component-model scalar representation and not as a handle, so that only a value the runtime owns is carried by handle and a scalar carries no runtime dependency.
+//= spec/contracts/component-abi.md#the-exchanged-signature-is-monomorphic
+//# A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
 pub fn collect_extern_imports(db: &mut Db, id: StructId, out: &mut Vec<ExternImport>) {
     match core_of(db, id) {
         Core::ExternCall {
