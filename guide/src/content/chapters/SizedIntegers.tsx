@@ -78,20 +78,40 @@ export default function SizedIntegers() {
       <H2>Your turn</H2>
       <Exercise
         id="sized-integers:1"
-        prompt={<>Convert <C>127</C> into a <C>UInt8</C> with the checked conversion — the result is <C>127</C>.</>}
-        starter={`(UInt8.of ?)`}
-        solution={`(UInt8.of 127)`}
-        expected="127"
-        hint={<><C>127</C> is well within a byte's 0–255 range, so <C>.of</C> accepts it.</>}
+        prompt={
+          <>
+            Signed widths hold negatives. Convert <C>-100</C> into an <C>Int8</C> (range −128–127) with the
+            checked <C>.of</C> — the result is <C>-100</C>.
+          </>
+        }
+        starter={`(Int8.of ?)`}
+        solution={`(Int8.of (- 0 100))`}
+        expected="-100"
+        hint={
+          <>
+            Write the value <C>-100</C> as <C>(- 0 100)</C>; it's inside <C>Int8</C>'s −128–127 range, so{" "}
+            <C>Int8.of</C> accepts it.
+          </>
+        }
       />
 
       <Exercise
         id="sized-integers:2"
-        prompt={<>Take the low 8 bits of <C>258</C> with <C>wrap</C> — the answer is <C>2</C> (258 − 256).</>}
-        starter={`(UInt8.wrap ?)`}
-        solution={`(UInt8.wrap 258)`}
-        expected="2"
-        hint={<><C>wrap</C> discards everything above 8 bits, so <C>258</C> becomes <C>258 − 256</C>.</>}
+        prompt={
+          <>
+            This won't compile: <C>(+ (UInt8.of 1) (UInt16.of 300))</C> mixes two widths. Fix it by making
+            the first operand a <C>UInt16</C> too, so both sides match and the sum is <C>301</C>.
+          </>
+        }
+        starter={`(+ (UInt?.of 1) (UInt16.of 300))`}
+        solution={`(+ (UInt16.of 1) (UInt16.of 300))`}
+        expected="301"
+        hint={
+          <>
+            Widths don't mix, so convert the <C>1</C> at the same width as the other operand —{" "}
+            <C>UInt16</C>. Then <C>1 + 300 = 301</C>.
+          </>
+        }
       />
     </article>
   );

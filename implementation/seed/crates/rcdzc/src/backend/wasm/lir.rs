@@ -453,6 +453,8 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // OPAQUE — its byte meaning belongs to the runtime; the program threads it without dereferencing.
         //= spec/contracts/component-abi.md#a-runtime-value-crosses-as-an-opaque-handle
         //# A runtime value that crosses between a program and the value-heap runtime MUST cross as an opaque handle whose interpretation belongs solely to the runtime, so that the value's byte representation is the runtime's internal concern and never a layout the program or the host depends on.
+        //= spec/contracts/component-abi.md#a-runtime-value-crosses-as-an-opaque-handle
+        //# The program MUST NOT dereference or interpret a runtime handle, so that the acyclic reference-counted heap the runtime owns is not aliased by another linear memory and the handle is a capability-free token rather than a pointer into shared state.
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
         Ty::Sum { .. } => None,

@@ -10049,6 +10049,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
+        // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
+        // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.
+        // It now names the intended keyword AND carries a REPLACE fix on the head occurrence, the same
+        // closed-set "did you mean?"-with-fix the export-name / pragma-key sites give (the candidate pool
+        // is `TOP_LEVEL_KEYWORDS`, so the suggestion can never name a keyword the grammar rejects). This is
+        // a code-less DECLINE (a top-level unbound head declines the whole program), so it is found by
+        // message, not code.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("at the top level"))
+                .expect("a top-level unknown head is reported")
+        };
+        let d = find("(module m (def (f) 1) (exprot f))");
+        assert!(
+            d.message.contains("did you mean `export`?"),
+            "names the keyword, not a value def: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "export", "swaps the head to the keyword");
+        // `deff` → `def` (the head is the FIRST form, not the export).
+        let d2 = find("(module m (deff (f) 1) (export f))");
+        assert!(d2.message.contains("did you mean `def`?"), "{}", d2.message);
+        assert_eq!(d2.fix.as_ref().map(|f| f.replacement.as_str()), Some("def"));
+        // NO OVERREACH: an unknown top-level head that is NOT close to any keyword (`improt`, `frobnicate`)
+        // keeps the defined-name hint and carries NO keyword fix — a baseless keyword swap is worse than
+        // none.
+        let far = find("(module m (improt x) (def (f) 1) (export f))");
+        assert!(
+            !far.message.contains("did you mean `"),
+            "no baseless keyword suggestion: {}",
+            far.message
+        );
+        assert!(
+            far.fix.is_none(),
+            "no fix for a non-keyword head: {:?}",
+            far.fix
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
@@ -14318,6 +14362,30 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tuple_threading_accumulator_fills_its_hole_from_the_call_site() {
+        // `go` THREADS a tuple accumulator `t`: the body pins `t`'s FIRST field (`(+ (. t 0) n)` → Int64)
+        // but reconstructs the second UNCHANGED (`(. t 1)`), so the body alone leaves `t = (Tuple Int64
+        // Any)` — the second field is an `Any` HOLE (unconstrained, grounded to `Any` not a free `Var`).
+        // Before, this declined "projecting a tuple element of type Any needs the value heap". Call-site
+        // seeding now FILLS the hole: `main`'s `(go 3 (tuple 0 0))` gives `(Tuple Int64 Int64)`, and
+        // `fill_holes` merges the concrete second field in while keeping the body-pinned first — a plain
+        // unify could not (an `Any` absorbs). `go 3 (tuple 0 0)` accumulates 0+3+2+1 = 6 in field 0.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1))))) \
+               (def (main) (. (go 3 (tuple 0 0)) 0)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping tuple-threading run");
+            return;
+        };
+        assert_eq!(
+            v, "6",
+            "tuple-threading accumulator with a call-site-filled hole"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
@@ -17955,6 +18023,19 @@ mod diagnostics {
             .expect("an error")
     }
 
+    fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
+        let ast = parse(src);
+        let bytes = crate::codec::encode(&ast);
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        out.diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect()
+    }
+
     #[test]
     fn a_duplicate_record_field_carries_a_delete_the_duplicate_fix() {
         // A record naming a field twice (CDZ0201) now carries the mechanical repair: DELETE the redundant
@@ -18059,6 +18140,48 @@ mod diagnostics {
             "wraps the integer operand in Float64.of-int"
         );
         assert!(!fix.verified, "a coercion is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn an_int_literal_argument_to_a_float_parameter_reports_one_coded_fault_with_a_retype_fix() {
+        // Passing a value to an ANNOTATED parameter is annotation-context: the argument must satisfy the
+        // declared type, exactly as a direct `(: arg T)` does. So a `(g 3)` to a `(: x Float64)` parameter
+        // is the SAME fault a direct `(: 3 Float64)` reports — ONE CDZ0203 carrying the retype fix `3` →
+        // `3.0`. It previously DOUBLE-reported: the call-site arg-unify added a redundant CDZ0301 (no
+        // implicit conversion) at the same span alongside the reduced-body's CDZ0203, because a REFERENCED
+        // parameter's argument is checked by BOTH the arg-unify and the substituted body's synthesized
+        // `(: arg paramtype)` annotation. The arg-unify now DEFERS to the body check for a referenced,
+        // reducible parameter (the authoritative annotation-context report with the actionable fix).
+        let errs = all_errors("(module m (def (g (: x Float64)) x) (def y (g 3)) (export y))");
+        assert_eq!(
+            errs.len(),
+            1,
+            "one fault, not the old CDZ0301+CDZ0203 double: {:?}",
+            errs.iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        let d = &errs[0];
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("make it a float literal"),
+            "carries the annotation-context retype message: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("a retype fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "3.0", "retypes the int literal to a float");
+
+        // An UNREFERENCED parameter (the body ignores `x`) is NOT covered by the body check, so the
+        // arg-unify remains the SOLE reporter — its CDZ0301 still fires (no double, but not dropped either).
+        let ignored = all_errors("(module m (def (g (: x Float64)) 0) (def y (g 3)) (export y))");
+        assert_eq!(
+            ignored.len(),
+            1,
+            "the sole arg-unify report survives when the body ignores the parameter: {:?}",
+            ignored.iter().map(|d| &d.code).collect::<Vec<_>>()
+        );
+        assert_eq!(ignored[0].code.as_deref(), Some("CDZ0301"));
     }
 
     #[test]
@@ -34361,6 +34484,7 @@ mod closure_host_resource {
             params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
             ret_vt: ValType::I64,
             ret_is_bytes: false,
+            ret_template: None,
         }];
 
         let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
@@ -34672,6 +34796,7 @@ mod closure_host_resource {
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I64,
                     ret_is_bytes: false,
+                    ret_template: None,
                 }],
             },
             RtSigGroup {
@@ -34686,6 +34811,7 @@ mod closure_host_resource {
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I32,
                     ret_is_bytes: false,
+                    ret_template: None,
                 }],
             },
         ];
@@ -35159,6 +35285,60 @@ mod closure_host_resource {
             err.message.contains("ask.ask"),
             "the rejection should name the escaping effect operation, got: {}",
             err.message
+        );
+    }
+
+    /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler
+    /// emits yet — its result was collected as `result: None` (indistinguishable from a Unit result), then
+    /// selection hit the INTERNAL "not in the host-import set" path, a message documented as "a compiler
+    /// bug" surfacing for a VALID-but-unsupported program. It now declines HONESTLY at emit, naming the
+    /// operation, the offending position (`result`), the type, and the feature limitation — never the
+    /// internal-invariant message. (A scalar/unit result stays on the emit path — verified separately.)
+    #[test]
+    fn a_host_op_with_a_string_result_declines_with_an_honest_message() {
+        use crate::testkit::parse;
+        // A host op with a STRING RESULT whose value is CONSUMED to a scalar (so the EXPORT is a scalar, and
+        // the program flows through the main `emit` path, not the value-escape resource path): `String.len`
+        // of the host's String result. The op still has no scalar boundary form for its String result.
+        let src = "(do (effect ask (op greet (-> Unit String))) \
+                   (def (main) (host (ask) (String.byte-len (ask.greet)))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a host op returning a String has no boundary form yet — must decline");
+        assert!(
+            err.message.contains("greet")
+                && err.message.contains("result")
+                && err.message.contains("String")
+                && err.message.contains("no component"),
+            "expected an honest feature-limitation decline naming the op/position/type, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("not in the host-import set"),
+            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
+            err.message
+        );
+        // The SAME honest decline covers a String-result op used AS THE EXPORT (routes to the value-escape
+        // path, `emit_runtime_resource`) — the representability guard is hoisted to the TOP of `emit`, before
+        // any escape/closure/main dispatch, so BOTH routings decline honestly (not the internal message).
+        let as_export = "(do (effect ask (op greet (-> Unit String))) \
+                   (def (main) (host (ask) (ask.greet))) (export main))";
+        let err2 = crate::compile::compile_component(&crate::codec::encode(&parse(as_export)))
+            .expect_err("a host op returning a String, used as the export, must also decline");
+        assert!(
+            err2.message.contains("greet") && err2.message.contains("no component"),
+            "the used-as-export routing must also decline honestly, got: {}",
+            err2.message
+        );
+        assert!(
+            !err2.message.contains("not in the host-import set"),
+            "the used-as-export routing must NOT surface the internal message, got: {}",
+            err2.message
+        );
+        // A SCALAR-result host op still compiles (the honest decline must not over-reject).
+        let ok = "(do (effect ask (op ask (-> Unit Int64))) \
+                  (def (main) (host (ask) (+ (ask.ask) 1))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect(
+            "a scalar-result host op still compiles (the honest decline is result-type-gated)",
         );
     }
 

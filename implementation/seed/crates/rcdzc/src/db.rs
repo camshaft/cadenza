@@ -2431,6 +2431,14 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
 const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect"];
 
+/// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
+/// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
+/// (`(exprot f)` → `export`, `(deff …)` → `def`). A superset of [`TOP_LEVEL_FORMS`]: it adds `module`
+/// (a grammar head, not in the scan set) and `pragma` (a directive validated separately), because a user
+/// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
+/// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
+pub const TOP_LEVEL_KEYWORDS: &[&str] = &["def", "export", "type", "effect", "module", "pragma"];
+
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`
 /// (a declaration parameter's positional slot, planted by `infer::decode_payload_template`) with `args[i]`
 /// — the type the sum was instantiated at. A `Var(i)` with `i` past `args` (a malformed/under-applied

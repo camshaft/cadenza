@@ -468,7 +468,12 @@ pub enum Core {
     /// for a one-payload variant, or a tuple handle built from the payloads for a multi-payload variant.
     /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`. This is what a
     /// constructor application produces: applying `Some`/`None`/… yields a Sum value tagged with the
-    /// variant's discriminant:
+    /// variant's discriminant. The emitter carries NO source-level name into the value heap: a sum is a
+    /// discriminated payload (`disc` + boxed value) and a record is a positional `arr-alloc` product (its
+    /// field NAMES are the compile-time `Symbol` keys, never stored), so the runtime holds only structure
+    /// and data and the position→name association is compile-time knowledge:
+    //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
+    //# The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a discriminated payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed

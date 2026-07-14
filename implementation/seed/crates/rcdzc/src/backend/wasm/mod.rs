@@ -166,6 +166,25 @@ pub fn emit(
     if let Some(reject) = kebab_export_collision(layout) {
         return Err(reject);
     }
+    // HOST-OP BOUNDARY-REPRESENTABILITY guard — hoisted BEFORE every emit path (escape / closure / main),
+    // so an unsupported host op declines HONESTLY regardless of which path the export's result routes to.
+    // A host op with a DETERMINED String/compound RESULT (or a determined compound ARGUMENT) has no
+    // boundary form this compiler emits yet; without this, such an op collected `result: None` and hit
+    // `select`'s internal "not in the host-import set" message (documented "a compiler bug") — and a
+    // String-RESULT op used AS the export routed to `emit_runtime_resource` (the value-escape path) and hit
+    // it THERE, ahead of the post-collection check further down. Checking here covers all paths uniformly.
+    // (`ty_undetermined`-gated inside, so a fold-synthesized `Ty::Any` HostCall is not falsely flagged.)
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
+            return Err(Reject::decline(format!(
+                "the host operation `{op}` has a {pos} of type `{ty}`, which has no component \
+                 boundary form this compiler emits yet (only scalar and unit results, and \
+                 scalar/string/unit arguments, cross the host boundary; a string or compound result \
+                 is a later increment)"
+            )));
+        }
+    }
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
@@ -388,6 +407,9 @@ pub fn emit(
     // selection (it fixes the host-op call index a `Core::HostCall` resolves to) and it shifts the
     // defined-func index space. This increment supports HOST-ONLY programs: a program mixing host + value-
     // heap runtime imports declines below (the two index spaces compose in a later increment).
+    // The per-program HOST-import set (a `Core::HostCall`), first-encountered order. An unrepresentable
+    // host-op boundary type was already declined honestly at the top of `emit` (the hoisted guard), so
+    // every op reaching here has an emittable scalar/unit/string signature.
     let mut host_imports: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
@@ -2626,6 +2648,7 @@ fn emit_roundtrip_resource(
         abi_params: Vec<envelope::ConsumeParamAbi>,
         result_byte: u8,
         ret_is_bytes: bool,
+        ret_template: Option<crate::lower::ValueFormTemplate>,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
     for p in &producers {
@@ -2691,8 +2714,15 @@ fn emit_roundtrip_resource(
             c.result.strip_nominal(),
             crate::ty::Ty::Bytes | crate::ty::Ty::String
         );
-        let consumer_result_byte = if ret_is_bytes {
-            0 // unused by the byte-rope path; the consumer returns list<u8>
+        // A fixed-shape COMPOUND consumer result crosses as `list<u8>` carrying the value form (its own
+        // template). `None` for byte-rope / scalar.
+        let ret_template = if ret_is_bytes || closure_boundary_byte(&c.result).is_some() {
+            None
+        } else {
+            crate::lower::runtime_value_form_template(c.result.strip_nominal())
+        };
+        let consumer_result_byte = if ret_is_bytes || ret_template.is_some() {
+            0 // unused by the list-returning paths; the consumer returns list<u8>
         } else {
             closure_boundary_byte(&c.result).ok_or_else(|| {
                 Reject::decline(format!(
@@ -2709,6 +2739,7 @@ fn emit_roundtrip_resource(
             abi_params,
             result_byte: consumer_result_byte,
             ret_is_bytes,
+            ret_template,
         });
     }
     // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
@@ -2757,6 +2788,7 @@ fn emit_roundtrip_resource(
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
     let any_bytes = consume_specs.iter().any(|c| c.ret_is_bytes);
+    let any_compound = consume_specs.iter().any(|c| c.ret_template.is_some());
     let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -2765,6 +2797,11 @@ fn emit_roundtrip_resource(
             // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
             used.insert("bytes-len");
             used.insert("bytes-get");
+        }
+        if any_compound {
+            // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
+            // `get-bool` (int + nested `arr-get` already covered).
+            used.insert("get-bool");
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -2809,6 +2846,7 @@ fn emit_roundtrip_resource(
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
+                ret_template: c.ret_template.clone(),
             })
         })
         .collect::<Result<_, Reject>>()?;
@@ -2849,7 +2887,8 @@ fn emit_roundtrip_resource(
             name: c.name.clone(),
             params: c.abi_params.clone(),
             result_byte: c.result_byte,
-            ret_is_bytes: c.ret_is_bytes,
+            // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
+            ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
         })
         .collect();
     let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
@@ -3163,6 +3202,9 @@ fn emit_distinct_sig_roundtrip_resource(
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
+                // A COMPOUND result on the DISTINCT-SIG round-trip is a later widening; that path's consumer
+                // result stays scalar/byte-rope (its classification never builds a template).
+                ret_template: None,
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),

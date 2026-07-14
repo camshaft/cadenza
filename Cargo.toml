@@ -19,9 +19,17 @@ members = ["implementation/seed/crates/*", "xtask"]
 # `cdz-runtime` (the wasm value-heap) and `cdz-wasm` (the browser-facing wasm-bindgen wrapper for the
 # interactive guide) are STANDALONE workspaces of their own — excluded so the native seed build/gate
 # never compiles a wasm-only crate. Both only ever build for wasm32-unknown-unknown.
+#
+# `cdz-smith` (the fuzzer) is excluded because its `bolero` dependency chain transitively pins
+# `toml_datetime = "=0.6.3"` (via `proc-macro-crate 2.0.2`), which is incompatible with the
+# `toml_edit` the `toml` surface uses (needs `toml_datetime >= 0.6.8`) — the two cannot co-resolve in
+# one lockfile. cdz-smith is a leaf crate: nothing depends on it and neither xtask nor the gate drive
+# it, so excluding it leaves the build/gate untouched; it still builds standalone (`cargo build` from
+# its own dir) for a fuzzing run.
 exclude = [
     "implementation/seed/crates/cdz-runtime",
     "implementation/seed/crates/cdz-wasm",
+    "implementation/seed/crates/cdz-smith",
 ]
 
 [profile.dev]

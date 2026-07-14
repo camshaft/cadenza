@@ -55,6 +55,20 @@
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
 //# Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
 //!
+//! This binary serialization of the AST IS the program's canonical STORED form — the byte string that
+//! is stored, hashed, and handed to the compiler, never a textual rendering. The compiler's derive path
+//! decodes THESE bytes (`compile` decodes the `ast`-kinded artifact); a textual `.cdz` is only a
+//! projection a tool reads/prints, not the stored program:
+//!
+//= spec/contracts/ast-encoding.md#the-canonical-stored-form-is-the-binary-ast
+//# A Cadenza program's canonical stored form MUST be the binary serialization of its abstract syntax tree.
+//= spec/contracts/ast-encoding.md#the-canonical-stored-form-is-the-binary-ast
+//# A program MUST be stored as its binary AST rather than as a textual rendering.
+//= spec/contracts/ast-encoding.md#the-canonical-stored-form-is-the-binary-ast
+//# A program MUST be hashed as its binary AST rather than as a textual rendering.
+//= spec/contracts/ast-encoding.md#the-canonical-stored-form-is-the-binary-ast
+//# A program MUST be supplied to the compiler as its binary AST rather than as a textual rendering.
+//!
 //! This binary serialization of the AST IS the program's canonical form — one canonical byte form
 //! independent of any textual rendering:
 //!

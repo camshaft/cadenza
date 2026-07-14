@@ -1005,38 +1005,36 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     // DETERMINED argument type constrains (an `Any`/var arg adds nothing), so a well-solved def is
     // byte-identical. Skips a self/recursive call (its args reference this def's own unsolved params —
     // no new information) and is re-entry-guarded by `solving_params`.
+    // The per-position call-site argument types, computed lazily only when a param is still open, then
+    // used in the grounding loop to `fill_holes` each open param.
+    let mut call_seed_arg_tys: Vec<Option<Ty>> = Vec::new();
     if let Some(body) = db.defs[def].body {
-        // A param is "open" if its body-solved type is `Any` OR still CONTAINS a free var — a bare
-        // unsolved param (`Var`) OR a PARTIALLY-solved compound (`(List (Tuple Int64 ?10))`, where the
-        // body pinned the first tuple field but left the second). A call site's concrete argument fills
-        // the remaining holes by unification. (`has_free_var` catches the partial-compound case a bare
-        // `Var`/`Any` match would miss — the assoc-list `xs` whose value field stays open in the body.)
-        let still_open: Vec<usize> = param_binders
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, v))| {
-                let t = subst.apply(v);
-                matches!(t, Ty::Any) || t.has_free_var()
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if !still_open.is_empty() {
-            let arg_tys = call_site_arg_types(db, def, body);
-            for i in still_open {
-                if let Some(Some(at)) = arg_tys.get(i)
-                    && !matches!(at, Ty::Any | Ty::Var(_))
-                {
-                    let (_, pvar) = &param_binders[i];
-                    let _ = crate::unify::unify(&mut subst, pvar, at);
-                }
-            }
+        // A param is "open" if its body-solved type still has a HOLE the body could not pin — a free
+        // `Var` (`has_free_var`) OR an `Any` anywhere (`has_any`; the body grounds an UNCONSTRAINED
+        // position to `Any`, not a `Var`, so a `(. t 1)` the body never uses lands `(Tuple Int64 Any)`).
+        // A call site's concrete argument fills those holes.
+        let any_open = param_binders.iter().any(|(_, v)| {
+            let t = subst.apply(v);
+            t.has_free_var() || t.has_any()
+        });
+        if any_open {
+            call_seed_arg_tys = call_site_arg_types(db, def, body);
         }
     }
 
-    // Ground each parameter: apply the substitution, then default a still-unsolved NUMERIC variable to
-    // the signed-64 integer (a bare literal's default) and leave anything else `Any` (unconstrained).
-    for (binder, var) in param_binders {
-        let solved = subst.apply(&var);
+    // Ground each parameter: apply the substitution, FILL any remaining hole (`Any`/free `Var`) from the
+    // call-site argument type — a plain unify cannot repair an `Any` (`Any` absorbs), so `fill_holes`
+    // merges the determined call-site type into the open positions while keeping the body-pinned parts —
+    // then default a still-unsolved NUMERIC variable to the signed-64 integer (a bare literal's default)
+    // and leave anything else `Any` (genuinely unconstrained — no call site fixed it).
+    for (i, (binder, var)) in param_binders.into_iter().enumerate() {
+        let mut solved = subst.apply(&var);
+        if (solved.has_free_var() || solved.has_any())
+            && let Some(Some(at)) = call_seed_arg_tys.get(i)
+            && !matches!(at, Ty::Any | Ty::Var(_))
+        {
+            solved = solved.fill_holes(at);
+        }
         let grounded = ground_param(solved);
         trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %grounded.render_name(), "A2: solved recursive param");
         db.param_types.insert(binder, grounded);
@@ -3819,9 +3817,22 @@ fn check_application(
         //     (`(: x Bool)`) has a definite type the argument must agree with; a bare parameter types
         //     `Any` (its body-inferred type isn't a signature here) and unifies with anything, so this
         //     catches the annotated-parameter mismatch (case A) precisely, without over-rejecting.
+        //
+        //     A REFERENCED parameter's argument is ALSO checked by step (2): substituting the argument
+        //     into the body puts it under the parameter's SYNTHESIZED `(: arg paramtype)` annotation, whose
+        //     `Annot` check reports the SAME conflict as an annotation-context CDZ0203 — carrying the
+        //     actionable retype/coercion fix (`(: 3 Float64)` → `3.0`), exactly as a direct annotation
+        //     does. That report is the AUTHORITATIVE one (annotation semantics — the arg must satisfy the
+        //     declared type). So a step-(1) unify fault at a param step (2) WILL cover is a REDUNDANT twin
+        //     with a different, fix-less code (CDZ0301 for a numeric mix) — the M58 dual-producer shape,
+        //     but across codes so `dedup_faults`'s (code, node) rule can't collapse it. BUFFER step (1)'s
+        //     faults with their param index and flush only those step (2) will NOT cover (an UNREFERENCED
+        //     param — step (2) is silent — or a callee whose reduction declines, e.g. recursion). The
+        //     "covered" test mirrors step (3)'s exactly (`reduced_ok && param_is_referenced`).
+        let mut arg_faults: Vec<(usize, Reject)> = Vec::new();
         if let Some(params) = crate::eval::lambda_params_of(db, head) {
             let mut subst = Subst::new();
-            for (&param_occ, &arg) in params.iter().zip(args.iter()) {
+            for (i, (&param_occ, &arg)) in params.iter().zip(args.iter()).enumerate() {
                 let pt = type_of(db, param_occ);
                 let at = type_of(db, arg);
                 if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
@@ -3831,21 +3842,22 @@ fn check_application(
                     // WRAP the argument in the matching constructor `(Some 5)`. General over any sum (reads
                     // the expected sum's own variants), forced-choice only (ambiguous → no suggestion), and
                     // the wrap type-checks in one shot. Heuristic — the intent (which construction) is a guess.
-                    if let Some(variant) = wrap_variant_for(db, &pt, &at) {
-                        out.push(reject.with_fix(Fix::wrap_heuristic(
+                    let tagged = if let Some(variant) = wrap_variant_for(db, &pt, &at) {
+                        reject.with_fix(Fix::wrap_heuristic(
                             arg,
                             format!("({variant} "),
                             ")",
                             format!("wrap the value in `{variant}`"),
-                        )));
+                        ))
                     } else if let Some((prefix, suffix, verb)) = total_conversion_wrap(&pt, &at) {
                         // A total prelude conversion bridges the mismatch at the CALL SITE — `String` where
                         // `Bytes` is expected → `(String.to-bytes …)`. The text-model twin of the numeric
                         // coercion wraps; heuristic, `--verify-fixes` upgrades it.
-                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
+                        reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb))
                     } else {
-                        out.push(reject);
-                    }
+                        reject
+                    };
+                    arg_faults.push((i, tagged));
                 }
             }
             // OVER-APPLICATION: more arguments than the lambda's arity, and the body's result is not
@@ -3959,6 +3971,11 @@ fn check_application(
         //     argument here AND in the reduced body, compounded per level). When the reduction did NOT
         //     produce a body (a recursive callee, the depth limit), NOTHING covered the arguments, so
         //     descend them ALL — matching the pre-change behavior for that case.
+        //
+        //     The SAME `covered` test flushes step (1)'s buffered arg-mismatch faults: a fault at a param
+        //     step (2) covered (referenced + reduced) is the redundant twin of step (2)'s annotation-context
+        //     CDZ0203 — drop it; a fault at an UNCOVERED param (unreferenced / reduction declined) is the
+        //     SOLE report — keep it.
         let params = crate::eval::lambda_params_of(db, head).unwrap_or_default();
         // The set of parameters the body references, computed in ONE walk (was a full-body scan PER
         // argument → O(args × body) = O(N²) for a WIDE application; now O(body) once + O(1) per arg).
@@ -3974,6 +3991,12 @@ fn check_application(
             let covered = reduced_ok && params.get(i).is_some_and(|&p| referenced.contains(&p));
             if !covered {
                 collect(db, arg, out);
+            }
+        }
+        for (i, reject) in arg_faults {
+            let covered = reduced_ok && params.get(i).is_some_and(|&p| referenced.contains(&p));
+            if !covered {
+                out.push(reject);
             }
         }
         return;
@@ -5551,6 +5574,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                         verb,
                                         format!(" — convert with `({n}.of …)`"),
                                     ))
+                                } else if let Some((prefix, suffix, verb)) =
+                                    total_conversion_wrap(&annot_ty, &expr_ty)
+                                {
+                                    // A total prelude conversion bridges the mismatch — `String` where
+                                    // `Bytes` is annotated → `(String.to-bytes …)`. The heuristic wrap fix
+                                    // applies it; the message tail names the verb inline. (This is the
+                                    // annotation-context twin of the CALL-SITE arg check's total-conversion
+                                    // wrap — a `(g s)` to a `Bytes` param now reports the SAME CDZ0203 with
+                                    // this fix, since the arg check defers a REFERENCED param to this arm.)
+                                    let tail = format!(" — {verb}");
+                                    Some((prefix, suffix, verb, tail))
                                 } else {
                                     None
                                 };
