@@ -233,6 +233,26 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             if items.len() != 2 {
                 return None;
             }
+            // A NON-INTEGER LITERAL operand (`,2.0`, `,"s"`, `,true`) cannot lift: the only value-carrying
+            // `Ast` variant this increment builds is `Ast.Int` (Int64 payload). Wrapping such a literal
+            // `(Ast.Int 2.0)` would leak the INTERNAL reification mechanism as a misleading "variant
+            // constructor's payload has declared type Int64, but Float64 was applied" — worse, its
+            // coercion fix would silently REWRITE the author's `2.0`→`2`, corrupting their value. BAIL
+            // instead (as `reify` does for a bare non-Int leaf), so the quasiquote declines honestly with
+            // "quasiquote produces an AST value (not yet built)" — the type-directed lift of a non-Int
+            // active operand is a later increment (module docs §Quasiquote). A NON-literal operand (a
+            // NAME `,n` or a call `,(f x)`) stays LIVE and wraps in `Ast.Int` as before — its type is
+            // unknown at reify time (pre-typecheck), and an Int-valued one is the corpus case.
+            //
+            // 🔑 A `Leaf::Name` is NOT a literal — it is a runtime REFERENCE (a let-bound var `,n` or a
+            // param), which the comment above says stays live. Only a non-int VALUE literal
+            // (Float/String/Bool/Char) bails; a bare int literal `,42` lifts. So exclude `Leaf::Name` from
+            // the bail (else `(let ((n 42)) `(op-const ,n))` and a `,param` regress to a spurious decline).
+            if let Struct::Atom(l) = ast.get(items[1])
+                && !matches!(ast.leaf(*l), Leaf::Int { .. } | Leaf::Name(_))
+            {
+                return None;
+            }
             // Reuse the operand node LIVE (it is evaluated code, not reified) and wrap it `(Ast.Int e)`:
             // the Int64 value lifts to an `Ast.Int` node identical to a const fold's.
             Some(ast_ctor(ast, "Int", items[1]))

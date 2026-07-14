@@ -13,10 +13,27 @@
 # ways: a seeded PRNG loop (the continuous driver), a `bolero` property test (shrinking +
 # `cargo test` integration + optional coverage-guided libFuzzer), and a one-shot subprocess
 # worker the driver spawns for hang/hard-crash isolation.
+# cdz-smith is its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace.
+# Two reasons, one manifest line: (1) its `bolero` fuzzing dependency chain pins
+# `toml_datetime =0.6.3` (via `proc-macro-crate`), which cannot co-resolve in the seed workspace's
+# single lockfile with the newer `toml_edit` the `toml` surface needs; a private lockfile sidesteps
+# that. (2) the coverage-guided libFuzzer build (`cargo bolero`) wants an isolated crate with its own
+# target dir + profiles anyway. The seed workspace's root Cargo.toml `exclude`s this path to match.
+# Path deps (rcdzc, cadenza-syntax) resolve fine across the boundary — they're plain path pointers.
+[workspace]
+
 [package]
 name = "cdz-smith"
 version = "0.0.0"
 edition = "2024"
+
+# A dedicated profile for coverage-guided fuzzing: optimized (fast fuzzing) but with debug line info
+# so a libFuzzer crash artifact / panic backtrace symbolizes to the exact rcdzc source site. Mirrors
+# the seed workspace's `release-debug`. `cargo bolero` builds under `--profile fuzz` by default.
+[profile.fuzz]
+inherits = "release"
+debug = true
+overflow-checks = true
 
 [lib]
 path = "src/lib.rs"

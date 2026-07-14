@@ -18,10 +18,14 @@ export default function Lists() {
 
       <H2>Building lists</H2>
       <P>
-        <C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Because they
-        return new lists, you can chain them and measure the result:
+        <C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a
+        whole new list — Run this and you'll see the result, <C>(list 1 2 3)</C>, not just a count:
       </P>
-      <Runnable source={`(List.len (List.push (list 1 2) 3))`} />
+      <Runnable source={`(List.push (list 1 2) 3)`} />
+      <P>
+        And because the result is itself a list, you can feed it straight into another operation — chain{" "}
+        <C>concat</C> and then measure, all in one expression:
+      </P>
       <Runnable source={`(List.len (List.concat (list 1 2) (list 3 4 5)))`} />
 
       <H2>Reaching in safely</H2>
@@ -71,6 +75,11 @@ export default function Lists() {
         now you'll see <C>99</C>. Two lists, sharing most of their structure under the hood, each with its
         own value.
       </P>
+      <P>
+        Return the updated list itself and you can see the change in place — one slot different,{" "}
+        <C>(list 10 99 30)</C>, and the input <C>(list 10 20 30)</C> still intact wherever else it's held:
+      </P>
+      <Runnable source={`(List.update (list 10 20 30) 1 99)`} />
 
       <Why tenet="Immutable, persistent values">
         Every value in Cadenza is immutable; an "update" always produces a fresh value and leaves every

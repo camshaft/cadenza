@@ -634,6 +634,45 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c true b) → (or c b)");
                     fold_short_circuit(db, cond, else_, false)
                 }
+                // IF-TOWER FLATTENING (shared-arm condition combination). Two nested `if`s that share an
+                // arm collapse to ONE `if` on a COMBINED condition, replacing a nested branch with a single
+                // (backend-selectable-branchless) decision:
+                //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  — the THEN arm `x` is shared (taken
+                //       when c1, OR when !c1 && c2 — i.e. `c1 || c2`).
+                //   `(if c1 (if c2 x y) y)` → `(if (and c1 c2) x y)` — the ELSE arm `y` is shared (`x` taken
+                //       only when c1 && c2).
+                // SHORT-CIRCUIT ORDER PRESERVED: `or`/`and` evaluate `c1` then `c2` (c2 only on the
+                // deciding polarity), exactly as the nested `if` did — so a trap/effect in `c2` fires under
+                // the same conditions. The shared arm and the surviving inner arm stay in `if`-branch
+                // (guarded) positions, so trapping branches keep their shielding AND the tail-loop transform
+                // is unaffected (no call is moved into a connective — only the two CONDITIONS combine).
+                // `reduce_to_if` sees through refs/annotations/non-recursive calls to the inner `if`; the
+                // combined condition is synthesized (`fold_short_circuit` folds it — `(or (> x 5) (> x 3))`
+                // etc.) and the inner arms are reused by occurrence. A constant `c1` was handled above.
+                _ if let Some((c2, t2, e2)) = crate::eval::reduce_to_if(db, else_)
+                    && core_equiv(db, then_, t2) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c1 x (if c2 x y)) → (if (or c1 c2) x y)");
+                    let combined = fold_short_circuit(db, cond, c2, false); // (or c1 c2)
+                    let cid = synth_core(db, combined, crate::ty::Ty::Bool);
+                    Core::If {
+                        cond: cid,
+                        then_,
+                        else_: e2,
+                    }
+                }
+                _ if let Some((c2, t2, e2)) = crate::eval::reduce_to_if(db, then_)
+                    && core_equiv(db, else_, e2) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c1 (if c2 x y) y) → (if (and c1 c2) x y)");
+                    let combined = fold_short_circuit(db, cond, c2, true); // (and c1 c2)
+                    let cid = synth_core(db, combined, crate::ty::Ty::Bool);
+                    Core::If {
+                        cond: cid,
+                        then_: t2,
+                        else_,
+                    }
+                }
                 _ => Core::If { cond, then_, else_ },
             }
         }
@@ -6579,24 +6618,31 @@ fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
     }
 }
 
+/// The wrong-arity CDZ0201 reject shared by the fixed-arity BINARY operators — integer arithmetic
+/// (`lower_arith`), FLOAT arithmetic (`lower_float_arith`), and COMPARISON (`lower_comparison`). All three
+/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+. 1.0 2.0 3.0)`) has a
+/// mechanical repair: DELETE the first surplus operand (`args[2]`) — the fixpoint removes each extra until
+/// exactly 2 remain. A TOO-FEW application (`(+ 1)`) has nothing to delete → no fix. Carrying the delete
+/// fix on THIS authoritative CDZ0201 is what lets `dedup_faults` drop the sibling CDZ0203 over-application
+/// (which anchors at the same surplus node), so a binary operator over-application reports ONCE, with the
+/// fix — the parity `lower_arith` had but `lower_comparison`/`lower_float_arith` lacked (they double-reported).
+fn binop_arity_reject(op: Prim, args: &[StructId]) -> Reject {
+    let mut reject = Reject::coded(
+        Code::Malformed,
+        format!("{} takes exactly 2 operands", intrinsic_name(op)),
+    );
+    if args.len() > 2 {
+        reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+            args[2],
+            "remove the extra operand",
+        ));
+    }
+    reject
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        let mut reject = Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        );
-        // OVER-application of a fixed-arity operator (`(+ 1 2 3)`) has a mechanical repair: DELETE the
-        // first surplus operand (`args[2]`) — the fixpoint removes each extra until exactly 2 remain. (A
-        // TOO-FEW `(+ 1)` has nothing to delete → no fix.) This is the authoritative operator-arity reject;
-        // it carrying the fix lets `dedup_faults` drop the sibling CDZ0203 over-application (which anchors
-        // at the same surplus arg) so the operator reports ONCE, with the fix.
-        if args.len() > 2 {
-            reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
-                args[2],
-                "remove the extra operand",
-            ));
-        }
-        return Core::Poison(reject);
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -6631,10 +6677,7 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 /// (the float-literal-overflow rule), so a fold to `±inf`/NaN DECLINES rather than producing a bad value.
 fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        return Core::Poison(Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        ));
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -7288,9 +7331,90 @@ fn fold_short_circuit(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -
                     Core::And { lhs, rhs, is_and }
                 }
             }
+            // REASSOCIATE TO EXPOSE A COMPARISON PAIR across a same-connective nested tree. The pairwise
+            // comparison folds above only see the TWO DIRECT operands, so `(and (and (> x 0) (< x 100)) (> x
+            // 5))` misses that `(> x 5)` subsumes the buried `(> x 0)`. When one operand is a same-connective
+            // `(op P Q)` and the other is a comparison `C`, try folding `C` against `P` (and against `Q`) via
+            // `fold_short_circuit`: if that pair COLLAPSES (to a constant or a single kept comparison — i.e.
+            // NOT a plain two-operand `Core::And`), rebuild the tree with the collapsed result and the
+            // remaining leaf. `(and (and (> x 0) (< x 100)) (> x 5))` → `(and (> x 5) (< x 100))`; a nested
+            // COMPLEMENT `(and (and (< x y) …) (>= x y))` → false. SOUND only when every involved leaf (`C`,
+            // `P`, `Q`) is TRAP-FREE: `and`/`or` is associative+commutative over pure booleans, so regrouping
+            // and reordering is unobservable (no trap/effect order to preserve). `reassociate_comparison_pair`
+            // returns the rebuilt `Core` or `None`.
+            _ if let Some(folded) = reassociate_comparison_pair(db, lhs, rhs, is_and) => folded,
             _ => Core::And { lhs, rhs, is_and },
         },
     }
+}
+
+/// Reassociate a short-circuit `(op lhs rhs)` (connective `is_and`) to expose a COMPARISON PAIR that the
+/// direct pairwise folds miss because it is split across a same-connective nested subtree. When one operand
+/// is a nested `(op P Q)` (SAME connective) and the OTHER operand `C` is a comparison, this folds `C`
+/// against `P` and against `Q` (via `fold_short_circuit`); if either pair COLLAPSES — the recursive fold
+/// returns something OTHER than a plain two-operand `Core::And` of those same two nodes (a constant, or a
+/// single subsuming comparison) — the whole tree is rebuilt as `(op collapsed remaining_leaf)`, dropping the
+/// redundant comparison. `(and (and (> x 0) (< x 100)) (> x 5))` → `(and (> x 5) (< x 100))` (subsumption);
+/// `(and (and (< x y) p) (>= x y))` → `false` (complement). Returns `None` when nothing collapses.
+///
+/// SOUNDNESS: fires ONLY when `C`, `P`, and `Q` are all TRAP-FREE. A short-circuit `and`/`or` over pure
+/// (trap-free, effect-free) boolean operands is fully associative AND commutative — there is no evaluation
+/// order or trap to preserve — so regrouping `(op (op P Q) C)` as `(op (op C P) Q)` and folding the exposed
+/// `(op C P)` pair is behavior-identical. (A non-trap-free leaf could change WHICH branch's trap fires or
+/// its order, so it is excluded — the tree stays as-is.) Both outer operand orders and both nested-operand
+/// positions are tried.
+fn reassociate_comparison_pair(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<Core> {
+    // Try: `nested` = a same-connective `(op P Q)`, `c` = the other operand (a comparison). Fold `c`
+    // against each nested leaf; on a genuine collapse, rebuild `(op collapsed other_leaf)`.
+    let try_side = |db: &mut Db, nested: StructId, c: StructId| -> Option<Core> {
+        // `c` must be a comparison, and trap-free (a discarding/regrouping fold requires purity).
+        if !matches!(core_of(db, c), Core::Compare { .. }) || !is_trap_free(db, c) {
+            return None;
+        }
+        let Core::And {
+            lhs: p,
+            rhs: q,
+            is_and: nested_is_and,
+        } = core_of(db, nested)
+        else {
+            return None;
+        };
+        if nested_is_and != is_and {
+            return None; // must be the SAME connective to reassociate
+        }
+        // Every leaf must be trap-free so the reassociation is unobservable.
+        if !is_trap_free(db, p) || !is_trap_free(db, q) {
+            return None;
+        }
+        // Fold `c` against P, keeping Q; then against Q, keeping P. A genuine collapse = the recursive fold
+        // did NOT return a plain `Core::And` re-pairing the same two nodes (that would be no progress).
+        let collapsed = |db: &mut Db, pair_a: StructId, pair_b: StructId| -> Option<Core> {
+            let folded = fold_short_circuit(db, pair_a, pair_b, is_and);
+            match folded {
+                // No progress: the pair stayed a two-operand `and`/`or`. (Any other shape — ConstBool, a
+                // single Compare, a Not, an Eq — is a real collapse.)
+                Core::And { .. } => None,
+                other => Some(other),
+            }
+        };
+        if let Some(folded) = collapsed(db, c, p) {
+            // `(op (op P Q) C)` → `(op folded(C,P) Q)`.
+            let fid = synth_core(db, folded, crate::ty::Ty::Bool);
+            return Some(fold_short_circuit(db, fid, q, is_and));
+        }
+        if let Some(folded) = collapsed(db, c, q) {
+            // → `(op folded(C,Q) P)`.
+            let fid = synth_core(db, folded, crate::ty::Ty::Bool);
+            return Some(fold_short_circuit(db, fid, p, is_and));
+        }
+        None
+    };
+    try_side(db, lhs, rhs).or_else(|| try_side(db, rhs, lhs))
 }
 
 /// NESTED IDEMPOTENCE for a short-circuit `and`/`or`: when one outer operand is a nested `Core::And` of the
@@ -8531,10 +8655,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
 
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        return Core::Poison(Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        ));
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);

@@ -598,6 +598,7 @@ pass	a record-returning closure alongside a parameterized plain export — the c
 pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive NEWTYPE traversal recurses on its projected recursive field
+pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation

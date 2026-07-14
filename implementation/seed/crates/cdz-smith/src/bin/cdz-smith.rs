@@ -1,11 +1,17 @@
 //! `cdz-smith` — the fuzzer CLI.
 //!
+//! The PRIMARY fuzzing path is coverage-guided libFuzzer via `cargo bolero` (see `tests/fuzz.rs` +
+//! `fuzz-cycle.sh`); it drives the same `generate()` + oracle this binary uses. This binary provides
+//! the surrounding tooling: the no-nightly PRNG fallback loop, single-seed reproduction, and the
+//! adapter that turns libFuzzer's crash/timeout artifacts into deduped findings.
+//!
 //! Subcommands:
-//!   fuzz   [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]
-//!            run the generate→compile→file loop (the continuous / cron mode). N omitted = forever.
-//!   once   <SEED>            generate + compile one seed; print the verdict (no filing).
-//!   gen    <SEED>            print the generated program source for a seed.
-//!   verify <FILE|SEED>       recompile a filed `.sexp` (or a seed's program); print the verdict.
+//!   fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]
+//!                      the PRNG-driver fallback loop (no coverage; watchdog aborts on a hang).
+//!   once             <SEED>            generate + compile one seed; print the verdict (no filing).
+//!   gen              <SEED>            print the generated program source for a seed.
+//!   verify           <FILE|SEED>       recompile a filed `.sexp` (or a seed's program); verdict.
+//!   triage-artifacts <CRASHES_DIR>     convert a libFuzzer artifacts dir → deduped findings.
 //!
 //! Deliberately dependency-light arg parsing (no clap) so the fuzzer binary stays small and its
 //! panic surface is just the compiler's.
@@ -25,6 +31,7 @@ fn main() -> ExitCode {
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
+        "triage-artifacts" => cmd_triage_artifacts(&args[1..]),
         "-h" | "--help" | "help" => {
             usage();
             ExitCode::SUCCESS
@@ -42,11 +49,84 @@ fn usage() {
         "cdz-smith — fuzz the reference compiler\n\
          \n\
          USAGE:\n\
-         \x20 cdz-smith fuzz   [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
-         \x20 cdz-smith once   <SEED>\n\
-         \x20 cdz-smith gen    <SEED>\n\
-         \x20 cdz-smith verify <FILE.sexp | SEED>\n"
+         \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
+         \x20 cdz-smith once             <SEED>\n\
+         \x20 cdz-smith gen              <SEED>\n\
+         \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
+         \x20 cdz-smith triage-artifacts <CRASHES_DIR> [--findings DIR] [--commit SHA]\n"
     );
+}
+
+/// Convert a libFuzzer crashes/artifacts dir into deduped findings in the failures queue.
+fn cmd_triage_artifacts(args: &[String]) -> ExitCode {
+    let mut crashes_dir: Option<PathBuf> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut commit: Option<String> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--commit" => commit = it.next().cloned(),
+            other if !other.starts_with('-') => crashes_dir = Some(PathBuf::from(other)),
+            other => {
+                eprintln!("cdz-smith triage-artifacts: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(crashes_dir) = crashes_dir else {
+        eprintln!("cdz-smith triage-artifacts: expected a CRASHES_DIR");
+        return ExitCode::from(2);
+    };
+
+    let findings_dir = match findings {
+        Some(d) => d,
+        None => match cdz_smith::finding::FindingStore::discover(
+            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        ) {
+            Ok(store) => store.dir().to_path_buf(),
+            Err(e) => {
+                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    let store = match cdz_smith::finding::FindingStore::open(&findings_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "cdz-smith: cannot open findings dir {}: {e}",
+                findings_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let commit = commit.unwrap_or_else(driver::detect_commit);
+
+    match cdz_smith::triage::triage_artifacts(&crashes_dir, &store, &commit) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] triaged {} artifact(s): {} new bucket(s), {} dup hit(s), {} not-reproduced → {}",
+                stats.artifacts_seen,
+                stats.new_buckets,
+                stats.duplicate_hits,
+                stats.not_reproduced,
+                findings_dir.display()
+            );
+            if stats.new_buckets > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith triage-artifacts: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_fuzz(args: &[String]) -> ExitCode {

@@ -36,7 +36,9 @@ pub mod driver;
 pub mod finding;
 pub mod generator;
 pub mod oracle;
+pub mod triage;
 
 pub use finding::{Category, Finding, FindingStore};
 pub use generator::{Program, generate};
 pub use oracle::{Verdict, compile_catching};
+pub use triage::{TriageStats, triage_artifacts};

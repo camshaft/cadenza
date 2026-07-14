@@ -333,6 +333,7 @@ pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive function counts down through a stateful effect and bails at zero

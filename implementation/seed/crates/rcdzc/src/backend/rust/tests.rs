@@ -799,19 +799,41 @@ fn the_builtin_option_maps_to_rusts_own_and_emits_no_enum() {
 }
 
 #[test]
-fn a_recursive_sum_declines_the_whole_function() {
-    // A recursive sum needs `Box` indirection (deferred), so its enum is not emitted — and a function
-    // taking/returning it DECLINES rather than emitting a signature naming an undeclared type.
-    let err = try_compile_rust(
+fn a_recursive_sum_emits_a_boxed_enum() {
+    // A recursive sum now EMITS a Rust enum with the recursive variant's field BOXED (`Box<…>`) for
+    // finite size — a function taking/returning it compiles. (Was deferred as "needs Box"; now realized:
+    // the recursive variant field is one `Box`, construction `Box::new(…)`, match derefs `*__pay`.)
+    let rs = try_compile_rust(
         "(module m (type IntList Nil (Cons (Tuple Int64 IntList))) \
            (def (len (: xs IntList)) (match xs (((. IntList Nil) _) 0) \
                                               (((. IntList Cons) (tuple h t)) (+ 1 (len t))))) (export len))",
     )
-    .expect_err("a recursive sum must decline");
+    .expect("a recursive sum now emits a boxed enum");
+    assert!(
+        rs.contains("enum IntList") && rs.contains("Box<"),
+        "the recursive variant's field is boxed: {rs}"
+    );
+}
+
+#[test]
+fn a_recursive_newtype_declines_the_whole_function() {
+    // A RECURSIVE NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` erases to its inner type on the rust
+    // backend — but the inner type mentions `Lst` (the μ back-edge), which erasure would render as a bare
+    // `Lst` that is never emitted → `cannot find type Lst` (an uncompilable crate). Erasure only works when
+    // the unfold terminates; a recursive newtype needs a Box-indirected nominal emission (deferred, like a
+    // recursive sum). So a function taking/returning it DECLINES, exactly as a recursive SUM does, rather
+    // than emitting a signature naming an undeclared type. (The wasm backend runs it — types erase at
+    // runtime with no Rust-level name needed.)
+    let err = try_compile_rust(
+        "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+           (def (sm (: l Lst)) (match l ((Mk o) (match o ((Some p) (+ (. p 0) (sm (. p 1)))) ((None) 0))))) \
+           (export sm))",
+    )
+    .expect_err("a recursive newtype must decline, not emit an uncompilable crate");
     assert!(
         err.iter()
             .any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
-        "decline reason should cite the recursive/unrepresentable sum: {err:?}"
+        "decline reason should cite the recursive/unrepresentable type: {err:?}"
     );
 }
 
@@ -820,23 +842,17 @@ fn a_recursive_sum_constructed_as_a_discarded_intermediate_folds_away() {
     // A helper `mk` returns `(tuple (NLit 5) 9)` — a pair whose element 0 is a recursive-sum value and
     // whose element 1 is the Int64 9. `main` reads `.1` and DISCARDS element 0. The projection folds
     // through the constant tuple (`(. l 1)` → 9), so the discarded `(NLit 5)` is never constructed and
-    // the (Box-needing, un-emittable) `Node` enum is never referenced — `main` compiles to the constant
-    // 9 on BOTH backends. Previously the projection stayed a runtime read that forced the recursive-sum
-    // element to materialize, and the rust backend DECLINED "no emitted Rust enum". The projection-fold
-    // (a tuple projection through a compile-time-visible tuple, incl. one produced by a tuple operation)
-    // drops the un-projected element, so a discarded intermediate of an un-representable type is elided
-    // rather than declined — the same DCE the wasm backend already performs, now reached on rust too.
+    // `main` compiles to the constant 9 on BOTH backends — the same DCE the wasm backend performs, reached
+    // on rust too. (The recursive `Node` enum now DOES emit — a boxed enum — but that is a harmless
+    // `#[allow(dead_code)]` declaration; the load-bearing property is that `main` folds to 9, NOT whether
+    // the declared-but-unused enum is present.)
     let rs = try_compile_rust(
         "(module m (type Node (NLit Int64) (NAdd (Tuple Node Node))) \
            (def (mk) (tuple (NLit 5) 9)) \
            (def (main) (let ((l (mk))) (. l 1))) (export main))",
     )
     .expect("a discarded recursive-sum intermediate folds away — the projection drops it");
-    // The discarded sum is elided: no `Node` enum emitted, `main` returns the folded constant 9.
-    assert!(
-        !rs.contains("enum Node"),
-        "the discarded recursive sum must not be emitted: {rs}"
-    );
+    // `main` returns the folded constant 9 (the discarded `(NLit 5)` is never constructed in `main`'s body).
     assert!(
         rs.contains("9u64 as i64") || rs.contains("9i64") || rs.contains("-> i64"),
         "main folds to the projected Int64 constant 9: {rs}"
@@ -858,6 +874,49 @@ fn rustc_roundtrip_user_sum_constructs_and_matches() {
     // A multi-payload variant carries ONE tuple, so it is constructed `Rect((4, 3))`.
     if let Some(out) = rustc_run(&rs, "area(Shape::Rect((4, 3)))") {
         assert_eq!(out, "12");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_recursive_sum_folds() {
+    // A RECURSIVE user sum (a cons-list) constructs and folds THROUGH RUSTC: the enum is `Box`ed
+    // (`Cons(Box<(i64, L)>)`), construction `Box::new(…)`, match derefs `*p`. `sm` sums a runtime-passed
+    // list; `sm(L::Cons(Box::new((1, L::Cons(Box::new((2, L::Nil)))))))` = 3. Pins that a recursive sum
+    // RUNS on the Rust backend (not just emits) and agrees with the wasm oracle — the last rust-backend
+    // sum gap, now closed via Box indirection.
+    let rs = compile_rust(
+        "(module m (type L Nil (Cons (Tuple Int64 L))) \
+           (def (sm (: l L)) (match l (((. L Nil) _) 0) \
+                                      (((. L Cons) (tuple h t)) (+ h (sm t))))) (export sm))",
+    );
+    if let Some(out) = rustc_run(
+        &rs,
+        "sm(L::Cons(Box::new((1, L::Cons(Box::new((2, L::Nil)))))))",
+    ) {
+        assert_eq!(out, "3");
+    }
+    if let Some(out) = rustc_run(&rs, "sm(L::Nil)") {
+        assert_eq!(out, "0");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_mutually_recursive_sums_fold() {
+    // A MUTUALLY-recursive pair of sums (`A` references `B`, `B` references `A`) — NEITHER variant mentions
+    // its OWN decl, but the A→B→A cycle needs Box indirection all the same (E0072 otherwise). Both edges
+    // box: `A { AN(Box<B>) }`, `B { BN(Box<A>) }`, construction `Box::new(…)`, match derefs. `sa(A::AN(…B…))`
+    // walks A→B→A to the `AL 9` leaf = 9. Pins that the cycle detector boxes a MUTUAL recursion, not only a
+    // direct self-reference — and that it RUNS on rustc, matching the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type A (AL Int64) (AN B)) (type B (BL Int64) (BN A)) \
+           (def (sa (: a A)) (match a (((. A AL) n) n) (((. A AN) b) (sb b)))) \
+           (def (sb (: b B)) (match b (((. B BL) n) n) (((. B BN) a) (sa a)))) (export sa))",
+    );
+    if let Some(out) = rustc_run(&rs, "sa(A::AN(Box::new(B::BN(Box::new(A::AL(9))))))") {
+        assert_eq!(out, "9");
+    }
+    if let Some(out) = rustc_run(&rs, "sa(A::AL(42))") {
+        assert_eq!(out, "42");
     }
 }
 

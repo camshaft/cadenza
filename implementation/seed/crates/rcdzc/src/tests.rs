@@ -4175,6 +4175,130 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_nested_if_sharing_an_arm_flattens_to_one_if_on_a_combined_condition() {
+        // IF-TOWER FLATTENING: two nested `if`s sharing an arm collapse to ONE `if` on a combined condition.
+        //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  (shared THEN arm `x`)
+        //   `(if c1 (if c2 x y) y)` → `(if (and c1 c2) x y)` (shared ELSE arm `y`)
+        // Emits a single (backend-branchless) `select` on `i32.or`/`i32.and` instead of a nested branch, and
+        // routes the combined condition through the boolean folds (so `(if (>5) 1 (if (>3) 1 0))` subsumes
+        // to `(> x 3)`). Short-circuit order + trap shielding are preserved.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // A1: shared THEN arm → `i32.or` combined condition + a single `select` (no nested `if`).
+        let a1 = lir(
+            "(: c1 Bool) (: c2 Bool) (: x Int64) (: y Int64)",
+            "(if c1 x (if c2 x y))",
+        );
+        assert!(
+            a1.iter().any(|i| matches!(i, Lir::I32Or))
+                && a1.iter().filter(|i| matches!(i, Lir::Select)).count() == 1
+                && !a1.iter().any(|i| matches!(i, Lir::If(_))),
+            "(if c1 x (if c2 x y)) → (if (or c1 c2) x y), got: {a1:?}"
+        );
+        // A2: shared ELSE arm → `i32.and` combined condition + a single `select`.
+        let a2 = lir(
+            "(: c1 Bool) (: c2 Bool) (: x Int64) (: y Int64)",
+            "(if c1 (if c2 x y) y)",
+        );
+        assert!(
+            a2.iter().any(|i| matches!(i, Lir::I32And))
+                && a2.iter().filter(|i| matches!(i, Lir::Select)).count() == 1
+                && !a2.iter().any(|i| matches!(i, Lir::If(_))),
+            "(if c1 (if c2 x y) y) → (if (and c1 c2) x y), got: {a2:?}"
+        );
+        // The combined condition folds: `(if (> x 5) 1 (if (> x 3) 1 0))` → `(or (> x 5) (> x 3))` subsumes
+        // to `(> x 3)`, so the whole tower is ONE compare (`gt_s`), no and/or/select/if.
+        let sub = lir("(: x Int64)", "(if (> x 5) 1 (if (> x 3) 1 0))");
+        assert!(
+            sub.iter().filter(|i| matches!(i, Lir::I64GtS)).count() == 1
+                && !sub
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::Select | Lir::If(_))),
+            "nested-if tower collapses to (> x 3), got: {sub:?}"
+        );
+
+        // VALUE PARITY over the truth tables (x=10, y=20).
+        let a1v = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: c1 Bool) (: c2 Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        let a1c = a1v("(if c1 10 (if c2 10 20))");
+        let a2c = a1v("(if c1 (if c2 10 20) 20)");
+        for (c1, c2) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run_returns_with::<i64>(&a1c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
+                if c1 || c2 { 10 } else { 20 },
+                "A1 @{c1},{c2}"
+            );
+            assert_eq!(
+                run_returns_with::<i64>(&a2c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
+                if c1 && c2 { 10 } else { 20 },
+                "A2 @{c1},{c2}"
+            );
+        }
+
+        // TRAP SHIELDING (shared arm): `(if c1 (/ 10 n) (if c2 (/ 10 n) 20))` — the shared `/` is reached
+        // exactly when `c1 || c2`, shielded otherwise. At c1=c2=false it must NOT trap; when reached it does.
+        let ta = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c1 Bool) (: c2 Bool) (: n Int64)) (if c1 (/ 10 n) (if c2 (/ 10 n) 20))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&ta, "f", &[Val::Bool(false), Val::Bool(false), Val::S64(0)]),
+            20,
+            "shared arm shielded when neither condition selects it"
+        );
+        assert!(
+            call_traps(&ta, "f", &[Val::Bool(true), Val::Bool(false), Val::S64(0)]),
+            "shared arm reached via c1 traps"
+        );
+        assert!(
+            call_traps(&ta, "f", &[Val::Bool(false), Val::Bool(true), Val::S64(0)]),
+            "shared arm reached via c2 traps"
+        );
+        // TRAP SHIELDING (combined condition c2): `(if c1 10 (if (> (/ 10 n) 0) 10 20))` — c2's `/` is
+        // evaluated only when c1 is false (short-circuit `or`). c1=true must not trap; c1=false does.
+        let tc = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c1 Bool) (: n Int64)) (if c1 10 (if (> (/ 10 n) 0) 10 20))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tc, "f", &[Val::Bool(true), Val::S64(0)]),
+            10,
+            "c1=true short-circuits the trapping condition c2"
+        );
+        assert!(
+            call_traps(&tc, "f", &[Val::Bool(false), Val::S64(0)]),
+            "c1=false reaches the trapping condition c2"
+        );
+    }
+
+    #[test]
     fn if_not_comparison_one_zero_computes_the_negated_predicate() {
         // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
         // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
@@ -16657,6 +16781,136 @@ mod match_engine {
     }
 
     #[test]
+    fn a_comparison_pair_split_across_a_nested_connective_reassociates_and_folds() {
+        // REASSOCIATION: the pairwise comparison folds see only the TWO DIRECT operands, so a pair split
+        // across a same-connective nested subtree is missed — `(and (and (> x 0) (< x 100)) (> x 5))` should
+        // notice `(> x 5)` subsumes the buried `(> x 0)`. When one operand is a same-connective `(op P Q)`
+        // and the other is a comparison `C`, folding `C` against `P`/`Q` (all trap-free) rebuilds the tree
+        // with the collapsed pair: subsumption → drop the redundant compare; complement/disjoint → `false`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Nested subsumption: `(> x 5)` subsumes the buried `(> x 0)` → 2 compares (`> x 5`, `< x 100`), not
+        // 3. Both outer nesting orders.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (> x 0) (< x 100)) (> x 5)) Bool)"
+            )),
+            2,
+            "nested subsumption (nested on left)"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (> x 5) (and (> x 0) (< x 100))) Bool)"
+            )),
+            2,
+            "nested subsumption (nested on right)"
+        );
+        // A deep chain fully collapses to the single tightest bound.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (and (> x 0) (> x 1)) (> x 2)) (> x 3)) Bool)"
+            )),
+            1,
+            "deep same-op chain → tightest bound"
+        );
+        // Nested COMPLEMENT and nested DISJOINT collapse to the constant `false` — no compares.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (and (< x y) (> x 0)) (>= x y)) Bool)"
+            )),
+            0,
+            "nested complement → false"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (< x 5) (> x 0)) (> x 10)) Bool)"
+            )),
+            0,
+            "nested disjoint → false"
+        );
+        // A NON-related third comparison does NOT collapse (distinct variable): all three kept.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (and (> x 0) (< x 100)) (> y 5)) Bool)"
+            )),
+            3,
+            "unrelated comparison kept"
+        );
+
+        // VALUE PARITY: the nested-subsumption form equals `5 < x < 100`.
+        use wasmtime::component::Val;
+        let f = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (and (and (> x 0) (< x 100)) (> x 5)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        for (x, want) in [(-5, 0), (0, 0), (5, 0), (6, 1), (99, 1), (100, 0), (150, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&f, "f", &[Val::S64(x)]),
+                want,
+                "nested subsumption value @{x}"
+            );
+        }
+        // The nested-complement form is always false.
+        let cf = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64) (: y Int64)) (if (and (and (< x y) (> x 0)) (>= x y)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        for (x, y) in [(3, 5), (5, 3), (0, 0), (10, 2)] {
+            assert_eq!(
+                run_returns_with::<i64>(&cf, "f", &[Val::S64(x), Val::S64(y)]),
+                0,
+                "nested complement @{x},{y}"
+            );
+        }
+        // TRAP SAFETY: a trapping leaf DECLINES the reassociation (it needs all leaves trap-free), so the
+        // runtime form is kept and the trap fires. `(/ 10 n)` traps at n=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: x Int64)) (if (and (and (> (/ 10 n) 0) (< x 100)) (> (/ 10 n) 5)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::S64(50)]),
+            "a trapping leaf keeps the runtime form and traps"
+        );
+    }
+
+    #[test]
     fn two_equalities_to_different_constants_do_not_subsume() {
         // ⚠ MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
         // wrongly included `Eq` — so `(and (= x 5) (= x 6))` was "subsumed" to `(= x 6)` (returns 1 at x=6),
@@ -17475,6 +17729,35 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0201"),
             "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
+        );
+        // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
+        // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
+        // "quasiquote produces an AST value (not yet built)"), NOT the leaky CDZ0201 "variant
+        // constructor's payload has declared type Int64, but Float64 was applied" the naive `(Ast.Int
+        // 2.0)` wrap produced — whose coercion fix would have silently rewritten the author's `2.0`→`2`.
+        // The reifier bails so no misleading coded reject + no value-corrupting fix is emitted.
+        for lit in ["2.0", "\"s\"", "true"] {
+            let src = format!("(module m (def (main) (quasiquote (unquote {lit}))) (export main))");
+            let d = reject_full(&src);
+            assert!(
+                d.as_ref().is_none_or(|d| {
+                    d.code.is_none() && !d.message.contains("variant constructor's payload")
+                }),
+                "an active unquote of a non-int literal declines honestly, not the leaky Ast.Int \
+                 payload error: {d:?}"
+            );
+        }
+        // REGRESSION GUARD: an active unquote of a NAME (`,n` — a let-bound var or a param) is NOT a literal,
+        // it is runtime code that stays LIVE and wraps `(Ast.Int n)`. A `Leaf::Name` is a `Struct::Atom`, so
+        // the non-int-LITERAL bail above must EXCLUDE names — else `` `(op-const ,n) `` (n let-bound) that
+        // builds an Ast RESULT regresses to a spurious "produces an AST value (not yet built)" decline (the
+        // 5 quasiquote corpus cases). Here the result is an `Ast`, so it compiles clean end-to-end.
+        assert!(
+            reject_code(
+                "(module m (def (main) (let ((n 42)) (quasiquote (op-const (unquote n))))) (export main))"
+            )
+            .is_none(),
+            "an active unquote of a let-bound NAME building an Ast result must reify (not bail as a literal)"
         );
     }
 
@@ -19272,6 +19555,30 @@ mod diagnostics {
             "nothing to delete for too-few: {:?}",
             few.fix
         );
+        // The COMPARISON `(< 1 2 3)` and FLOAT `(+. 1.0 2.0 3.0)` operators share the exact shape — they
+        // route through `lower_comparison`/`lower_float_arith`, which previously lacked the delete fix (so
+        // they DOUBLE-reported: CDZ0201 + an un-deduped CDZ0203). Via the shared `binop_arity_reject` they
+        // now report ONCE with the fix, exactly like `+`.
+        for src in [
+            "(module m (def (f) (< 1 2 3)) (export f))",
+            "(module m (def (f) (+. 1.0 2.0 3.0)) (export f))",
+        ] {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errs.len(),
+                1,
+                "a comparison/float operator over-application reports ONCE: {errs:?} for {src}"
+            );
+            assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"), "for {src}");
+            assert_eq!(
+                errs[0].fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "the surviving reject carries the delete fix for {src}"
+            );
+        }
     }
 
     #[test]
@@ -19495,6 +19802,37 @@ mod diagnostics {
                 .map(|f| f.replacement),
             Some("3.0".to_string()),
             "an int literal still retypes to a float literal, not an of-int wrap"
+        );
+    }
+
+    #[test]
+    fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
+        // `Ty::render_name` spells a RECORD type `(Record (a Int64))` — CAPITALIZED, the type-constructor
+        // head the author writes in an annotation (`(: r (Record (a Int64)))`), consistent with
+        // `Tuple`/`List`/`Map`/`Set`. It used to render lowercase `(record …)` — the VALUE constructor
+        // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
+        // reader could not have written. The rendered type must round-trip as a valid annotation.
+        let d = first_error("(module m (def y (: (record (a 1)) (Record (a Bool)))) (export y))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("(Record (a Bool))") && d.message.contains("(Record (a Int64))"),
+            "record TYPE renders capitalized, matching the annotation spelling: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("(record ("),
+            "no lowercase value-constructor spelling in a TYPE message: {}",
+            d.message
+        );
+        // The rendered type is a VALID annotation (round-trips) — a reader can copy `(Record (a Bool))`
+        // straight into an annotation; a compile of exactly that spelling never says "not a type".
+        let round_trip = all_errors(
+            "(module m (def (f (: r (Record (a Bool)))) r) (def (main) 0) (export main))",
+        );
+        assert!(
+            !round_trip.iter().any(|e| e.message.contains("not a type")),
+            "the rendered `(Record …)` spelling is accepted in type position: {:?}",
+            round_trip.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 
@@ -31282,6 +31620,51 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn a_uses_of_query_excludes_every_declaration_site_across_a_wide_module() {
+        // `uses_of` walks every node and skips DECLARATION-SITE name occurrences via a set of every def's
+        // signature-name head (was an O(defs) `Vec::contains` per node → O(nodes × defs) = O(N²); now an
+        // O(1) hash-set membership). This locks in the set's correctness at WIDTH: in a module of many
+        // defs that each REFERENCE `helper`, the query returns EXACTLY one use per referencing def and NOT
+        // a single one of the (many) declaration-name occurrences — the exclusion the set must preserve.
+        // `helper` is NULLARY so each reference is a bare `helper` name resolving to a `Ref` at its body
+        // (the same shape the small sibling test checks) — one reference per `d{i}` body.
+        let n = 30;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i}) helper)"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m (def (helper) 1) {defs} (def (main) 42) (export main))");
+        let out = compile(
+            &inputs(
+                &src,
+                &[Request::Query(Query::UsesOf {
+                    name: "helper".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        // Exactly N references (one bare `helper` per `d{i}`) — no declaration-site name (helper's own, or
+        // any of the N `d{i}` / `main` sig names) leaked in, and none of the N uses was missed. Ascending.
+        assert_eq!(ids.len(), n, "one use per referencing def: {ids:?}");
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "ascending: {ids:?}");
+        // Every reported node genuinely resolves to `helper`'s body (not a mis-included declaration name).
+        let mut db = crate::db::Db::load(parse(&src));
+        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        for &id in &ids {
+            assert!(
+                matches!(
+                    crate::resolve::resolved_of(&mut db, crate::ast::StructId(id)),
+                    crate::resolved::Resolved::Ref { value } if value == helper_body
+                ),
+                "node {id} must reference helper"
+            );
+        }
+    }
+
+    #[test]
     fn a_uses_of_query_for_an_unused_or_unknown_name_is_empty() {
         // A name with no references (or no such definition) yields an empty list, not an error.
         let src = "(module m (def (lonely) 1) (def (main) 42) (export main))";
@@ -36547,6 +36930,53 @@ mod closure_host_resource {
             err.message.contains("ask.ask"),
             "the rejection should name the escaping effect operation, got: {}",
             err.message
+        );
+    }
+
+    /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
+    /// (fn (x) (+ x v))))` — is VALID (the `ask.ask` is discharged while the delegation is in scope; the
+    /// returned closure is effect-free, capturing only the plain result). It is NOT the CDZ0406 escape (the
+    /// perform is make-time, not in the lifted body). But the closure-resource emit path does not yet import
+    /// the host interface, so it declines — now HONESTLY, naming the feature, NOT with the internal "not in
+    /// the host-import set" message (documented "a compiler bug"). A plain capturing closure (no host) still
+    /// emits, and the CDZ0406 escape (perform IN the closure body) still fires — the make-time decline must
+    /// not swallow either.
+    #[test]
+    fn a_closure_export_delegating_a_build_time_effect_declines_honestly() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure export with a build-time host effect is not yet emitted — must decline",
+        );
+        assert!(
+            err.message.contains("ask.ask")
+                && err.message.contains("closure export")
+                && err.message.contains("not yet emitted"),
+            "expected an honest feature-limitation decline naming the op, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("not in the host-import set"),
+            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
+            err.message
+        );
+        // A PLAIN capturing closure (no host) still emits.
+        let plain = "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(plain)))
+            .expect("a plain capturing closure still emits (the make-time decline is host-gated)");
+        // The CDZ0406 ESCAPE (perform INSIDE the closure body) still fires — not swallowed by the make-time
+        // decline (which scans the EXPORT body; the escape scans the LIFTED body).
+        let escape = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
+        let esc_err = crate::compile::compile_component(&crate::codec::encode(&parse(escape)))
+            .expect_err("a closure whose body performs must still reject CDZ0406");
+        assert_eq!(
+            esc_err.code.as_deref(),
+            Some("CDZ0406"),
+            "the escape case must still be CDZ0406, got: {:?} / {}",
+            esc_err.code,
+            esc_err.message
         );
     }
 

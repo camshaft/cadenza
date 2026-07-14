@@ -434,7 +434,13 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 ///
 /// This walk records a `Reject` for every faulting definition and keeps going over the well-formed
 /// remainder rather than aborting at the first fault, so the maximal set of diagnostics is produced in
-/// one pass (each `Reject` becomes one error diagnostic in `compile`'s output):
+/// one pass (each `Reject` becomes one error diagnostic in `compile`'s output). The walk visits nodes in
+/// a source-determined order (the arena's node ids), and the closing `dedup_faults` is stable — no clock,
+/// environment, or nondeterministic iteration order enters — so the SEQUENCE of diagnostics is itself a
+/// deterministic function of the source:
+///
+//= spec/capabilities/diagnostics.md#diagnostics-are-emitted-in-a-deterministic-order
+//# The sequence of diagnostics the compiler emits for a program MUST be a deterministic function of the program's source.
 ///
 //= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
 //# A phase that encounters an error in one part of a program MUST record a diagnostic for that error.

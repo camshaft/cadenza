@@ -6677,6 +6677,50 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every string value dropped");
     }
 
+    /// value-encode of a ROPE String (concat/slice nodes) via `Shape::Str` must MATERIALIZE it first.
+    /// Since a runtime `String.concat`/`String.at`-slice lowers to the SAME `bytes-concat`/`bytes-slice`
+    /// rope nodes as Bytes (a String IS a bytes rope), a rope-String reaching `Shape::Str` is NOT a flat
+    /// leaf — the encoder must `bytes_flatten` before reading `raw` (fixed `@b77b3ae0`; without it a rope
+    /// String rendered its raw HANDLE bytes = garbage). Every OTHER `Shape::Str` test uses `op_str_new` (a
+    /// FLAT leaf), so the flatten line was runtime-untested (only an e2e wasmtime spot check). Build a rope
+    /// String the way the compiler does and assert it encodes byte-identically to the equivalent flat one.
+    #[test]
+    fn value_encode_rope_string_flattens_like_a_flat_leaf() {
+        reset();
+        let before = live_nodes();
+        let desc: &[u8] = &[0x01, 0x03, 0x00]; // [0]=Str(tag 3), root=0
+
+        // Helper: a str leaf carrying `s`'s UTF-8 bytes (same node shape a str/bytes leaf uses).
+        let str_leaf_bytes = |s: &str| -> Handle {
+            let b = op_bytes_alloc(s.len() as u32);
+            for (i, &by) in s.as_bytes().iter().enumerate() {
+                op_bytes_set(b, i as u32, by as u32);
+            }
+            b
+        };
+
+        // A ROPE: concat "caf" + "é" (é = 0xC3 0xA9, spanning the seam), then a further concat — exactly the
+        // `String.concat` shape. The logical content is "caféXY".
+        let rope = op_bytes_concat(str_leaf_bytes("caf"), str_leaf_bytes("é"));
+        let rope = op_bytes_concat(rope, str_leaf_bytes("XY"));
+        let got_rope = op_value_encode_form(rope, desc).expect("encode a rope String");
+
+        // The equivalent FLAT string must produce byte-identical output (the flatten makes them agree).
+        let flat = op_str_new(String::from("caféXY"));
+        let got_flat = op_value_encode_form(flat, desc).expect("encode the flat String");
+        assert_eq!(
+            got_rope, got_flat,
+            "a rope String value-encodes identically to its flattened content (the Shape::Str flatten)"
+        );
+        // And byte-exact: KIND_STR(7), len 7 (café=5 bytes + XY=2), body "caféXY".
+        let expect_body: &[u8] = &[0x07, 0x07, b'c', b'a', b'f', 0xC3, 0xA9, b'X', b'Y'];
+        assert_eq!(&got_rope[9..9 + expect_body.len()], expect_body, "KIND_STR with the flattened UTF-8 body");
+
+        op_drop(rope);
+        op_drop(flat);
+        assert_eq!(live_nodes(), before, "no leak: rope + flat strings dropped");
+    }
+
     /// value-encode of a BOXED i64 at the extremes, byte-exact against the codec's KIND_INT sign+magnitude
     /// form. `int_round_trip` only checks `op_get_int` (round-trip) and a test-side `render` reimpl — NOT
     /// `int_leaf`'s real codec bytes through `op_value_encode_form`. The riskiest value is `i64::MIN`,
