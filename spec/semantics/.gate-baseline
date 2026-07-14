@@ -1377,6 +1377,8 @@ pass	a tuple-returning closure alongside a plain export — the plain
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
+pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
@@ -1719,10 +1721,13 @@ pass	concatenating lists with a runtime element appends in order and totals the 
 pass	concatenating tuples preserves each element's type
 pass	concatenating tuples with a runtime element reads elements from both operands
 pass	concatenating two byte sequences appends their bytes in order
+pass	concatenating two empty lists is the empty list
 pass	concatenating two empty tuples is the empty tuple
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
+pass	concatenating with the empty list on the left is the identity
 pass	concatenating with the empty list on the right is identity
+pass	concatenating with the empty list on the right yields the operand by value
 pass	concatenation is associative by content
 pass	concatenation with a run-time-selected operand joins the actual strings
 pass	conditional propagation respects a shadowing rebind of the condition variable
@@ -1892,6 +1897,7 @@ pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
 pass	let bindings' initializers are evaluated in binding order
+pass	list concatenation is associative by content
 pass	lists are equal by elements in order
 pass	looking up an absent key yields None
 pass	map equality is independent of insertion order

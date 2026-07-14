@@ -1528,6 +1528,39 @@
   (input  (do (def (main) (List.len (List.concat (list 7 8 9) (list)))) (export main)))
   (output (: 3 Int64)))
 
+(case "concatenating with the empty list on the right yields the operand by value"
+  (doc    "The right-identity by VALUE, strengthening the length-only case above (which only counts to 3):
+           `(List.concat (list 7 8 9) (list))` EQUALS `(list 7 8 9)` — same elements in the same order, not
+           merely the same length (collections-and-text.md §A List Is Grown By Functional Construction).
+           Pins that the empty right operand is the identity element-for-element.")
+  (input  (= (List.concat (list 7 8 9) (list)) (list 7 8 9)))
+  (output (: true Bool)))
+
+(case "concatenating with the empty list on the left is the identity"
+  (doc    "The left side: `(List.concat (list) (list 7 8 9))` equals `(list 7 8 9)` — the empty list is the
+           identity on the left as well as the right, so a concat with an empty operand on either side is
+           a no-op on value. The companion the right-identity case does not cover (concat is not assumed
+           symmetric until pinned), matching the empty-on-both-sides bytes/string cases.")
+  (input  (= (List.concat (list) (list 7 8 9)) (list 7 8 9)))
+  (output (: true Bool)))
+
+(case "concatenating two empty lists is the empty list"
+  (doc    "The degenerate boundary: `(List.concat (list) (list))` joins nothing to nothing, yielding the
+           empty list. Pins that concat handles the zero+zero case (not underflowing or producing a novel
+           form), the list companion of the empty+empty bytes/string/tuple cases.")
+  (input  (= (List.concat (list) (list)) (list)))
+  (output (: true Bool)))
+
+(case "list concatenation is associative by content"
+  (doc    "`(List.concat (List.concat a b) c)` and `(List.concat a (List.concat b c))` denote the same list
+           — concat depends only on the elements in order, not on grouping. For a={1,2}, b={3,4}, c={5,6}
+           both are {1,2,3,4,5,6}. Pins the associativity law (matching the bytes concat-associative case),
+           so a builder that regroups its concatenations — e.g. a self-hosted emitter joining code
+           fragments — produces the same list whichever way the tree is nested.")
+  (input  (= (List.concat (List.concat (list 1 2) (list 3 4)) (list 5 6))
+             (List.concat (list 1 2) (List.concat (list 3 4) (list 5 6)))))
+  (output (: true Bool)))
+
 (case "a list-concatenating helper threads lists through a call"
   (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
            PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper
