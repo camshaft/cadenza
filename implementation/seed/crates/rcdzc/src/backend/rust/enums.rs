@@ -416,8 +416,7 @@ pub(super) fn sum_derives_eq(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
         .flat_map(|(c, ps)| ps.into_iter().map(move |p| (c, p)))
         .collect();
     occs.iter().all(|&(_ctor, pty)| {
-        let ty = sentinel_payload_ty(db, decl, pty)
-            .or_else(|| crate::eval::typeval_of(db, pty));
+        let ty = sentinel_payload_ty(db, decl, pty).or_else(|| crate::eval::typeval_of(db, pty));
         ty.is_some_and(|ty| ty_derives_eq(db, &ty, &mut visited))
     })
 }
