@@ -12347,6 +12347,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
+        // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
+        // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
+        // and Bool must be the same type here") that reads like an internal clash. The prelude-op analogue
+        // of the effect-op perform message + the variant-ctor payload message.
+        let push = reject_full(
+            "(module m (def (g (: xs (List Int64))) ((. List push) xs true)) (export g))",
+        )
+        .expect("a wrong-element-type List.push rejects");
+        assert_eq!(
+            push.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            push.message
+        );
+        assert!(
+            push.message
+                .contains("`List.push` expects an argument of type Int64")
+                && push.message.contains("Bool"),
+            "names the operation + expected/actual types: {}",
+            push.message
+        );
+        // A conversion op takes the same treatment: `Int64.of` on a String.
+        let of = reject_full("(module m (def (g (: s String)) ((. Int64 of) s)) (export g))")
+            .expect("Int64.of on a String rejects");
+        assert!(
+            of.message
+                .contains("`Int64.of` expects an argument of type Int64"),
+            "names the conversion op: {}",
+            of.message
+        );
+        // NO regression: a bare operator (`+`) is NOT a `(. Module member)` head, so it keeps the generic
+        // symmetric message (it reads fine — both operands named), not a `.`-member phrasing.
+        let bare =
+            reject_full("(module m (def (g) (+ 1 true)) (export g))").expect("(+ 1 true) rejects");
+        assert!(
+            !bare.message.contains("expects an argument of type"),
+            "a bare operator keeps the generic mismatch message: {}",
+            bare.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
