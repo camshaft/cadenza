@@ -2293,13 +2293,7 @@ fn emit_multi_closure_resource(
     // the cell from the flat fields (`TupleArgRebuild`). The tuple may be the SOLE arg OR sit among scalar args
     // (prefix/suffix). Detected here so the scalar `arg_bytes` decline below doesn't reject it. 5-tuple =
     // (tuple field bytes, full flattened core vts, prefix scalar bytes, suffix scalar bytes, rebuild).
-    let tuple_arg: Option<(
-        Vec<u8>,
-        Vec<crate::backend::wasm::lir::ValType>,
-        Vec<u8>,
-        Vec<u8>,
-        serialize::TupleArgRebuild,
-    )> = if arg_tys.len() == 1 {
+    let tuple_arg: Option<CompoundArgBoundary> = if arg_tys.len() == 1 {
         fixed_shape_scalar_tuple_arg(&arg_tys[0])
             .map(|(fb, fv, rb)| (fb, fv, Vec::new(), Vec::new(), rb))
     } else {

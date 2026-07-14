@@ -34604,7 +34604,13 @@ mod stage1 {
             body = format!("((fn (a{i}) {body}) {i})");
         }
         let src = format!("(module m (def (main) {body}) (export main))");
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        // Through the host-stack guard the bin uses (`host.rs`): a depth-20 nested-lambda chain's
+        // β-reduction/type-check recurses ~per level, which SIGABRTs a default `cargo test` worker's
+        // ≈2 MB stack (EXIT=101, 0 FAILED) even though the O(2^depth)→O(depth) fix the test guards makes it
+        // TERMINATE quickly. Deep-but-finite, not a loop — size the stack from `DESCENT_DEPTH_LIMIT`.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
         assert!(
             diags
                 .iter()
