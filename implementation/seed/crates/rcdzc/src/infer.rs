@@ -997,7 +997,7 @@ fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
     } else {
         parent
     };
-    if let Some(i) = db.defs.iter().position(|d| d.sig_occ == sig) {
+    if let Some(i) = db.def_index_by_sig(sig) {
         return Some(i);
     }
     // A MODULE-MEMBER internal def (`Def::internal`, `modules::register_callable`) reuses the member's

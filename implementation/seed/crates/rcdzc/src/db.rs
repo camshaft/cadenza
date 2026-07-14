@@ -421,6 +421,15 @@ pub struct Db {
     /// [`defs`]: Db::defs
     def_by_body: crate::fxhash::FxHashMap<StructId, usize>,
 
+    /// `def signature occurrence → its index in [`defs`]` — the O(1) reverse of a def's `sig_occ`, backing
+    /// `infer::def_of_param`'s "which def owns this parameter?". That was a linear
+    /// `defs.iter().position(|d| d.sig_occ == sig)`; the transitive-inference feature (`989e8c7c`) calls
+    /// `def_of_param` per parameter reference (`arg_is_other_def_param`), so a wide module made it O(N²)
+    /// (8000 defs: `def_of_param` 42% self). LAZILY built + cached (paired with the `defs.len()` it was
+    /// built at, so a later synthesized-def push — effect specialization — is picked up by a rebuild;
+    /// pushes are rare, so the rebuild is amortized). `None` until first built.
+    def_by_sig: Option<(usize, crate::fxhash::FxHashMap<StructId, usize>)>,
+
     /// For each def NAME, the index in [`defs`] of the FIRST def with that name. Built once at load.
     /// `resolve_name` consults it for EVERY non-local, non-parameter name reference (before the prelude
     /// fallback) — so a program with N defs, each body referencing an operator or a sibling, made N
@@ -1111,6 +1120,7 @@ impl Db {
             child_ix,
             scope_skip,
             def_by_body,
+            def_by_sig: None,
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
@@ -1652,6 +1662,27 @@ impl Db {
     /// [`defs`]: Db::defs
     pub fn def_index_by_body(&self, body: StructId) -> Option<usize> {
         self.def_by_body.get(&body).copied()
+    }
+
+    /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
+    /// `infer::def_of_param` (was a linear `defs.iter().position(|d| d.sig_occ == sig)` → O(N²) when
+    /// called per parameter reference). Lazily builds + caches a `sig_occ → index` map, keyed alongside
+    /// the `defs.len()` it was built at so a later synthesized-def push (effect specialization) triggers a
+    /// rebuild (pushes are rare, so it is amortized). A def with a duplicated `sig_occ` cannot occur (each
+    /// def has its own signature node), so no collision; FIRST-wins on the defensive off-chance.
+    pub(crate) fn def_index_by_sig(&mut self, sig: StructId) -> Option<usize> {
+        let stale = match &self.def_by_sig {
+            Some((built_len, _)) => *built_len != self.defs.len(),
+            None => true,
+        };
+        if stale {
+            let mut map = crate::fxhash::FxHashMap::default();
+            for (i, d) in self.defs.iter().enumerate() {
+                map.entry(d.sig_occ).or_insert(i);
+            }
+            self.def_by_sig = Some((self.defs.len(), map));
+        }
+        self.def_by_sig.as_ref().unwrap().1.get(&sig).copied()
     }
 
     /// Register a recursive DO-LOCAL function found in a β-REDUCED (copied) body as an INTERNAL callable

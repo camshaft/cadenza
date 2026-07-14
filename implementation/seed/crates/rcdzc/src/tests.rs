@@ -15470,6 +15470,33 @@ mod match_engine {
     }
 
     #[test]
+    fn many_recursive_defs_resolve_their_params_via_the_sig_index() {
+        // `infer::def_of_param` ("which def owns this parameter?") reads a `sig_occ → def index` INDEX
+        // (`Db::def_index_by_sig`), not a linear `defs.iter().position(|d| d.sig_occ == sig)` — the O(N²)
+        // a wide module hit once transitive inference calls `def_of_param` per parameter reference (8000
+        // defs: `def_of_param` was 42% self-time). This locks in that the index resolves each param to the
+        // RIGHT def at width: N recursive defs each fold over their own param, and each must run to its own
+        // answer (`sm{i}(3)` = 3·i via the threaded accumulator), proving no param is mis-attributed.
+        let n = 40;
+        let defs = (0..n)
+            .map(|i| format!("(def (sm{i} n acc) (if (= n 0) acc (sm{i} (- n 1) (+ acc {i}))))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // main sums sm0(3,0)=0 + sm1(3,0)=3 + sm2(3,0)=6 = 9 (0·3 + 1·3 + 2·3).
+        let src = format!(
+            "(module m {defs} (def (main) (+ (sm0 3 0) (+ (sm1 3 0) (sm2 3 0)))) (export main))"
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src))).expect("compiles"),
+                "main"
+            ),
+            9,
+            "each recursive def's param resolves to its own def (0·3 + 1·3 + 2·3 = 9)"
+        );
+    }
+
+    #[test]
     fn a_sum_expect_in_a_tuple_beside_an_i64_element_emits_valid_wasm() {
         // Regression guard for the scratch-slot clash: a `(tuple <Option.expect result> <i64 arith>)` — an
         // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
