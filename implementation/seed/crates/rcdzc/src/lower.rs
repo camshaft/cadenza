@@ -2171,14 +2171,20 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
 fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
     // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
     // what the body's `Ref`s point at and what a kept binding is keyed by.
+    // Collect every binding's use facts (reference count + whole-value escape) in ONE walk of the whole
+    // `let` region — all initializer values + the body. `let*` scoping guarantees a reference to `init_k`
+    // appears only in the LATER inits + body (an earlier init cannot name a later binding), so a
+    // whole-region count equals each binding's exact in-scope count — no over-count. This replaces the
+    // per-binding `should_keep_binding` scope walk (each O(region)), which was O(bindings × body) = O(N²)
+    // on a wide `let` (the fix-16/18 class).
+    let mut uses = BindingUses::default();
+    for &(_name_occ, v) in bindings.iter() {
+        collect_binding_uses(db, v, false, &mut uses);
+    }
+    collect_binding_uses(db, body, false, &mut uses);
     let mut kept: Vec<(StructId, StructId)> = Vec::new();
-    for (k, &(_name_occ, init)) in bindings.iter().enumerate() {
-        // A binding's SCOPE (the positions its name is visible in) is the LATER sibling initializers
-        // plus the body — `let*` sequential scoping. Count uses across that whole continuation so a
-        // binding referenced only by a later initializer is still named.
-        let mut continuation: Vec<StructId> = bindings[k + 1..].iter().map(|&(_, v)| v).collect();
-        continuation.push(body);
-        if should_keep_binding(db, init, &continuation) {
+    for &(_name_occ, init) in bindings.iter() {
+        if should_keep_binding(db, init, &uses) {
             // Record the keep BEFORE lowering the body/later inits — their references to this init read
             // `db.kept_bindings` to decide `LocalRef` vs follow-through.
             db.kept_bindings.insert(init);
@@ -6001,13 +6007,150 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
     }
 }
 
+/// Per-binding use facts for a whole `let`, collected in ONE walk of the binding region (all initializer
+/// values + the body) rather than an O(scope) walk PER binding. For each `let`-bound initializer occurrence
+/// it records: `count` — total references (the `uses_in` sum), and `escapes_whole` — whether any reference
+/// is a WHOLE-VALUE use (not merely a projection operand, the `ref_escapes_whole` predicate). `let*`
+/// scoping means a reference to `init_k` can only appear in the LATER inits + body (an earlier init cannot
+/// name a later binding), so counting across the WHOLE region set gives each init its exact in-scope
+/// count — no over-count. This replaces `should_keep_binding`'s per-binding `uses_in`/`binding_escapes_whole`
+/// scope walks (each O(scope)), which made a wide `let` O(bindings × body) = O(N²) (the fix-16/18 class: a
+/// per-item predicate walking the whole body per item → collect the facts in ONE walk).
+#[derive(Default)]
+struct BindingUses {
+    count: crate::fxhash::FxHashMap<StructId, u32>,
+    escapes_whole: crate::fxhash::FxHashSet<StructId>,
+}
+
+/// Walk `node` once, recording into `out` a use (and, unless `proj_operand`, a whole-value escape) for
+/// every `Resolved::Ref { value }` — and a use for every `SumPayload`/`BinField`/`MapField` reading `init`
+/// directly. `proj_operand` marks that `node` sits in a PROJECTION-operand position (`(. □ i)`): a bare ref
+/// there is a piece-read, not a whole-value escape (mirrors `ref_escapes_whole`'s projection arm), but it
+/// STILL counts as a use (mirrors `uses_in`, which counts every ref). The combined walk reproduces both
+/// `uses_in` (the `count`) and `ref_escapes_whole` (the `escapes_whole` set) in a single traversal.
+fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &mut BindingUses) {
+    match resolved_of(db, node) {
+        Resolved::Ref { value } => {
+            *out.count.entry(value).or_insert(0) += 1;
+            if !proj_operand {
+                out.escapes_whole.insert(value);
+            }
+        }
+        // A projection/member reads a PIECE: its operand ref does not escape, but recurse the operand (a
+        // deeper whole-value use can nest, `(. (f c) 0)`), flagging the operand as a projection position.
+        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
+            collect_binding_uses(db, operand, true, out)
+        }
+        Resolved::If { cond, then_, else_ } => {
+            collect_binding_uses(db, cond, false, out);
+            collect_binding_uses(db, then_, false, out);
+            collect_binding_uses(db, else_, false, out);
+        }
+        Resolved::And { lhs, rhs, .. } => {
+            collect_binding_uses(db, lhs, false, out);
+            collect_binding_uses(db, rhs, false, out);
+        }
+        Resolved::Not { operand } => collect_binding_uses(db, operand, false, out),
+        Resolved::Let { bindings, body } => {
+            for (_, v) in &bindings {
+                collect_binding_uses(db, *v, false, out);
+            }
+            collect_binding_uses(db, body, false, out);
+        }
+        Resolved::Record { fields } => {
+            for &v in fields.values() {
+                collect_binding_uses(db, v, false, out);
+            }
+        }
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            for &e in elems.iter() {
+                collect_binding_uses(db, e, false, out);
+            }
+        }
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                collect_binding_uses(db, k, false, out);
+                collect_binding_uses(db, v, false, out);
+            }
+        }
+        Resolved::Bin { segs } => {
+            for s in segs.iter() {
+                collect_binding_uses(db, s.slot, false, out);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(sz) } => {
+                        collect_binding_uses(db, *sz, false, out)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => {
+                        collect_binding_uses(db, *size, false, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Resolved::Annot { expr, .. } => collect_binding_uses(db, expr, false, out),
+        Resolved::Apply { head, args } => {
+            collect_binding_uses(db, head, false, out);
+            for &a in args.iter() {
+                collect_binding_uses(db, a, false, out);
+            }
+        }
+        Resolved::Match { scrutinee, arms } => {
+            collect_binding_uses(db, scrutinee, false, out);
+            for (_, body) in &arms {
+                collect_binding_uses(db, *body, false, out);
+            }
+        }
+        // A `SumPayload`/`BinField`/`MapField` reading `init` directly is a piece-read: a USE (counted) but
+        // NOT a whole-value escape — exactly as `uses_in` counts it and `ref_escapes_whole` rejects it.
+        Resolved::SumPayload { scrutinee, .. }
+        | Resolved::BinField { scrutinee, .. }
+        | Resolved::MapField { scrutinee, .. } => {
+            *out.count.entry(scrutinee).or_insert(0) += 1;
+        }
+        Resolved::Handle {
+            init: seed,
+            arms,
+            body,
+        } => {
+            collect_binding_uses(db, seed, false, out);
+            for arm in arms.iter() {
+                collect_binding_uses(db, arm.body, false, out);
+            }
+            collect_binding_uses(db, body, false, out);
+        }
+        Resolved::Resume { value, next_state } => {
+            collect_binding_uses(db, value, false, out);
+            collect_binding_uses(db, next_state, false, out);
+        }
+        Resolved::Host { body, .. } => collect_binding_uses(db, body, false, out),
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
+        | Resolved::Bytes(_)
+        | Resolved::Char(_)
+        | Resolved::Float(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::Extern { .. }
+        | Resolved::Poison(_) => {}
+    }
+}
+
 /// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
 /// rather than copy-propagated. Kept iff (1) its value is a RUNTIME computation — its core is not a
 /// constant/atom that folds away, so following it through would re-emit the computation — AND (2) its
 /// name is used MORE THAN ONCE across `scope` (the later sibling initializers and the body — naming
 /// pays for itself only when it avoids a recompute). A constant, a single-use binding, or a poison is
 /// propagated (byte-neutral).
-fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+///
+/// `uses` carries the per-binding use facts collected in ONE walk of the whole `let` region (see
+/// [`BindingUses`]); the whole-value-escape and use-count queries are O(1) lookups into it rather than an
+/// O(scope) walk per binding (the O(N²) a wide `let` otherwise pays).
+fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool {
     // A LAMBDA-valued binding is NEVER kept as a runtime `let` slot — it is copy-propagated so its
     // applications fold (β-reduce) at each use. Short-circuit HERE, before `is_runtime_computation` calls
     // `core_of(init)` — which for a lambda runs `lower_lambda_value`, LIFTING it speculatively and (for a
@@ -6046,7 +6189,7 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     // nested into another compound) genuinely needs materialization and IS kept. (A non-compound
     // runtime binding — a shared scalar computation — keeps the multi-use rule below: naming avoids a
     // recompute.)
-    if is_compound_value(db, init) && !binding_escapes_whole(db, init, scope) {
+    if is_compound_value(db, init) && !uses.escapes_whole.contains(&init) {
         return false;
     }
     // A CONSTANT list `let`-bound and read ONLY through its element/rest PATTERN binders — `(let (((list a
@@ -6061,127 +6204,18 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     // kept: the old `ListNew`-is-always-whole reasoning still holds for those.)
     if matches!(core_of(db, init), Core::ListNew { .. })
         && is_constant_compound(db, init)
-        && !binding_escapes_whole(db, init, scope)
+        && !uses.escapes_whole.contains(&init)
     {
         return false;
     }
     // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
-    let mut n = 0;
-    for &region in scope {
-        n += uses_in(db, region, init);
-    }
-    n >= 2
+    uses.count.get(&init).copied().unwrap_or(0) >= 2
 }
 
 /// Whether the node at `init` lowers to a COMPOUND heap value — a tuple or a record. These are the
 /// values whose only-projected form folds through rather than being built on the heap.
 fn is_compound_value(db: &mut Db, init: StructId) -> bool {
     matches!(core_of(db, init), Core::Tuple { .. } | Core::Record { .. })
-}
-
-/// Whether the binding `init` is used as a WHOLE VALUE anywhere in `scope` — i.e. referenced in any
-/// position OTHER than as the operand of a projection (`(. c i)` / `(. c field)`). A whole-value use
-/// (returned as the body's result, passed as a call argument, nested as an element of another compound,
-/// annotated, …) means the compound must actually exist at run time, so it is materialized on the heap.
-/// If every reference is a projection, the compound never needs to exist — each field read folds to the
-/// element directly — so this returns `false` and the binding is not kept. Mirrors the value-flow
-/// discipline `binding_escapes` uses in selection for Perceus drops, at the resolved layer.
-fn binding_escapes_whole(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
-    scope
-        .iter()
-        .any(|&region| ref_escapes_whole(db, region, init))
-}
-
-/// Whether a reference to `init` appears as a WHOLE-VALUE use within `node` (not merely as a projection
-/// operand). Recurses every sub-position; at a projection `(. operand i)`, a reference that IS the
-/// `operand` is a projection (does not escape), but the operand is still recursed in case it nests a
-/// whole-value use deeper (e.g. `(. (f c) 0)` uses `c` wholly as `f`'s argument).
-fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
-    match resolved_of(db, node) {
-        // A bare reference to the binding, in a non-projection position → a whole-value use.
-        Resolved::Ref { value } => value == init,
-        // A projection: if its operand is a DIRECT ref to `init`, that is a projection use (does not
-        // escape). Otherwise recurse the operand (it may nest a whole-value use).
-        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
-            if matches!(resolved_of(db, operand), Resolved::Ref { value } if value == init) {
-                false
-            } else {
-                ref_escapes_whole(db, operand, init)
-            }
-        }
-        Resolved::If { cond, then_, else_ } => {
-            ref_escapes_whole(db, cond, init)
-                || ref_escapes_whole(db, then_, init)
-                || ref_escapes_whole(db, else_, init)
-        }
-        Resolved::And { lhs, rhs, .. } => {
-            ref_escapes_whole(db, lhs, init) || ref_escapes_whole(db, rhs, init)
-        }
-        Resolved::Not { operand } => ref_escapes_whole(db, operand, init),
-        Resolved::Let { bindings, body } => {
-            bindings
-                .iter()
-                .any(|(_, v)| ref_escapes_whole(db, *v, init))
-                || ref_escapes_whole(db, body, init)
-        }
-        Resolved::Record { fields } => fields.values().any(|&v| ref_escapes_whole(db, v, init)),
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
-            elems.iter().any(|&e| ref_escapes_whole(db, e, init))
-        }
-        // A map literal uses each entry's key AND value as a whole value (both consumed into the map).
-        Resolved::Map { entries } => entries
-            .iter()
-            .any(|&(k, v)| ref_escapes_whole(db, k, init) || ref_escapes_whole(db, v, init)),
-        // A `(bin …)` construction uses each segment's value slot (and dependent size) as a whole value.
-        Resolved::Bin { segs } => segs.iter().any(|s| {
-            ref_escapes_whole(db, s.slot, init)
-                || matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(n) } if ref_escapes_whole(db, *n, init))
-                || matches!(&s.kind, crate::resolved::SegKind::Utf8 { size } if ref_escapes_whole(db, *size, init))
-        }),
-        Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
-        Resolved::Apply { head, args } => {
-            ref_escapes_whole(db, head, init)
-                || args.iter().any(|&a| ref_escapes_whole(db, a, init))
-        }
-        Resolved::Match { scrutinee, arms } => {
-            ref_escapes_whole(db, scrutinee, init)
-                || arms.iter().any(|(_, b)| ref_escapes_whole(db, *b, init))
-        }
-        // Effect control forms: a reference to `init` as a whole value can appear in a handler's init,
-        // any arm body, a resumption's value/next-state, or the handled/delegated body — recurse each.
-        Resolved::Handle {
-            init: seed,
-            arms,
-            body,
-        } => {
-            ref_escapes_whole(db, seed, init)
-                || arms.iter().any(|a| ref_escapes_whole(db, a.body, init))
-                || ref_escapes_whole(db, body, init)
-        }
-        Resolved::Resume { value, next_state } => {
-            ref_escapes_whole(db, value, init) || ref_escapes_whole(db, next_state, init)
-        }
-        Resolved::Host { body, .. } => ref_escapes_whole(db, body, init),
-        // A `SumPayload`/`BinField` reads a PIECE of the scrutinee (a payload / a decoded segment), not
-        // the whole value — like a projection operand, it is not a whole-value escape of `init`.
-        Resolved::SumPayload { .. }
-        | Resolved::BinField { .. }
-        | Resolved::MapField { .. }
-        | Resolved::Int(_)
-        | Resolved::Bool(_)
-        | Resolved::Str(_)
-        | Resolved::SymbolConst(_)
-        | Resolved::Bytes(_)
-        | Resolved::Char(_)
-        | Resolved::Float(_)
-        | Resolved::Unit
-        | Resolved::Prim(_)
-        | Resolved::Param { .. }
-        | Resolved::TypeVal(_)
-        | Resolved::Lambda { .. }
-        | Resolved::Extern { .. }
-        | Resolved::Poison(_) => false,
-    }
 }
 
 /// Whether the node at `init` lowers to a RUNTIME COMPUTATION — a core form that emits instructions
@@ -7791,130 +7825,6 @@ fn is_negation_of(db: &mut Db, a: StructId, b: StructId) -> bool {
         matches!(core_of(db, x), Core::Not { operand } if core_equiv(db, operand, y))
     };
     one_way(db, a, b) || one_way(db, b, a)
-}
-
-/// The number of times the binding whose initializer is `init` is REFERENCED within the resolved
-/// subtree rooted at `node` — a use is a `Resolved::Ref { value: init }` (the identity a reference to
-/// the binding resolves to). Walks the resolved tree structurally without lowering; a nested `let`
-/// that SHADOWS the name rebinds references below it to a different init, so those do not count (they
-/// resolve to the inner binding's occurrence, not `init`). Bounded by the subtree size.
-fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
-    match resolved_of(db, node) {
-        Resolved::Ref { value } => {
-            if value == init {
-                1
-            } else {
-                // A ref to ANOTHER binding — but its value may itself reference `init` (e.g. a later
-                // `let` binding's initializer). Do not descend through the ref target here: the walk
-                // over the enclosing structure already visits every initializer/body position, so
-                // counting the ref itself (0 for a different binding) avoids double-counting.
-                0
-            }
-        }
-        Resolved::If { cond, then_, else_ } => {
-            uses_in(db, cond, init) + uses_in(db, then_, init) + uses_in(db, else_, init)
-        }
-        Resolved::And { lhs, rhs, .. } => uses_in(db, lhs, init) + uses_in(db, rhs, init),
-        Resolved::Not { operand } => uses_in(db, operand, init),
-        Resolved::Let { bindings, body } => {
-            let mut n = 0;
-            for (_, value) in &bindings {
-                n += uses_in(db, *value, init);
-            }
-            n + uses_in(db, body, init)
-        }
-        Resolved::Record { fields } => {
-            let mut n = 0;
-            for value in fields.values() {
-                n += uses_in(db, *value, init);
-            }
-            n
-        }
-        Resolved::Member { operand, .. } => uses_in(db, operand, init),
-        Resolved::Bin { segs } => {
-            let mut n = 0;
-            for s in segs.iter() {
-                n += uses_in(db, s.slot, init);
-                match &s.kind {
-                    crate::resolved::SegKind::Bytes { size: Some(sz) } => {
-                        n += uses_in(db, *sz, init)
-                    }
-                    crate::resolved::SegKind::Utf8 { size } => n += uses_in(db, *size, init),
-                    _ => {}
-                }
-            }
-            n
-        }
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
-            let mut n = 0;
-            for &e in elems.iter() {
-                n += uses_in(db, e, init);
-            }
-            n
-        }
-        Resolved::Map { entries } => {
-            let mut n = 0;
-            for &(k, v) in entries.iter() {
-                n += uses_in(db, k, init) + uses_in(db, v, init);
-            }
-            n
-        }
-        Resolved::Proj { operand, .. } => uses_in(db, operand, init),
-        Resolved::Annot { expr, .. } => uses_in(db, expr, init),
-        Resolved::Apply { head, args } => {
-            let mut n = uses_in(db, head, init);
-            for a in args.iter() {
-                n += uses_in(db, *a, init);
-            }
-            n
-        }
-        // A match: the scrutinee and every arm body may reference the binding. (A literal pattern is a
-        // constant, not a reference.) The scrutinee runs once; each arm body is a distinct use position.
-        Resolved::Match { scrutinee, arms } => {
-            let mut n = uses_in(db, scrutinee, init);
-            for (_, body) in &arms {
-                n += uses_in(db, *body, init);
-            }
-            n
-        }
-        // A `SumPayload`/`BinField`/`MapField` reads the scrutinee at run time (a payload / a decoded
-        // segment / a keyed lookup); if the scrutinee is `init`, that is a use of the binding.
-        Resolved::SumPayload { scrutinee, .. }
-        | Resolved::BinField { scrutinee, .. }
-        | Resolved::MapField { scrutinee, .. } => usize::from(scrutinee == init) as u32,
-        // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
-        // resumption's value/next-state, or the handled/delegated body — count each position.
-        Resolved::Handle {
-            init: seed,
-            arms,
-            body,
-        } => {
-            let mut n = uses_in(db, seed, init);
-            for arm in arms.iter() {
-                n += uses_in(db, arm.body, init);
-            }
-            n + uses_in(db, body, init)
-        }
-        Resolved::Resume { value, next_state } => {
-            uses_in(db, value, init) + uses_in(db, next_state, init)
-        }
-        Resolved::Host { body, .. } => uses_in(db, body, init),
-        // Leaves and non-referencing forms contribute nothing.
-        Resolved::Int(_)
-        | Resolved::Bool(_)
-        | Resolved::Str(_)
-        | Resolved::SymbolConst(_)
-        | Resolved::Bytes(_)
-        | Resolved::Char(_)
-        | Resolved::Float(_)
-        | Resolved::Unit
-        | Resolved::Prim(_)
-        | Resolved::Param { .. }
-        | Resolved::TypeVal(_)
-        | Resolved::Lambda { .. }
-        | Resolved::Extern { .. }
-        | Resolved::Poison(_) => 0,
-    }
 }
 
 /// Lower an ARITHMETIC application: FOLD it when its operands fold to constants — evaluate at compile

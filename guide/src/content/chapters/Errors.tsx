@@ -164,13 +164,33 @@ export default function Errors() {
 
       <Exercise
         id="errors:2"
-        prompt={<>Multiply 6 and 7 with a checked op and unwrap it, so the answer is <C>42</C>.</>}
-        starter={`(def (main)
-  (Option.expect (Int64.checked-mul 6 ?) "overflow"))`}
-        solution={`(def (main)
-  (Option.expect (Int64.checked-mul 6 7) "overflow"))`}
-        expected="42"
-        hint={<>Fill in the second factor: <C>7</C>.</>}
+        prompt={
+          <>
+            A pattern can match a literal <em>inside</em> a constructor. Here <C>describe</C> is called with{" "}
+            <C>(Some 5)</C>; fill the payload pattern so the first arm fires only for that exact value and
+            returns <C>100</C>. (Get it wrong and it falls through to the binding arm, returning <C>5</C>.)
+          </>
+        }
+        starter={`(def (describe o)
+  (match o
+    ((Some ?) 100)
+    ((Some x) x)
+    ((None _) (- 0 1))))
+(def (main) (describe (Some 5)))`}
+        solution={`(def (describe o)
+  (match o
+    ((Some 5) 100)
+    ((Some x) x)
+    ((None _) (- 0 1))))
+(def (main) (describe (Some 5)))`}
+        expected="100"
+        hint={
+          <>
+            The first arm should match <C>(Some 5)</C> exactly, so the literal in the pattern is <C>5</C>.
+            A pattern that names a value (like <C>x</C>) binds anything; a literal (<C>5</C>) matches only
+            itself.
+          </>
+        }
       />
     </article>
   );
