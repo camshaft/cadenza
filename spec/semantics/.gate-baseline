@@ -1440,6 +1440,7 @@ pass	concatenating an empty string on the right is the identity
 pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
 pass	concatenating tuples preserves each element's type
+pass	concatenating tuples with a runtime element reads elements from both operands
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
@@ -1632,6 +1633,8 @@ pass	membership of a runtime element in a runtime-element set
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
 pass	merging records that share a field name is rejected
+pass	merging records with a runtime field value carries both operands' fields
+pass	merging records with runtime values on both sides binds each field to its own value
 pass	merging two records with disjoint fields unions their fields
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
@@ -1786,6 +1789,7 @@ pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
+pass	runtime tuple concatenation preserves element order across the seam
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
@@ -1806,6 +1810,7 @@ pass	splicing an integer literal directly is a type error
 pass	splitting a tuple at a position yields a prefix and a suffix
 pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
+pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	string concatenation
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
