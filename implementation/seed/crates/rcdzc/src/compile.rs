@@ -3632,6 +3632,19 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
             continue;
         };
+        // A match whose lowering POISONS — a malformed pattern (`(tuple a b c)` against a 2-tuple →
+        // CDZ0201), a non-linear binder, an unbound scrutinee — is being REJECTED; its arm binders never
+        // bind, so "unused binding" on them is CONSEQUENT noise, not an INDEPENDENT problem. Skip the
+        // whole match's binder pass, deferring to the poison the SAME lowering produces (the authority the
+        // CDZ0201 comes from — the two can never disagree). This closes a check≡compile discrepancy: the
+        // `compile` path bails at the first fault set before any warning is collected, so it shows ONLY the
+        // CDZ0201; the `diagnostics()`/`cdz check` path collects faults AND warnings, and without this
+        // guard it appended spurious CDZ0306s for the binders inside the rejected pattern.
+        //= spec/capabilities/diagnostics.md#diagnosis-reports-the-maximal-independent-set-in-one-pass
+        //# The compiler MUST recover from an error and report the maximal set of independent problems in one pass rather than only the first.
+        if matches!(crate::lower::core_of(db, id), crate::core::Core::Poison(_)) {
+            continue;
+        }
         for (pat, body) in arms.iter() {
             // A GUARD pattern `(guard <pat> <cond>)` binds names in `<pat>`, and its `<cond>` is a USE
             // site (`(guard x (> x 0))` reads `x`) — NOT a second binding. Split them: binders come from

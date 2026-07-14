@@ -28694,6 +28694,13 @@ mod diagnostics {
             .collect()
     }
 
+    /// EVERY diagnostic (faults + warnings) the `cdz check`/LSP path reports — so a test can assert on the
+    /// FULL set (e.g. that a consequent warning is NOT emitted alongside a primary fault).
+    fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        let mut db = Db::load(parse(src));
+        crate::diagnostics(&mut db)
+    }
+
     #[test]
     fn an_unused_binding_carries_a_verified_underscore_prefix_fix() {
         // The first MACHINE-APPLICABLE fix (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is
@@ -28795,6 +28802,57 @@ mod diagnostics {
             "a guard binder used in neither cond nor body still warns: {dead_guard:?}"
         );
         assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
+    }
+
+    /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
+    /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
+    /// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
+    /// CONSEQUENCE of the pattern fault, not an INDEPENDENT problem. This was a check≡compile discrepancy —
+    /// `cdz compile` bails at the first fault set (only the CDZ0201 shows), but `cdz check`/`diagnostics()`
+    /// collects faults AND warnings, and without the poison guard it appended spurious CDZ0306s. The
+    /// match-arm binder pass now skips a match whose `core_of` POISONS (the same lowering the CDZ0201 comes
+    /// from — they can never disagree).
+    #[test]
+    fn a_malformed_match_pattern_does_not_also_warn_its_binders_unused() {
+        // A too-wide tuple pattern → CDZ0201 ONLY; no CDZ0306 for `b`/`c` (inside the rejected pattern).
+        let tup =
+            "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b c) a))) (export f))";
+        let all = diags_of(tup);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+            "the malformed tuple pattern is rejected CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+            "no consequent CDZ0306 for a binder inside the rejected pattern: {all:?}"
+        );
+        // A malformed list-rest pattern (a binder after `..`) → same: CDZ0201 only, no CDZ0306.
+        let lst = "(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest b) a) (_ 0))) (export f))";
+        let all = diags_of(lst);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+            "the malformed list-rest pattern is rejected CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+            "no consequent CDZ0306 for a binder inside the rejected list pattern: {all:?}"
+        );
+        // NOT over-suppressed: a WELL-FORMED pattern whose body TRAPS (a poison in the BODY, not the
+        // pattern — the match's `core_of` is NOT a poison) still warns its genuinely-unused binders.
+        let trap_body = "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b) (trap \"x\")))) (export f))";
+        let u = unused_of(trap_body);
+        assert_eq!(
+            u.len(),
+            2,
+            "a well-formed pattern with a trapping body still warns its 2 unused binders: {u:?}"
+        );
+        // NOT over-suppressed: an ordinary well-formed match still warns a genuinely-unused binder.
+        assert_eq!(
+            unused_of("(module m (def (f (: o (Option Int64))) (match o ((Some x) 0) ((None) 1))) (export f))")
+                .len(),
+            1,
+            "a well-formed match's unused binder still warns"
+        );
     }
 
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
