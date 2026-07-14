@@ -770,6 +770,22 @@ the component type. The new work:
   flat n-ary arrow annotation) that unblocks the idiomatic multi-arg closure signature. +4 corpus (flat 2-arg
   beside the curried-spelling case; flat 3-arg; flat multi-arg with compound args; flat multi-arg with a
   compound result).
+- **✅ SUM + nested-collection COMPOUND results cross via `value-encode` COMPLETE `@a3c1485b`.** A closure
+  result crossed as `list<u8>` only for a byte-rope, a FIXED-shape compound (static template), or a bare
+  `List`/`Map`/`Set`; a SUM (`Option`/`Result`/a user sum) or a compound CONTAINING a variable-length element
+  (a tuple/record with a list/map/set inside) declined "no scalar host-boundary representation" — even though
+  the single-export value escape already renders these via the runtime `value-encode` op. Two changes: (1)
+  `lower::sum_shape_descriptor` gains a Tuple/Record arm (it already handled Sum/Nominal/List/Map/Set) —
+  `shape_of` recurses over the elements. (2) The SIX `ret_descriptor` classifications (the `call` result for
+  single/multi/mixed/distinct-sig producers + the round-trip consumer result for single + distinct-sig) now
+  fall back to `sum_shape_descriptor` for ANY result once it is not a scalar / byte-rope / fixed-template,
+  instead of only matching `List`/`Map`/`Set`. Safe general widening (`sum_shape_descriptor` → `None` for a
+  scalar/unrenderable shape; a fixed-shape compound still takes the cheaper static-template path first). An
+  unconstrained sum type arg (an `(Ok …)` whose `Err` type is never pinned) still correctly declines. +7
+  corpus (a `call` returning Option / a user sum / a tuple-of-list; a round-trip consumer returning Option / a
+  Result Err-pinned / a Result reaching both variants / a tuple-of-list). **The closure-RESULT matrix now
+  reaches EVERY value-encodable type — scalar, byte-rope, fixed compound, collection, SUM, and
+  compound-containing-collection — across every closure shape.**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
