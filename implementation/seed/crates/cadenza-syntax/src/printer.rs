@@ -398,6 +398,21 @@ impl<'a> Printer<'a> {
                 let sigil = if head == "unquote" { "," } else { ",@" };
                 return self.unquote(sigil, args[0], parent_prec);
             }
+            // ---- annotation `(@ name form)` -> `@name form` ----
+            // The general-purpose annotation sigil (inline-never/inline-always today, and whatever the
+            // language grows). `args = [name, form]`; the name prints bare and the form follows on the
+            // same line — the idiomatic ML form the parser re-reads (a nested `(@ …)` recurses here, so
+            // stacked `@a @b def …` round-trips). The name is a plain leaf, emitted via `emit_name`.
+            if head == "@"
+                && args.len() == 2
+                && let Some(name) = self.a.as_name(args[0])
+            {
+                self.doc.word("@");
+                self.doc.word(emit_name(name));
+                self.doc.word(" ");
+                self.expr(args[1], parent_prec);
+                return;
+            }
             // ---- keyword forms ----
             match head.as_str() {
                 "let" if self.is_let_shape(args) => return self.print_let(args, parent_prec),
@@ -406,18 +421,6 @@ impl<'a> Printer<'a> {
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
-                // An INLINE-POLICY marker wrapping a def: `(inline-never (def …))` prints as
-                // `inline-never def …` (the keyword prefixing the def), the idiomatic ML form the parser
-                // accepts (rather than the generic `inline-never(def …)` application fallback). `args` is
-                // the wrapper's single operand — the inner `(def …)`.
-                kw @ ("inline-never" | "inline-always")
-                    if args.len() == 1 && self.a.head_name(args[0]) == Some("def") =>
-                {
-                    self.doc.word(kw);
-                    self.doc.word(" ");
-                    self.expr(args[0], parent_prec);
-                    return;
-                }
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "effect" if self.is_effect_shape(args) => return self.print_effect(args),
@@ -2577,6 +2580,40 @@ mod tests {
         // a NAME operand or a `)`-terminated operand needs no parens.
         assert_eq!(print(&sexpr::read("(. x 0)").unwrap(), 80), "x.0");
         assert_eq!(print(&sexpr::read("(. (f a) 0)").unwrap(), 80), "f(a).0");
+    }
+
+    #[test]
+    fn annotation_sigil_round_trips() {
+        // `@name form` is the general-purpose annotation sigil, canonically `(@ name form)` — the same
+        // sigil↔head pattern as `.` member-access and `,@` unquote-splicing. It prints back to the `@`
+        // surface and re-reads to the same head form. `inline-never`/`inline-always` are the two names
+        // the compiler consumes today; the surface is name-agnostic.
+        assert_eq!(
+            assert_roundtrip("@inline-never def big(x) = x * 7", 80),
+            "@inline-never def big(x) = x * 7"
+        );
+        // ML surface desugars to the `@`-headed canonical form; the s-expr surface reads it directly.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@inline-never def big(x) = x * 7").arenas),
+            "(@ inline-never (def (big x) (* x 7)))"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read("(@ inline-always (def (f x) (+ x 1)))").unwrap(),
+                80
+            ),
+            "@inline-always def f(x) = x + 1"
+        );
+        // A name-agnostic annotation (not an inline-policy name) round-trips just the same.
+        assert_eq!(
+            assert_roundtrip("@deprecated def old(x) = x", 80),
+            "@deprecated def old(x) = x"
+        );
+        // Stacked annotations nest, since the annotated form parses in prefix position.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@a @b def f(x) = x").arenas),
+            "(@ a (@ b (def (f x) x)))"
+        );
     }
 
     #[test]

@@ -1281,8 +1281,8 @@ pub struct Db {
     /// non-recursive call β-reduces); `inline-never` forces the def to be EMITTED as ONE real wasm
     /// function, every call a `Core::Call` (routed through `emit_call_or_specialize`, so a generic /
     /// `const`-param `inline-never` def still SPECIALIZES — "avoid the inline but keep polymorphism").
-    /// Populated ONCE by `strip_inline_policy` at load (which unwraps the `(inline-never (def …))` wrapper
-    /// in place, so every downstream reader sees a plain `(def …)`), keyed by the def's BODY occ — the
+    /// Populated ONCE by `strip_inline_policy` at load (which unwraps the `(@ inline-never (def …))`
+    /// annotation in place, so every downstream reader sees a plain `(def …)`), keyed by the def's BODY occ — the
     /// identity `lower`/`layout` (`def_index_by_body`) already use. Empty for a program with none.
     pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
 
@@ -1337,9 +1337,9 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
-        // Normalize away an `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper on
-        // a definition BEFORE `scan_top_level`: the policy is a declaration the emitter consumes, not part
-        // of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
+        // Normalize away an `(@ inline-never (def …))` / `(@ inline-always (def …))` INLINE-POLICY
+        // annotation on a definition BEFORE `scan_top_level`: the policy is a declaration the emitter
+        // consumes, not part of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
         // the `inline_never` / `inline_always` set (Addendum 4). Done here like `strip_def_docs`, so every
         // downstream reader sees a plain `(def …)` and the policy lives only in the sets.
         let (inline_never, inline_always) = strip_inline_policy(&mut ast);
@@ -3203,18 +3203,21 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// Unwrap every `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper in place, and
-/// return `(inline_never, inline_always)` — the sets of the wrapped defs' BODY occurrences
-/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). The policy is a declaration the
-/// emitter consumes (not part of the def shape every reader walks), so it is removed here BEFORE
-/// `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers — leaving every
-/// downstream reader a plain `(def …)`.
+/// Unwrap every INLINE-POLICY annotation `(@ inline-never (def …))` / `(@ inline-always (def …))` in
+/// place, and return `(inline_never, inline_always)` — the sets of the annotated defs' BODY occurrences
+/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the two
+/// inline-policy names and leaves any other annotation for a later pass / reject. The policy is a
+/// declaration the emitter consumes (not part of the def shape every reader walks), so it is removed here
+/// BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers —
+/// leaving every downstream reader a plain `(def …)`.
 ///
-/// The wrapper NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's children),
-/// so its `StructId` now identifies the def and every parent that already pointed at the wrapper needs no
-/// update — the inner def node is left orphaned (harmless; unreferenced). The recorded key is the def's
-/// BODY occurrence (`def` tail index 1 = child index 2), the identity `lower`/`layout` key on
-/// (`def_index_by_body`). A wrapper around a NON-def (or a malformed def) is left untouched.
+/// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
+/// children), so its `StructId` now identifies the def and every parent that already pointed at the
+/// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
+/// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
+/// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
+/// one whose name is not an inline-policy name, is left untouched.
 fn strip_inline_policy(
     ast: &mut Arenas,
 ) -> (
@@ -3225,18 +3228,22 @@ fn strip_inline_policy(
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
-        // `(inline-never INNER)` / `(inline-always INNER)` — exactly one operand, an inner `(def …)`.
-        let (never, inner) = if let Some(tail) = ast.as_form(id, "inline-never") {
-            (true, tail.first().copied())
-        } else if let Some(tail) = ast.as_form(id, "inline-always") {
-            (false, tail.first().copied())
-        } else {
+        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only the two
+        // inline-policy names are consumed here; every other `@` annotation is left in place.
+        let Some(tail) = ast.as_form(id, "@") else {
             continue;
         };
-        let Some(inner) = inner else { continue };
+        let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
+            continue;
+        };
+        let never = match ast.as_name(name_occ) {
+            Some("inline-never") => true,
+            Some("inline-always") => false,
+            _ => continue,
+        };
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
-            continue; // a wrapper around a non-def — leave untouched (a well-formedness concern elsewhere)
+            continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
         };
         // The def's BODY occurrence: `def_tail = [SIG, BODY, …]`, so index 1 (a well-formed def has ≥2).
         let Some(&body) = def_tail.get(1) else {

@@ -513,7 +513,7 @@ the callee's own), closing the caller-capture gap the `own`-only check missed.
 
 ---
 
-# ADDENDUM 4: INLINE POLICY — `inline-never` / `inline-always`, default always-inline, heuristic deferred
+# ADDENDUM 4: INLINE POLICY — `@inline-never` / `@inline-always`, default always-inline, heuristic deferred
 
 Status: LANDED (`inline-never` fully; `inline-always` recorded + conflict-rejected, inert until the
 heuristic; cost heuristic still deferred). Operator's concern (2026-07-14): the compiler inlines EVERY
@@ -523,9 +523,21 @@ helper called 3× → 15 muls). Wanted: author control over inlining, in the Rus
 `db.inline_never`/`db.inline_always`; `lower.rs` routes an `inline_never` call to the shared
 `emit_call_or_specialize` (factored out of `lower_recursive_call_or_decline`) so it emits-once-and-calls
 AND still specializes a generic/`const` callee; `compile.rs` rejects `inline-always` on a recursive def
-(CDZ0201); `cadenza-syntax` printer+parser do `inline-never`/`inline-always def …` (round-trips). Verified:
-`inline-never big` ×2 → 3 muls not 6; `inline-never`+`const` dict → 0 `call_indirect`, one fn per distinct
-dict; `inline-always` on recursion → CDZ0201.
+(CDZ0201). Verified: `inline-never big` ×2 → 3 muls not 6; `inline-never`+`const` dict → 0 `call_indirect`,
+one fn per distinct dict; `inline-always` on recursion → CDZ0201.
+
+## SURFACE (operator, 2026-07-14): a GENERAL-PURPOSE `@annotation`, not a bespoke keyword prefix
+The inline policy is expressed as an ANNOTATION: `@inline-never def …` / `@inline-always def …`. `@name
+form` is the general-purpose annotation sigil, canonically `(@ name form)` — the same sigil↔head pattern as
+`.` member-access (`(. obj key)`) and `,@` unquote-splicing. This was chosen OVER a dedicated keyword-prefix
+form (`inline-never def …` → `(inline-never (def …))`) so future annotations (`@deprecated`, `@test`, …)
+layer in with NO new lexer/parser/printer rules: one `Kind::At` token, one prefix-position parse arm
+(`@<ident> <form>` → `(@ name form)`, nesting for stacked `@a @b def …`), one printer arm, and the compiler
+consumes the names it recognizes (`strip_inline_policy` matches head `@` + name
+`inline-never`/`inline-always`) while leaving every other annotation in place. The name is surface-agnostic
+— the s-expr co-surface reads `(@ inline-never (def …))` directly and the ML surface desugars
+`@inline-never def …` to it. `@` in an error position (`@` with no name, `@)`, `@=>`) degrades to a reported
+error + recovery, so recovery tests that needed a genuinely-unhandled junk glyph moved from `@` to `$`.
 
 ## Why Cadenza is NOT Rust here (this reframes the whole feature)
 In Rust, codegen emits CALLS and inlining is an OPTIMIZATION on top. In Cadenza, the compiler LOWERS BY

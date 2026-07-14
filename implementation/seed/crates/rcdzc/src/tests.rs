@@ -35600,7 +35600,7 @@ mod stage1 {
         // the calls do NOT constant-fold away): called twice, INLINED it emits 6 muls, EMITTED-ONCE it
         // emits 3. Assert the module has exactly 3 muls (emit-once); the un-marked control emits 6.
         let src = "(module m \
-             (inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
+             (@ inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
              (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         let mul_count = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Mul));
@@ -35628,7 +35628,7 @@ mod stage1 {
         // erase). Both hold: the dict's `op` is INLINED into the specialized copy (NO `call_indirect`, no
         // runtime record) and that copy is emitted once + called. Runs to 145; asserts 0 `call_indirect`.
         let src = "(module m \
-             (inline-never \
+             (@ inline-never \
                (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
                  ((. d op) ((. d op) x)))) \
              (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
@@ -35655,7 +35655,7 @@ mod stage1 {
                 "m",
                 crate::codec::encode(&parse(
                     "(module m \
-                       (inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
+                       (@ inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
                        (def (main) (loop-n 5)) (export main))",
                 )),
             )],

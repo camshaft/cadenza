@@ -717,21 +717,28 @@ impl<'a> Parser<'a> {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
             }
-            Kind::Ident
-                if matches!(self.cur_text(), "inline-never" | "inline-always")
-                    && self.nth_kind(1) == Kind::Ident
-                    && keyword(self.nth_text(1)) == Some(Keyword::Def) =>
-            {
-                // An INLINE-POLICY marker on a def: `inline-never def f(x) = …` → `(inline-never (def …))`
-                // (Addendum 4). `inline-never`/`inline-always` are not lexer keywords (hyphenated idents),
-                // so recognized here by text ONLY when immediately followed by `def`; a bare identifier
-                // `inline-never` used as a value stays an ordinary name (the `None` arm below).
-                let kw_text = self.cur_text().to_string();
-                self.bump(); // the marker
-                let kw = self.name(kw_text, span);
-                let def = self.def_expr();
-                let dspan = span.merge(self.prev_span());
-                self.list(vec![kw, def], dspan)
+            // An ANNOTATION: `@name form` -> `(@ name form)`. `@` is a GENERAL-PURPOSE annotation
+            // sigil — the name is any ident (`inline-never`, `inline-always`, and whatever future
+            // annotations the language grows); the compiler consumes the ones it recognizes and rejects
+            // the rest. Stacked annotations nest, since the wrapped form is itself parsed in prefix
+            // position: `@a @b def …` -> `(@ a (@ b (def …)))`.
+            Kind::At => {
+                self.bump(); // `@`
+                let head = self.name("@", span);
+                let name = if self.at(Kind::Ident) {
+                    let name_span = self.cur_span();
+                    let t = self.bump().unwrap();
+                    self.name(self.text(t), name_span)
+                } else {
+                    self.error("expected an annotation name after `@`");
+                    self.error_node(self.cur_span())
+                };
+                // The annotated form parses in PREFIX position (no postfix): a following juxtaposed
+                // top-level form that begins with `(` must not be swallowed as a call of the def. A
+                // `def`/other keyword dispatches to its full form; a nested `@` recurses here.
+                let form = self.prefix();
+                let full = span.merge(self.prev_span());
+                self.list(vec![head, name, form], full)
             }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
@@ -986,15 +993,6 @@ impl<'a> Parser<'a> {
             .get(self.pos + n)
             .map(|t| t.kind)
             .unwrap_or(Kind::Error)
-    }
-
-    /// The source text of the token `n` ahead of the cursor (`""` past the end). The look-ahead
-    /// companion of `cur_text`, used to peek a hyphenated keyword-ident (`inline-never def …`).
-    fn nth_text(&self, n: usize) -> &'a str {
-        self.tokens
-            .get(self.pos + n)
-            .map(|&t| self.text(t))
-            .unwrap_or("")
     }
 
     /// Parse `( e, … )` and return the argument occurrences.
@@ -2954,8 +2952,8 @@ mod tests {
     fn a_single_stray_symbol_does_not_cascade() {
         // One bad token in the middle of an otherwise-fine call yields a small, bounded number of
         // errors — recovery resynchronizes rather than mis-parsing everything after it.
-        let p = read_ml("f(a, @, c)");
-        assert!(!p.ok(), "the stray `@` is reported");
+        let p = read_ml("f(a, $, c)");
+        assert!(!p.ok(), "the stray `$` is reported");
         assert!(
             p.errors.len() <= 2,
             "one stray token stays bounded, got {} errors: {:?}",
@@ -3067,7 +3065,7 @@ mod tests {
     #[test]
     fn recovers_the_let_around_a_bad_binding() {
         // A stray value in a binding is isolated: the `let` shape and its body survive.
-        let p = read_ml("let x = @ in x + 1");
+        let p = read_ml("let x = $ in x + 1");
         assert!(!p.ok());
         let a = &p.arenas;
         let tail = a.as_form(a.root, "let").expect("still a let form");
@@ -3080,7 +3078,7 @@ mod tests {
     fn keyword_boundary_is_not_swallowed_by_a_bad_condition() {
         // A stray symbol where the `if` condition belongs must not eat the `then` — the rest of the
         // form still parses, so we get an `(if …)` with three children.
-        let p = read_ml("if @ then a else b");
+        let p = read_ml("if $ then a else b");
         assert!(!p.ok());
         let a = &p.arenas;
         let if_form = a.as_form(a.root, "if").expect("still an if form");
