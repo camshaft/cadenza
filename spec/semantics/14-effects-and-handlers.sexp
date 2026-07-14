@@ -1432,6 +1432,23 @@
                 ((. List len) xs))) (export main)))
   (output (: 3 Int64)))
 
+(case "a STRING-result effect op resumes with a string that folds through a concat"
+  (doc    "The effect fold's value column carries a heap STRING: an operation returning `String` is resumed
+           with a string literal, and that performed value flows into `String.concat` in the continuation.
+           `Env.name : Unit -> String`, arm `(name (u) s (resume \"cdz\" s))`, so `(Env.name)` yields the heap
+           string `\"cdz\"`; the body `(String.concat (Env.name) \"!\")` appends `\"!\"`, giving `\"cdz!\"`.
+           Pins that a performed String resume value threads through the fold like any scalar and composes
+           under a heap string operation — the String companion of the tuple/list value-column cases,
+           exercising the value-heap runtime for the resume value rather than an immediate. (wasm: the rust
+           target declines — it lacks the value-heap/String emission the component-model backend has, the
+           same backend-parity gap as the list-building cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Env (op name (-> Unit String)))
+            (def (main)
+              (handle Env 0 ((name (u) s (resume "cdz" s)))
+                (String.concat (Env.name) "!"))) (export main)))
+  (output (: "cdz!" String)))
+
 (case "a recursive walk threads TWO effects at once — a fresh-index counter and a running total"
   (doc    "The full compiler-pass shape: ONE recursive walk that reads a fresh index from `Idx` AND folds a
            running total through `Tot`, under TWO nested handlers, each threading its own state independently.
