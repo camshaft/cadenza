@@ -39079,6 +39079,40 @@ mod stage1 {
              `typeval_of` fixes it): depth 200→400 grew the node count {ratio:.1}× (n200={n200}, \
              n400={n400}); linear is ~2×, the O(depth²) blowup was ~4×"
         );
+
+        // The TUPLE and RECORD type constructors are the same-mechanism TWINS (they also went through the
+        // `reduce_ctor`→`encode_typeval` round-trip until they got the direct-build fast path in
+        // `typeval_of`). Assert the arena stays O(depth) for a deeply-nested `(Tuple (Tuple … Int64) Int64)`
+        // and `(Record (f (Record …)))` too, so a regression on EITHER twin is caught here.
+        let wrap_tuple: fn(&str) -> String = |t| format!("(Tuple {t} Int64)");
+        let wrap_record: fn(&str) -> String = |t| format!("(Record (f {t}))");
+        for (label, wrap) in [("Tuple", wrap_tuple), ("Record", wrap_record)] {
+            let src = |depth: usize| {
+                let mut ty = String::from("Int64");
+                for _ in 0..depth {
+                    ty = wrap(&ty);
+                }
+                format!("(module m (def (g (: x {ty})) x) (def (main) 0) (export main))")
+            };
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src(4))));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a nested {label}-type annotation compiles with no error diagnostics: {diags:?}"
+            );
+            let base = nodes_after_check(&src(50)) as f64;
+            let t200 = nodes_after_check(&src(200)) as f64 - base;
+            let t400 = nodes_after_check(&src(400)) as f64 - base;
+            let ratio = t400 / t200.max(1.0);
+            assert!(
+                ratio < 3.0,
+                "a deeply-nested {label}-type annotation must leave the arena O(depth), not O(depth²) (the \
+                 `reduce_ctor`→`encode_typeval` twin of the collection ctors; the direct `Ty` build fixes \
+                 it): depth 200→400 grew the node count {ratio:.1}× (t200={t200}, t400={t400}); linear is \
+                 ~2×, the O(depth²) blowup was ~4×"
+            );
+        }
     }
 
     #[test]
