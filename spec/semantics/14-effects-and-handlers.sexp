@@ -121,6 +121,24 @@
   (host-calls (call ask.ask) (call ask.ask))
   (output (: 7 Int64)))
 
+(case "a delegated host effect composes with the value-heap runtime"
+  (doc    "Witnesses that a program may BOTH delegate an effect to the host AND use the value-heap runtime
+           in one component (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
+           Responses composed with the runtime's collection operations). `ask` is delegated to the host; its
+           returned value is used as a KEY inserted into a runtime map. The component imports TWO interfaces —
+           the effect (as `host`) and the value-heap runtime (as `heap`) — and the boundary threads both: the
+           host response for `ask.ask` and the runtime's `map-insert`/`map-size` ops. With `ask.ask`
+           responding 2, inserting key 2 into the map {1: 10} yields two distinct keys, so `Map.size` is 2 —
+           a deterministic function of the input, the recorded response, and the runtime's semantics.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (Map.size (Map.insert (map (1 10)) (ask.ask) 20)))) (export main)))
+  (host-responses (respond ask.ask (: 2 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 2 Int64)))
+
 (case "an effect discharged by a handler does not escape to the manifest"
   (doc    "Witnesses capabilities-and-effects.md #An Effect That Does Not Escape Is Discharged By A
            Handler and #An Effect Discharged By An In-Program Handler Does Not Appear In The Manifest:

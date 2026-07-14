@@ -233,16 +233,53 @@ pub fn register_callable(ast: &Arenas, decls: &[ModuleDecl], defs: &mut Vec<Def>
             .map(<[StructId]>::to_vec)
             .unwrap_or_default();
         for member in members {
-            register_member_fn(ast, member, defs);
+            register_fn_def(ast, member, defs);
         }
     }
 }
 
-/// Register a single `(def (f p…) body)` member as an internal callable def, if it is a FUNCTION with
-/// parameters. A value/nullary/non-def member registers nothing. (A nested `(module …)` member is handled
-/// by its OWN `ModuleDecl` entry in `decls` — `register_callable` iterates every module — so it need not
-/// recurse here.)
-fn register_member_fn(ast: &Arenas, member: StructId, defs: &mut Vec<Def>) {
+/// Register every DO-LOCAL FUNCTION declaration in the program as an internal callable def — the do-block
+/// analogue of [`register_callable`]. A do-local `(def (fac n) …)` is in scope in its own body (self-
+/// recursion) and a sibling's (mutual recursion) via `resolve::do_local_binds`, but a recursive call still
+/// needs a `db.defs` index to lower to a `Core::Call` — this gives it one, exactly as a module member gets.
+/// Walks the WHOLE user arena for `(do …)` blocks (a do-block may nest anywhere — inside a def body, a
+/// module member, another do), registering each block's `(def (f p…) BODY)` FUNCTION forms. A value/nullary
+/// do-local def is skipped (it folds/projects, no recursive-call lowering need). Registering globally by
+/// body is sound: the do-local name only RESOLVES inside its block (`do_local_binds`), so a body reached
+/// only through that resolution keys `def_by_body` to this def; a reference elsewhere never names it.
+pub fn register_do_local_callables(ast: &Arenas, defs: &mut Vec<Def>) {
+    // A do-form def whose BODY is ALREADY a registered def is a TOP-LEVEL (name-resolvable) def, not a
+    // genuine do-local — the program root `(do …)`'s defs, AND in a linked multi-file package each LIBRARY
+    // FILE's root `(do …)` defs (a `(module "lib" (do (def (parse …) …)))` clause), are top-level defs the
+    // package scan already registered. Re-registering one as an INTERNAL def would duplicate it under the
+    // same body (a `def_by_body` clobber) and shadow the real, name-resolvable, cross-file-linked def —
+    // breaking import resolution. Skip any def already present; register ONLY a genuinely do-LOCAL one.
+    let existing: crate::fxhash::FxHashSet<StructId> = defs.iter().filter_map(|d| d.body).collect();
+    // Scan every structure occurrence for a `(do …)` block, registering its direct `(def …)` FUNCTION
+    // children. A block nested inside another is reached because the scan visits every node, not by
+    // descending — so no recursion is needed, and each block's forms are its DIRECT children only (a def's
+    // body is a separate `(do …)` node, visited on its own).
+    for i in 0..ast.structure.len() {
+        let node = StructId(i as u32);
+        let Some(forms) = ast.as_form(node, "do") else {
+            continue;
+        };
+        for &form in forms {
+            // Skip a def whose body is already a top-level def (root / library-file scope) — see above.
+            if let Some(body) = ast.as_form(form, "def").and_then(|t| t.get(1).copied())
+                && existing.contains(&body)
+            {
+                continue;
+            }
+            register_fn_def(ast, form, defs);
+        }
+    }
+}
+
+/// Register a single `(def (f p…) body)` form as an internal callable def, if it is a FUNCTION with
+/// parameters. A value/nullary/non-def form registers nothing. Shared by module-member registration
+/// ([`register_callable`]) and do-local registration ([`register_do_local_callables`]).
+fn register_fn_def(ast: &Arenas, member: StructId, defs: &mut Vec<Def>) {
     let Some(tail) = ast.as_form(member, "def") else {
         return;
     };

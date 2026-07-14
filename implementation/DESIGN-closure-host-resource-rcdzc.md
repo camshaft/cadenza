@@ -680,12 +680,23 @@ the component type. The new work:
   `multi_closure_value_encode_resource_core_module` (which already threads plain exports) reusing
   `assemble_multi_closure_bytes_resource` (the same `list<u8>` envelope with plain slots). `cdz-run` already
   try-decodes. +4 corpus (List closure + plain `two`; Map closure + parameterized plain `inc`).
-- **REMAINING (all optional, none blocking):** a variable-length collection result on the distinct-sig/
-  round-trip paths (single/multi/mixed List/Map/Set are done); a compound closure ARG (host→guest decode —
+- **✅ VARIABLE-LENGTH collection RESULT on the DISTINCT-SIG path COMPLETE `@27a2e90e`.** Closures of
+  DIFFERENT signatures each returning a List/Map/Set now cross as G distinct resource types, each `call-g<n>`
+  value-encoding the returned handle against THAT group's shape descriptor. A collection group, a compound
+  group, a byte-rope group, and a scalar group all coexist with disjoint memory. Pieces: (1)
+  `serialize::SigGroup.ret_descriptor` + `distinct_sig_resource_core_module` — a collection group's `call-<g>`
+  builds the descriptor Bytes, value-encodes the dispatched handle, and copies the doc out PAST all
+  compound-template data (`bytes_out_off`); the shared memory + `cabi_realloc` fires whenever any group
+  crosses as `list<u8>`. (2) `emit_distinct_sig_resource` — per-group `ret_descriptor`; `SigGroupAbi.
+  ret_is_bytes` now = "crosses as `list<u8>`" (byte-rope OR compound OR collection). `cdz-run` already
+  try-decodes. +6 corpus (two distinct-sig list closures; a collection + a compound + a byte-rope + a scalar
+  group all in one component, each driven).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the round-trip path
+  (single/multi/mixed/distinct-sig List/Map/Set are done); a compound closure ARG (host→guest decode —
   harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
   `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
   fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
-  collection result is DONE on single-export + multi-export + mixed.**
+  collection result is DONE on single-export + multi-export + mixed + distinct-sig.**
 
 ## Risks / open questions
 

@@ -492,6 +492,34 @@
   (input  (do (def base 10) (def (add-base n) (+ n base)) (add-base 5)))
   (output (: 15 Int64)))
 
+; A do-local FUNCTION declaration is in scope in its OWN body (self-recursion) and in a sibling
+; function's body regardless of order (mutual recursion) — a function group in a `do` is mutually
+; visible, exactly like a module's members or the top-level defs, not strictly sequential like a VALUE
+; binding (whose scope stays backward-only: `(do (def x 5) (def x (+ x 10)) x)` = 15, the second `x`
+; seeing only the first). A recursive do-local function is registered as a standalone emittable function,
+; so its recursive call lowers to a runtime call — the same lowering a top-level or module-member
+; recursive function gets. A compiler that scopes a do-local declaration strictly sequentially reports
+; the self-name (or a forward sibling) unbound; one that models the function group runs the recursion.
+
+(case "a do-local function declaration is recursive"
+  (doc    "A do-local `(def (fac n) …)` calls ITSELF: the function is in scope in its own body (like a
+           top-level or module-member recursive def), and the self-call lowers to a runtime call. fac(5)
+           = 120. Pins that a do-local function group is self-visible, not strictly sequential — a value
+           declaration's backward-only scope does not constrain a function's recursion.")
+  (input  (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5)))
+  (output (: 120 Int64)))
+
+(case "two do-local function declarations are mutually recursive"
+  (doc    "`ev` calls `od`, `od` calls `ev` — a do-local function is visible in a sibling function's body
+           regardless of declaration order (mutual visibility, like a module's members). Neither reaches
+           a normal form by inlining, so both lower to standalone runtime functions calling each other.
+           ev(10) is true → 1. Pins that a do-local function group is mutually visible, so `ev`'s body
+           sees `od` declared AFTER it (a forward reference a strictly-sequential scope would reject).")
+  (input  (do (def (ev n) (if (= n 0) true (od (- n 1))))
+              (def (od n) (if (= n 0) false (ev (- n 1))))
+              (if (ev 10) 1 0)))
+  (output (: 1 Int64)))
+
 ; An ARGUMENT to a user-function call is an expression evaluated in the CALL SITE's scope, and its
 ; names bind there — a compiler that reduces a call by substituting the argument into the callee's
 ; body must not thereby resolve the argument's names in the callee's scope. The witnesses below pin

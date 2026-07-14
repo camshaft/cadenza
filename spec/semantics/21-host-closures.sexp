@@ -1929,3 +1929,130 @@
               (export mk) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) result on the DISTINCT-SIG path — closures of DIFFERENT
+; signatures each returning a List/Map/Set cross as G distinct resource types, each `call-g<n>` value-encoding
+; the returned handle against THAT group's shape descriptor. A collection group, a compound group, a byte-rope
+; group, and a scalar group can all coexist in one component (compound templates in the data section;
+; collection + byte-rope payloads written past them; scalars by value — none collide).
+
+(case "distinct-sig collection result — the Int64→List closure"
+  (doc    "`mki : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `mkb : () -> (-> Bool (List Int64))`
+           returns `(list (if b 1 0))` — distinct arg types → two resource types, each `call-g<n>` value-
+           encoding its own result. `call(mki-handle, 5)` → `(: (list 5 6) (List Int64))`.")
+  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mki (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "distinct-sig collection result — the Bool→List closure"
+  (doc    "The SAME two-resource program, driving the OTHER signature: `call(mkb-handle, true)` → `(: (list
+           1) (List Int64))`. Confirms each distinct-sig group value-encodes its own result.")
+  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mkb (: true Bool))
+  (output (: (list 1) (List Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection"
+  (doc    "FOUR distinct signatures, FOUR result MODES in one component: `lst` a List (value-encode), `pr` a
+           tuple (fixed template), `byt` a Bytes (raw byte-rope), `inc` an Int64 (by value). `call(lst-handle,
+           7)` → `(: (list 7 8) (List Int64))`. Pins the full disjoint-memory layout (compound template region
+           + value-encode/byte-rope payloads past it + scalar-by-value all coexisting).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   lst (: 7 Int64))
+  (output (: (list 7 8) (List Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
+  (doc    "The SAME 4-mode program, driving the COMPOUND group: `call(pr-handle, false)` → `(: (tuple false
+           0) (Tuple Bool Int64))` (a fixed-shape template, distinct from the value-encoded collection).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   pr (: false Bool))
+  (output (: (tuple false 0) (Tuple Bool Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope"
+  (doc    "The SAME program's byte-rope group: `call(byt-handle, 65)` → `(65)` (a raw byte list, written past
+           the compound template region).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   byt (: 65 Int64))
+  (output (65)))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
+  (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (by value, NOT list<u8>). Confirms
+           the scalar `call-<g>` is unaffected by the three sibling list-returning groups.")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) result on the ROUND-TRIP path — a consumer takes a produced
+; closure back, applies it, and RETURNS a List/Map/Set, value-encoded against its shape descriptor. This
+; closes the collection-result surface across EVERY closure shape. A collection consumer coexists with a
+; scalar consumer of the same closure.
+
+(case "round-trip: a consumer applies the handed-back closure and returns a List"
+  (doc    "`mk : () -> (-> Int64 Int64)` (adds 1); `app : (own<t>, Int64) -> (List Int64)` returns `(list x (g
+           x))`. Host produces via `mk`, hands to `app(handle, 5)` → the closure yields 6, so `value-encode`
+           renders `(: (list 5 6) (List Int64))`. Pins the variable-length collection result on the round-trip
+           path.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "round-trip: a consumer returns a Set built from the closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list x (g x) x))`. `app(handle,
+           3)` → `{3, 6}` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list x (g x) x)))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: ((. Set of) (list 3 6)) (Set Int64))))
+
+(case "round-trip: a consumer returns a Map from the closure result"
+  (doc    "`mk` adds 100; `app : (own<t>, Int64) -> (Map Int64 Int64)` = `(map (0 x) (1 (g x)))`. `app(handle,
+           5)` → `(: (map (0 5) (1 105)) (Map Int64 Int64))` in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 x) (1 (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (map (0 5) (1 105)) (Map Int64 Int64))))
+
+(case "round-trip: a scalar consumer + a List consumer of the same closure — the list"
+  (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aslist` returns `(list x (g x))`.
+           `aslist(handle, 8)` → `(: (list 8 9) (List Int64))`. Pins a scalar consumer and a collection
+           (value-encode) consumer of the same resource coexisting.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export asnum) (export aslist)))
+  (call   aslist (: 8 Int64))
+  (output (: (list 8 9) (List Int64))))
+
+(case "round-trip: a scalar consumer + a List consumer of the same closure — the scalar"
+  (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
+           a value-encoded document). Confirms the scalar consumer is unaffected by the sibling collection
+           consumer's value-encode.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aslist (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (export mk) (export asnum) (export aslist)))
+  (call   asnum (: 8 Int64))
+  (output (: 9 Int64)))

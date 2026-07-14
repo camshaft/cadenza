@@ -1454,6 +1454,9 @@ pub mod driver {
         /// Byte offset of the start of each line (line 1 is `starts[0] = 0`). Strictly ascending.
         starts: Vec<usize>,
         len: usize,
+        /// Whether the source is entirely ASCII. When true, char count == byte count, so a column is
+        /// `byte - line_start + 1` in O(1) — no per-call char scan of the line prefix.
+        ascii: bool,
     }
 
     impl LineIndex {
@@ -1468,23 +1471,30 @@ pub mod driver {
             LineIndex {
                 starts,
                 len: src.len(),
+                ascii: src.is_ascii(),
             }
         }
 
         /// The 1-based `(line, column)` of `byte` in `src` — byte-identical to [`line_col`], via a binary
-        /// search over the line starts (O(log lines)) plus a CHAR count of the found line's prefix
-        /// (O(chars-on-that-line), a small bounded slice — NOT the O(byte)-from-start scan `line_col` does).
-        /// `src` MUST be the source this index was built from. A byte past the end clamps (like `line_col`).
+        /// search over the line starts (O(log lines)) plus the column. `src` MUST be the source this index
+        /// was built from. A byte past the end clamps (like `line_col`).
         pub fn line_col(&self, src: &str, byte: usize) -> (usize, usize) {
             let byte = byte.min(self.len);
             // The line is the last start `<= byte`. `partition_point` gives the count of starts `<= byte`;
             // since `starts[0] == 0 <= byte` always, that count is `>= 1`, and the 1-based line IS the count.
             let line = self.starts.partition_point(|&s| s <= byte);
             let line_start = self.starts[line - 1];
-            // Column = CHARS from the line start to `byte`, + 1 — matching `line_col`'s per-char count
-            // exactly (it differs from a byte count only on multibyte input; the count is over ONE line's
-            // short prefix, so it is a small bounded cost, not the file-length scan).
-            let col = src[line_start..byte].chars().count() + 1;
+            // Column = CHARS from the line start to `byte`, + 1. For an ALL-ASCII source (the common case:
+            // Cadenza source is ASCII) char count == byte count, so this is O(1) — critical because a
+            // program on ONE long line (a corpus `(input …)` form, minified/generated code) makes the byte
+            // span `[line_start, byte)` grow to O(source_len), so the char-count fallback below was O(N) per
+            // call → O(N²) over N sites (a wide single-line `cdz exports`/`highlight`/`uses` = ~62% self in
+            // `do_count_chars`). A multibyte source keeps the exact char count (bounded by the line length).
+            let col = if self.ascii {
+                byte - line_start + 1
+            } else {
+                src[line_start..byte].chars().count() + 1
+            };
             (line, col)
         }
     }
@@ -3930,6 +3940,12 @@ mod tests {
             // report relies on (the O(N²)→O(N log N) fix must not shift any reported line:col). Cover an
             // empty line, a trailing newline, a byte past the end, AND multibyte chars (col counts CHARS,
             // so a `é`/emoji before the offset must count as one column, not its UTF-8 byte length).
+            // A LONG single ASCII line (400 chars, no newline) — the O(N²) trigger `cdz exports`/`highlight`
+            // hits on a corpus `(input …)` form: the column is `byte - line_start` chars from the ONE line
+            // start, so every offset takes the ASCII O(1) fast path and MUST still equal `line_col`.
+            let long_line: String = (0..400)
+                .map(|i| char::from(b'a' + (i % 26) as u8))
+                .collect();
             for src in [
                 "abc\ndef\nghi",
                 "",
@@ -3937,6 +3953,7 @@ mod tests {
                 "no trailing newline",
                 "x\n",                  // trailing newline → an empty final line
                 "café\nnaïve\n😀 tail", // multibyte: é (2 bytes), ï (2), 😀 (4)
+                long_line.as_str(),     // a long single ASCII line — the fast-path stress
             ] {
                 let idx = driver::LineIndex::new(src);
                 // Every valid byte boundary + a handful past the end.

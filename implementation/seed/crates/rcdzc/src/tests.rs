@@ -4057,6 +4057,124 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_with_one_boolean_constant_branch_becomes_a_short_circuit_connective() {
+        // `(if c a false)` IS `(and c a)` and `(if c true b)` IS `(or c b)` — an `if` with one
+        // boolean-constant branch is a short-circuit connective, so it emits branchless `i32.and`/`i32.or`
+        // (not a `select`) AND routes through the whole boolean-algebra fold family: `(if (> x 5) (> x 3)
+        // false)` collapses to `(> x 5)` (subsumption), `(if (< x y) (>= x y) false)` to `false`
+        // (complement). VETOED when the guarded branch holds a tail call (tail-loop conversion must win).
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if c a false)` → `i32.and`, no `select`/`if`.
+        let and_shape = lir("(: c Bool) (: a Bool)", "(if c a false)");
+        assert!(
+            and_shape.iter().any(|i| matches!(i, Lir::I32And))
+                && !and_shape
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c a false) → i32.and, got: {and_shape:?}"
+        );
+        // `(if c true b)` → `i32.or`, no `select`/`if`.
+        let or_shape = lir("(: c Bool) (: b Bool)", "(if c true b)");
+        assert!(
+            or_shape.iter().any(|i| matches!(i, Lir::I32Or))
+                && !or_shape
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c true b) → i32.or, got: {or_shape:?}"
+        );
+        // FOLD FAMILY UNLOCKED: subsumption collapses `(if (> x 5) (> x 3) false)` to a single compare
+        // (`gt_s`) with NO and/or/select/if.
+        let subsumed = lir("(: x Int64)", "(if (> x 5) (> x 3) false)");
+        assert!(
+            subsumed.iter().filter(|i| matches!(i, Lir::I64GtS)).count() == 1
+                && !subsumed
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::Select | Lir::If(_))),
+            "(if (> x 5) (> x 3) false) → (> x 5), got: {subsumed:?}"
+        );
+        // Complement collapses `(if (< x y) (>= x y) false)` to the constant `false` — no compares at all.
+        let complement = lir("(: x Int64) (: y Int64)", "(if (< x y) (>= x y) false)");
+        assert!(
+            !complement
+                .iter()
+                .any(|i| matches!(i, Lir::I64LtS | Lir::I64GeS | Lir::I32And | Lir::I32Or)),
+            "(if (< x y) (>= x y) false) → false, got: {complement:?}"
+        );
+        // TAIL-CALL VETO: a mutually-recursive `even`/`odd` whose bodies are `(if (= n 0) true/false
+        // (other …))` must NOT rewrite the call-bearing branch into a connective — it stays an `if` so the
+        // loop transform fires. Verified via runtime correctness at a depth that would blow a non-loop
+        // stack only if the transform were defeated; here we just confirm the values are right.
+        let eo = "(module m (def (even (: n Int64)) (if (= n 0) true (odd (- n 1)))) \
+                    (def (odd (: n Int64)) (if (= n 0) false (even (- n 1)))) (export even))";
+        let comp =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(eo))).expect("compile");
+        assert!(run_returns_with::<bool>(&comp, "even", &[Val::S64(10)]));
+        assert!(!run_returns_with::<bool>(&comp, "even", &[Val::S64(7)]));
+
+        // VALUE PARITY: the connective forms match `and`/`or` over the full truth table.
+        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: a Bool)",
+                    "(if c a false)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                c && a,
+                "(if c a false) @{c},{a}"
+            );
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: b Bool)",
+                    "(if c true b)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                c || a,
+                "(if c true b) @{c},{a}"
+            );
+        }
+        // TRAP SHIELDING: the guarded branch's trap stays shielded exactly as in the `if` — `(if c (> (/ 10
+        // n) 0) false)` = `(and c (> (/ 10 n) 0))`; at c=false the trapping `/` is NOT evaluated (no trap),
+        // at c=true it fires.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) false) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            0,
+            "c=false shields the trap"
+        );
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            "c=true reaches the trapping branch"
+        );
+    }
+
+    #[test]
     fn if_not_comparison_one_zero_computes_the_negated_predicate() {
         // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
         // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
@@ -11619,6 +11737,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_fixed_arity_grammar_form_with_too_many_operands_offers_a_delete_fix() {
+        // The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201);
+        // TOO MANY now carries a delete-the-surplus fix (the same surplus-arg delete an over-applied
+        // operator / a too-many-operand quote gets — `spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix). TOO FEW carries no fix (nothing to delete).
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("takes exactly"))
+                .unwrap_or_else(|| panic!("an arity fault is reported for {src}"))
+        };
+        for (src, want) in [
+            (
+                "(module m (def (main) (if true 1 2 3)) (export main))",
+                "if",
+            ),
+            (
+                "(module m (def (main) (and true false true)) (export main))",
+                "and",
+            ),
+            (
+                "(module m (def (main) (or true false true)) (export main))",
+                "or",
+            ),
+            (
+                "(module m (def (main) (not true false)) (export main))",
+                "not",
+            ),
+        ] {
+            let d = find(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "`{want}` too-many-operands carries a delete fix: {:?}",
+                d.fix
+            );
+        }
+        // TOO FEW (a missing `if` else / a 1-operand `and`) has nothing to delete — no fix.
+        let few = find("(module m (def (main) (if true 1)) (export main))");
+        assert!(
+            few.fix.is_none(),
+            "a too-few `if` has no surplus to delete: {:?}",
+            few.fix
+        );
+    }
+
+    #[test]
     fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
         // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful
         // ONLY inside a `` ` `` template. `unquote`/`unquote-splicing` are grammar heads now (reader-
@@ -12661,6 +12827,71 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message == crate::diag::OVER_APPLICATION_DECLINE),
             "the 'applied more arguments' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
+    fn over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix() {
+        // A BUILT-IN operation over-applied (`(Map.size m x)` — size takes one operand) is the built-in
+        // analogue of the user-function case above: `lower` emits the uncoded "`Map.size` is applied at
+        // the wrong arity — a built-in operation must be applied to exactly its arguments" decline AND
+        // `infer` the coded CDZ0203 over-application (with its delete-surplus fix). They are the same
+        // defect — `dedup_faults` now drops the weaker decline WHEN the coded reject is present, so the
+        // program reports ONE primary error carrying the fix. (An UNDER-application keeps the decline —
+        // no coded sibling — tested separately below.)
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. Map size) (map (1 2)) 99)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "built-in over-application = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
+        assert_eq!(
+            errors[0].fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the surviving over-application error carries the delete-surplus fix: {:?}",
+            errors[0].fix
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)),
+            "the built-in wrong-arity decline must not accompany the coded reject"
+        );
+        // An UNDER-application (`(List.at l)`, missing the index) has NO coded sibling — the wrong-arity
+        // decline is KEPT (it is the only report; nothing to delete, so no fix).
+        let under = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. List at) (list 1))) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        assert!(
+            under
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)),
+            "an under-application keeps the wrong-arity decline: {:?}",
+            under.diagnostics
         );
     }
 
@@ -14514,6 +14745,42 @@ mod match_engine {
         assert_eq!(
             out, "(: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64)))",
             "runtime map-of-lists renders the nested value type"
+        );
+    }
+
+    #[test]
+    fn a_runtime_string_is_indexed_by_scalar() {
+        // `String.at` on a RUNTIME string (a `String.concat`-built rope, not a constant that folds) reads
+        // the i-th UNICODE SCALAR as a one-scalar String, fallibly. `Core::StrAt` WALKS the UTF-8 buffer
+        // (a byte is a scalar START iff `(b & 0xC0) != 0x80`), skips `index` scalars, and `bytes-slice`s
+        // the scalar's byte span into `Some`. THREE fixes compose here: (1) `Core::StrAt` (the walk);
+        // (2) the runtime `value-encode` `Shape::Str` now FLATTENS a rope before reading its bytes (a
+        // slice/concat string rendered its raw handle bytes before); (3) a GENERIC sum escape renders its
+        // type ARGS (`(Option String)`, not the bare `Option`) via the parametric `Framed` frame. `é` is
+        // scalar 3 of "café", occupying 2 UTF-8 bytes → `(Some "é")` whole.
+        let Some(v) = run_heap_value_escape(
+            "(module m (def (at s i) ((. String at) ((. String concat) s \"\") i)) \
+               (def (main) (at \"café\" 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime String.at run");
+            return;
+        };
+        assert_eq!(
+            v, "(: (Some \"é\") (Option String))",
+            "runtime String.at reads the é scalar whole"
+        );
+
+        // Out of range (index >= scalar count) → None, consumed internally (byte-len) to avoid the escape.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (at s i) ((. String at) ((. String concat) s \"\") i)) \
+                   (def (main) (match (at \"hi\" 5) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "runtime String.at past the last scalar is None"
         );
     }
 
@@ -17165,6 +17432,53 @@ mod match_engine {
     }
 
     #[test]
+    fn quasiquote_selectively_evaluates_at_unquote_holes() {
+        // 12-metaprogramming §Quasiquote Constructs AST With Selective Evaluation: `(quasiquote T)`
+        // reifies like quote, EXCEPT an active `(unquote e)` hole EVALUATES `e` and inserts its value.
+        // `crate::quote::reify_active` rewrites the quasiquote, keeping an active unquote's operand LIVE
+        // (wrapped `(Ast.Int e)`) so `e` resolves/types as ordinary code. Each below compiles clean; the
+        // gate checks the built ASTs' values/equalities.
+        // An active unquote embedding a runtime (let-bound) value builds the same node a const fold does,
+        // so `` `(f ,x) `` (x=1) equals `(quote (f 1))`.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((x 1)) (= (quasiquote (f (unquote x))) (quote (f 1))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an unquoted runtime value builds the same AST as quote"
+        );
+        // An unquote MUST evaluate its operand — an UNBOUND name in it is the ordinary CDZ0101, NOT
+        // swallowed into inert quoted AST (metaprogramming.md: selective EVALUATION, not a second quote).
+        assert_eq!(
+            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
+                .as_deref(),
+            Some("CDZ0101"),
+            "an active unquote of an unbound name is rejected, not quoted"
+        );
+        // Quasiquote NESTS: ``(+ ,,x) evaluates only the INNER unquote (depth reaches 1 there); the outer
+        // `quasiquote`/`unquote` reify as inert structure. Compiles clean (builds the nested AST value).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((x 2)) (quasiquote (quasiquote (+ (unquote (unquote x))))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a nested quasiquote evaluates only the inner unquote"
+        );
+        // An ACTIVE splice (`,@`) is DEFERRED this increment — the quasiquote bails un-reified, so the
+        // existing splice-non-list check still fires: splicing a non-list (Int64 `5`) is CDZ0201.
+        assert_eq!(
+            reject_code("(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))")
+                .as_deref(),
+            Some("CDZ0201"),
+            "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_linked_list_folds_at_runtime() {
         // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
         // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
@@ -19150,6 +19464,41 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap() {
+        // A NON-literal integer EXPRESSION annotated a float — `(: n Float64)` with `n : Int64` — has no
+        // float literal spelling (the retype above is literal-only), so it converts with `(<Float>.of-int
+        // …)`, the annotation-position twin of the argument-site `of-int` coercion. Before this the
+        // annotation site offered NO int→float wrap for a non-literal (only the literal retype), while the
+        // ARGUMENT site did — so `(: n Float64)` declined a fix `(g n)` to a `Float64` param gave.
+        fn fix_of(src: &str) -> Option<String> {
+            first_error(src).fix.map(|f| f.replacement)
+        }
+        // Int64 source → a bare `of-int`.
+        assert_eq!(
+            fix_of("(module m (def (f (: n Int64)) (: n Float64)) (export f))"),
+            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
+            "non-literal Int64→Float64 wraps in of-int"
+        );
+        // NARROWER int source → widen to Int64 first (`of-int : Int64 → Float`).
+        assert_eq!(
+            fix_of("(module m (def (f (: n Int32)) (: n Float64)) (export f))"),
+            Some(format!(
+                "(Float64.of-int (Int64.of {}))",
+                crate::abi::WRAP_HOLE
+            )),
+            "non-literal Int32→Float64 nests the Int64 widening"
+        );
+        // A LITERAL still takes the cleaner retype (`3` → `3.0`), NOT the wrap.
+        assert_eq!(
+            first_error("(module m (def (f) (: 3 Float64)) (export f))")
+                .fix
+                .map(|f| f.replacement),
+            Some("3.0".to_string()),
+            "an int literal still retypes to a float literal, not an of-int wrap"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
@@ -19172,24 +19521,42 @@ mod diagnostics {
             "no coercion fix Bool→Int64 let-binder: {:?}",
             d.fix
         );
-        // The let-binder now shares the FULL `numeric_text_coercion_fix` (M65), not just int-width — so
-        // int→Float and String→Bytes coercions fire here exactly as at the argument/annotation sites.
-        // An int init annotated Float64 → wrap in `(Float64.of-int …)`.
-        let f = first_error("(module m (def (main) (let (((: x Float64) 5)) x)) (export main))");
+
+        // The let-binder now offers the SAME coercions the value annotation `(: value T)` does — not just
+        // the int-width `.of` above. Each covering fix must resolve in ONE shot (helper `fix_text`).
+        fn fix_text(src: &str) -> Option<String> {
+            let d = first_error(src);
+            d.fix.map(|f| f.replacement)
+        }
+        // int LITERAL annotated Float → retype `3` → `3.0` (the clean literal form, not an `of-int` wrap).
         assert_eq!(
-            f.fix.as_ref().map(|x| x.replacement.as_str()),
-            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE).as_str()),
-            "int init annotated Float64 wraps in of-int: {}",
-            f.message
+            fix_text("(module m (def (f) (let (((: x Float64) 3)) x)) (export f))").as_deref(),
+            Some("3.0"),
+            "int-literal→Float let-binder retypes to a float literal"
         );
-        // A String init annotated Bytes → wrap in `(String.to-bytes …)`.
-        let b =
-            first_error("(module m (def (f (: s String)) (let (((: b Bytes) s)) b)) (export f))");
+        // A NON-literal int init annotated Float → wrap in `(Float64.of-int …)` (no float literal spelling).
         assert_eq!(
-            b.fix.as_ref().map(|x| x.replacement.as_str()),
-            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE).as_str()),
-            "String init annotated Bytes wraps in to-bytes: {}",
-            b.message
+            fix_text("(module m (def (f (: n Int64)) (let (((: x Float64) n)) x)) (export f))"),
+            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
+            "non-literal int→Float let-binder wraps in of-int"
+        );
+        // integer-valued float LITERAL annotated Int → drop the `.0`.
+        assert_eq!(
+            fix_text("(module m (def (f) (let (((: x Int64) 3.0)) x)) (export f))").as_deref(),
+            Some("3"),
+            "float-literal→Int let-binder drops the fractional form"
+        );
+        // String init annotated Bytes → wrap in `(String.to-bytes …)` (total prelude conversion).
+        assert_eq!(
+            fix_text("(module m (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f))"),
+            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)),
+            "String→Bytes let-binder wraps in to-bytes"
+        );
+        // A payload-type value annotated its SUM → wrap in the matching variant constructor `(Some …)`.
+        assert_eq!(
+            fix_text("(module m (def (f) (let (((: x (Option Int64)) 5)) x)) (export f))"),
+            Some(format!("(Some {})", crate::abi::WRAP_HOLE)),
+            "Int→(Option Int64) let-binder wraps in Some"
         );
     }
 
@@ -19961,6 +20328,34 @@ mod stage1 {
         // A do-local declaration shadows an OUTER lexical binding for the forms that follow it: the inner
         // `(def x 99)` shadows the enclosing `let ((x 1))`, so the block yields 99.
         assert_eq!(run_main("(let ((x 1)) (do (def x 99) x))"), 99);
+    }
+
+    #[test]
+    fn a_do_local_function_declaration_is_recursive() {
+        // 02-binding-and-control "a do-local function declaration is recursive": a do-local `(def (fac
+        // n) …)` is in scope in its OWN body (self-recursion, like a top-level/module-member def, NOT
+        // strictly sequential like a value binding), and the self-call LOWERS — `register_do_local_callables`
+        // registers it as an internal `db.defs` entry so the recursive call is a `Core::Call`. fac(5)=120.
+        assert_eq!(
+            run_main("(do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5))"),
+            120
+        );
+        // MUTUAL recursion: `ev` calls `od`, `od` calls `ev` — a do-local function is visible in a sibling's
+        // body regardless of order (a forward reference a strictly-sequential scope would reject). ev(10) →
+        // true → 1.
+        assert_eq!(
+            run_main(
+                "(do (def (ev n) (if (= n 0) true (od (- n 1)))) \
+                     (def (od n) (if (= n 0) false (ev (- n 1)))) \
+                     (if (ev 10) 1 0))"
+            ),
+            1
+        );
+        // A do-local VALUE declaration stays STRICTLY sequential (backward-only) — the function
+        // mutual-visibility must not leak to values: the second `x` sees only the first → 15, and a
+        // forward VALUE reference is still unbound (checked in
+        // `a_do_local_declaration_scope_is_backward_only`).
+        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
     }
 
     #[test]
@@ -24332,6 +24727,23 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
+        // HOST + RUNTIME COMPOSITION: a host op result fed into a value-heap runtime op (`Map.insert` on the
+        // runtime `ask.ask` value imports the `"heap"` runtime; `ask` imports `"host"`). Previously declined
+        // ("a program that both delegates a host effect AND uses the value-heap runtime is not yet emitted");
+        // now `envelope::assemble_host_runtime` composes BOTH imported interfaces and the program emits a
+        // VALID component (wasmtime parses it). Running it end-to-end also needs cdz-run to link both the
+        // host responses and the runtime — a separate increment; component validity is the structural gate.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (Map.size (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a host op composed with the value-heap runtime now emits");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the composed host+runtime component must be valid");
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
@@ -28070,6 +28482,43 @@ mod stage1 {
                 "an if-wrapped self-application must decline, not hang: {s}"
             );
         }
+    }
+
+    #[test]
+    fn a_compound_wrapped_self_application_declines_not_a_stack_overflow() {
+        // A THIRD hang shape the fuzzer surfaced: `(fn v (tuple (v v) 1))` applied to a copy of itself. Here
+        // the reduction BUDGET already terminates inference (β-reduction gives up past `REDUCE_NODE_BUDGET`)
+        // — but that leaves a MEMOIZED core chain thousands of nodes deep, `Tuple[Tuple[…poison…, 1], 1]`,
+        // bottoming out in the reduction-bound poison. That chain is built bottom-up at shallow demand
+        // depths, so lowering's own descent guard never fired on it; the reached-poison walk
+        // (`collect_reached_poisons`) then descended the whole pre-built chain in ONE native recursion and
+        // OVERFLOWED THE COMPILER'S STACK — a process abort. Giving that walk the same `DESCENT_DEPTH_LIMIT`
+        // guard lowering has makes it surface the reduction-bound poison (CDZ0999) past the limit instead of
+        // crashing. The guard is at the walk's single recursive entry and the walk dispatches structurally,
+        // so the whole compound-construction class (tuple / record / list / …) is covered by ONE guard, not
+        // one syntactic wrapper at a time. The property is 'never crash': it must TERMINATE with a coded
+        // rejection on any input, regardless of the compound the divergence hides in.
+        let tup = "(module m (def (main) ((fn (v0) (tuple (v0 v0) 1)) (fn (v2) (tuple (v2 v2) 1)))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(tup)))
+            .expect_err("a tuple-wrapped self-application must decline, not crash");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a tuple-wrapped diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // The record-wrapped sibling is the SAME class (a self-app in a record field) — it must likewise
+        // TERMINATE with a coded rejection, exercising the shared structural guard on a different compound.
+        let rec = "(module m (def (main) ((fn (v0) (record (a (v0 v0)) (b 1))) (fn (v2) (record (a (v2 v2)) (b 1))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(rec)))
+            .expect_err("a record-wrapped self-application must decline, not crash");
+        assert!(
+            reject.code.is_some(),
+            "a record-wrapped diverging reduction is a coded decline, not a crash: {} / {:?}",
+            reject.message,
+            reject.code
+        );
     }
 
     #[test]
@@ -35293,6 +35742,7 @@ mod closure_host_resource {
             ret_vt: ValType::I64,
             ret_is_bytes: false,
             ret_template: None,
+            ret_descriptor: None,
         }];
 
         let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
@@ -35434,6 +35884,7 @@ mod closure_host_resource {
                 lifted_slot: 0, // lifted-inc is table slot 0
                 ret_is_bytes: false,
                 ret_template: None,
+                ret_descriptor: None,
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -35446,6 +35897,7 @@ mod closure_host_resource {
                 lifted_slot: 1,       // lifted-isz is table slot 1
                 ret_is_bytes: false,
                 ret_template: None,
+                ret_descriptor: None,
             },
         ];
 
@@ -35605,6 +36057,7 @@ mod closure_host_resource {
                     ret_vt: ValType::I64,
                     ret_is_bytes: false,
                     ret_template: None,
+                    ret_descriptor: None,
                 }],
             },
             RtSigGroup {
@@ -35620,6 +36073,7 @@ mod closure_host_resource {
                     ret_vt: ValType::I32,
                     ret_is_bytes: false,
                     ret_template: None,
+                    ret_descriptor: None,
                 }],
             },
         ];

@@ -3504,6 +3504,12 @@ pub struct SigGroup {
     /// its OWN data-section region; byte-rope groups write dynamically PAST all compound data so the two
     /// never collide. When any group is byte-rope OR compound the core gains a memory + `cabi_realloc`.
     pub ret_template: Option<crate::lower::ValueFormTemplate>,
+    /// `Some(descriptor)` when this group's closure result is a VARIABLE-LENGTH collection (List/Map/Set) —
+    /// its `call-<g>` renders the value form at run time via `value-encode(rep, desc)` against this group's
+    /// shape descriptor (no static template). Like a byte-rope group it writes its runtime-length payload
+    /// PAST all compound-template data (`bytes_out_off`), so a compound group + a collection group + a
+    /// byte-rope group never collide. Mutually exclusive with `ret_is_bytes`/`ret_template`.
+    pub ret_descriptor: Option<Vec<u8>>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -3530,7 +3536,8 @@ pub fn distinct_sig_resource_core_module(
     // envelope lifts each such group with the Memory/Realloc canon options. A compound group writes the
     // VALUE FORM from its own data-section template region; a byte-rope group writes a runtime-length
     // payload PAST all compound data so the two never collide.
-    let is_list = |gr: &SigGroup| gr.ret_is_bytes || gr.ret_template.is_some();
+    let is_list =
+        |gr: &SigGroup| gr.ret_is_bytes || gr.ret_template.is_some() || gr.ret_descriptor.is_some();
     let any_list = groups.iter().any(is_list);
     // Per COMPOUND group: place its template + `(ptr,len)` retarea in the data section (4-aligned), record
     // `(byte_off, ret_off)`. `data_end` is the 4-aligned end of all compound data — where byte-rope groups
@@ -3768,7 +3775,130 @@ pub fn distinct_sig_resource_core_module(
         let lifted_tyi = (defined_type_base + layout.order.len() + gr.lifted_slot) as u32;
         let arity = gr.arg_vts.len() as u32;
         let mut inner = Vec::new();
-        if let Some(template) = &gr.ret_template {
+        if let Some(descriptor) = &gr.ret_descriptor {
+            // Variable-length collection: dispatch → the collection handle, drop the cell, build the
+            // descriptor Bytes, value-encode(rep, desc) → the document, copy it out (PAST all compound data
+            // at `bytes_out_off`), release rep/desc/doc, return the retptr (`bytes_ret_off`).
+            let out_off = bytes_out_off as i64;
+            let cell = 1 + arity;
+            let rep = cell + 1;
+            let desc = rep + 1;
+            let doc = desc + 1;
+            let nlen = doc + 1;
+            let iv = nlen + 1;
+            inner.extend_from_slice(&wasm_vec(1, &{
+                let mut gl = uleb_bytes(6);
+                gl.push(wasm_abi::CORE_I32);
+                gl
+            }));
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            let ci32 = |v: i64, out: &mut Vec<u8>| {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(v, out);
+            };
+            get(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rrep_fn[gi] as u64, &mut inner);
+            set(cell, &mut inner);
+            get(cell, &mut inner);
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
+            get(cell, &mut inner);
+            ci32(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("arr-get"), &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("get-int"), &mut inner);
+            inner.push(op::I32_WRAP_I64);
+            inner.push(op::CALL_INDIRECT);
+            uleb128(lifted_tyi as u64, &mut inner);
+            uleb128(0, &mut inner);
+            set(rep, &mut inner);
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            // desc = bytes-alloc(len); bytes-set each constant descriptor byte.
+            ci32(descriptor.len() as i64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-alloc"), &mut inner);
+            set(desc, &mut inner);
+            for (j, &byte) in descriptor.iter().enumerate() {
+                get(desc, &mut inner);
+                ci32(j as i64, &mut inner);
+                ci32(byte as i64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("bytes-set"), &mut inner);
+                set(desc, &mut inner);
+            }
+            // doc = value-encode(rep, desc); n = bytes-len(doc).
+            get(rep, &mut inner);
+            get(desc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("value-encode"), &mut inner);
+            set(doc, &mut inner);
+            get(doc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-len"), &mut inner);
+            set(nlen, &mut inner);
+            ci32(0, &mut inner);
+            set(iv, &mut inner);
+            inner.push(op::BLOCK);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            inner.push(op::LOOP);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            get(iv, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_GE_U);
+            inner.push(op::BR_IF);
+            uleb128(1, &mut inner);
+            ci32(out_off, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::I32_ADD);
+            get(doc, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-get"), &mut inner);
+            inner.push(op::I32_STORE8);
+            inner.push(0x00);
+            inner.push(0x00);
+            get(iv, &mut inner);
+            ci32(1, &mut inner);
+            inner.push(op::I32_ADD);
+            set(iv, &mut inner);
+            inner.push(op::BR);
+            uleb128(0, &mut inner);
+            inner.push(op::END);
+            inner.push(op::END);
+            ci32(bytes_ret_off as i64, &mut inner);
+            ci32(out_off, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            ci32(bytes_ret_off as i64 + 4, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            get(rep, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            get(desc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            get(doc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
+            inner.push(op::END);
+        } else if let Some(template) = &gr.ret_template {
             // Compound: dispatch → the compound handle (rep), drop the cell, walk the handle into this
             // group's template region, drop the handle, return the template's retarea pointer.
             let (byte_off, ret_off) =
@@ -4047,6 +4177,11 @@ pub struct ClosureConsume {
     /// PAST all compound data. When any consumer crosses as `list<u8>` the module gains a memory +
     /// `cabi_realloc`.
     pub ret_template: Option<crate::lower::ValueFormTemplate>,
+    /// `Some(descriptor)` when the consumer's result is a VARIABLE-LENGTH collection (List/Map/Set) — the
+    /// wrapper renders the value form at run time via `value-encode(rep, desc)` against this consumer's shape
+    /// descriptor (no static template), then copies the document out PAST all compound-template data
+    /// (`bytes_out_off`). Mutually exclusive with `ret_is_bytes`/`ret_template`.
+    pub ret_descriptor: Option<Vec<u8>>,
 }
 
 /// The ROUND-TRIP closure-resource core module (C-HOST-4): N producer `make-<name>` functions (as in
@@ -4077,7 +4212,9 @@ pub fn roundtrip_resource_core_module(
     // `cabi_realloc`; the envelope lifts each such consumer with the Memory/Realloc canon options. A
     // compound consumer writes the VALUE FORM from its own data-section region; a byte-rope consumer writes a
     // runtime-length payload PAST all compound data so the two never collide.
-    let consumer_is_list = |c: &ClosureConsume| c.ret_is_bytes || c.ret_template.is_some();
+    let consumer_is_list = |c: &ClosureConsume| {
+        c.ret_is_bytes || c.ret_template.is_some() || c.ret_descriptor.is_some()
+    };
     let any_list = consumers.iter().any(consumer_is_list);
     // Per COMPOUND consumer: place its template + `(ptr,len)` retarea in the data section (4-aligned),
     // record `(byte_off, ret_off)`. `bytes_ret_off`/`bytes_out_off` are past all compound data — where the
@@ -4317,8 +4454,10 @@ pub fn roundtrip_resource_core_module(
             .count();
         // Extra i32 scratch beyond the closure cells: a byte-rope consumer needs 3 (the returned handle, its
         // length, the copy index); a COMPOUND consumer needs 1 (the returned handle) + a SEPARATE i64 group
-        // (the walk scratch) added after the i32 group.
-        let extra_i32 = if c.ret_is_bytes {
+        // (the walk scratch); a COLLECTION consumer needs 5 (rep, desc, doc, n, i) for the value-encode.
+        let extra_i32 = if c.ret_descriptor.is_some() {
+            5
+        } else if c.ret_is_bytes {
             3
         } else if c.ret_template.is_some() {
             1
@@ -4368,7 +4507,106 @@ pub fn roundtrip_resource_core_module(
         }
         inner.push(op::CALL);
         uleb128(c.consume_abs as u64, &mut inner);
-        if let Some(template) = &c.ret_template {
+        if let Some(descriptor) = &c.ret_descriptor {
+            // The body returned a COLLECTION HANDLE (on the stack). Save it in `rep`, drop the closure cells,
+            // build the descriptor Bytes, value-encode(rep, desc) → the document, copy it out PAST all
+            // compound-template data (`bytes_out_off`), release rep/desc/doc, return the retptr.
+            let out_off = bytes_out_off as i64;
+            let rep = cell_slot;
+            let desc = cell_slot + 1;
+            let doc = cell_slot + 2;
+            let nlen = cell_slot + 3;
+            let iv = cell_slot + 4;
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            let ci32 = |v: i64, out: &mut Vec<u8>| {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(v, out);
+            };
+            set(rep, &mut inner);
+            for cell in cell_of.values() {
+                get(*cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            // desc = bytes-alloc(len); bytes-set each constant descriptor byte.
+            ci32(descriptor.len() as i64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-alloc"), &mut inner);
+            set(desc, &mut inner);
+            for (j, &byte) in descriptor.iter().enumerate() {
+                get(desc, &mut inner);
+                ci32(j as i64, &mut inner);
+                ci32(byte as i64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("bytes-set"), &mut inner);
+                set(desc, &mut inner);
+            }
+            get(rep, &mut inner);
+            get(desc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("value-encode"), &mut inner);
+            set(doc, &mut inner);
+            get(doc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-len"), &mut inner);
+            set(nlen, &mut inner);
+            ci32(0, &mut inner);
+            set(iv, &mut inner);
+            inner.push(op::BLOCK);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            inner.push(op::LOOP);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            get(iv, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_GE_U);
+            inner.push(op::BR_IF);
+            uleb128(1, &mut inner);
+            ci32(out_off, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::I32_ADD);
+            get(doc, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-get"), &mut inner);
+            inner.push(op::I32_STORE8);
+            inner.push(0x00);
+            inner.push(0x00);
+            get(iv, &mut inner);
+            ci32(1, &mut inner);
+            inner.push(op::I32_ADD);
+            set(iv, &mut inner);
+            inner.push(op::BR);
+            uleb128(0, &mut inner);
+            inner.push(op::END);
+            inner.push(op::END);
+            ci32(bytes_ret_off as i64, &mut inner);
+            ci32(out_off, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            ci32(bytes_ret_off as i64 + 4, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            get(rep, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            get(desc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            get(doc, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
+        } else if let Some(template) = &c.ret_template {
             // The body returned a COMPOUND HANDLE (on the stack). Save it in `rep`, drop the closure cells,
             // walk the handle into this consumer's value-form template region, drop the handle, return the
             // template's retarea pointer. `rep` is the i32 slot past the closure cells; `scratch` (i64) is

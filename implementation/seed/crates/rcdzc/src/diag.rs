@@ -225,6 +225,8 @@ pub enum Code {
     /// two things on two toolchains). Opens the CDZ06xx MODULE-DIRECTIVE band.
     //= spec/capabilities/modules-and-namespaces.md#an-unrecognized-module-directive-is-rejected
     //# A module directive whose key is not one the fixed set defines MUST be rejected at compile time with a machine-readable diagnostic, rather than ignored, so that a directive can neither silently change a program's meaning on a toolchain that understands it while being dropped by one that does not, nor silently fail to take effect.
+    //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-drawn-from-a-fixed-set
+    //# A module MAY carry directives that instruct the compiler how to compile it, and every such directive's key MUST be drawn from a set fixed by this specification rather than invented per program, so that a directive has one fixed meaning across generations.
     UnknownDirective,
     /// A recognized module directive whose ARGUMENTS do not match the shape its key defines: the key is
     /// in the registry but the directive is structurally malformed (wrong arity), e.g. `(pragma
@@ -601,6 +603,13 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// "applied "). `dedup_faults` matches this to recognize the reject that makes the decline redundant,
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
+
+/// A stable SUBSTRING unique to the BUILT-IN-OPERATION wrong-arity decline (`<op> is applied at the wrong
+/// arity — a built-in operation must be applied to exactly its arguments …`, in `lower`). Fires on BOTH
+/// an under-application (no coded sibling — the decline is the primary "no") and an OVER-application
+/// (where `infer`'s coded CDZ0203 over-application reject is primary — then this decline is redundant).
+/// `dedup_faults` matches this to drop the decline ONLY when that coded over-application reject is present.
+pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be applied to exactly";
 
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
