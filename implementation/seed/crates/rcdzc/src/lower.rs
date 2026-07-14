@@ -634,6 +634,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c true b) → (or c b)");
                     fold_short_circuit(db, cond, else_, false)
                 }
+                // The OTHER two if-with-one-boolean-constant patterns, where the constant is in the position
+                // that flips the connective's condition to `(not c)`:
+                //   `(if c a true)`  IS `(or (not c) a)`  — else is `true` (result is true unless c holds
+                //       and a fails), so `(not c)` short-circuits the `or` to true when c is false.
+                //   `(if c false b)` IS `(and (not c) b)` — then is `false` (result is false unless c fails
+                //       and b holds), so `(not c)` short-circuits the `and` to false when c is true.
+                // Same soundness as the two above: `(not c)` is the always-evaluated short-circuit LHS (c's
+                // trap is preserved; `not` is total), and the runtime branch is the guarded RHS, evaluated
+                // on exactly the original's deciding polarity. The negated condition is synthesized and
+                // routed through `fold_short_circuit`, so `(not c)` folds (`(not (> x 10))`→`(<= x 10)`) and
+                // the whole thing joins the boolean-algebra fold family — e.g. `(if (> x 10) (< x 5) true)`
+                // → `(or (<= x 10) (< x 5))` → `(<= x 10)` (subsumption). Same tail-call veto on the guarded
+                // runtime branch.
+                _ if matches!(core_of(db, else_), Core::ConstBool(true))
+                    && !tail_positions_have_call(db, then_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c a true) → (or (not c) a)");
+                    let not_c = synth_core(db, Core::Not { operand: cond }, crate::ty::Ty::Bool);
+                    fold_short_circuit(db, not_c, then_, false)
+                }
+                _ if matches!(core_of(db, then_), Core::ConstBool(false))
+                    && !tail_positions_have_call(db, else_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c false b) → (and (not c) b)");
+                    let not_c = synth_core(db, Core::Not { operand: cond }, crate::ty::Ty::Bool);
+                    fold_short_circuit(db, not_c, else_, true)
+                }
                 // IF-TOWER FLATTENING (shared-arm condition combination). Two nested `if`s that share an
                 // arm collapse to ONE `if` on a COMBINED condition, replacing a nested branch with a single
                 // (backend-selectable-branchless) decision:
@@ -2107,22 +2134,60 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         Arm::Fixed(_, _) => None,
     });
     let Some(m) = tail_start.min() else {
-        return Core::Poison(Reject::coded(
+        // NO catch-all arm → no arm covers the infinite tail. The mechanical repair is a WILDCARD `_` arm
+        // (covers every remaining length), the list analogue of the scalar add-wildcard fix — bodied with
+        // a diverging `(trap "TODO")` so it type-checks whatever the other arms return. Anchored at the
+        // `(match …)` form (parent of the scrutinee); no parent → the bare reject.
+        let reject = Reject::coded(
             Code::NonExhaustive,
             "a list match must cover every length (end in a `_`, a whole-list binder, or a `(list .. rest)` arm)",
-        ));
+        );
+        return Core::Poison(match db.parent_of(scrutinee) {
+            Some(match_form) => reject.with_fix(Fix::insert_arms_heuristic(
+                match_form,
+                vec!["(_ (trap \"TODO\"))".to_string()],
+            )),
+            None => reject,
+        });
     };
     // Every length in 0..m must have a matching `Fixed` arm.
-    let prefix_covered = (0..m).all(|n| {
-        classified
+    let missing: Vec<usize> = (0..m)
+        .filter(|&n| {
+            !classified
+                .iter()
+                .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
+        })
+        .collect();
+    if !missing.is_empty() {
+        // A `Rest(m)`/`Wild` covers `[m, ∞)`, but a shorter length `n < m` has no `Fixed(n)` arm. The
+        // repair is to add exactly those missing-length arms — `(list _ _ … n underscores) (trap "TODO")`
+        // (a length-0 gap is the empty `((list) (trap "TODO"))`). Underscore elements (the matcher only
+        // needs the ARITY covered; the author renames as needed), diverging body. Fixed arms must precede
+        // the catch-all to be reachable, but `insert_arms` appends AFTER the last arm — which is where the
+        // `Rest`/`Wild` sits, so the inserted fixed arm would be dead. Still, applying it makes the match
+        // exhaustive (the appended arm's length is now covered by SOME arm — the appended one shadows
+        // nothing since the earlier catch-all already matched); `--verify-fixes` confirms it clears the
+        // CDZ0210. (WHERE to place it for reachability is the author's call — the fix resolves the gap.)
+        let arms: Vec<String> = missing
             .iter()
-            .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
-    });
-    if !prefix_covered {
-        return Core::Poison(Reject::coded(
+            .map(|&n| {
+                let unders = vec!["_"; n].join(" ");
+                let pat = if n == 0 {
+                    "(list)".to_string()
+                } else {
+                    format!("(list {unders})")
+                };
+                format!("({pat} (trap \"TODO\"))")
+            })
+            .collect();
+        let reject = Reject::coded(
             Code::NonExhaustive,
             "a list match must cover every length (a rest pattern leaves shorter lengths uncovered)",
-        ));
+        );
+        return Core::Poison(match db.parent_of(scrutinee) {
+            Some(match_form) => reject.with_fix(Fix::insert_arms_heuristic(match_form, arms)),
+            None => reject,
+        });
     }
     // A CONSTANT scrutinee FOLDS: the length selects the arm; the body's element binders read the
     // constant elements via their `SumPayload` `Elem`/`RestFrom` folds, so lowering the SELECTED body is
@@ -2618,6 +2683,8 @@ struct MatchRow {
 //= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
 //# A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
 //= spec/capabilities/core-semantics.md#patterns-compose
+//# A pattern MUST admit any pattern in each of its binder positions, so that a constructor pattern's binder and a tuple pattern's element MAY themselves be a wildcard, a name, a tuple pattern, or a constructor pattern, matched recursively to any depth.
+//= spec/capabilities/core-semantics.md#patterns-compose
 //# A composed pattern MUST bind the union of its sub-patterns' bindings, matched recursively, and MUST remain linear across the whole pattern, so that a name appearing in more than one sub-pattern is the same `CDZ0102` error as one appearing twice in a flat pattern.
 fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2948,19 +3015,16 @@ fn collect_pattern_binders(
 /// when this fires; a non-sum leaves the bare `reject` untouched). Returns the enriched (or original)
 /// reject. Deterministic — `suggest::nearest` over the declaration-ordered variant set.
 fn enrich_pattern_head_suggestion(
-    db: &Db,
+    db: &mut Db,
     head: StructId,
     ty: &crate::ty::Ty,
     reject: Reject,
 ) -> Reject {
-    // The scrutinee sum's declared variant names — the closed candidate set.
+    // The scrutinee sum's declaration occurrence — the key of its (memoized) variant candidate set.
     let crate::ty::Ty::Sum { decl, .. } = ty else {
         return reject;
     };
-    let Some(t) = db.type_decl_by_occ(*decl) else {
-        return reject;
-    };
-    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    let decl = *decl;
     // The mistyped key: the second child of the `(. Sum Q)` head; its name is what to match + rewrite.
     let Some(key_occ) = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied()) else {
         return reject;
@@ -2968,7 +3032,22 @@ fn enrich_pattern_head_suggestion(
     let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
         return reject;
     };
-    let Some(candidate) = crate::diag::suggest::nearest(&key, &names) else {
+    // The nearest variant of `decl` to `key`, MEMOIZED per (decl, key): the variant-name clone + edit-
+    // distance scan is O(variants), and a WIDE sum matched with a stale variant from N sites re-ran it each
+    // → O(N²). Keyed by (decl, key), it is computed once per distinct query.
+    let candidate = if let Some(hit) = db.variant_suggest_winner.get(&(decl, key.clone())) {
+        hit.clone()
+    } else {
+        let names: Vec<String> = match db.type_decl_by_occ(decl) {
+            Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+            None => return reject,
+        };
+        let winner = crate::diag::suggest::nearest(&key, &names);
+        db.variant_suggest_winner
+            .insert((decl, key.clone()), winner.clone());
+        winner
+    };
+    let Some(candidate) = candidate else {
         return reject; // no near variant — keep the bare "record has no field" message
     };
     // Append the suggestion to the bare message and carry a replace fix on the key occurrence — mirroring
@@ -8728,6 +8807,17 @@ fn ordering_discs(db: &mut Db, id: StructId) -> Option<(u32, u32, u32)> {
 /// fold/escape/match exactly as a variant constructor does. A float pair compares by canonical value
 /// (IEEE partial order; a NaN pair — unordered — declines). A compound or runtime operand declines (the
 /// heap-walk / runtime three-way compare is a later stage), mirroring `lower_comparison`.
+///
+/// The order each scalar type offers is TOTAL and a deterministic function of the values: Int by numeric
+/// value, Char by scalar value, String lexicographically, and Bool by `false < true` (Rust `bool::cmp`).
+/// Every ordered pair folds to exactly one of Less/Equal/Greater, and the fold reads only the operand
+/// values — no environment, order, or outside influence enters.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# A type that offers an ordering MUST offer a total order over its values.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# The ordering a type offers MUST be a deterministic function of the values compared.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# The Bool type MUST offer a total order in which false is less than true.
 fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Core {
     use std::cmp::Ordering::{Equal, Greater, Less};
     let Some((lt, eq, gt)) = ordering_discs(db, id) else {

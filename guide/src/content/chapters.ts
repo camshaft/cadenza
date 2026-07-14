@@ -71,7 +71,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Tuples & records",
     blurb: "Bundling values together, by position or by name.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Data.tsx")),
   },
   {
