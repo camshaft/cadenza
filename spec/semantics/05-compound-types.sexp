@@ -2011,6 +2011,23 @@
             ((None _)       0)))
   (output (: 3 Int64)))
 
+(case "a nested constructor pattern dispatches a RUNTIME two-sum value"
+  (doc    "The runtime companion of the constant nested `(Some (Ok 3))` above: the scrutinee is chosen at
+           run time (an `if`), so the nested match cannot fold — it emits a real two-level DECISION TREE
+           (outer switch Some/None, the Some arm's continuation switches Ok/Err of the payload). `(f 5)` is
+           `(Some (Ok 5))` → the `(Some (Ok n))` arm binds n=5. Pins the two-compiler agreement on a nested
+           runtime decision tree: the wasm backend walks `sum-disc` at each level, the Rust backend emits a
+           nested `match` (outer `Option::Some(p)`, inner `match p { Result::Ok(n) => n, … }`) — both must
+           reproduce this output, distinct from the constant case that folds to the arm.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (def (f (: x (Option (Result Int64 Int64))))
+              (match x ((Some (Ok n)) n) ((Some (Err e)) e) ((None) 0)))
+            (def (main (: k Int64)) (f (if (> k 0) (Some (Ok k)) (None))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a sum-type value is deconstructed by an exhaustive match"
   (doc    "Patterns are uniform: `(Ctor _)` for nullary constructors. The binder `_` matches the
            unit payload. Consistent with unary constructor patterns like `(Some x)`.")
