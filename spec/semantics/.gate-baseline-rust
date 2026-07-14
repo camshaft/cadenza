@@ -837,6 +837,7 @@ pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuples are deconstructed by pattern matching
+pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two dependent-size segments each bind the count a preceding segment named

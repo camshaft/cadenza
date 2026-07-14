@@ -1099,12 +1099,22 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// True if `form` is a `def` (function or value) — a form that routes a pending `delimit_body`
-    /// through `body_after_eq`, parenthesizing just its `= body` rather than taking a trailing `;`
-    /// (which its greedy body would swallow).
+    /// True if `form` is a DECLARATION-keyword form (`def`/`module`/`type`/`effect`) — one the ML reader's
+    /// `;`-sequence loop BREAKS before (`at_declaration_keyword`, from `539f7712`), because at the top level
+    /// a bare declaration after `;` begins the next juxtaposed form. So a NON-FINAL such form inside a `do`
+    /// body must be WRAPPED — `(module Inc { … })` — by [`Self::print_do_stmts`]: the leading `(` makes it an
+    /// EXPRESSION, not a bare declaration keyword, so the reader collects it into the body's sequence
+    /// instead of ending the body and leaking the rest as top-level siblings. Without this a body of two
+    /// adjacent `module`s (`def main() = module A { … }; module B { … }; expr`) truncates after the first
+    /// module — the exact round-trip the printer must not produce (it emits ML the reader then rejects).
+    /// `def` additionally has a greedy `= body`; a wrapping `(def f() = e)` bounds that body too. `import`
+    /// and `export` are top-level-only, never a body statement, so they need not be listed.
     fn form_routes_delimit(&self, form: StructId) -> bool {
         matches!(self.a.get(form), Struct::List(items) if !items.is_empty()
-            && self.head_name(items[0]).as_deref() == Some("def"))
+        && matches!(
+            self.head_name(items[0]).as_deref(),
+            Some("def" | "module" | "type" | "effect")
+        ))
     }
 
     /// True when `id` prints with a leading RESERVED word (a keyword form) or a `///`/`//` comment lead —

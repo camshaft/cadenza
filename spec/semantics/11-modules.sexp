@@ -364,6 +364,26 @@
             ((. (. outer inner) f) 21)))
   (output (: 42 Int64)))
 
+(case "two adjacent modules declared inside a function body compose"
+  (doc    "A function body is a `(do …)` sequence that may hold BODY-LOCAL module declarations: `main`'s
+           body declares `Inc` then `Scale` then uses both — `Scale.g(Inc.f(4))` = 50. Pins that two
+           ADJACENT nested modules in a def body both register (each its own nested record) and the trailing
+           expression reaches them. The point beyond the value: the ML surface round-trip. The ML printer
+           emits a non-final declaration-keyword statement PARENTHESIZED — `(module Inc { … }); (module Scale
+           { … }); …` — because the reader's `;`-sequence otherwise BREAKS before a bare `module` keyword
+           (treating it as the next top-level form), truncating the body after the first module. The parens
+           make each a bracketed expression the reader collects into the body, so the printer emits ML the
+           reader reads back to this same tree (the roundtrip harness exercises exactly that path). Without
+           the wrapping the printer produced ML it then rejected — a printer/reader round-trip failure.")
+  (input  (do
+            (def (main)
+              (do (module Inc (def (f x) (+ x 1)))
+                  (module Scale (def (g x) (* x 10)))
+                  ((. Scale g) ((. Inc f) 4))))
+            (export main)))
+  (call   main)
+  (output (: 50 Int64)))
+
 (case "an outer definition references a sibling nested module by bare name"
   (doc    "A module's members are mutually visible (core-semantics.md #A Module Evaluates To A Record Of
            Its Exports), and a nested module is a member — so an outer `(def …)` may reference the sibling
