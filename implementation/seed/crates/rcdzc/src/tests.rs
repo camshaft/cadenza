@@ -36265,7 +36265,9 @@ mod sidecar_driven {
     #[test]
     fn a_type_of_query_for_an_unknown_name_is_total() {
         // Querying a name that names no definition yields a DEFINED result, never an error — the
-        // oracle contract (a query is total over every input).
+        // oracle contract (a query is total over every input). The result names the missing definition
+        // and, like the compiler's unbound-name sites, offers the nearest defined name as a "did you
+        // mean?"/"closest matches" hint (a `TypeOf` for a near-typo of a real def is almost always a typo).
         let src = "(module m (def (main) 42) (export main))";
         let out = compile(
             &inputs(
@@ -36277,9 +36279,25 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
+        let text = artifact_text(&out, KIND_TYPE_INFO).unwrap_or_default();
+        assert!(
+            text.starts_with("no such definition `ghost`"),
+            "names the missing definition: {text}"
+        );
+
+        // A NEAR-typo of a real def gets a confident "did you mean?" pointing at it.
+        let out2 = compile(
+            &inputs(
+                "(module m (def (compute) 42) (export compute))",
+                &[Request::Query(Query::TypeOf {
+                    name: "computee".into(),
+                })],
+            ),
+            &[],
+        );
         assert_eq!(
-            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-            Some("no such definition `ghost`")
+            artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
+            Some("no such definition `computee` — did you mean `compute`?"),
         );
     }
 

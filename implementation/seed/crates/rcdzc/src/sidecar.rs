@@ -312,7 +312,15 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     // DEFINED "unknown", not an error: the query is total.
                     None => "unknown".to_string(),
                 },
-                None => format!("no such definition `{name}`"),
+                // A name that names no definition — but a near-miss for a REAL def name (`computee` for
+                // `compute`) is almost always a typo, so name the nearest, the same closed-set "did you
+                // mean?" the compiler's unbound-name / export / pragma sites carry. The candidate pool is
+                // the program's own def names, so a suggestion can only ever point at a real definition.
+                None => {
+                    let names: Vec<&str> = db.defs.iter().map(|d| d.name.as_str()).collect();
+                    let hint = crate::diag::suggest::did_you_mean(name, names, 3);
+                    format!("no such definition `{name}`{hint}")
+                }
             };
             QueryResult {
                 kind: KIND_TYPE_INFO,
