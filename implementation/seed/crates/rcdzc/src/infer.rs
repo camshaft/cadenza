@@ -6736,6 +6736,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     //# An explicit type annotation MUST participate in inference as an additional constraint unified with the type the system infers, rather than override it.
                     //= spec/capabilities/type-system.md#annotations-constrain-never-contradict
                     //# A program whose annotation cannot be unified with the type inference determines MUST be rejected rather than have the annotation silently replace the inferred type.
+                    // The same check realizes the compile-time half of core-semantics §Types Are First-Class
+                    // Values: the annotation is validated against the expression's static type here, and a
+                    // mismatch is rejected before the program runs (the runtime-inspection half — a Type as a
+                    // value inspected at runtime — is not realized; the seed erases types).
+                    //= spec/capabilities/core-semantics.md#types-are-first-class-values
+                    //# The compiler MUST validate a type annotation against the annotated expression's static type at compile time.
+                    //= spec/capabilities/core-semantics.md#types-are-first-class-values
+                    //# The compiler MUST reject a program in which a type annotation's declared type does not match the annotated expression's static type before that program runs.
                     let expr_ty = type_of(db, expr);
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
