@@ -1229,7 +1229,8 @@ fn a_generic_sum_emits_a_parameterized_descriptor_for_the_gate_renderer() {
     // render a generic-sum escape (was: no descriptor → the escape fell to a scalar `Display` of the enum
     // → rustc E0277). A bare-param payload `(W a)` renders `T0`; a nested one `(W (Option a))` renders
     // `(Option T0)`.
-    let bare = compile_rust("(module m (type Box (W a) (E)) (def (main) (Box.W 42)) (export main))");
+    let bare =
+        compile_rust("(module m (type Box (W a) (E)) (def (main) (Box.W 42)) (export main))");
     assert!(
         bare.contains("// cdz-sum[Box]: (W T0) (E)"),
         "bare-param generic sum descriptor uses T0 placeholder:\n{bare}"

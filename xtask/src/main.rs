@@ -1133,7 +1133,13 @@ fn cdz_render_expr(
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
     let expr = cdz_render_at(
-        ty, "__r", sums, newtypes, sum_params, &mut helpers, &mut on_path,
+        ty,
+        "__r",
+        sums,
+        newtypes,
+        sum_params,
+        &mut helpers,
+        &mut on_path,
     );
     // The recursive-sum render helpers (if any) are hoisted ahead of the expression, then the expression
     // is a block that defines them and evaluates. Each helper is a `fn`, so mutual/self recursion works.
@@ -1250,7 +1256,9 @@ fn cdz_render_at(
     let vbind = format!("__v{}", path.len());
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
-        let inner = cdz_render_at(payload, &vbind, sums, newtypes, sum_params, helpers, on_path);
+        let inner = cdz_render_at(
+            payload, &vbind, sums, newtypes, sum_params, helpers, on_path,
+        );
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
         );
@@ -3064,7 +3072,12 @@ mod trap_grading_tests {
                 ("Nil".to_string(), Vec::new()),
             ],
         );
-        let expr = cdz_render_expr("IntList", &sums, &std::collections::HashMap::new(), &std::collections::HashMap::new());
+        let expr = cdz_render_expr(
+            "IntList",
+            &sums,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
         assert!(
@@ -3091,7 +3104,12 @@ mod trap_grading_tests {
                 ("Pos".to_string(), Vec::new()),
             ],
         );
-        let s = cdz_render_expr("Sign", &mono, &std::collections::HashMap::new(), &std::collections::HashMap::new());
+        let s = cdz_render_expr(
+            "Sign",
+            &mono,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
             "{s}"

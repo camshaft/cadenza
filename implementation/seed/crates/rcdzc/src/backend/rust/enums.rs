@@ -84,7 +84,10 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
         // A generic sum records its parameter COUNT so the driver knows how many `T{k}` placeholders to
         // substitute from the result type's args. A monomorphic sum (no params) needs no such note.
         if !decl.params.is_empty() {
-            out.push_str(&format!("// cdz-sum-params[{ident}]: {}\n", decl.params.len()));
+            out.push_str(&format!(
+                "// cdz-sum-params[{ident}]: {}\n",
+                decl.params.len()
+            ));
         }
     }
     out

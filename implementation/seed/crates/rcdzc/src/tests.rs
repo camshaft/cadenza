@@ -26434,7 +26434,14 @@ mod stage1 {
         // Every `(f r)` projects k0 = 0, so the sum is 0 — a well-typed program. The perf-relevant part is
         // that type-checking (the per-call `unify` → `apply` over the wide record) and full compilation
         // both COMPLETE in bounded time; the record's runtime value is covered by the record-read tests.
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        // Through the host-stack guard the bin uses (`host.rs`): the per-call unify/fold walk recurses deep
+        // over the wide record, SIGABRTing a default `cargo test` worker's ≈2 MB stack (EXIT=101, 0 FAILED)
+        // even though it TERMINATES — deep-but-finite, not a loop (`RUST_MIN_STACK=64M` passes). `&src` is
+        // borrowed (the scoped guard permits it); `src` is still used by the `compile_component` below,
+        // which self-guards. Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
         assert!(
             diags
                 .iter()
