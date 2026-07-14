@@ -1340,12 +1340,16 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // binder (the scrutinee minus the named keys). Resolves to a `MapField` (the map analogue of Case 6's
     // `SumPayload` / Case B's `BinField`). Scoped to this arm. The map pattern is the DIRECT match
     // scrutinee here, so the access path is EMPTY.
-    if let Some((scrutinee, key, named)) = match_arm_map_binds(db, form, from, name) {
+    if let Some((scrutinee, key, named, value_steps, value_heads)) =
+        match_arm_map_binds(db, form, from, name)
+    {
         return Some(Resolved::MapField {
             scrutinee,
             path: std::rc::Rc::from(Vec::new()),
             key,
             named: named.into(),
+            value_steps: value_steps.into(),
+            value_heads: value_heads.into(),
         });
     }
     // Case Mn: `form`'s pattern is a COMPOUND (tuple/record/variant/list) with a MAP pattern NESTED inside
@@ -1354,12 +1358,16 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // the `MapField` reads the map at that sub-path of the scrutinee (the map analogue of a nested
     // `SumPayload`). Complements Case M (the direct map scrutinee); tuple/list-nested tuple/list binders
     // already compose via `SumPayload`, this adds the missing nested-MAP arm.
-    if let Some((scrutinee, path, key, named)) = match_arm_nested_map_binds(db, form, from, name) {
+    if let Some((scrutinee, path, key, named, value_steps, value_heads)) =
+        match_arm_nested_map_binds(db, form, from, name)
+    {
         return Some(Resolved::MapField {
             scrutinee,
             path: std::rc::Rc::from(path),
             key,
             named: named.into(),
+            value_steps: value_steps.into(),
+            value_heads: value_heads.into(),
         });
     }
     None
@@ -1370,12 +1378,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
 /// scrutinee, `Some(key-occ)` when `name` is a VALUE binder at that key (else `None` for the REST
 /// binder), and `named` the keys the pattern names (removed to form the rest map). `None` otherwise.
 /// The map companion of [`match_arm_bin_binds`].
+#[allow(clippy::type_complexity)]
 fn match_arm_map_binds(
     db: &Db,
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, Option<StructId>, Vec<StructId>)> {
+) -> Option<(
+    StructId,
+    Option<StructId>,
+    Vec<StructId>,
+    Vec<crate::core::PathStep>,
+    Vec<StructId>,
+)> {
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
@@ -1391,17 +1406,47 @@ fn match_arm_map_binds(
         return None;
     }
     let named: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
-    // A VALUE binder: `name` is the value position of some entry → carry that entry's KEY.
+    // A VALUE binder: `name` is bound by the value sub-pattern of some entry → carry that entry's KEY and
+    // the access sub-path INTO the value. A BARE-binder value (`(k v)`) binds `name` directly at an EMPTY
+    // sub-path; a non-bare value (`(k (tuple x y))` / `(k (Some n))`) descends via the same element/payload
+    // walk a list element / variant payload uses — the map analogue of Inc-1 list-element compose.
     for &(k, v) in &entries {
-        if db.ast.as_name(v).is_some_and(|nm| nm == name && nm != "_") {
-            return Some((scrutinee, Some(k), named));
+        if let Some((steps, heads)) = value_subpattern_binds(db, v, name) {
+            return Some((scrutinee, Some(k), named, steps, heads));
         }
     }
     // The REST binder: `name` is the rest occurrence → the scrutinee minus the named keys.
     if rest.is_some_and(|r| db.ast.as_name(r).is_some_and(|nm| nm == name && nm != "_")) {
-        return Some((scrutinee, None, named));
+        return Some((scrutinee, None, named, Vec::new(), Vec::new()));
     }
     None
+}
+
+/// If the map-pattern VALUE sub-pattern `v` binds `name`, return `(steps, heads)`: the access sub-path from
+/// the value down to the binder (empty for a bare-binder value `v`), and the variant heads at each
+/// `Payload` step (for a ctor sub-pattern). `None` if `v` does not bind `name`. Reuses the same
+/// element/payload descent list elements + variant payloads use (`find_binder_in_tuple`/`_list`/
+/// `_pattern`), so a value MAY be a bare binder, a tuple `(tuple x y)`, a nested list, or a constructor
+/// `(Some n)`, composed to any depth (`core-semantics.md §145`). A literal / wildcard value binds nothing.
+fn value_subpattern_binds(
+    db: &Db,
+    v: StructId,
+    name: &str,
+) -> Option<(Vec<crate::core::PathStep>, Vec<StructId>)> {
+    // A bare binder value binds `name` directly at the value itself (no sub-path).
+    if let Some(nm) = db.ast.as_name(v) {
+        return (nm == name && nm != "_").then(|| (Vec::new(), Vec::new()));
+    }
+    let mut steps = Vec::new();
+    let mut heads = Vec::new();
+    let found = if is_tuple_pattern(db, v) {
+        find_binder_in_tuple(db, v, name, &mut steps, &mut heads)
+    } else if is_list_pattern(db, v) {
+        find_binder_in_list(db, v, name, &mut steps, &mut heads)
+    } else {
+        find_binder_in_pattern(db, v, name, &mut steps, &mut heads)
+    };
+    found.then_some((steps, heads))
 }
 
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(bin <seg>…)`
@@ -2536,6 +2581,8 @@ type NestedMapBind = (
     Vec<crate::core::PathStep>,
     Option<StructId>,
     Vec<StructId>,
+    Vec<crate::core::PathStep>, // value_steps: sub-path INTO the value at the key
+    Vec<StructId>,              // value_heads: variant heads at each Payload step in value_steps
 );
 
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a COMPOUND
@@ -2565,11 +2612,12 @@ fn match_arm_nested_map_binds(
     // The map pattern must be NESTED — a DIRECT map scrutinee is Case M, not here (an empty path would
     // duplicate it). Descend the compound for a map sub-pattern binding `name`.
     let mut path = Vec::new();
-    let hit = find_map_binder_in_pattern(db, pattern, name, &mut path)?;
+    let (key, named, value_steps, value_heads) =
+        find_map_binder_in_pattern(db, pattern, name, &mut path)?;
     if path.is_empty() {
         return None; // the map is the whole pattern → Case M's job
     }
-    Some((scrutinee, path, hit.0, hit.1))
+    Some((scrutinee, path, key, named, value_steps, value_heads))
 }
 
 /// Descend a COMPOUND pattern (tuple/list/variant/record) looking for a MAP sub-pattern that binds `name`,
@@ -2579,23 +2627,30 @@ fn match_arm_nested_map_binds(
 /// element-by-element binder descent (`find_binder_in_tuple`/`_list`/`_pattern`), which handle tuple/list/
 /// variant sub-patterns but had no map arm — so a `(map …)` nested in a tuple/record/variant dropped its
 /// binder (a spurious "unbound name"). Element positions compose to any depth (`core-semantics.md §145`).
+#[allow(clippy::type_complexity)]
 fn find_map_binder_in_pattern(
     db: &Db,
     pattern: StructId,
     name: &str,
     path: &mut Vec<crate::core::PathStep>,
-) -> Option<(Option<StructId>, Vec<StructId>)> {
-    // A MAP pattern here: does it bind `name` (a value binder at some key, or the rest binder)?
+) -> Option<(
+    Option<StructId>,
+    Vec<StructId>,
+    Vec<crate::core::PathStep>,
+    Vec<StructId>,
+)> {
+    // A MAP pattern here: does it bind `name` (a value binder at some key — possibly nested in a value
+    // sub-pattern — or the rest binder)?
     if is_map_pattern(db, pattern) {
         let (entries, rest) = map_pattern_of(db, pattern)?;
         let named: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
         for &(k, v) in &entries {
-            if db.ast.as_name(v).is_some_and(|nm| nm == name && nm != "_") {
-                return Some((Some(k), named)); // a VALUE binder at key `k`
+            if let Some((vsteps, vheads)) = value_subpattern_binds(db, v, name) {
+                return Some((Some(k), named, vsteps, vheads)); // a VALUE binder at key `k`
             }
         }
         if rest.is_some_and(|r| db.ast.as_name(r).is_some_and(|nm| nm == name && nm != "_")) {
-            return Some((None, named)); // the REST binder
+            return Some((None, named, Vec::new(), Vec::new())); // the REST binder
         }
         return None; // this map does not bind `name`
     }

@@ -216,6 +216,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             scrutinee,
             path,
             key,
+            value_steps,
+            value_heads,
             ..
         } => {
             // Walk the access PATH from the scrutinee down to the nested MAP (empty for a direct map
@@ -224,7 +226,22 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             match map_ty {
                 Ty::Map(k, v) => {
                     if key.is_some() {
-                        (*v).clone() // a value binder holds the value type
+                        // A value binder holds the value type — but when the binder is NESTED inside a value
+                        // sub-pattern (`(map ("a" (tuple x y)))`), walk the value type down `value_steps` to
+                        // the nested binder (`(tuple Int64 Int64)` at `Elem(0)` → `Int64`), exactly as a
+                        // nested payload binder walks its scrutinee. Empty `value_steps` = the value IS the
+                        // binder (the common case).
+                        if value_steps.is_empty() {
+                            (*v).clone()
+                        } else {
+                            walk_payload_ty(
+                                db,
+                                (*v).clone(),
+                                &value_steps,
+                                &value_heads,
+                                &Subst::new(),
+                            )
+                        }
                     } else {
                         Ty::Map(k, v) // the rest binder holds the map type
                     }

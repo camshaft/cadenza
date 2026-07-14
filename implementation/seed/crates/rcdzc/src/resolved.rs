@@ -1092,6 +1092,16 @@ pub enum Resolved {
         key: Option<StructId>,
         /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.
         named: std::rc::Rc<[StructId]>,
+        /// The access sub-path INTO the value at `key`, for a value binder NESTED inside a value
+        /// sub-pattern — `(map ("a" (tuple x y)))` binds `x` with `value_steps=[Elem(0)]`, `(map ("a"
+        /// (Some n)))` binds `n` with `[Payload]`. EMPTY when the value position is a bare binder (the
+        /// common case — the value IS the binder). Applied AFTER the key lookup, exactly as
+        /// `SumPayload.steps` walks into a variant payload. Unused for the REST binder (`key = None`).
+        value_steps: std::rc::Rc<[crate::core::PathStep]>,
+        /// The variant HEADS at each `Payload` step in `value_steps` (for a ctor value sub-pattern), so the
+        /// nested binder's type is read at the right instantiation — the value-sub-path twin of
+        /// `SumPayload.heads`. Empty when `value_steps` has no `Payload` step.
+        value_heads: std::rc::Rc<[StructId]>,
     },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple

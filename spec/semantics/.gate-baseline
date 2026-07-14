@@ -704,6 +704,7 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map pattern nested in a tuple binds its value binder
 pass	a map pattern value sub-pattern may be a literal that refines the match
+pass	a map pattern value sub-pattern may be an irrefutable compound that binds
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a String value is looked up and its value compared in the arm

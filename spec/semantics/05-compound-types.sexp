@@ -6569,6 +6569,22 @@
             (def (main) (look (pick 0))) (export main)))
   (output (: 1 Int64)))
 
+(case "a map pattern value sub-pattern may be an irrefutable compound that binds"
+  (doc    "A map-pattern VALUE sub-pattern may be an IRREFUTABLE COMPOUND that INTRODUCES BINDERS — a tuple
+           `(map (\"a\" (tuple x y)))` / a single-variant `(Mk n)` — not just a bare binder or a literal
+           (core-semantics.md §A Map Is Matched By Key-Directed Patterns: each value binder position is a
+           *Patterns Compose* position). The nested binders resolve via a resolve-stage descent giving the
+           value read a sub-path INTO the value (the map analogue of a nested tuple/payload binder), and the
+           value is folded down that sub-path. Here the map holds `(tuple 3 4)` at \"a\" → `x`=3, `y`=4 →
+           7. A refutable value (a multi-variant constructor) instead needs value-discriminant dispatch.")
+  (input  (do
+            (def (main)
+              (match (Map.insert (Map.empty) "a" (tuple 3 4))
+                ((map ("a" (tuple x y)) .. rest) (+ x y))
+                (_                               -1)))
+            (export main)))
+  (output (: 7 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
