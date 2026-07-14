@@ -11723,6 +11723,54 @@ mod match_engine {
     }
 
     #[test]
+    fn adding_two_rationals_declines_honestly_without_a_phantom_int64() {
+        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic is not yet wired. The operator's
+        // `∀a. (Int a) → …` scheme does not accept a Rational, so the generic scheme-unify would default the
+        // first operand to `Int64` and report the second (Rational) as a numeric MIX — fabricating a phantom
+        // `Int64` the author never wrote. The honest outcome names Rational once, as a not-yet-supported op.
+        let d = reject_full(
+            "(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))",
+        )
+        .expect("Rational arithmetic must decline (not yet wired)");
+        assert!(
+            d.message.contains("Rational"),
+            "the message names Rational: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("Int64"),
+            "no phantom Int64 operand (neither operand is Int64): {}",
+            d.message
+        );
+        // An uncoded decline (a not-yet-built construct), NOT the CDZ0301 numeric-mix rejection.
+        assert_eq!(
+            d.code, None,
+            "an uncoded decline, not a coded mismatch: {}",
+            d.message
+        );
+
+        // CONTRAST — must be UNAFFECTED: equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
+        assert!(
+            reject_code("(module m (def (f (: r Rational) (: s Rational)) (= r s)) (def (main) 5) (export main))")
+                .is_none(),
+            "equality of two Rationals still compiles"
+        );
+        // A GENUINE Rational/int MIX keeps CDZ0301 — there the Int64 operand IS present (the `1` literal).
+        assert_eq!(
+            reject_code("(module m (def (f (: r Rational)) (+ r 1)) (def (main) 5) (export main))")
+                .as_deref(),
+            Some("CDZ0301"),
+            "a Rational/int mix is a genuine numeric-promotion error"
+        );
+        // BigInt arithmetic IS wired — two BigInt operands still compile (the sibling generic-numeric shape).
+        assert!(
+            reject_code("(module m (def (f (: b BigInt) (: c BigInt)) (+ b c)) (def (main) 5) (export main))")
+                .is_none(),
+            "BigInt arithmetic still compiles"
+        );
+    }
+
+    #[test]
     fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
         // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
         // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum

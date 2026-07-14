@@ -3803,6 +3803,35 @@ fn check_application(
             }
             return;
         }
+        // A `+`/`-`/`*`/`/`/`%` ARITHMETIC op over two `Rational` operands: Rational arithmetic is not yet
+        // wired (B4-0 threads `Ty::Rational` through the type universe; the runtime op arrives in a later
+        // increment). The operator's `∀a. (Int a) → …` scheme does not accept a `Rational`, so the generic
+        // scheme-unify below defaults the first operand to the scheme's `Int64` var and then reports the
+        // SECOND (`Rational`) as a numeric MIX — fabricating a phantom `Int64` operand the author never
+        // wrote (`no implicit conversion between Int64 and Rational`). Give the HONEST message: name
+        // `Rational` once, as a not-yet-supported op — the operands are the SAME type, not a promotion mix.
+        // COMPARISON (`=`/`<`/… — also in `is_additive`) is EXCLUDED: it is `∀a. a→a→Bool`, accepts two
+        // Rationals today, and must keep compiling; only genuine arithmetic is unwired. A Rational/fixed MIX
+        // (`(+ r 1)`) is left to the generic path — there the `Int64` IS present, so CDZ0301 is honest.
+        let is_arith = matches!(
+            prim,
+            Some(
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+                    | crate::resolved::Prim::Rem
+            )
+        );
+        if is_arith && matches!(a0, Ty::Rational) && matches!(b0, Ty::Rational) {
+            // An uncoded DECLINE — a not-yet-built construct (Rational arithmetic), the honest outcome
+            // distinct from a type/well-formedness rejection. Anchored at the op node.
+            out.push(Reject::decline("Rational arithmetic is not yet supported").at(app));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         if is_additive {
             let a = a0;
             let b = b0;
