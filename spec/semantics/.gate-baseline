@@ -596,6 +596,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
+pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent

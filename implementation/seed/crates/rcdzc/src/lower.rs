@@ -3889,15 +3889,159 @@ fn list_element_irrefutable_or_decline(
     }
 }
 
+/// PRE-PASS for `lower_match_map`: match a RUNTIME map by rewriting the whole match to a nested
+/// PRESENCE-TEST `if`-chain the existing machinery lowers (the Inc-9 blocker, unblocked via the
+/// Inc-11/12/14 desugar idiom). A runtime map's keys are not known at compile time, so the const-fold path
+/// in `lower_match_map` declines "constant maps only". A key-directed arm `((map (k1 v1) …) .. rest) body)`
+/// matches iff EVERY named key is present, so each arm becomes:
+///
+/// ```text
+/// (if <k1-present> (if <k2-present> … body <else>) <else>)
+/// ```
+///
+/// where `<kN-present>` = `(match (Map.lookup m kN) ((Some _) true) ((None) false))` and `<else>` = the
+/// next arm's desugar (threaded backward from the catch-all, the innermost `<else>`). The arm BODY is
+/// REUSED VERBATIM — its value/rest binders keep their `MapField` resolution (a body reference resolved
+/// BEFORE this desugar and is MEMOIZED; re-binding it via a synthesized `(Some v)` would NOT take — the
+/// memo wins), so the desugar supplies only DISPATCH; inside the all-keys-present branch the body's
+/// `MapField` binders lower to runtime reads (`lower_map_field_runtime` emits `Map.lookup`/`Map.remove`).
+/// A GUARD wraps `(if guard body <else>)`. This is the Inc-9 dispatch structure; the value read is
+/// `lower_map_field`'s job. Returns `Some(Core)` iff the scrutinee is a RUNTIME map (non-`MapNew`); a
+/// constant map keeps the fold.
+fn desugar_runtime_map_match(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Only fire for a RUNTIME map scrutinee — a constant `MapNew` keeps the existing const-fold path (it
+    // selects the arm at compile time, no lookups emitted).
+    if matches!(
+        core_of(db, scrutinee),
+        Core::MapNew { .. } | Core::Poison(_)
+    ) {
+        return None;
+    }
+    // Require a catch-all (a bare binder / `_`) — a map's key set is unbounded, so without one the match is
+    // non-exhaustive. Find the FIRST unguarded catch-all; arms after it are dead. (The const path enforces
+    // the same rule; mirror it here so the desugar has a well-defined innermost `<else>`.)
+    let catch_all_ix = arms.iter().position(|&(pat, _)| {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+    });
+    let Some(catch_all_ix) = catch_all_ix else {
+        return Some(Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
+        )));
+    };
+    // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern whose value
+    // sub-patterns are bare binders (a nested value pattern is a later increment — decline honestly).
+    for &(pat, _) in &arms[..catch_all_ix] {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) else {
+            return Some(Core::Poison(Reject::decline(
+                "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
+            )));
+        };
+        if !entries.iter().all(|&(_, v)| db.ast.as_name(v).is_some()) {
+            return Some(Core::Poison(Reject::decline(
+                "a map pattern value sub-pattern that is not a binder is not yet supported",
+            )));
+        }
+    }
+    // The innermost `<else>` = the catch-all arm's body (reused in place; a binder catch-all reads the whole
+    // map via the Case-5 binder→scrutinee rule).
+    let mut else_node = arms[catch_all_ix].1;
+    // Fold the key-directed arms (before the catch-all) from LAST backward into nested presence-test `if`s.
+    // KEY DESIGN: the arm body is REUSED VERBATIM — its value/rest binders keep their `MapField` resolution
+    // (a body reference resolved BEFORE this desugar and is memoized; re-binding via a synthesized `(Some
+    // v)` would NOT take — the memo wins). So the desugar supplies only the DISPATCH: a nested
+    // `(if <k-present> … <else>)` presence chain, where each `<k-present>` = `(match (Map.lookup m k) ((Some
+    // _) true) ((None) false))`. Inside the (all-keys-present) branch the body's `MapField` binders lower to
+    // runtime reads (`lower_map_field` emits `Map.lookup`/`Map.remove` for a runtime scrutinee). This is the
+    // Inc-9 dispatch+rest structure; the value read is `lower_map_field`'s job.
+    for &(pat, body) in arms[..catch_all_ix].iter().rev() {
+        let (inner, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let (entries, _rest) = crate::resolve::map_pattern_of(db, inner)?;
+        // The taken-branch body: reuse verbatim, then wrap a guard `(if guard body <else>)` (a false guard
+        // falls through to the same else as a missing key).
+        let mut taken = body;
+        if let Some(guard) = guard {
+            let if_head = db.push_name("if");
+            taken = db.push_list(vec![if_head, guard, taken, else_node]);
+        }
+        // Nest a presence test per named key: `(if <k-present> <inner> <else>)`, INNERMOST last so the first
+        // key is the OUTERMOST test. `<k-present>` = `(match (Map.lookup m k) ((Some _) true) ((None) false))`.
+        let mut chain = taken;
+        for &(k, _v) in entries.iter().rev() {
+            let dot = db.push_name(".");
+            let map_mod = db.push_name("Map");
+            let lookup_key = db.push_name("lookup");
+            let lookup_member = db.push_list(vec![dot, map_mod, lookup_key]);
+            let k_copy = clone_key_expr(db, k);
+            let lookup_call = db.push_list(vec![lookup_member, scrutinee, k_copy]);
+            let some_head = db.push_name("Some");
+            let wild_p = db.push_name("_");
+            let some_pat = db.push_list(vec![some_head, wild_p]);
+            let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+            let some_arm = db.push_list(vec![some_pat, true_node]);
+            let none_head = db.push_name("None");
+            let none_pat = db.push_list(vec![none_head]);
+            let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+            let none_arm = db.push_list(vec![none_pat, false_node]);
+            let match_head = db.push_name("match");
+            let present = db.push_list(vec![match_head, lookup_call, some_arm, none_arm]);
+            let if_head = db.push_name("if");
+            chain = db.push_list(vec![if_head, present, chain, else_node]);
+        }
+        else_node = chain;
+    }
+    crate::resolve::resolve_subtree(db, else_node);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime map match → nested presence-test if-chain (body MapField reads runtime)");
+    Some(core_of(db, else_node))
+}
+
+/// A FRESH copy of a map-pattern KEY expression for use in a synthesized `Map.lookup`/`Map.remove` call.
+/// A key is a value expression (a literal or a scoped name) sitting in a map PATTERN; reused verbatim it
+/// would carry its pattern-context parent, so copy it: a literal atom clones its leaf; a bare name clones
+/// the name; any other (a compound key expression) is reused (its own subtree resolves independently).
+fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
+    match db.ast.get(k) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        _ => k,
+    }
+}
+
 /// Lower a match over a MAP scrutinee by KEY-DIRECTED patterns (ask-61, core-semantics.md §A Map Is
 /// Matched By Key-Directed Patterns). A `(map (k p) …)` arm matches when the map HAS every named key `k`
-/// (each bound to a value the body reads via a `MapField`); a bare binder / `_` is a catch-all. This
-/// increment folds a CONSTANT `Core::MapNew` scrutinee: a named key is present iff some entry's key is
-/// `const_compound_eq` to it, so the first arm whose keys are all present is selected and its body
-/// lowered (the body's `MapField` binders then fold — the value at each key, the rest map). A map's key
-/// set is UNBOUNDED, so a `(map …)` arm covers no shape — the match needs a catch-all (else CDZ0210).
-/// A runtime map scrutinee, or a key-sub-pattern that is not a bare binder, declines (later increments).
+/// (each bound to a value the body reads via a `MapField`); a bare binder / `_` is a catch-all. A CONSTANT
+/// `Core::MapNew` scrutinee FOLDS: a named key is present iff some entry's key is `const_compound_eq` to
+/// it, so the first arm whose keys are all present is selected and its body lowered (the body's `MapField`
+/// binders then fold). A RUNTIME map is handled by `desugar_runtime_map_match` (a nested `Map.lookup`
+/// chain) — the pre-pass below. A map's key set is UNBOUNDED, so a `(map …)` arm covers no shape — the
+/// match needs a catch-all (else CDZ0210). A key-sub-pattern that is not a bare binder declines.
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS: a RUNTIME map scrutinee desugars to a nested `Map.lookup` chain (the const path below only
+    // handles a compile-time-constant `MapNew`). Fires only for a non-constant map. The desugar rebuilds
+    // the WHOLE match (dispatch by key presence) so the arm-selection is a runtime `Map.lookup`/`None`
+    // fall-through; the value/rest binders are re-bound by the synthesized `(Some v)` / `let rest` — a body
+    // reference re-resolves against those, NOT the original `MapField` (whose lowering only folds a
+    // constant map). See `desugar_runtime_map_match`.
+    if let Some(core) = desugar_runtime_map_match(db, scrutinee, arms) {
+        return core;
+    }
     // The constant scrutinee's entries (the corpus shape: an inline `Map.insert` chain / `(map …)`).
     let entries = match core_of(db, scrutinee) {
         Core::MapNew { entries, .. } => entries,
@@ -13951,9 +14095,14 @@ fn lower_map_field(
     named: &[StructId],
 ) -> Core {
     let Core::MapNew { entries, .. } = core_of(db, scrutinee) else {
-        return Core::Poison(Reject::decline(
-            "a map pattern over a runtime map scrutinee is not yet matched (constant map only)",
-        ));
+        // A RUNTIME map scrutinee (not a compile-time-constant `MapNew`). The arm was SELECTED by the
+        // runtime presence-test `if`-chain `desugar_runtime_map_match` built, so control is here ONLY when
+        // every named key IS present — so a VALUE binder reads the value at its key (`Map.lookup` then unwrap
+        // the `Some`, safe: the key is present), and the REST binder reads the map minus the named keys (a
+        // `Map.remove` chain). Both are synthesized as SOURCE forms + lowered via `core_of` (the Inc-11/12/14
+        // idiom — a synthesized `Map.lookup`/`Map.remove` grounds its type through `resolve_subtree` +
+        // re-lowering, unlike the raw generic-application Inc-9 tried). `(. Map lookup)`/`(. Map remove)`.
+        return lower_map_field_runtime(db, id, scrutinee, key, named);
     };
     match key {
         // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`).
@@ -13988,6 +14137,79 @@ fn lower_map_field(
                 key_ty,
                 val_ty,
             }
+        }
+    }
+}
+
+/// The RUNTIME arm of `lower_map_field`: read a map-pattern binder off a RUNTIME map scrutinee. The arm was
+/// selected by the presence-test `if`-chain `desugar_runtime_map_match` built, so every named key IS
+/// present when control reaches the body. A VALUE binder at key `k` reads `(match (Map.lookup scrutinee k)
+/// ((Some x) x) ((None) (trap …)))` — the `Some` is guaranteed by the presence test, the `None → trap` is
+/// dead but keeps the match exhaustive; the REST binder reads `(Map.remove (Map.remove scrutinee k1) …)`
+/// (the map minus every named key). Both are synthesized as SOURCE forms + lowered via `core_of` after
+/// `resolve_subtree` — a source-written `Map.lookup`/`Map.remove` over a runtime map already compiles, and
+/// re-lowering grounds the synthesized nodes' types (the Inc-11/12/14 discipline that unblocked Inc-9's
+/// "synthesized generic app not grounded at emit").
+fn lower_map_field_runtime(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    key: Option<StructId>,
+    named: &[StructId],
+) -> Core {
+    // Helper: `((. Map <op>) args…)`.
+    fn map_op(db: &mut Db, op: &str, args: &[StructId]) -> StructId {
+        let dot = db.push_name(".");
+        let map_mod = db.push_name("Map");
+        let op_key = db.push_name(op);
+        let member = db.push_list(vec![dot, map_mod, op_key]);
+        let mut call = vec![member];
+        call.extend_from_slice(args);
+        db.push_list(call)
+    }
+    match key {
+        // VALUE binder at key `k`: `(match (Map.lookup scrutinee k) ((Some x) x) ((None) (trap …)))`.
+        Some(k) => {
+            let k_copy = clone_key_expr(db, k);
+            let lookup = map_op(db, "lookup", &[scrutinee, k_copy]);
+            // `((Some x) x)` — the payload binder `x` and the body ref are two occurrences of one fresh name.
+            let some_head = db.push_name("Some");
+            let x_binder = db.push_name("__mv");
+            let some_pat = db.push_list(vec![some_head, x_binder]);
+            let x_ref = db.push_name("__mv");
+            let some_arm = db.push_list(vec![some_pat, x_ref]);
+            // `((None) (trap …))` — dead (presence proven) but keeps the match exhaustive.
+            let none_head = db.push_name("None");
+            let none_pat = db.push_list(vec![none_head]);
+            let trap_head = db.push_name("trap");
+            let trap_msg = db.push_str("unreachable: map key absent after presence test");
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let none_arm = db.push_list(vec![none_pat, trap]);
+            let match_head = db.push_name("match");
+            let rewritten = db.push_list(vec![match_head, lookup, some_arm, none_arm]);
+            crate::resolve::resolve_subtree(db, rewritten);
+            // Carry the binder's KNOWN value type onto the synthesized read (the map value type — `id`'s own
+            // solved type), so the emit path has a grounded result type even if the synthesized Option's `v`
+            // is slow to solve. Only a ground type sticks (`types.fill` no-ops a free var / Any).
+            let vty = crate::infer::type_of(db, id);
+            if !matches!(vty, crate::ty::Ty::Any) && !vty.has_free_var() {
+                db.types.fill(rewritten, vty);
+            }
+            core_of(db, rewritten)
+        }
+        // REST binder: `(Map.remove (Map.remove scrutinee k1) k2 …)` — the map minus every named key.
+        None => {
+            let mut acc = scrutinee;
+            for &nk in named {
+                let k_copy = clone_key_expr(db, nk);
+                acc = map_op(db, "remove", &[acc, k_copy]);
+            }
+            crate::resolve::resolve_subtree(db, acc);
+            let mty = crate::infer::type_of(db, id);
+            if !matches!(mty, crate::ty::Ty::Any) && !mty.has_free_var() {
+                db.types.fill(acc, mty);
+            }
+            core_of(db, acc)
         }
     }
 }
