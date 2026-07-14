@@ -10424,9 +10424,16 @@ mod recursion {
         // (a recursion/resource limit)" (reads as a compiler resource problem). Now it is rejected CDZ0201
         // naming the real cause — a value cannot reference itself — with the fix route. (Contrast the mutual
         // FUNCTIONS above, which run: a function's self-reference is legitimate recursion.)
-        let single = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (g) g) (export g))",
-        )));
+        // Through the host-stack guard the bin uses (`host.rs`): a self-referential value cycle reduces
+        // up to `DESCENT_DEPTH_LIMIT` (1024 levels — bounded, and the CDZ0201 IS emitted) before the guard
+        // stops it, but that depth needs the guard-sized 64 MB stack, not a default `cargo test` worker's
+        // ≈2 MB (which SIGABRTs, EXIT=101, 0 FAILED). Deep-but-finite, not a loop — the CLI already runs
+        // this through the guard, so the test must too.
+        let single = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g) g) (export g))",
+            )))
+        });
         let d = single
             .iter()
             .find(|d| d.code.as_deref() == Some("CDZ0201"))
@@ -10445,9 +10452,11 @@ mod recursion {
         );
         // A MUTUAL value cycle (`a = b`, `b = a`) is caught too — each cyclic def reports once, and the
         // "nests too deeply" decline is deduped away (exactly 2 errors, both the clear cycle message).
-        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (a) b) (def (b) a) (export a))",
-        )));
+        let ds = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) b) (def (b) a) (export a))",
+            )))
+        });
         assert_eq!(
             ds.iter()
                 .filter(|d| d.code.as_deref() == Some("CDZ0201"))
