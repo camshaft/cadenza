@@ -534,6 +534,55 @@
   (call   app (: 3 Int64) (: 4 Int64))
   (output (: 7 Int64)))
 
+; A multi-argument arrow may be written FLAT `(-> A B … R)` (the idiomatic spelling) as well as explicitly
+; CURRIED `(-> A (-> B R))` — both denote the same n-ary function type `A -> (B -> (… -> R))`. The flat form
+; `(-> Int64 Int64 Int64)` used to error "-> takes one or two type arguments" (only arities 1 + 2 were
+; handled), so a round-trip consumer whose closure parameter was written flat solved `Any` and declined
+; "parameter type is ambiguous — annotate it". The arrow constructor now curries any arity ≥1.
+
+(case "a multi-argument closure round-trips through a consumer — FLAT arrow spelling"
+  (doc    "The SAME two-arg round trip as above, but the consumer's closure parameter is written with the
+           FLAT arrow `(: g (-> Int64 Int64 Int64))` instead of the explicitly-curried `(-> Int64 (-> Int64
+           Int64))`. Both denote `Int64 -> (Int64 -> Int64)`. `app(handle, 3, 4)` = 7. Pins that a flat
+           multi-arg arrow annotation curries — previously it errored `-> takes one or two type arguments`
+           and the param declined `parameter type is ambiguous`.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (app (: g (-> Int64 Int64 Int64)) (: a Int64) (: b Int64)) (g a b))
+              (export mk) (export app)))
+  (call   app (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "a THREE-argument closure round-trips — flat arrow spelling"
+  (doc    "A flat three-argument arrow `(-> Int64 Int64 Int64 Int64)` curries to `Int64 -> Int64 -> Int64 ->
+           Int64`. `mk` sums three args; `app` applies the handed-back `g` to `x`, `x+1`, `x+2`. `app(handle,
+           10)` → `g(10, 11, 12)` = 33.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)))
+              (def (app (: g (-> Int64 Int64 Int64 Int64)) (: x Int64)) (g x (+ x 1) (+ x 2)))
+              (export mk) (export app)))
+  (call   app (: 10 Int64))
+  (output (: 33 Int64)))
+
+(case "a multi-argument closure with COMPOUND args round-trips — flat arrow spelling"
+  (doc    "Composes the flat multi-arg arrow with compound closure arguments (both built in-guest): `g : (->
+           (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` reads `p.0 + q.1`; `app` applies it to `(tuple x
+           x)` and `(tuple x (x*2))`. `app(handle, 5)` → `g((tuple 5 5), (tuple 5 10))` = 5 + 10 = 15.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (app (: g (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)) (: x Int64))
+                (g (tuple x x) (tuple x (* x 2))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling"
+  (doc    "A flat two-arg arrow with a compound RESULT: `g : (-> Int64 Int64 (Tuple Int64 Int64))` pairs its
+           two args; `app` applies it to `x` and `x+10` and returns the tuple. `app(handle, 5)` → `g(5, 15)` =
+           `(: (tuple 5 15) (Tuple Int64 Int64))`, value-form-encoded out.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (tuple a b)))
+              (def (app (: g (-> Int64 Int64 (Tuple Int64 Int64))) (: x Int64)) (g x (+ x 10)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (tuple 5 15) (Tuple Int64 Int64))))
+
 (case "a round-trip at a widened scalar width (UInt32)"
   (doc    "The round trip at UInt32, not Int64: `(def (mk (: k UInt32)) (fn (x) (+ x k)))` produces a `(->
            UInt32 UInt32)` closure; `(def (app (: g (-> UInt32 UInt32)) (: x UInt32)) (g x))` applies it.

@@ -160,6 +160,22 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let r = type_in_env(db, args[1], env)?;
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
+                // A MULTI-ARGUMENT arrow `(-> A B … R)` (≥3 elements) CURRIES right-associatively into
+                // `A -> (B -> (… -> R))` — the standard n-ary function type, matching how a multi-param
+                // lambda `(fn (a b …) …)` types and how `apply_type` peels one arrow per argument. Without
+                // this a `(-> Int64 Int64 Int64)` param read `None` (only arity 1 + 2 were handled), so a
+                // multi-argument closure PARAMETER (e.g. a round-trip consumer `(: g (-> Int64 Int64 Int64))`)
+                // solved `Any` and declined "parameter type is ambiguous". Fold from the right: the last
+                // element is the result, each earlier element wraps it in one more arrow.
+                Prim::FnCtor if args.len() >= 3 => {
+                    let (last, rest) = args.split_last()?;
+                    let mut acc = type_in_env(db, *last, env)?;
+                    for &a in rest.iter().rev() {
+                        let p = type_in_env(db, a, env)?;
+                        acc = Ty::Fn(Box::new(p), Box::new(acc));
+                    }
+                    Some(acc)
+                }
                 // A SINGLE-element arrow `(-> R)` is a NULLARY operation type `Unit -> R` — the unit
                 // domain is elided (an effect op `(op get (-> (List Int64)))` performed as `(E.get)`,
                 // the same elided-unit convention `apply_type`'s nullary-perform arm honors). Without
@@ -1755,23 +1771,32 @@ pub fn reduce_ctor(
         }
         Prim::FnCtor => {
             // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
-            // (a nullary effect op `(op get (-> R))`); a two-element `(-> P R)` is the ordinary `P -> R`.
-            let (p, r) = match args.len() {
+            // (a nullary effect op `(op get (-> R))`); a two-element `(-> P R)` is the ordinary `P -> R`; a
+            // MULTI-argument arrow `(-> A B … R)` (≥3) CURRIES right-associatively into `A -> (B -> (… -> R))`
+            // — the standard n-ary function type. Without the curry a `(-> Int64 Int64 Int64)` annotation
+            // (e.g. a round-trip consumer's `(: g (-> Int64 Int64 Int64))`) errored "-> takes one or two type
+            // arguments" and the param solved `Any`, declining "parameter type is ambiguous".
+            let fn_ty = match args.len() {
+                0 => return Err("-> takes at least one type argument".to_string()),
                 1 => {
                     let r = typeval_of(db, args[0])
                         .ok_or_else(|| "-> result is not a type".to_string())?;
-                    (crate::ty::Ty::Unit, r)
+                    crate::ty::Ty::Fn(Box::new(crate::ty::Ty::Unit), Box::new(r))
                 }
-                2 => {
-                    let p = typeval_of(db, args[0])
-                        .ok_or_else(|| "-> parameter is not a type".to_string())?;
-                    let r = typeval_of(db, args[1])
+                _ => {
+                    // Fold from the right: the last element is the result, each earlier element wraps it in
+                    // one more arrow. `(-> A B R)` → `A -> (B -> R)`.
+                    let (last, rest) = args.split_last().expect("len >= 2");
+                    let mut acc = typeval_of(db, *last)
                         .ok_or_else(|| "-> result is not a type".to_string())?;
-                    (p, r)
+                    for &a in rest.iter().rev() {
+                        let p = typeval_of(db, a)
+                            .ok_or_else(|| "-> parameter is not a type".to_string())?;
+                        acc = crate::ty::Ty::Fn(Box::new(p), Box::new(acc));
+                    }
+                    acc
                 }
-                _ => return Err("-> takes one or two type arguments".to_string()),
             };
-            let fn_ty = crate::ty::Ty::Fn(Box::new(p), Box::new(r));
             trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
         }
