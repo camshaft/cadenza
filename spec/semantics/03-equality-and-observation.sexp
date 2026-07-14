@@ -692,3 +692,67 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "first" String))
               (call log.emit (: "second" String))))
+
+; --- Left-to-right evaluation order WITHIN an expression --------------------------------------------
+; The case above pins that a `do` block sequences its FORMS in order. This pins the finer guarantee that
+; the sub-expressions WITHIN a single expression — a call's arguments, a binary operator's operands, a
+; `let`'s initializers, a tuple's elements — are evaluated LEFT TO RIGHT (core-semantics.md #Host Calls
+; Are Ordered And Part Of Observable Behavior; #A Sequencing Block Evaluates Its Forms In Order). Each
+; sub-expression is a host call `(log.emit …)`, and the `host-responses` are consumed in CALL order, so
+; the order is observable TWO ways at once: the `(host-calls …)` observation asserts the emit sequence
+; directly, AND the operator is NON-COMMUTATIVE (`-`) with distinct responses, so evaluating in the wrong
+; order would consume the responses swapped and produce a DIFFERENT value (`3 - 10 = -7`, not `10 - 3 = 7`)
+; — the recorded `(output …)` alone would catch a right-to-left evaluator even without the observation.
+; (A sub-expression whose result is UNUSED is dead-code-eliminated and makes no host call, so each case
+; CONSUMES every sub-expression it evaluates — the tuple binds then reads both elements.)
+
+(case "function arguments are evaluated left to right"
+  (doc    "`(diff (log.emit \"first\") (log.emit \"second\"))` calls two host effects as the arguments to
+           `diff = a - b`. The arguments evaluate left to right, so `first` is emitted before `second` and
+           `a` gets the first response (10), `b` the second (3) → 10 - 3 = 7. A right-to-left evaluator
+           would emit `second` first, bind `a`=3 and `b`=10, and compute -7 — caught by BOTH the value and
+           the host-call order. Pins argument evaluation order, observable through the ordered host calls.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (diff a b) (- a b))
+            (def (main) (host (log) (diff (log.emit "first") (log.emit "second")))) (export main)))
+  (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 3 Int64)))
+  (output (: 7 Int64))
+  (host-calls (call log.emit (: "first" String)) (call log.emit (: "second" String))))
+
+(case "binary operator operands are evaluated left to right"
+  (doc    "`(- (log.emit \"left\") (log.emit \"right\"))` — the two operands of `-` are host effects. The
+           left operand evaluates first (emitting `left`, consuming response 10), then the right (`right`,
+           response 3) → 10 - 3 = 7. The operator-position companion of the argument case: operand order,
+           not only call-argument order, is left to right. A swapped order gives -7.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (main) (host (log) (- (log.emit "left") (log.emit "right")))) (export main)))
+  (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 3 Int64)))
+  (output (: 7 Int64))
+  (host-calls (call log.emit (: "left" String)) (call log.emit (: "right" String))))
+
+(case "let bindings' initializers are evaluated in binding order"
+  (doc    "`(let ((x (log.emit \"x\")) (y (log.emit \"y\"))) (- x y))` — the initializers run in binding
+           order, so `x` is emitted and bound (response 10) before `y` (response 4) → 10 - 4 = 6. Pins that
+           a multi-binding `let` evaluates its initializers top to bottom (the order a later binding could
+           depend on an earlier one relies on), observable through the ordered host calls.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (main) (host (log) (let ((x (log.emit "x")) (y (log.emit "y"))) (- x y)))) (export main)))
+  (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 4 Int64)))
+  (output (: 6 Int64))
+  (host-calls (call log.emit (: "x" String)) (call log.emit (: "y" String))))
+
+(case "tuple elements are evaluated left to right"
+  (doc    "`(tuple (log.emit \"a\") (log.emit \"b\"))` — the elements evaluate left to right, so `a` is
+           emitted (response 10) before `b` (response 4). The tuple is bound and BOTH elements read back
+           (`(- (. t 0) (. t 1))` = 10 - 4 = 6) so neither emit is dead-code-eliminated — an unused element
+           would be dropped, making no host call. Pins that a compound constructor evaluates its components
+           left to right, observable through the ordered host calls.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (main) (host (log) (let ((t (tuple (log.emit "a") (log.emit "b")))) (- (. t 0) (. t 1))))) (export main)))
+  (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 4 Int64)))
+  (output (: 6 Int64))
+  (host-calls (call log.emit (: "a" String)) (call log.emit (: "b" String))))

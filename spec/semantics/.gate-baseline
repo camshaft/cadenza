@@ -1418,6 +1418,7 @@ pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	binary operator operands are evaluated left to right
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
@@ -1588,6 +1589,7 @@ pass	float multiplication uses the float operator
 pass	float subtraction uses the float operator
 pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
+pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -1629,6 +1631,7 @@ pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
+pass	let bindings' initializers are evaluated in binding order
 pass	lists are equal by elements in order
 pass	looking up an absent key yields None
 pass	map equality is independent of insertion order
@@ -1959,6 +1962,7 @@ pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
+pass	tuple elements are evaluated left to right
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
