@@ -648,11 +648,27 @@ the component type. The new work:
   `ret_template`; `ClosureConsumeAbi.ret_is_bytes` now = "crosses as `list<u8>`" (byte-rope OR compound). (3)
   `cdz-run` already try-decodes. +5 corpus (compound + scalar consumer of another sig; two compound consumers
   of different sigs — tuple + record; compound + byte-rope consumer of different sigs).
-- **REMAINING (all optional, none blocking):** a VARIABLE-LENGTH list/map/set closure result (needs a runtime
-  looping value-form walker, like the runtime-Bytes escape but recursing over elements); a compound closure
-  ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
-  wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface
-  AND the entire fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes.**
+- **✅ VARIABLE-LENGTH collection (List/Map/Set) closure RESULT COMPLETE `@0beb35d6` (single-export).** A
+  closure returning a `List`/`Map`/`Set` now crosses: the `call` returns `list<u8>` carrying the canonical
+  value form, rendered at RUN TIME by the runtime `value-encode(rep, desc)` op (the recursive-sum escape's
+  approach C) walking the returned collection handle against a compiler-baked shape DESCRIPTOR. Unlike a
+  fixed-shape tuple/record (a static template), a collection is variable-length, so the runtime assembles the
+  document. Pieces: (1) `serialize::closure_value_encode_resource_core_module` — the `call` body dispatches →
+  the collection handle, drops the cell, builds the descriptor Bytes (`bytes-alloc` + literal `bytes-set`),
+  calls `value-encode(rep, desc)` → the document, copies it out, releases rep/desc/doc; NO data section (the
+  descriptor bytes are baked into the code). (2) `emit_closure_resource` — a non-bytes, non-scalar,
+  non-fixed-template List/Map/Set result consults `lower::sum_shape_descriptor` (its List/Map/Set arm builds a
+  parametric `Framed` descriptor so element/key/value types are observable — a NESTED collection crosses too);
+  `Some(desc)` routes to the value-encode core reusing `assemble_closure_bytes_resource`. `cdz-run` already
+  try-decodes. +6 corpus (List, Set canonical order, Map canonical key order, nested List, capturing→List,
+  empty List). 🔑 SCOPE: single-export. The multi/mixed/distinct-sig/round-trip collection result is the
+  natural next widening (thread the descriptor through their shared-`call`/consumer serializers).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the multi/mixed/
+  distinct-sig/round-trip paths (single-export List/Map/Set is done); a compound closure ARG (host→guest
+  decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
+  `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
+  fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
+  collection result is DONE on the single-export path.**
 
 ## Risks / open questions
 
