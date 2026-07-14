@@ -3873,7 +3873,10 @@ fn pattern_constraints(
         // (tuple h t))`: the payloads are boxed as ONE tuple handle (`lower_sum_new` / the `SumNew`
         // backend), so `payload_ty_at_instantiation` reports the payload as a `Ty::Tuple`, and each arg
         // destructures a tuple ELEMENT at `path + [Payload, Elem(i)]` — exactly the descent the explicit
-        // `(tuple …)` payload pattern takes.
+        // `(tuple …)` payload pattern takes. So destructuring a tagged value carrying a tuple of sub-values
+        // (the shape a tree-walking pass over a recursive sum takes) is ONE nested arm, not a bind-then-rematch.
+        //= spec/capabilities/core-semantics.md#patterns-compose
+        //# A destructuring of a tagged value carrying a tuple of sub-values in a single arm — the shape every tree-walking pass over a recursive sum takes — MUST therefore be expressible directly as one nested pattern rather than requiring a bind-then-rematch.
         _ => {
             let payload_ty = crate::infer::payload_ty_at_instantiation(db, head, ty)
                 .unwrap_or(crate::ty::Ty::Any);
