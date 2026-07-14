@@ -3562,16 +3562,16 @@ fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
 /// (a silent state-reset miscompile). `contains_any_perform` misses this because a nested `let` obscures
 /// the perform from its reachability walk, so the guard checks this too.
 fn contains_recursive_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
-    if let Resolved::Apply { head, .. } = resolved_of(db, node) {
-        if let Some(other) = callee_def_index_of(db, head) {
-            if other == callee_def {
-                return true;
-            }
-            if let Some(other_body) = db.defs[other].body
-                && crate::eval::is_recursive(db, other_body)
-            {
-                return true;
-            }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(other) = callee_def_index_of(db, head)
+    {
+        if other == callee_def {
+            return true;
+        }
+        if let Some(other_body) = db.defs[other].body
+            && crate::eval::is_recursive(db, other_body)
+        {
+            return true;
         }
     }
     match db.ast.get(node).clone() {
