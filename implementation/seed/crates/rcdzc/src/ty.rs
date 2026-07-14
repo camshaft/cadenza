@@ -594,6 +594,8 @@ pub enum Ty {
     //# A map MUST associate keys of one type with values of one type.
     //= spec/capabilities/collections-and-text.md#a-map-associates-keys-with-values
     //# A map MUST contain each key at most once.
+    //= spec/capabilities/collections-and-text.md#a-map-associates-keys-with-values
+    //# Two maps MUST be equal exactly when they associate the same keys with equal values, independent of insertion order.
     //= spec/capabilities/collections-and-text.md#keys-are-compared-by-value-not-representation
     //# Whether a map contains a key, and which entry a lookup or removal names, MUST be decided by the key's value under *core-semantics.md §Equality Is Structural* — two keys that are equal as values name the same entry regardless of how each was constructed or stored.
     //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
