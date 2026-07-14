@@ -72,14 +72,27 @@ pub struct Calculator {
     /// its non-re-readable display `1/2`, and so `ans` composes by lexical shadowing rather than
     /// recursing (see the module docs' `let`-chain explanation).
     bindings: Vec<(String, String)>,
+    /// EXACT MODE: when true (the default — the operator's "forced rationals by default"), a bare numeric
+    /// literal grounds to an exact `Rational`, so `1 / 3` is `1/3` (not integer-truncated 0) with no `R`
+    /// suffix. Realized by assembling through `repl::assemble_repl_program_exact` (a do-local
+    /// `(pragma default-fraction Rational)` module, C6). Off → ordinary Int64/Float defaults.
+    exact: bool,
 }
 
 impl Calculator {
-    /// A fresh calculator in `surface` with no bindings.
+    /// A fresh calculator in `surface`, EXACT MODE ON (forced rationals by default) — the operator's
+    /// intended calculator behavior.
     pub fn new(surface: Format) -> Self {
+        Calculator::new_with_exact(surface, true)
+    }
+
+    /// A fresh calculator in `surface` with exact mode set explicitly (`--exact=off` turns it off, giving
+    /// ordinary integer/float literal defaults).
+    pub fn new_with_exact(surface: Format, exact: bool) -> Self {
         Calculator {
             surface,
             bindings: Vec::new(),
+            exact,
         }
     }
 
@@ -153,7 +166,12 @@ impl Calculator {
         let buffer = parse_buffer("").map_err(Eval::Error)?;
         let expr_arena = parse_one(&wrapped, self.surface)
             .map_err(|m| Eval::Error(format!("in the expression: {m}")))?;
-        let program = cadenza_syntax::repl::assemble_repl_program(&buffer, &expr_arena);
+        // In exact mode the expression's bare literals default to Rational (forced rationals by default).
+        let program = if self.exact {
+            cadenza_syntax::repl::assemble_repl_program_exact(&buffer, &expr_arena)
+        } else {
+            cadenza_syntax::repl::assemble_repl_program(&buffer, &expr_arena)
+        };
         eval_program(&program).map(|value_form| render_value(&value_form, self.surface))
     }
 

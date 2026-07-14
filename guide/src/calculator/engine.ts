@@ -80,9 +80,13 @@ export class Calculator {
   private surface: Surface;
   /// Bindings in insertion order, APPEND-only (a re-binding is a new inner `let` that shadows the outer).
   private bindings: Binding[] = [];
+  /// EXACT MODE (forced rationals by default): a bare numeric literal grounds to Rational, so `1 / 3` is
+  /// `1/3` with no `R` suffix — via `replEval`'s exact flag (C6's default-fraction pragma). On by default.
+  private exact: boolean;
 
-  constructor(surface: Surface) {
+  constructor(surface: Surface, exact = true) {
     this.surface = surface;
+    this.exact = exact;
   }
 
   /// The distinct names in scope (newest binding visible), for completion.
@@ -131,7 +135,7 @@ export class Calculator {
     // buffer string and rejects an empty one ("empty program"). Pass a bare `0` — it parses on both
     // surfaces and `buffer_items` yields nothing for a bare (non-def) expression, so the assembled
     // program is exactly our `let`-wrapped expression as the entry.
-    const out = await replEval("0", wrapped, this.surface);
+    const out = await replEval("0", wrapped, this.surface, this.exact);
     if (!out.component) {
       const firstErr = out.diagnostics.find((d) => d.error);
       return {

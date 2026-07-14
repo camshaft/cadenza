@@ -19,24 +19,24 @@ interface TapeEntry {
   result: Eval;
 }
 
-/// A per-surface example expression, so the empty calculator suggests something to try. NOTE the `R`
-/// suffix binds to a LITERAL: `1R / 3R` is one-third (each literal a Rational, then rational `/`) —
-/// `1/3R` would be `1 ÷ 3R`, an Int64/Rational mismatch.
+/// A per-surface example expression, so the empty calculator suggests something to try. In EXACT MODE
+/// (on by default) a bare `1 / 3` is the exact fraction 1/3 — no `R` suffix needed.
 const PLACEHOLDER: Record<string, string> = {
-  ml: "1R / 3R + 1R / 3R + 1R / 3R",
-  sexpr: "(+ (Rational.of 1 3) (Rational.of 1 6))",
+  ml: "1 / 3 + 1 / 3 + 1 / 3",
+  sexpr: "(+ (+ (/ 1 3) (/ 1 3)) (/ 1 3))",
 };
 
 /// A few starter expressions per surface — click to fill the input. They showcase the calculator's
-/// reason for existing: exact fractions, dimensioned quantities, and variables.
+/// reason for existing: exact fractions (bare `1 / 3` = 1/3, exact by default), dimensioned quantities,
+/// and variables.
 const STARTERS: Record<string, { label: string; expr: string }[]> = {
   ml: [
-    { label: "exact thirds", expr: "1R / 3R + 1R / 3R + 1R / 3R" },
+    { label: "exact thirds", expr: "1 / 3 + 1 / 3 + 1 / 3" },
     { label: "km + m", expr: "Qty.of(1, Unit.of(#\"kilometer\")) + Qty.of(500, Unit.of(#\"meter\"))" },
     { label: "assign a variable", expr: "x = 6 * 7" },
   ],
   sexpr: [
-    { label: "exact thirds", expr: "(+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3))" },
+    { label: "exact thirds", expr: "(+ (+ (/ 1 3) (/ 1 3)) (/ 1 3))" },
     { label: "km + m", expr: "(+ (Qty.of 1 (Unit.of #\"kilometer\")) (Qty.of 500 (Unit.of #\"meter\")))" },
     { label: "assign a variable", expr: "x = (* 6 7)" },
   ],
@@ -138,9 +138,10 @@ export default function CalculatorPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-100">Cadenza calculator</h1>
           <p className="text-sm text-slate-500">
-            Exact fractions, units, and big integers — in the real language. Assign variables with{" "}
-            <code className="text-slate-400">name = expr</code>; recall the last result with{" "}
-            <code className="text-slate-400">ans</code>.
+            Exact by default — <code className="text-slate-400">1 / 3</code> is{" "}
+            <code className="text-slate-400">1/3</code>, not 0. Fractions, units, and big integers in the
+            real language. Assign variables with <code className="text-slate-400">name = expr</code>;
+            recall the last result with <code className="text-slate-400">ans</code>.
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
