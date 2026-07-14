@@ -689,7 +689,10 @@ mod tests {
         // ident-continuation glued to the number so the token fails the numeric parse and is rejected
         // downstream (never silently a suffix + a stray `x`). The radix body absorbs the hex `F`s; the
         // `Nx` follows. `0xFFN` alone suffixes, but `0xFFNx` must not peel just the `N`.
-        assert_eq!(spanned_text("0xFFNx"), vec![("0xFF", Kind::Int), ("Nx", Kind::Ident)]);
+        assert_eq!(
+            spanned_text("0xFFNx"),
+            vec![("0xFF", Kind::Int), ("Nx", Kind::Ident)]
+        );
         // A SPACE before the letter stays a separate token (the ML `5 R` quantity-unit sugar), unaffected.
         assert_eq!(
             spanned_text("0xFF N"),
