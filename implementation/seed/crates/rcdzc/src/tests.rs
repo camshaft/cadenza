@@ -7035,6 +7035,34 @@ mod runtime_ops {
             ),
             42 // 6 + 6*6
         );
+
+        // A TUPLE/RECORD PROJECTION IS TRAP-FREE: `(. p i)` emits `arr-get(compound, const-index)` where
+        // `i` is within the operand's static arity (`type_errors` rejects an out-of-arity index at compile
+        // time — never a runtime OOB trap), so it never traps. A discarding annihilator `(* 0 (. p 0))` → 0
+        // now DROPS the projection (no `arr-get`). (A SumPayload variant-payload read is NOT trap-free — it
+        // could mismatch its discriminant — so it is not covered here.)
+        let getarr = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::CallImport("arr-get")))
+                .count()
+        };
+        assert_eq!(
+            getarr(&lir("(: p (Tuple Int64 Int64))", "(* 0 (. p 0))")),
+            0,
+            "a dead tuple projection is dropped by the annihilator fold (it is trap-free)"
+        );
+        // VALUE PARITY (the whole `(* 0 (. p 0))` folds to 0, projection dropped): a nullary export builds
+        // the tuple + projects, confirming the fold + a LIVE projection both compute correctly.
+        assert_eq!(
+            run::<i64>("", "(let ((p (tuple 42 7))) (* 0 (. p 0)))", &[]),
+            0,
+            "the annihilated projection evaluates to 0"
+        );
+        assert_eq!(
+            run::<i64>("", "(let ((p (tuple 42 7))) (. p 0))", &[]),
+            42,
+            "a live projection reads the field"
+        );
     }
 
     #[test]
