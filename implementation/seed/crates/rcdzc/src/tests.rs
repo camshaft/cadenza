@@ -35974,6 +35974,124 @@ mod closure_host_resource {
             .expect("closure-resource core module validates");
     }
 
+    /// HOST-COMPOSED closure-resource core (`multi_closure_resource_core_module_with_host`): the build-time-
+    /// delegated closure-capture shape — a closure export whose `make` body performs a host call
+    /// (`(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`). Host ops are laid FIRST (core funcs `0..h`),
+    /// so a `Lir::CallHostImport(0)` in the export body resolves to core func 0 verbatim (the same invariant
+    /// the plain `emit` path relies on) with NO index recomputation; the runtime cell ops shift to `h..h+k`
+    /// and the resource intrinsics to `h+k`,`h+k+1`. Pins that the host-threaded layout emits a
+    /// STRUCTURALLY VALID core (the `CallHostImport` index, the shifted runtime-op `CallImport` indices, the
+    /// resource intrinsics, and the `call_indirect` functype are all consistent). This is brick 1 of the
+    /// closure-capture feature — the envelope (importing the `host` interface) + `emit_closure_resource`
+    /// wiring are the following bricks.
+    #[test]
+    fn closure_resource_core_with_host_is_structurally_valid() {
+        use crate::backend::wasm::host::{HostImport, HostParam};
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // ONE host op `log.emit : () -> ()` (no params, UNIT result — leaves nothing on the stack, so the
+        // minimal make body needs no drop) laid at core func 0. The point of this test is the LAYOUT/index
+        // consistency of a `CallHostImport` in a closure-make body, not a specific op signature.
+        let host_fns = vec![HostImport {
+            effect: "log".to_string(),
+            op: "emit".to_string(),
+            params: Vec::<HostParam>::new(),
+            result: None,
+        }];
+        // The runtime cell ops (make builds the capturing cell; call recovers it). Shift to h..h+k.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let h = host_fns.len();
+        // Export body `main : () -> own<closure>`: call the host op (`CallHostImport(0)` → the captured v),
+        // then build a 1-slot cell holding box-int(0) — a minimal make that both performs a host call AND
+        // builds the closure cell. (The host result is dropped here; the real body captures it — this test
+        // only pins the LAYOUT/index consistency, not the capture dataflow.)
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::CallHostImport(0), // log.emit() → () (host func 0; leaves nothing on the stack)
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        // import_base = h host + k runtime + 2 resource intrinsics.
+        let import_base = (h + imports.len() + 2) as u32;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::multi_closure_resource_core_module_with_host(
+            &funcs,
+            &imports,
+            &host_fns,
+            &[crate::backend::wasm::serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("host-composed closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("host-composed closure-resource core module validates");
+    }
+
     /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production
     /// core a closure whose result is a runtime `Bytes` emits — is structurally valid. The closure body
     /// `(env, x) -> Bytes` builds a 2-byte `[x, x+1]` (`bytes-alloc`/`bytes-set`); `call` dispatches it via
