@@ -6413,6 +6413,8 @@ fn check_application(
                         // payload Bytes → `(String.to-bytes s)` — offer the SAME coercion fix the operator/
                         // argument position does (the D33 lesson: the same repair wherever the same mismatch
                         // surfaces). No coercion (e.g. Bool payload) → the bare reject.
+                        // Anchor at the offending ARGUMENT (the wrong-type payload value), not the whole
+                        // ctor application — the squiggle lands on `"x"` in `(T.Mk "x")`.
                         let mut reject = Reject::coded(
                             Code::Malformed,
                             format!(
@@ -6421,7 +6423,8 @@ fn check_application(
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
-                        );
+                        )
+                        .at(arg);
                         if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
                             reject = reject.with_fix(fix);
                         }
@@ -7175,10 +7178,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let cond_ty = type_of(db, cond);
             if !cond_ty.agrees_with(&Ty::Bool) {
                 trace!(target: "rcdzc::infer", node = id.0, cond_ty = %cond_ty.render_name(), "fault: if condition not Bool (CDZ0203)");
-                out.push(Reject::coded(
-                    Code::TypeMismatch,
-                    format!("if condition must be Bool, found {}", cond_ty.render_name()),
-                ));
+                // Anchor at the CONDITION expression, not the whole `(if …)` — the squiggle then lands on
+                // the non-Bool value (`5` in `(if 5 …)`), the actual culprit. (Without `.at`, `collect`
+                // stamps the coarse `if`-node default.) The branch-mismatch reject below stays at the `if`
+                // node: it concerns the RELATIONSHIP between both branches, not one sub-node.
+                out.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!("if condition must be Bool, found {}", cond_ty.render_name()),
+                    )
+                    .at(cond),
+                );
             }
             // Both branches are type-checked HERE (each `type_of`'d, and they must agree) EVEN THOUGH only
             // the condition-selected branch runs — so an unevaluated branch can never carry a deferred type
@@ -7244,10 +7254,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let t = type_of(db, operand);
                 if !t.agrees_with(&Ty::Bool) {
                     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!("`{op}` operand must be Bool, found {}", t.render_name()),
-                    ));
+                    // Anchor at the offending OPERAND, not the whole `(and …)`/`(or …)`.
+                    out.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!("`{op}` operand must be Bool, found {}", t.render_name()),
+                        )
+                        .at(operand),
+                    );
                 }
                 collect(db, operand, out);
             }
@@ -7256,10 +7270,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let t = type_of(db, operand);
             if !t.agrees_with(&Ty::Bool) {
                 trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0201)");
-                out.push(Reject::coded(
-                    Code::Malformed,
-                    format!("`not` operand must be Bool, found {}", t.render_name()),
-                ));
+                // Anchor at the offending OPERAND, not the whole `(not …)`.
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!("`not` operand must be Bool, found {}", t.render_name()),
+                    )
+                    .at(operand),
+                );
             }
             collect(db, operand, out);
         }

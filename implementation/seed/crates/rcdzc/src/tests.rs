@@ -29241,6 +29241,50 @@ mod diagnostics {
         );
     }
 
+    /// A value-position type fault anchors at the offending SUB-EXPRESSION, not the enclosing form: an
+    /// `if` with a non-Bool condition points at the CONDITION (`5` in `(if 5 …)`); an `and`/`or`/`not` with
+    /// a non-Bool operand points at the OPERAND; a variant constructor applied to a wrong-type payload
+    /// points at the ARGUMENT. Each reject carries its faulting sub-node explicitly (`.at(cond)` /
+    /// `.at(operand)` / `.at(arg)`); without it, the `collect` walk stamped the coarse enclosing-form node.
+    #[test]
+    fn a_value_position_type_fault_anchors_at_the_sub_expression() {
+        // The reported node is a LEAF ATOM (the `5`/`7`/`"hi"` sub-expression), not the enclosing List form.
+        fn anchor_is_atom(src: &str) -> bool {
+            let ast = parse(src);
+            let bytes = crate::codec::encode(&ast);
+            let out = compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .expect("an error");
+            let node = d.node.expect("the fault carries an anchor node");
+            let db = Db::load(parse(src));
+            matches!(db.ast.get(StructId(node)), crate::ast::Struct::Atom(_))
+        }
+        // `if` condition, `and`/`or`/`not` operand, and a ctor payload all anchor at the offending atom.
+        for (src, what) in [
+            ("(module m (def (f) (if 5 1 2)) (export f))", "if condition"),
+            (
+                "(module m (def (f (: p Bool)) (and p 5)) (export f))",
+                "and operand",
+            ),
+            ("(module m (def (f) (not 7)) (export f))", "not operand"),
+            (
+                "(module m (type P (Mk Int64)) (def (f) (P.Mk \"hi\")) (export f))",
+                "ctor payload",
+            ),
+        ] {
+            assert!(
+                anchor_is_atom(src),
+                "the {what} fault anchors at the offending atom, not the enclosing form"
+            );
+        }
+    }
+
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
     /// DEF parameter (CDZ0306 + `_`-prefix fix). A lambda is not in `db.defs`, so the def-param loop missed
     /// it; a dedicated `head_name == "fn"` pass (using the same name-based `used_param_names` check) covers
