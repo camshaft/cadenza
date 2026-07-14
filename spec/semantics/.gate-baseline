@@ -598,6 +598,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
@@ -1346,6 +1347,8 @@ pass	a tuple-wrapped self-application is rejected in bounded time, not a compile
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
+pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
+pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
@@ -1418,6 +1421,7 @@ pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
+pass	an Option pipeline short-circuits on the first None
 pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic

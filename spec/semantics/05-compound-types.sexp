@@ -2919,6 +2919,48 @@
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
+; `Option` is the partial-lookup carrier; chaining two lookups so a `None` short-circuits the rest is the
+; partial-lookup pipeline (the Option analogue of the Result-pipeline cases). And a `(Map.lookup m k)` over
+; a map whose VALUE is itself an `Option` yields a HOMOGENEOUS nest `Option (Option v)` — the matcher must
+; distinguish the OUTER `None` (key absent) from the INNER `None` (key present, value is `None`), two arms
+; over the SAME `Option` type (unlike the Option-of-Result nest above, whose levels are different types).
+
+(case "an Option pipeline short-circuits on the first None"
+  (doc    "Two lookups chained so a `None` from either aborts the rest: `(match (Map.lookup m k1) ((Some a)
+           (match (Map.lookup m k2) ((Some b) (+ a b)) (None -1))) (None -2))`. Over `{1↦10, 2↦20}`:
+           k1=1,k2=2 → both present → 10+20 = 30; k1=1,k2=9 → second absent → -1; k1=9 → first absent, the
+           second lookup never runs → -2. Pins the partial-lookup pipeline short-circuit — a present value
+           flows into the next lookup, an absent one skips the rest (the Option analogue of the Result
+           pipeline; the resolve-two-names-then-combine idiom).")
+  (input  (do
+            (def (main (: k1 Int64) (: k2 Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (match (Map.lookup m k1)
+                  ((Some a) (match (Map.lookup m k2) ((Some b) (+ a b)) (None -1)))
+                  (None -2))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 1 Int64) (: 9 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 2 Int64)) (output (: -2 Int64)))
+
+(case "a homogeneous nested Option distinguishes its outer and inner None"
+  (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
+           v) ((Some (None _)) -1) (None -2)`. The scrutinee is runtime (an `if`), so no fold: `b`=true →
+           `(Some (Some 5))` → 5; `b`=false → `(Some (None unit))` → the INNER-None arm → -1 (NOT the outer
+           -2). Pins that the matcher distinguishes the outer `None` (the whole optional is absent) from the
+           inner `None` (present, but its payload is absent) when both levels are the same `Option` type —
+           the shape a `(Map (Option v))` lookup returns (`Option (Option v)`), distinct from the
+           Option-of-Result nest whose levels differ.")
+  (input  (do
+            (def (main (: b Bool))
+              (match (if b (Some (Some 5)) (Some (None unit)))
+                ((Some (Some v)) v)
+                ((Some (None _)) -1)
+                (None -2)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: -1 Int64)))
+
 (case "equality over a partly-un-built sum with a free Err type compiles on every backend"
   (doc    "The equality companion to the total-match case above: `(= (if (> k 0) (Ok k) (Ok 0)) (Ok 5))`
            compares two `Result Int64 ?e` values where NO `Err` is ever built, so the Err type stays a
