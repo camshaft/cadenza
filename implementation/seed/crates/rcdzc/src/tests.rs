@@ -1785,6 +1785,63 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// Mint ONE closure handle with `make` and `call` it TWICE, returning both results. Proves the
+    /// `borrow<t>` `call` is REPEATABLE — the host keeps the handle across calls (versus `own<t>`, which
+    /// consumes it, so a second call on the same handle traps "unknown handle index"). The handle is
+    /// resource-dropped after the two calls (via wasmtime's `ResourceAny` scope on `store` teardown, which
+    /// fires the `t-dtor` to reclaim the cell).
+    fn closure_make_call_twice(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args_1: &[wasmtime::component::Val],
+        call_args_2: &[wasmtime::component::Val],
+    ) -> (wasmtime::component::Val, wasmtime::component::Val) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        // make(make_args…) → ONE closure handle.
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        // call #1 on the handle — `borrow<t>` does NOT consume it.
+        let mut args1 = vec![handle[0].clone()];
+        args1.extend_from_slice(call_args_1);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args1, &mut out1)
+            .expect("first call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        // call #2 on the SAME handle — with `own<t>` this would trap "unknown handle index"; with
+        // `borrow<t>` the host still holds it, so it succeeds.
+        let mut args2 = vec![handle[0].clone()];
+        args2.extend_from_slice(call_args_2);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args2, &mut out2)
+            .expect("second call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        (out1[0].clone(), out2[0].clone())
+    }
+
     /// Like [`closure_make_call`] but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
     /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
     /// dispatches whichever the named `make` built.
@@ -38133,8 +38190,44 @@ mod closure_host_resource {
             Val::S64(6),
             "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
         );
-        // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
+        // A fresh handle called with 41 → 42. (`call` now takes `borrow<t>`, so ONE handle could serve both;
+        // this still mints a fresh handle per call, which is equally fine — see the twice-call test below for
+        // the repeatability proof.)
         assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
+    }
+
+    /// C-HOST-6 (`borrow<t>` REPEATABLE call): a closure `call` takes `borrow<t>`, so the host keeps the
+    /// handle across calls — ONE `make` handle serves MANY `call`s (the natural callback shape), versus
+    /// `own<t>`'s consume-per-call (a second call on the same handle trapped "unknown handle index"). The
+    /// body uses the rep the borrow-lift passes DIRECTLY (no `resource.rep`, which traps on a borrow in
+    /// wasmtime 37), and does NOT self-drop — the `t-dtor` reclaims the cell when the host drops the handle.
+    /// This is the value-heap `encode` borrow pattern reused for a callable closure. A CAPTURING closure
+    /// (`adder(10)`) makes it real — the SAME captured `k` must be readable on both calls (a consumed cell
+    /// would be gone). `#[ignore]` gate: needs the runtime wasm in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_borrow_closure_handle_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A CAPTURING closure: `adder(10)` builds a cell holding k=10; the returned closure is `(+ x k)`.
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(10) → ONE handle; call(5) = 15, then call(7) = 17 on the SAME handle. `own<t>` would trap on
+        // the second call; `borrow<t>` keeps the handle (and the captured k=10) live.
+        let (first, second) =
+            rt.closure_make_call_twice(&[Val::S64(10)], &[Val::S64(5)], &[Val::S64(7)]);
+        assert_eq!(first, Val::S64(15), "adder(10) applied to 5 = 15");
+        assert_eq!(
+            second,
+            Val::S64(17),
+            "the SAME handle applied to 7 = 17 — borrow<t> keeps it live (repeatable)"
+        );
     }
 
     /// C-HOST-5 (the leak fix): a closure `make`+`call` round-trip leaves NO live heap cell. `make` builds

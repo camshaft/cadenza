@@ -1697,7 +1697,14 @@ fn emit_closure_resource(
             &arg_bytes,
         ));
     }
-    let main_core = serialize::closure_resource_core_module(
+    // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a
+    // REPEATABLE callback, the natural host-closure shape), and the `t-dtor` reclaims the cell when the host
+    // finally drops it (`resource_dtor_module_with_drop`, already used above). This replaces the earlier
+    // own/self-drop single-use posture (`resource.rep` on a borrow traps in wasmtime 37 — dodged by using the
+    // rep the borrow-lift passes DIRECTLY, no `resource.rep`). Still leak-free: make allocs the cell, the dtor
+    // drops it. (The compound/collection `call` results above keep own/self-drop for now — a later widening;
+    // borrow there also needs the value form's own memory handling, out of this increment's scope.)
+    let main_core = serialize::closure_resource_core_module_borrow(
         &funcs,
         &imports,
         export_abs,
@@ -1706,9 +1713,10 @@ fn emit_closure_resource(
         &make_param_vts,
         lifted_type_idx,
         &layout,
+        true,
     )
     .map_err(Reject::decline)?;
-    Ok(envelope::assemble_closure_resource(
+    Ok(envelope::assemble_closure_resource_borrow(
         &main_core,
         &dtor_core,
         &imports,
@@ -1716,6 +1724,7 @@ fn emit_closure_resource(
         &make_param_bytes,
         &arg_bytes,
         result_byte,
+        true,
     ))
 }
 

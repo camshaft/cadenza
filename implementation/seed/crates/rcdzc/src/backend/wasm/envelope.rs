@@ -1584,6 +1584,37 @@ pub fn assemble_closure_resource(
     arg_bytes: &[u8],
     result_byte: u8,
 ) -> Vec<u8> {
+    assemble_closure_resource_borrow(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        make_param_bytes,
+        arg_bytes,
+        result_byte,
+        false,
+    )
+}
+
+/// [`assemble_closure_resource`] with a `call_borrow` switch. When TRUE the `call` method's `self` is typed
+/// `borrow<t>` (both on the outer lift and in the nested re-export component) instead of `own<t>`, so the
+/// host KEEPS the handle across calls (a REPEATABLE closure — the natural callback shape) and the `t-dtor`
+/// reclaims the cell when the host finally drops it. Pairs with
+/// [`serialize::closure_resource_core_module_borrow`]`(…, true)` (the `call` body uses the passed rep
+/// directly, no `resource.rep`, no self-drop). `false` reproduces the shipped own/self-drop single-use
+/// component byte-for-byte. Only `call`'s `own_item(1)`→`borrow_item(1)` differs; `make` stays `own<t>`
+/// (it MINTS the handle and transfers ownership OUT to the host).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_closure_resource_borrow(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    result_byte: u8,
+    call_borrow: bool,
+) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -1704,11 +1735,16 @@ pub fn assemble_closure_resource(
         sec::CANON,
         &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
     ));
-    // sec 7: `own<t>` (type 4) then the `call` functype `(self: own<t>, args…) -> R` (type 5). ⚠ `own<t>`
-    // CONSUMES self per call (single-use per handle) — the `borrow<t>` migration for repeated calls is
-    // C-HOST-5 (shared with the value-escape's `encode`).
+    // sec 7: `own<t>`/`borrow<t>` (type 4) then the `call` functype `(self: <handle<t>>, args…) -> R` (type
+    // 5). `own<t>` CONSUMES self per call (single-use); `borrow<t>` keeps the handle across calls (repeatable
+    // — the host drops it when done, firing the dtor). The functype references the handle type by index
+    // either way, so only the type-4 item differs.
     out.extend_from_slice(&{
-        let mut items = own_item(1);
+        let mut items = if call_borrow {
+            borrow_item(1)
+        } else {
+            own_item(1)
+        };
         items.extend_from_slice(&closure_call_functype(4, arg_bytes, result_byte));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
@@ -1721,11 +1757,14 @@ pub fn assemble_closure_resource(
     // sec 4: the nested re-export component. sec 5: instantiate it (comp type 1 + comp funcs k, k+1) →
     // component instance 1 (the runtime import is component instance 0). sec 11: export as the closure
     // interface.
-    out.extend_from_slice(&component_section(&resource_inner_component_closure(
-        make_param_bytes,
-        arg_bytes,
-        result_byte,
-    )));
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_closure_borrow(
+            make_param_bytes,
+            arg_bytes,
+            result_byte,
+            call_borrow,
+        ),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
         &wasm_vec(
@@ -3720,11 +3759,33 @@ fn resource_inner_component() -> Vec<u8> {
 /// call-ft `(self:own<3>, args…)->R` → 4; imported `make` → func 0; imported `call` → func 1; RE-EXPORTED
 /// resource → type 5; `own<5>` → 6; make-exp-ft → 7; `own<5>` → 8; call-exp-ft `(self:own<8>, args…)->R` →
 /// 9. (No `list u8` type as the encode variant has — a `call`'s result is a scalar valtype inline.)
+#[allow(dead_code)]
 fn resource_inner_component_closure(
     make_param_bytes: &[u8],
     arg_bytes: &[u8],
     result_byte: u8,
 ) -> Vec<u8> {
+    resource_inner_component_closure_borrow(make_param_bytes, arg_bytes, result_byte, false)
+}
+
+/// [`resource_inner_component_closure`] with a `call_borrow` switch. `call`'s `self` handle type (both the
+/// imported type 3 and the re-exported type 8) is `borrow<t>` when TRUE, `own<t>` when FALSE — matching the
+/// outer lift in [`assemble_closure_resource_borrow`]. `make` stays `own<t>` (it hands ownership out). Only
+/// the two `call` handle-type items differ; the functype/index layout is identical.
+fn resource_inner_component_closure_borrow(
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    result_byte: u8,
+    call_borrow: bool,
+) -> Vec<u8> {
+    // `call`'s self handle type: a `borrow<idx>` (repeatable) or `own<idx>` (single-use) defined-type item.
+    let call_handle = |idx: u32| -> Vec<u8> {
+        if call_borrow {
+            borrow_item(idx)
+        } else {
+            own_item(idx)
+        }
+    };
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     // sec 10: import the abstract resource → type 0.
@@ -3744,9 +3805,10 @@ fn resource_inner_component_closure(
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_func_item("import-func-make", 2)),
     ));
-    // sec 7: `own<0>` (type 3) then the imported `call` functype `(self: own<3>, args…) -> R` (type 4).
+    // sec 7: `own<0>`/`borrow<0>` (type 3) then the imported `call` functype `(self: <handle<3>>, args…) -> R`
+    // (type 4).
     let call_import_types = {
-        let mut items = own_item(0);
+        let mut items = call_handle(0);
         items.extend_from_slice(&closure_call_functype(3, arg_bytes, result_byte));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
@@ -3773,9 +3835,10 @@ fn resource_inner_component_closure(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 7)),
     ));
-    // sec 7: `own<5>` (type 8) then the `call` functype re-typed against the exported resource (type 9).
+    // sec 7: `own<5>`/`borrow<5>` (type 8) then the `call` functype re-typed against the exported resource
+    // (type 9).
     let call_export_types = {
-        let mut items = own_item(5);
+        let mut items = call_handle(5);
         items.extend_from_slice(&closure_call_functype(8, arg_bytes, result_byte));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };

@@ -30,12 +30,30 @@
 ; calls it, showing the resource + its `call` dispatch are reusable, and that the result tracks the input.
 
 (case "a host-called closure applied to a different argument tracks the input"
-  (doc    "The same `(fn (x) (+ x 1))` closure export, called with 41 → 42. The host `make`s a fresh
-           closure handle and `call`s it (each `own<t>` handle is one-shot). Pins that the closure's
-           dispatch is reusable across handles and its result follows the argument.")
+  (doc    "The same `(fn (x) (+ x 1))` closure export, called with 41 → 42. The `call` method takes
+           `borrow<t>`, so the host KEEPS the handle across calls (a repeatable callback — the natural
+           host-closure shape) and the resource dtor reclaims the cell when the host finally drops it; this
+           case still `make`s + `call`s once. Pins that the closure's dispatch is reusable and its result
+           follows the argument.")
   (input  (do (def (main) (fn ((: x Int64)) (+ x 1))) (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64)))
+
+; The `call` method takes `borrow<t>`: the host holds the handle and may invoke it REPEATEDLY (the natural
+; callback shape), versus a consume-per-call `own<t>` where a second call on the same handle would trap
+; "unknown handle index". The gate drives ONE `(call …)` per case, so the REPEATABILITY is pinned by the
+; `a_borrow_closure_handle_is_repeatable` unit test (one `make` handle, two `call`s: `adder(10)` then 5→15,
+; 7→17 on the SAME handle); this case witnesses the borrow `call` runs end-to-end. A capturing closure makes
+; it concrete: the captured `k` survives across calls because the cell is not consumed.
+
+(case "a capturing closure crosses as a repeatable (borrow<t>) callback handle"
+  (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` → `adder : (Int64) -> own<closure-s64-s64>`. The host
+           `make`s a handle capturing k, then `call`s it — `call` borrows the handle (does NOT consume it),
+           so the same handle serves repeated calls (proven twice-over in the unit test). Here `adder(100)` →
+           a handle → `call(handle, 5)` = 105. Pins the borrow<t> repeatable-callback `call` end-to-end.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 100 Int64) (: 5 Int64))
+  (output (: 105 Int64)))
 
 ; A closure whose body MULTIPLIES rather than adds — a different lifted code selected through the same
 ; call_indirect boundary, proving the resource carries the RIGHT closure code (its funcref-table slot).
