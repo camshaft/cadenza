@@ -549,6 +549,19 @@
               (def (main) (+ (helper 5) (helper 3))) (export main)))
   (output (: 126 Int64)))
 
+(case "a nullary do-local def followed by a use of it computes over its result"
+  (doc    "The `def helper … then use it` idiom: `main`'s body is a do-block with a nullary do-local
+           `(def (a) 10)` followed by `(+ (a) 5)` = 15. Pins the intended semantics of a def-body sequence
+           whose declaration ends in a NUMBER and whose next statement STARTS with a name — the exact shape
+           the ML surface's unit-quantity sugar (`5 feet` → Qty) corrupted by greedily reading the def RHS
+           `10` and the next statement's leading `a` as one quantity `(Qty.of 10 (Unit.of #\"a\"))`, dropping
+           main's real tail. The ML reader now gates that sugar to a single line (no crossing a newline /
+           statement boundary), so this program's ML spelling parses like this s-expr and runs to 15. The
+           s-expr surface was always correct (it has no juxtaposition sugar); this is the semantics witness.")
+  (input  (do (def (main) (do (def (a) 10) (+ (a) 5))) (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
 ; An ARGUMENT to a user-function call is an expression evaluated in the CALL SITE's scope, and its
 ; names bind there — a compiler that reduces a call by substituting the argument into the callee's
 ; body must not thereby resolve the argument's names in the callee's scope. The witnesses below pin

@@ -739,6 +739,17 @@ impl<'a> Parser<'a> {
             return num;
         }
         let unit_span = self.cur_span();
+        // The unit name must be on the SAME LINE as the number. The quantity sugar repurposes number+name
+        // ADJACENCY, but statement sequencing juxtaposes forms across lines with no separator (`539f7712`),
+        // so a number ending one statement (`def a() = 10`) sits right before the next statement's leading
+        // identifier (`a() + 5`). Without this guard the sugar greedily eats that identifier as a unit —
+        // `10 a` — swallowing the following statement and MISCOMPILING the program to a bogus quantity. A
+        // NEWLINE between the number and the candidate unit means they belong to different statements: the
+        // adjacency is sequencing, not a quantity, so decline the sugar and leave the bare number. (A
+        // genuine `5 feet` / `10 a` on ONE line has no intervening newline and still reads as a quantity.)
+        if self.src[num_span.end..unit_span.start].contains('\n') {
+            return num;
+        }
         let name = text.to_string();
         self.bump(); // the unit name
         // (Unit.of #"name")
@@ -2281,6 +2292,36 @@ mod tests {
         // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
         let a = parse_ok("5 and mask");
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
+    }
+
+    #[test]
+    fn quantity_sugar_does_not_cross_a_newline() {
+        use crate::sexpr;
+        // The quantity sugar (`5 feet` → Qty) repurposes number+name ADJACENCY, but statement sequencing
+        // juxtaposes forms across lines with no separator — so a number ending one statement sits right
+        // before the next statement's leading identifier. The sugar must NOT eat that identifier as a unit
+        // (a miscompile that swallows the following statement). A NEWLINE between the number and the
+        // candidate unit means they are different statements: leave the bare number, let the next form be
+        // its own statement.
+        //
+        // `def a() = 10 <newline> a() + 5`: the `10` must stay a bare number (main's `a` def), and `a()+5`
+        // is the next top-level form — NOT `(Qty.of 10 (Unit.of "a"))` eating the next line.
+        let a = parse_ok("def a() = 10\na() + 5");
+        assert_eq!(
+            sexpr::print(&a),
+            "(do (def (a) 10) (+ (a) 5))",
+            "the quantity sugar must not span the newline into the next statement"
+        );
+        // A genuine SAME-LINE quantity is unchanged — `10 a` (no intervening newline) is still a quantity.
+        assert_eq!(
+            sexpr::print(&parse_ok("10 a")),
+            r#"((. Qty of) 10 ((. Unit of) #"a"))"#
+        );
+        // Same-line even when a statement follows on the NEXT line: `5 feet` is the quantity, `x` is next.
+        assert_eq!(
+            sexpr::print(&parse_ok("5 feet\nx")),
+            r#"(do ((. Qty of) 5 ((. Unit of) #"feet")) x)"#
+        );
     }
 
     #[test]
