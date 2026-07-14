@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! convert [--from FMT] [--to FMT] [--width N] [FILE]
+//! fmt     [FILE|DIR…]      [--from FMT] [--width N] [--check|--diff|--stdout]
 //! query   PATTERN          [FILE|DIR…] [--from FMT] [--count] [--json]
 //! rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--diff|--write|--json]
 //! diff    FILE-A FILE-B    [--from FMT] [--json]
@@ -53,6 +54,8 @@ pub struct Cli {
 pub enum Cmd {
     /// Convert a program between surfaces (reads FILE or stdin, writes stdout).
     Convert(ConvertArgs),
+    /// Format program file(s) in place: reprint each canonically in its OWN surface.
+    Fmt(FmtArgs),
     /// Structurally search a program for a PATTERN, printing each match (with its span) or a count.
     Query(QueryArgs),
     /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, validated.
@@ -250,6 +253,37 @@ pub struct ConvertArgs {
     file: Option<String>,
 }
 
+#[derive(Args)]
+pub struct FmtArgs {
+    /// Files or directories to format (directories are recursed by extension). Omit (or use `-`) to
+    /// read stdin and write the formatted program to stdout.
+    files: Vec<String>,
+
+    /// Input surface. Inferred from each FILE's extension when omitted; required when reading stdin.
+    /// Formatting is same-surface (a `.cdz` reprints as ML, a `.sexp` as s-expr) — `fmt` never
+    /// changes a file's surface; use `convert` for that.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Target line width for the pretty-printer.
+    #[arg(short, long, default_value_t = Options::default().width)]
+    width: usize,
+
+    /// Don't write anything; exit non-zero if any file is not already canonically formatted, listing
+    /// which. The CI shape (the `cargo fmt --check` analogue) — pairs naturally with a directory input.
+    #[arg(long)]
+    check: bool,
+
+    /// Show a unified diff of what formatting WOULD change, without writing. Preview mode.
+    #[arg(long)]
+    diff: bool,
+
+    /// Write the formatted program to stdout instead of editing the file in place. (The implicit mode
+    /// when input is stdin.) Mutually exclusive with `--check`/`--diff`.
+    #[arg(long)]
+    stdout: bool,
+}
+
 /// The surface formats, as a clap `ValueEnum`. Mirrors [`Format`]. `pub` because it appears in the
 /// (now-`pub`) `QueryArgs::from` field that the `cdz` bin reads.
 #[derive(Clone, Copy, ValueEnum)]
@@ -301,13 +335,26 @@ pub fn run(command: Cmd, prog: &str) -> ExitCode {
             }
         };
     }
+    // `fmt --check` has the same third outcome as `lint`: it runs cleanly yet must exit non-zero when
+    // some file is not formatted (the CI gate), without printing a tool-level error. So it returns
+    // `Ok(all_formatted)` and maps a `false` to a non-zero exit here.
+    if let Cmd::Fmt(args) = &command {
+        return match run_fmt(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE, // `--check`: some file was not formatted
+            Err(msg) => {
+                eprintln!("{prog}: {msg}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let result = match command {
         Cmd::Convert(args) => run_convert(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
         Cmd::Diff(args) => run_diff(&args),
         Cmd::Clones(args) => run_clones(&args),
-        Cmd::Lint(_) => unreachable!("handled above"),
+        Cmd::Lint(_) | Cmd::Fmt(_) => unreachable!("handled above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -339,6 +386,111 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
         let _ = std::io::stdout().write_all(b"\n");
     }
     Ok(())
+}
+
+/// Format the targets: read each, reprint it CANONICALLY in its OWN surface (a same-surface round-trip
+/// through the printer — `.cdz` as ML, `.sexp` as s-expr), and edit it in place when the bytes change.
+/// `fmt` never changes a file's surface (that is `convert`'s job) and never rewrites structure (that is
+/// `rewrite`'s) — it only normalizes layout, so an already-canonical file is left byte-identical.
+///
+/// The write modes mirror the codemod tool: default is IN-PLACE (only files that change are rewritten,
+/// reported to stderr); `--stdout` prints the result instead (the implicit mode for stdin, which has no
+/// file to edit); `--diff` previews a unified diff; `--check` writes nothing and reports whether every
+/// file was already formatted. Returns `Ok(all_formatted)` — always `true` outside `--check`; under
+/// `--check`, `false` when some file needed formatting (the caller maps that to a non-zero exit, the CI
+/// gate). A file that does not parse is a hard error and is NEVER written (the reader rejects a recovered
+/// tree, so a broken file can't be silently "reformatted" into a patched-up shape) — in a multi-file run
+/// it warns and skips, so one unparseable file can't abort a whole directory sweep.
+fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
+    // `--check`/`--diff` inspect without writing; `--stdout` writes elsewhere. They are exclusive: a
+    // single run has one output disposition, so an ambiguous combination is rejected up front rather
+    // than silently letting one win.
+    let modes = [args.check, args.diff, args.stdout];
+    if modes.iter().filter(|m| **m).count() > 1 {
+        return Err("--check, --diff, and --stdout are mutually exclusive".into());
+    }
+
+    let targets = collect_targets(&args.files, args.from)?;
+    let multi = targets.len() > 1;
+    let opts = Options {
+        width: args.width,
+        ..Options::default()
+    };
+    let mut all_formatted = true;
+
+    for spec in &targets {
+        // Read the raw bytes ourselves (not via `load_target`) so we can compare the formatted output
+        // against the EXACT original bytes — the "is it already canonical?" test — and, on a parse
+        // failure, decline the file rather than format a recovered tree.
+        let input = match read_input(spec.path.as_deref()) {
+            Ok(b) => b,
+            Err(e) if multi => {
+                eprintln!("cdz: skipping {}", with_path(&spec.path, &e));
+                continue;
+            }
+            Err(e) => return Err(with_path(&spec.path, &e)),
+        };
+        // Format = read the surface and re-print it canonically in the SAME surface. `convert::read`
+        // (inside `convert_with`) rejects a program that only parses with recovered errors, so a broken
+        // file errors here instead of being rewritten to a patched-up form.
+        let formatted = match convert::convert_with(&input, spec.format, spec.format, opts) {
+            Ok(mut b) => {
+                // The printer emits no trailing newline; keep a file newline-terminated (and stable
+                // under re-formatting) by appending one, matching `rewrite --write`'s convention.
+                if b.last() != Some(&b'\n') {
+                    b.push(b'\n');
+                }
+                b
+            }
+            Err(e) if multi => {
+                eprintln!("cdz: skipping {}", with_path(&spec.path, &e.to_string()));
+                continue;
+            }
+            Err(e) => return Err(with_path(&spec.path, &e.to_string())),
+        };
+
+        // Emit to stdout — the EXPLICIT `--stdout` mode, and the IMPLICIT mode when reading stdin
+        // (there is no file to edit). Unlike the write/diff/check modes below, this always prints the
+        // formatted text, even when the file was already canonical: `--stdout` is a "give me the
+        // formatted program" request (like `convert`), not a conditional edit.
+        if args.stdout || spec.path.is_none() {
+            std::io::stdout()
+                .write_all(&formatted)
+                .map_err(|e| format!("writing stdout: {e}"))?;
+            continue;
+        }
+        let path = spec.path.as_deref().expect("a non-stdin target has a path");
+
+        if formatted == input {
+            // Already canonical — nothing to do in the write/diff/check modes (no diff, no write, no
+            // `--check` failure).
+            continue;
+        }
+
+        if args.check {
+            // The file WOULD change — report it and remember to fail (but keep scanning the rest, so
+            // one `--check` run lists every unformatted file).
+            all_formatted = false;
+            println!("not formatted: {path}");
+            continue;
+        }
+        if args.diff {
+            // Compare the original bytes against the formatted result (both lossy-decoded — a formatter
+            // only touches text surfaces, so this is faithful).
+            let before = String::from_utf8_lossy(&input);
+            let after = String::from_utf8_lossy(&formatted);
+            print!(
+                "{}",
+                query::diff::unified(&before, &after, &format!("a/{path}"), &format!("b/{path}"))
+            );
+            continue;
+        }
+        // Default: edit in place. (`--stdout`/stdin were handled before the already-canonical check.)
+        std::fs::write(path, &formatted).map_err(|e| format!("writing {path}: {e}"))?;
+        eprintln!("cdz: formatted {path}");
+    }
+
+    Ok(all_formatted)
 }
 
 /// Compile a list of pattern strings into patterns (for the relational flags).
@@ -974,6 +1126,102 @@ mod tests {
         // A path WITH a known extension resolves regardless of existence (the read error, if any, comes
         // later) — so a nonexistent `.sexp` still infers sexpr here.
         assert!(resolve_from(None, Some("/tmp/cdz-nope.sexp")).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fresh temp dir unique to `tag` (the caller populates + removes it).
+    fn fmt_tmp(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cdz-fmt-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    /// Build `FmtArgs` for a single file with the given write mode (the clap defaults filled in).
+    fn fmt_args(files: Vec<String>, check: bool, diff: bool, stdout: bool) -> FmtArgs {
+        FmtArgs {
+            files,
+            from: None,
+            width: Options::default().width,
+            check,
+            diff,
+            stdout,
+        }
+    }
+
+    #[test]
+    fn fmt_in_place_canonicalizes_and_is_idempotent() {
+        let dir = fmt_tmp("inplace");
+        let file = dir.join("m.sexp");
+        // A non-canonical program (extra whitespace + blank lines) — `fmt` must reflow it.
+        std::fs::write(&file, "(module   m\n\n  (def (main)   1) (export main))").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // Default mode edits in place and reports success (Ok(true) — not a `--check` verdict).
+        assert!(run_fmt(&fmt_args(vec![path.clone()], false, false, false)).unwrap());
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            after, "(module m (def (main) 1) (export main))\n",
+            "in-place fmt canonicalizes to the printer's form + a trailing newline"
+        );
+        // Idempotent: a second run leaves the bytes byte-identical.
+        assert!(run_fmt(&fmt_args(vec![path], false, false, false)).unwrap());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), after);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fmt_check_reports_but_never_writes() {
+        let dir = fmt_tmp("check");
+        let file = dir.join("m.sexp");
+        let original = "(module   m (def (main) 1) (export main))"; // non-canonical, no trailing \n
+        std::fs::write(&file, original).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // `--check` on an unformatted file returns Ok(false) (→ non-zero exit) and does NOT touch it.
+        assert!(!run_fmt(&fmt_args(vec![path.clone()], true, false, false)).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            original,
+            "--check must not modify the file"
+        );
+
+        // Once canonical, `--check` returns Ok(true).
+        run_fmt(&fmt_args(vec![path.clone()], false, false, false)).unwrap();
+        assert!(run_fmt(&fmt_args(vec![path], true, false, false)).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fmt_declines_a_file_that_does_not_parse_and_never_writes_it() {
+        // The safety guarantee: a program that only parses with recovered errors is REJECTED, and the
+        // file is left exactly as it was — `fmt` never rewrites a broken file into a patched-up tree.
+        let dir = fmt_tmp("broken");
+        let file = dir.join("bad.sexp");
+        let broken = "(module m (def (main) 1"; // unbalanced — a hard parse error
+        std::fs::write(&file, broken).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // A single-file run surfaces the parse error as a hard `Err`.
+        assert!(run_fmt(&fmt_args(vec![path], false, false, false)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            broken,
+            "a file that fails to parse must be left untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fmt_write_modes_are_mutually_exclusive() {
+        let dir = fmt_tmp("exclusive");
+        let file = dir.join("m.sexp");
+        std::fs::write(&file, "(module m (def (main) 1) (export main))").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        // Any two of --check/--diff/--stdout together is rejected before any file work.
+        assert!(run_fmt(&fmt_args(vec![path.clone()], true, true, false)).is_err());
+        assert!(run_fmt(&fmt_args(vec![path.clone()], true, false, true)).is_err());
+        assert!(run_fmt(&fmt_args(vec![path], false, true, true)).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

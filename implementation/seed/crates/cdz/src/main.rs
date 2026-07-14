@@ -52,6 +52,8 @@ enum Cmd {
     // ── front-end (cadenza-syntax) ──────────────────────────────────────────────────────────────
     /// Convert a program between surfaces (binary/sexpr/ml + the debug/flat views).
     Convert(syntax_cli::ConvertArgs),
+    /// Format program file(s) in place: reprint each canonically in its OWN surface (`--check`/`--diff`).
+    Fmt(syntax_cli::FmtArgs),
     /// Structurally search a program for a PATTERN (the codemod query).
     Query(syntax_cli::QueryArgs),
     /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, validated.
@@ -125,6 +127,7 @@ fn main() -> ExitCode {
         // Front-end commands defer to the syntax CLI, reconstructing its command enum (its arg structs
         // are re-exported, so `cdz convert …` and `cdz-syntax convert …` run the SAME code).
         Cmd::Convert(a) => syntax_cli::run(syntax_cli::Cmd::Convert(a), PROG),
+        Cmd::Fmt(a) => syntax_cli::run(syntax_cli::Cmd::Fmt(a), PROG),
         // A `--where` clause makes this a COMBINED structural+semantic query — `cdz` runs it (it needs
         // the compiler). Without `--where` it is the pure structural query, delegated unchanged.
         Cmd::Query(a) if a.where_.is_some() => run_query_where(&a),
