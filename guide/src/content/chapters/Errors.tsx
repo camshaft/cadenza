@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -56,9 +56,30 @@ export default function Errors() {
       <P>
         Sometimes you know an <C>Option</C> holds a value and want to get on with it. <C>Option.expect</C>{" "}
         unwraps a <C>Some</C>, or halts with your message if it's a <C>None</C>. The message is required —
-        so the one place you turn absence into a crash is spelled out, right where it happens.
+        so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is
+        present, so this just hands back <C>20</C>:
       </P>
       <Runnable source={`(Option.expect (List.at (list 10 20 30) 1) "index out of range")`} />
+      <P>
+        But ask for index <C>9</C> — off the end — and there's no value to unwrap. <C>expect</C> makes
+        good on its name and halts, with the message you supplied:
+      </P>
+      <Note>
+        This one is <strong>meant to halt</strong>. It compiles fine — the trap is a run-time event, not
+        a compile error — so Run it and read the status bar: the program stops deliberately, at the exact
+        spot you asked it to, rather than limping on with a bogus value.
+      </Note>
+      <Runnable
+        source={`(Option.expect (List.at (list 10 20 30) 9) "index out of range")`}
+        expect="error"
+      />
+      <P>
+        That's the trade <C>expect</C> makes explicit: you're promising the <C>Option</C> is a{" "}
+        <C>Some</C>, and if you're wrong the program halts <em>here</em>, named, instead of a wrong answer
+        leaking downstream. Contrast the <C>match</C> above, which forces you to write the <C>None</C>{" "}
+        case — <C>expect</C> is the "I've already checked, let me proceed" shortcut, and the required
+        message is the receipt.
+      </P>
 
       <H2>Arithmetic that can't answer</H2>
       <P>
