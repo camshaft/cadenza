@@ -13,6 +13,17 @@
 //! is what makes an operator generic over the integer type. Nothing here reads a column or an AST node
 //! — it is pure over [`Ty`].
 //!
+//! Because the solution is ONE substitution shared across a binding's uses, a variable solved at one
+//! occurrence is applied at every other — a parameter used in one position is typed consistently at
+//! every occurrence and every call site (`infer` reads the solved type through this `Subst`). And when
+//! two uses impose contradictory constraints the `unify` has no solution: it returns a `Reject` coded
+//! for the conflicting-use type error rather than compiling:
+//!
+//= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+//# Inference MUST propagate a determined type to every occurrence of the binding it constrains, so that a parameter used in one position is typed consistently at every other occurrence and at every call site.
+//= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+//# A program for which unification has no solution — a use that imposes contradictory constraints on a type variable — MUST be rejected at compile time with the machine-readable code for the conflicting-use type error, rather than compiled.
+//!
 //! Unification equates types by EQUALITY — two types either unify or the program is rejected; there is
 //! no widening/narrowing arm that would let one type stand in for another, so the type system never
 //! inserts an implicit subtyping coercion the program did not write:
