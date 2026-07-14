@@ -1058,11 +1058,25 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // per β-copy of an enclosing inlined helper). So it must NOT participate in the duplicate-name check —
     // else a legitimately-once-declared recursive function inlined at a call site would spuriously report
     // "defined more than once". Only genuine (non-internal) user definitions form the fixed name set.
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    //
+    // PER-MODULE (per-file), not global — the same reasoning as the duplicate-TYPE check below: a value-
+    // name set is fixed within ONE module, but two SEPARATE modules of a linked package may each define a
+    // private helper of the same name (`(def node-count …)` in a lib AND in the importing entry — each
+    // module has its own value namespace; a sibling's un-imported def is invisible, so re-using its name
+    // is not a redeclaration). Key the seen-set on `(file, name)` via the same `file_of` identity the
+    // resolver scopes name visibility by (`None` for a single-file program collapses to one bucket — the
+    // flat case is byte-identical to the old global scan). Without the file key, a global scan flagged a
+    // cross-module same-named def as a spurious duplicate — blocking the idiomatic multi-module layout.
+    let mut seen: std::collections::HashSet<(Option<usize>, &str)> =
+        std::collections::HashSet::new();
     let dups: Vec<(String, StructId)> = db
         .defs
         .iter()
-        .filter(|d| !d.internal && !d.name.is_empty() && !seen.insert(d.name.as_str()))
+        .filter(|d| {
+            !d.internal
+                && !d.name.is_empty()
+                && !seen.insert((db.file_of(d.sig_occ), d.name.as_str()))
+        })
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {

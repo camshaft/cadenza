@@ -37321,6 +37321,46 @@ mod stage1 {
     }
 
     #[test]
+    fn two_sibling_modules_may_each_define_a_private_helper_of_the_same_name() {
+        // REGRESSION: the duplicate-value-def check is PER-MODULE (per-file), not global — mirroring the
+        // duplicate-TYPE check. A value-name set is fixed within ONE module, but two SEPARATE files of a
+        // linked package may each define a PRIVATE helper of the same name (`node-count` in a lib AND in
+        // the importing entry). Each module owns its value namespace; a sibling's un-imported def is
+        // invisible, so re-using the name is not a redeclaration. The old global scan flagged this as a
+        // spurious "defined more than once", blocking the idiomatic multi-module layout (a shared type
+        // module `ast` + several passes that each carry their own generically-named helper).
+        let lib = parse(
+            "(do (type Ast (Int Int64) (Name String)) (def (foo (: x Int64)) (+ x 1)) (export (. Ast *)))",
+        );
+        let app = parse(
+            "(do (import \"lib\" (Ast)) (def (foo (: x Int64)) (+ x 2)) \
+               (def (main) (foo (match (. Ast Int 0) (((. Ast Int) n) n) (((. Ast Name) _) 0)))) (export main))",
+        );
+        let files = vec![("lib".to_string(), lib), ("app".to_string(), app)];
+        let linked = crate::link::link(&files, "app").expect("package links");
+        let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+        let dups: Vec<_> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.message.contains("defined more than once"))
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "a private `foo` in each of two sibling modules is not a duplicate: {dups:?}"
+        );
+
+        // But a SAME-FILE duplicate must STILL reject — the per-file scoping narrows the collision, it
+        // does not remove it. Two `foo` in ONE module collide as before.
+        let mut db2 =
+            crate::db::Db::load(parse("(module m (def (foo) 1) (def (foo) 2) (export foo))"));
+        assert!(
+            crate::diagnostics(&mut db2)
+                .iter()
+                .any(|d| d.message.contains("defined more than once")),
+            "a same-file duplicate def still rejects"
+        );
+    }
+
+    #[test]
     fn a_duplicate_parameter_name_is_rejected_as_nonlinear() {
         // A function's parameter list is a BINDER POSITION, linear like a pattern (core-semantics.md
         // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing
