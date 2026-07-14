@@ -235,6 +235,12 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Redundant-match-arm warnings (an arm an earlier arm already covers — CDZ0211): dead code, like an
     // unused binding, so a warning that rides alongside the artifact without denying it.
     diagnostics.extend(collect_redundant_arm_warnings(&mut db));
+    // Discarded-value warnings (a pure, non-Unit, non-final `do` form whose value is thrown away —
+    // CDZ0307): the sequencing-block analogue of the unused-binding warning — the SHOULD-emit-a-diagnostic
+    // on a pure non-final form whose value is discarded.
+    //= spec/capabilities/core-semantics.md#a-discarded-pure-non-final-value-is-diagnosed
+    //# An implementation SHOULD emit a diagnostic of non-error severity — one that leaves the build successful — for such a form, so that a program does not silently discard the value of a pure computation whose result it never observes.
+    diagnostics.extend(collect_discarded_value_warnings(&mut db));
 
     // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
     // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
@@ -365,6 +371,7 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     out.extend(collect_dead_trap_warnings(db));
     out.extend(collect_unused_binding_warnings(db));
     out.extend(collect_redundant_arm_warnings(db));
+    out.extend(collect_discarded_value_warnings(db));
     out
 }
 
@@ -2492,6 +2499,86 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             )
             .with_fix(&fix),
         );
+    }
+    out
+}
+
+/// Warn on a NON-FINAL form of a sequencing block whose computed value is silently DISCARDED (CDZ0307).
+/// A `(do S… tail)` yields ONLY its last form (`core-semantics.md` §A Sequencing Block Evaluates Its Forms
+/// In Order), so every earlier form is evaluated for a thrown-away value. In a pure language, dropping the
+/// value of a PURE statement that produced one is almost always a bug — the author forgot to bind it, or
+/// misplaced an expression. So warn when a non-final statement is (1) a user node, (2) not a declaration
+/// (a `def`/`type`/`effect`/`module` binds a name — it is not an evaluated statement), (3) PURE (reaches
+/// no host call — nothing observable to sequence for; the SAME `subtree_reaches_host_call` the `do`
+/// lowering uses to decide whether to KEEP the statement, so the warning fires on exactly what DCE drops),
+/// and (4) has a concrete NON-Unit type (a real value is discarded). A `Unit`-typed statement discards
+/// nothing; an effectful one is kept by the `Core::Seq` lowering and is not dead. A WARNING (not a
+/// rejection): the block is well-formed and runs correctly. The repair is to DELETE the dead statement
+/// (removing a pure, value-discarded, non-final form is behaviour-preserving — the block still yields its
+/// last form); if the author meant to observe the value, they bind it with a `let`.
+fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
+    let node_count = db.ast.structure.len();
+    let mut out = Vec::new();
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if db.ast.head_name(id) != Some("do") {
+            continue;
+        }
+        let Some(forms) = db.ast.as_form(id, "do") else {
+            continue;
+        };
+        // Only the NON-FINAL forms — the last form IS the block's value and is never discarded.
+        let Some((_, stmts)) = forms.split_last() else {
+            continue;
+        };
+        for &s in &stmts.to_vec() {
+            // A declaration form binds a name; it is not an evaluated statement (its value flows only to a
+            // reference, checked there). Skip `def`/`type`/`effect`/`module` — the same forms the `do`
+            // lowering and the poison walk skip.
+            if matches!(
+                db.ast.head_name(s),
+                Some("def") | Some("type") | Some("effect") | Some("module")
+            ) {
+                continue;
+            }
+            // Only a USER node has a span the warning can anchor to.
+            if !db.is_user_node(s) {
+                continue;
+            }
+            // Effectful statements are KEPT by the lowering (their host call is observable and must run) —
+            // sequencing them for effect is exactly why a non-final form is allowed to have a value at all,
+            // so they are not dead. Only a PURE statement's discarded value is the defect.
+            if crate::lower::subtree_reaches_host_call(db, s) {
+                continue;
+            }
+            // A concrete non-Unit type means a real value was thrown away. `Ty::Unit` discards nothing; a
+            // poison (`Ty::Any`) already faulted elsewhere; a free type variable is unresolved — stay
+            // conservative on both and do not warn (a false "discarded value" is worse than a missed one).
+            let ty = crate::infer::type_of(db, s);
+            if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
+                continue;
+            }
+            // Deleting a pure, value-discarded, non-final form preserves the block's meaning (it still
+            // yields its last form) — a heuristic delete because the author may instead have meant to
+            // OBSERVE the value (bind it with a `let`), which the compiler cannot decide for them.
+            let fix = crate::diag::Fix::delete_heuristic(
+                s,
+                "remove the discarded statement (or bind its value with a `let`)",
+            );
+            out.push(
+                Diagnostic::warning(
+                    Code::DiscardedValue,
+                    format!(
+                        "this `{}`-typed value is computed but discarded — a non-final form of a \
+                         sequencing block is evaluated only for its effect, and this form has none \
+                         (bind it with a `let` if you meant to use it, or remove it)",
+                        ty.render_name()
+                    ),
+                    Some(s),
+                )
+                .with_fix(&fix),
+            );
+        }
     }
     out
 }

@@ -142,6 +142,18 @@ pub enum Code {
     /// when the name begins with `_` — the deliberate "intentionally unused" convention (as in Rust),
     /// so `_x`/`_` never warn. The reference check is the same resolution-column read `UsesOf` uses.
     UnusedBinding,
+    /// A NON-FINAL form of a sequencing block computes a value that is DISCARDED — a `(do S… tail)` yields
+    /// only its last form (`core-semantics.md` §A Sequencing Block Evaluates Its Forms In Order), so every
+    /// earlier form is evaluated for its (thrown-away) value. When such a form is PURE (reaches no host
+    /// call — nothing observable to sequence for) AND has a concrete NON-Unit type, its value can only have
+    /// been meant to be used: in a pure language a pure statement whose result is dropped is almost always
+    /// a bug (a call whose result the author forgot to bind, a misplaced expression). A WARNING (not a
+    /// rejection): the program is well-formed and runs correctly (the compiler already drops the pure
+    /// intermediate — this is exactly the form its DCE elides), just likely a defect. The sequencing-block
+    /// analogue of `UnusedBinding`/`DeadTrap` — dead code the build surfaces rather than silently keeping.
+    /// A Unit-typed statement (a host-effect-free `unit`) or an effectful one (a host call, kept by the
+    /// `Core::Seq` lowering) never warns; a `_ =`-style intentional discard is spelled as a `let` binding.
+    DiscardedValue,
     /// An effect operation is reached at a point with NEITHER an enclosing handler for its effect NOR an
     /// enclosing host delegation of it — the merged "no home for a reached effect" check. This single
     /// code subsumes both the reached-but-undelegated host operation and the undischarged intra-program
@@ -288,6 +300,7 @@ impl Code {
             Code::ConstTrap => "CDZ0304",
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",
+            Code::DiscardedValue => "CDZ0307",
             Code::NonExhaustive => "CDZ0210",
             Code::PresentField => "CDZ0211",
             Code::AbsentField => "CDZ0212",

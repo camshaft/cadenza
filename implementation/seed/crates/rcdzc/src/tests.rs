@@ -22608,6 +22608,94 @@ mod stage1 {
         );
     }
 
+    /// The CDZ0307 discarded-value warnings from `src` — the `diagnostics()` query set (what `cdz check`
+    /// drives) filtered to the discarded-value code. Used rather than `warnings_of` so a body that does
+    /// not emit a component (e.g. one taking a parameter) still yields its diagnostics.
+    fn discarded_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0307"))
+            .collect()
+    }
+
+    #[test]
+    fn a_pure_non_final_do_form_that_discards_a_value_warns() {
+        // The user-reported shape: `(do (inc 8) (* n 2))` — the first form computes a value that is thrown
+        // away (a non-final form is evaluated only for its effect, and a pure one has none). In a pure
+        // language that is almost always a bug (a call whose result the author forgot to use), so warn
+        // CDZ0307 anchored at the discarded form, with a delete fix.
+        let src = "(module m (def (inc n) (+ n 1)) \
+             (def (dbl n) (do (inc 8) (* n 2))) (export dbl))";
+        let ws = discarded_of(src);
+        assert_eq!(ws.len(), 1, "one discarded-value warning: {ws:?}");
+        assert!(
+            ws[0].message.contains("computed but discarded"),
+            "message names the defect: {}",
+            ws[0].message
+        );
+        let node = ws[0].node.expect("carries the discarded form's node");
+        assert!(
+            crate::db::Db::load(parse(src)).is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node"
+        );
+        // The repair DELETES the dead statement.
+        let fix = ws[0].fix.as_ref().expect("carries a delete fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+    }
+
+    #[test]
+    fn a_unit_typed_or_final_do_form_does_not_warn() {
+        // The LAST form is the block's value — never discarded, so it never warns (`(do (inc 8) (* n 2))`
+        // warns on `(inc 8)` only, not `(* n 2)`; the exactly-one assertion above already pins that). A
+        // Unit-typed non-final form discards nothing (there is no value to use), so it does not warn: the
+        // empty list `()` IS the unit value.
+        assert!(
+            discarded_of("(module m (def (main) (do () 42)) (export main))").is_empty(),
+            "a Unit-typed non-final form discards no value"
+        );
+        // A block with a single form has no non-final form at all — nothing to warn about.
+        assert!(
+            discarded_of("(module m (def (main) (do 42)) (export main))").is_empty(),
+            "a one-form block has no discarded intermediate"
+        );
+    }
+
+    #[test]
+    fn multiple_discarded_intermediates_each_warn() {
+        // `(do 1 2 3)`: BOTH non-final forms (`1`, `2`) discard a value; the last (`3`) is the block value.
+        // A pure scalar intermediate is exactly the corpus-blessed `(do 1 2 3)` shape — well-formed and it
+        // still compiles (CDZ0307 is a WARNING), but each dropped value is surfaced.
+        let ws = discarded_of("(module m (def (main) (do 1 2 3)) (export main))");
+        assert_eq!(ws.len(), 2, "two discarded scalars warn: {ws:?}");
+    }
+
+    #[test]
+    fn an_effectful_non_final_do_form_does_not_warn() {
+        // A non-final statement that reaches a HOST CALL is KEPT by the `Core::Seq` lowering — its call
+        // crosses the boundary and must run, so sequencing it for effect is exactly why a non-final form
+        // is allowed to have a value. It is NOT a discarded-value defect. `(do (log.emit "x") unit)`: the
+        // `log.emit` statement is effectful (and Unit-typed), so no CDZ0307. Uses the same
+        // `subtree_reaches_host_call` the lowering uses, so the diagnostic tracks exactly what DCE keeps.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do (log.emit \"x\") unit))) (export main))";
+        assert!(
+            discarded_of(src).is_empty(),
+            "an effectful (kept) non-final form is not a discarded value: {:?}",
+            discarded_of(src)
+        );
+    }
+
+    #[test]
+    fn a_do_local_declaration_is_not_a_discarded_value() {
+        // A `(def …)` form of a `do` is a DECLARATION (it binds a name for the following forms), not an
+        // evaluated statement — its value flows to a reference, not thrown away. So a leading do-local def
+        // never warns CDZ0307, even though it is a non-final form.
+        assert!(
+            discarded_of("(module m (def (main) (do (def x 5) (+ x 1))) (export main))").is_empty(),
+            "a do-local declaration is not a discarded statement"
+        );
+    }
+
     #[test]
     fn a_local_binding_shadows_a_same_named_top_level_def() {
         // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent

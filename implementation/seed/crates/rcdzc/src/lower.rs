@@ -128,7 +128,10 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
 /// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
 /// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
-fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
+/// Also read by `compile::collect_discarded_value_warnings` so the CDZ0307 "discarded value" warning fires
+/// on EXACTLY the pure non-final statements this lowering drops — one predicate, no drift between the DCE
+/// decision and the diagnostic that explains it.
+pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     if matches!(core_of(db, id), Core::HostCall { .. }) {
         return true;
     }

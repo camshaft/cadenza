@@ -102,6 +102,10 @@ A sequencing block MUST evaluate to the value of its last form.
 
 A host call a form in a sequencing block makes MUST be observed before a host call made by a later form in the same block.
 
+### A Discarded Pure Non-Final Value Is Diagnosed
+
+Because a non-final form of a sequencing block is evaluated only for its effect — its value is discarded — a non-final form that is pure (it reaches no host call) and yields a value of a type other than unit computes a value that can never affect the program's observable behavior, which is far more likely a program defect than an intent. An implementation SHOULD emit a diagnostic of non-error severity — one that leaves the build successful — for such a form, so that a program does not silently discard the value of a pure computation whose result it never observes.
+
 ### A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It
 
 A declaration form in a sequencing block MUST bind its name for the forms that follow it in that block, so that a name a declaration introduces is in scope without a separate binding form.
