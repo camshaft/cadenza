@@ -1661,10 +1661,21 @@ runtime_local! {
     /// REUSED completed-struct stack for `encode_value`'s walk (the `out` results Vec) — the companion of
     /// `ENCODE_BUILDER`. `encode_value`'s `out` grew from zero every call (a fresh `Vec<u32>` per encode);
     /// caching it here + `clear()`ing per call retains capacity, so after the first walk it never
-    /// reallocates. `Vec<u32>` (no borrowed lifetime, unlike the `work` stack which holds descriptor refs
-    /// `&'d …` and stays a fresh local), so a plain `'static` thread-local is sound. Safe: single-threaded,
-    /// the walk is iterative + never re-enters `encode_value`, so the borrow never nests.
+    /// reallocates. Safe: single-threaded, the walk is iterative + never re-enters `encode_value`, so the
+    /// borrow never nests.
     static ENCODE_OUT: core::cell::RefCell<Vec<u32>> = core::cell::RefCell::new(Vec::new());
+}
+
+runtime_local! {
+    /// REUSED WORK stack for `encode_value`'s iterative walk — the companion of `ENCODE_OUT`. The `work`
+    /// stack grows O(depth) (each container's assembler stays on the stack while its children are visited,
+    /// so a Cons-list's depth is O(N)), so a fresh `Vec<EncodeWork>` per encode paid an O(log depth)
+    /// grow-chain of reallocs EVERY call. Now that `EncodeWork` is `'static` (its formerly-borrowed key/
+    /// name/type-node fields are re-derived from `desc` at process time), the stack caches here +
+    /// `clear()`s per call, retaining capacity → grows ONCE to the high-water mark then refills allocation-
+    /// FREE. Measured: value_encode of a 50-node list dropped from ~13/encode toward the output-Vec floor.
+    /// Safe: single-threaded, iterative, never re-enters `encode_value` — the borrow never nests.
+    static ENCODE_WORK: core::cell::RefCell<Vec<EncodeWork>> = core::cell::RefCell::new(Vec::new());
 }
 
 runtime_local! {
@@ -2205,30 +2216,37 @@ const ENCODE_REF_CYCLE_CAP: u32 = 100_000;
 /// walk it replaces (below, as `encode_value_recursive` in the tests) so the SEQUENCE of `DocBuilder`
 /// leaf/struct pushes — and therefore the document bytes — is IDENTICAL. `'d` borrows the descriptor's
 /// interned names (the head/field/type strings), so no name is cloned.
-enum EncodeWork<'d> {
+// `'static` (no borrow of the descriptor) so the `work` stack can be REUSED from a thread-local across
+// encodes (grow-once, like `ENCODE_OUT`/`ENCODE_BUILDER`) instead of a fresh heap Vec per call — the
+// `work` stack grows O(depth) for a deep value (each container's assembler stays on the stack during
+// child descent), so a fresh Vec's grow-chain cost O(log depth) reallocs PER encode. The three formerly
+// borrowed fields (a record field's key `&str`, a `Named`'s type name `&str`, a `Framed`'s `&TypeNode`)
+// are re-derived from `desc` at PROCESS time via the OWNING shape's table index — the name leaf is still
+// built at process time, so emission order (byte-exactness) is unchanged.
+enum EncodeWork {
     /// Dispatch on the shape of value `h` at table entry `shape_ix`; leaf shapes emit + produce one
     /// result, container shapes emit their head eagerly then push children (in reverse) + an assembler.
     /// `refs` = consecutive non-consuming `Ref`/`Named` hops taken to reach here (reset on child descent).
     Visit { h: Handle, shape_ix: u32, refs: u32 },
     /// A record FIELD: emit the key leaf+atom (BEFORE the field value, matching the recursive per-field
-    /// order), then queue the value visit and a `Pair` assembler.
+    /// order), then queue the value visit and a `Pair` assembler. The key `&str` is re-derived at process
+    /// time from `desc.table[rec_ix]` (the `Shape::Record`) at `field_ix` — no borrow held on the stack.
     VisitField {
         h: Handle,
         shape_ix: u32,
-        key: &'d str,
+        rec_ix: u32,
+        field_ix: u32,
     },
     /// Assemble `list([head_s, <the top `nkids` results in child order>])` — the tuple/list/record/sum body.
     List { head_s: u32, nkids: usize },
     /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
-    /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
-    Named { colon_s: u32, name: &'d str },
+    /// (matching the recursive order), then `list([colon_s, value, tname_s])`. The name `&str` is
+    /// re-derived at process time from `desc.table[named_ix]` (the `Shape::Named`).
+    Named { colon_s: u32, named_ix: u32 },
     /// Assemble a `(: value <type-node>)` frame — like `Named` but the type is an arbitrary (possibly
-    /// NESTED) type node. Pop the inner value, `render_type_node` the type, then `list([colon_s, value,
-    /// type_node])`.
-    Framed {
-        colon_s: u32,
-        type_node: &'d TypeNode,
-    },
+    /// NESTED) type node, re-derived at process time from `desc.table[framed_ix]` (the `Shape::Framed`).
+    /// Pop the inner value, `render_type_node` the type, then `list([colon_s, value, type_node])`.
+    Framed { colon_s: u32, framed_ix: u32 },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
     /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
@@ -2261,14 +2279,16 @@ fn encode_value(
     desc: &Descriptor,
     b: &mut DocBuilder,
     out: &mut Vec<u32>,
+    work: &mut Vec<EncodeWork>,
     root_h: Handle,
     root_shape: u32,
 ) -> Option<u32> {
-    // `out` (completed struct indices, in completion order) is the REUSED `ENCODE_OUT` buffer, passed in
-    // by the caller (cleared there, capacity retained across encodes). `work` holds `EncodeWork<'_>`
-    // borrowing the descriptor, so it stays a fresh local — a `'static` thread-local can't hold the borrow.
+    // `out` (completed struct indices) and `work` (the pending-task stack) are both REUSED thread-local
+    // buffers, passed in by the caller (cleared here, capacity retained across encodes). `EncodeWork` is
+    // now `'static` (no descriptor borrow — the key/name/type-node are re-derived from `desc` at process
+    // time), so the `work` stack reuses like `out`/the builder instead of a fresh Vec per encode.
     out.clear();
-    let mut work: Vec<EncodeWork> = Vec::new();
+    work.clear();
     work.push(EncodeWork::Visit {
         h: root_h,
         shape_ix: root_shape,
@@ -2422,11 +2442,12 @@ fn encode_value(
                             head_s,
                             nkids: fields.len(),
                         });
-                        for (i, (k, fs)) in fields.iter().enumerate().rev() {
+                        for (i, (_k, fs)) in fields.iter().enumerate().rev() {
                             work.push(EncodeWork::VisitField {
                                 h: op_arr_get(h, i as u32),
                                 shape_ix: *fs,
-                                key: k,
+                                rec_ix: shape_ix, // the Record shape's own table index (re-derives the key)
+                                field_ix: i as u32,
                             });
                         }
                     }
@@ -2472,25 +2493,31 @@ fn encode_value(
                             });
                         }
                     }
-                    Shape::Named(name, inner) => {
+                    Shape::Named(_name, inner) => {
                         // The `(: <value> <Type>)` value-form frame — same `h`, no node consumed → count.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Named { colon_s, name });
+                        work.push(EncodeWork::Named {
+                            colon_s,
+                            named_ix: shape_ix, // re-derives `name` from desc.table[named_ix] at process time
+                        });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
                             refs: refs + 1,
                         });
                     }
-                    Shape::Framed(type_node, inner) => {
+                    Shape::Framed(_type_node, inner) => {
                         // The `(: <value> <type-node>)` frame — an arbitrary (possibly nested) type node.
                         // Same `h`, no node consumed → count toward the ref cap.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Framed { colon_s, type_node });
+                        work.push(EncodeWork::Framed {
+                            colon_s,
+                            framed_ix: shape_ix, // re-derives the TypeNode from desc.table[framed_ix]
+                        });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
@@ -2564,9 +2591,21 @@ fn encode_value(
                     }
                 }
             }
-            EncodeWork::VisitField { h, shape_ix, key } => {
+            EncodeWork::VisitField {
+                h,
+                shape_ix,
+                rec_ix,
+                field_ix,
+            } => {
                 // Key leaf+atom emitted BEFORE the field value; the `Pair` assembler runs AFTER it. The
                 // field value is a fresh child node (arr-get already applied) → a new walk, `refs` 0.
+                // Re-derive the key from the owning `Shape::Record` at `field_ix` (no borrow on the stack).
+                let key = match desc.table.get(rec_ix as usize) {
+                    Some(Shape::Record(fields)) => {
+                        fields.get(field_ix as usize).map(|(k, _)| k.as_str())
+                    }
+                    _ => None,
+                }?;
                 let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
                 work.push(EncodeWork::Pair { katom });
@@ -2584,14 +2623,24 @@ fn encode_value(
                 out.truncate(base);
                 out.push(s);
             }
-            EncodeWork::Named { colon_s, name } => {
+            EncodeWork::Named { colon_s, named_ix } => {
                 let value = out.pop()?;
+                // Re-derive the type name from the owning `Shape::Named` (no borrow on the stack).
+                let name = match desc.table.get(named_ix as usize) {
+                    Some(Shape::Named(name, _)) => name.as_str(),
+                    _ => return None,
+                };
                 let tname = b.name_leaf(name);
                 let tname_s = b.atom(tname);
                 out.push(b.list(&[colon_s, value, tname_s]));
             }
-            EncodeWork::Framed { colon_s, type_node } => {
+            EncodeWork::Framed { colon_s, framed_ix } => {
                 let value = out.pop()?;
+                // Re-derive the TypeNode from the owning `Shape::Framed` (no borrow on the stack).
+                let type_node = match desc.table.get(framed_ix as usize) {
+                    Some(Shape::Framed(tn, _)) => tn,
+                    _ => return None,
+                };
                 let type_s = b.render_type_node(type_node);
                 out.push(b.list(&[colon_s, value, type_s]));
             }
@@ -2655,17 +2704,20 @@ fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
             *slot = Some((desc.to_vec(), decoded));
         }
         let descriptor = &slot.as_ref()?.1;
-        // Reuse the thread-local builder + `out` stack — `reset()`/`clear()` empties them but retains
-        // capacity, so the leaf/struct/child-pool + result-stack growth is paid ONCE (not per encode). The
-        // result bytes are identical either way; the reuse is a pure allocation optimisation (see
-        // `ENCODE_BUILDER`/`ENCODE_OUT`). The three thread-locals are distinct cells, so they never alias.
+        // Reuse the thread-local builder + `out` + `work` stacks — `reset()`/`clear()` empties them but
+        // retains capacity, so the leaf/struct/child-pool + result-stack + work-stack growth is paid ONCE
+        // (not per encode). The result bytes are identical either way; the reuse is a pure allocation
+        // optimisation (see `ENCODE_BUILDER`/`ENCODE_OUT`/`ENCODE_WORK`). The cells are distinct → never alias.
         ENCODE_BUILDER.with(|bcell| {
             ENCODE_OUT.with(|ocell| {
-                let b = &mut *bcell.borrow_mut();
-                let out = &mut *ocell.borrow_mut();
-                b.reset();
-                let root = encode_value(descriptor, b, out, h, descriptor.root)?;
-                Some(b.finish(root))
+                ENCODE_WORK.with(|wcell| {
+                    let b = &mut *bcell.borrow_mut();
+                    let out = &mut *ocell.borrow_mut();
+                    let work = &mut *wcell.borrow_mut();
+                    b.reset();
+                    let root = encode_value(descriptor, b, out, work, h, descriptor.root)?;
+                    Some(b.finish(root))
+                })
             })
         })
     })
@@ -10057,8 +10109,8 @@ mod tests {
         // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
         // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
         assert!(
-            smap_enc <= 2200,
-            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 2200 (10200 → 7100 (`DocLeaf::IntScalar` int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse) → ~1600 (`DocLeaf::Str` stores `Raw` — a SHORT key like \"k00\" inlines, no per-leaf `Vec` clone). The residual is the entries Vec + the output byte Vec growth. A LONG (>12-byte) key still heaps. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
+            smap_enc <= 1200,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 1200 (10200 → 7100 (`DocLeaf::IntScalar` int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse) → ~1600 (`DocLeaf::Str` stores `Raw` — a SHORT key like \"k00\" inlines, no per-leaf `Vec` clone) → ~903 (`ENCODE_WORK` reuse — the work stack no longer grows-from-zero per encode). The residual is the entries Vec + the output byte Vec growth. A LONG (>12-byte) key still heaps. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
         );
         op_drop(smap);
 
@@ -10130,16 +10182,18 @@ mod tests {
         // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`), the output-Vec pre-size
         // that killed the serialization realloc churn (~100→92, `@84ebc883`), the `DocLeaf::IntScalar`
         // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, `@6decb84a`), the reused
-        // thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: no more grow-from-ZERO per call), AND the
+        // thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: no more grow-from-ZERO per call), the
         // `DESCRIPTOR_CACHE` (19→13: the descriptor's table Vec + nested shape Vecs + name Strings — ~6/encode,
-        // 31% — are decoded ONCE and cached by bytes, skipped on every later same-descriptor call). The
-        // remaining allocs are the output byte Vec's own growth + the per-call `work` stack (borrows the
-        // descriptor, so NOT pooled). Ceiling TIGHTENED 2400→1800 to track the reduced floor; catches an
-        // O(N²) re-walk, a lost pool/descriptor reuse, or a return of per-node Vec / output-realloc churn.
-        // `xtask bench`'s baseline (1331) is the tight guard; this is the coarse in-suite backstop.
+        // decoded ONCE and cached by bytes), AND the reused thread-local `ENCODE_WORK` stack (13→~7: the
+        // iterative walk's task stack grows O(depth) — O(N) for a Cons-list — so a fresh Vec per call paid
+        // an O(log N) grow-chain EVERY encode; now it grows once + refills allocation-free, after
+        // `EncodeWork` became `'static`). The remaining allocs are the output byte Vec's own growth. Ceiling
+        // TIGHTENED 1800→1000 to track the reduced ~7/encode floor; catches an O(N²) re-walk, a lost
+        // pool/descriptor/work reuse, or a return of per-node Vec / output-realloc churn. `xtask bench`'s
+        // baseline (~737) is the tight guard; this is the coarse in-suite backstop.
         assert!(
-            venc <= 1800,
-            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 1800 (~13/encode of a 50-node list: 92 (per-int Vec) → 43 (`IntScalar`) → 19 (`ENCODE_BUILDER`/`ENCODE_OUT` reuse) → 13 (`DESCRIPTOR_CACHE` — the descriptor decode's ~6 Vecs/Strings paid ONCE, skipped on same-descriptor reuse). Residual = output byte Vec + per-call `work` stack. A lost cache/pool reuse, a per-int-Vec, or an output-realloc regression would climb)"
+            venc <= 1000,
+            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 1000 (~7/encode of a 50-node list after the ENCODE_WORK reuse; was ~13 before. Residual = the output byte Vec's growth. A lost cache/pool/work reuse, a per-int-Vec, or an output-realloc regression would climb)"
         );
         op_drop(ve_list);
     }
@@ -10507,7 +10561,7 @@ mod tests {
     /// `rc:u32`(4) + `Handles`(32) + `Raw`(24) = 60, padded to 64 for the 8-alignment `Handles`/`Raw`
     /// require — the 4-byte pad after `rc` is unavoidable. If you INTEND to change the layout, update
     /// these + re-measure the wasm hash impact.
-    #[test]
+#[test]
     fn node_layout_sizes_are_pinned_native() {
         use core::mem::size_of;
         assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
@@ -18851,8 +18905,15 @@ mod tests {
             // Iterative production walk (what the guest runs).
             let iter_doc = {
                 let mut b = DocBuilder::default();
-                encode_value(&descriptor, &mut b, &mut Vec::new(), v, descriptor.root)
-                    .map(|r| b.finish(r))
+                encode_value(
+                    &descriptor,
+                    &mut b,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    v,
+                    descriptor.root,
+                )
+                .map(|r| b.finish(r))
             };
             // Recursive reference over the SAME borrowed value + descriptor.
             let rec_doc = {
