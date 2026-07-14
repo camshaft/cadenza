@@ -811,9 +811,12 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a record computed from its argument
 pass	a parameterized export returns a runtime BigInt computed from its argument
 pass	a parameterized export returns a runtime Rational computed from its argument
 pass	a parameterized export returns a sum value computed from its argument

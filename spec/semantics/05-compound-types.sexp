@@ -6048,3 +6048,42 @@
   (input  (do (type Option (Some Int64) None) (def (main (: a Int64)) (Option.Some (* a a))) (export main)))
   (call   main (: 9 Int64))
   (output (: (Some 81) Option)))
+
+; The list/tuple/sum companions above pin ONE call each. These extend the param-forwarding resource escape
+; to the RECORD and built-in Option compound kinds, and add a case whose TWO calls prove the argument
+; genuinely FLOWS to the `make` (the returned compound differs per argument, not a baked constant) — the
+; runtime arg-forwarding a `compile(...).is_ok()`-only test never exercises. (A NESTED runtime compound
+; built from a parameter — a tuple CONTAINING a list — still declines: the compound-param heap return is a
+; later increment.)
+
+(case "a parameterized export returns a record computed from its argument"
+  (doc    "The record companion of the list/tuple/sum cases above: `main(a) = (record (lo a) (hi (+ a 10)))`
+           crosses the host boundary as a resource whose `make` forwards the scalar argument, so the host
+           builds the record from its input — `main(5) = (record (lo 5) (hi 15))`, rendered in canonical
+           (sorted) field order `(record (hi 15) (lo 5))`. Two calls pin that both fields track the
+           argument, not a constant.")
+  (input  (do (def (main (: a Int64)) (record (lo a) (hi (+ a 10)))) (export main)))
+  (call   main (: 5 Int64)) (output (: (record (hi 15) (lo 5)) (Record (hi Int64) (lo Int64))))
+  (call   main (: 0 Int64)) (output (: (record (hi 10) (lo 0)) (Record (hi Int64) (lo Int64)))))
+
+(case "a parameterized export returns a built-in Option computed from its argument"
+  (doc    "The built-in `Option` companion (the sum case above used a user `(type Option …)`): `main(a)`
+           returns `(Some a)` when `a > 0` and `(None unit)` otherwise, the variant DECIDED by the runtime
+           argument and built on the host side of the param-forwarding escape. `main(5) = (Some 5)`,
+           `main(0) = (None unit)`. Pins that a built-in-Option compound return forwards its argument and
+           renders the argument-selected variant.")
+  (input  (do (def (main (: a Int64)) (if (> a 0) (Some a) (None unit))) (export main)))
+  (call   main (: 5 Int64)) (output (: (Some 5) (Option Int64)))
+  (call   main (: 0 Int64)) (output (: (None unit) (Option Int64))))
+
+(case "a parameterized compound-return export forwards distinct arguments to make"
+  (doc    "The regression guard for runtime ARGUMENT FORWARDING: `main(n) = (tuple n (+ n 1))` returns a
+           compound built from the argument, and TWO calls with different arguments return DIFFERENT tuples
+           — `main(5) = (tuple 5 6)`, `main(40) = (tuple 40 41)`. This pins that the export's parameter is
+           actually DELIVERED to the resource-escape `make` at run time (a compile-only `is_ok()` test never
+           runs the component, so an unforwarded parameter — which traps `expected 1 argument, got 0`, or
+           bakes a constant — would pass that test yet fail here). The two distinct results are what a
+           constant-baking or arg-dropping escape cannot produce.")
+  (input  (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
+  (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
+  (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64))))
