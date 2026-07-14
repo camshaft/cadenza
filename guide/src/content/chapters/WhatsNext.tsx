@@ -20,16 +20,26 @@ export default function WhatsNext() {
       <H2>What you've learned</H2>
       <P>
         You can bind values and write functions (<Ch to="/basics">Values &amp; functions</Ch>), pipe
-        and compose them (<Ch to="/functions">Composing functions</Ch>), branch
-        and recurse (<Ch to="/control-flow">Control flow</Ch>), compare and order
-        (<Ch to="/ordering">Comparison &amp; ordering</Ch>), bundle data into tuples and records and
-        take it apart (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
-        <Ch to="/records-tuples">Working with records &amp; tuples</Ch>), decide by shape with{" "}
-        <Ch to="/pattern-matching">pattern matching</Ch>, work with <Ch to="/lists">lists</Ch> and{" "}
-        <Ch to="/strings">strings</Ch>, handle{" "}
+        and compose them (<Ch to="/functions">Composing functions</Ch>), branch and recurse{" "}
+        (<Ch to="/control-flow">Control flow</Ch>), compare and order{" "}
+        (<Ch to="/ordering">Comparison &amp; ordering</Ch>), and bundle data into tuples and records —
+        reading, nesting, and functionally updating it (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
+        <Ch to="/records-tuples">Working with records &amp; tuples</Ch>). You decide by shape with{" "}
+        <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections —{" "}
+        <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch> — and the text and binary
+        types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch>, and{" "}
+        <Ch to="/symbols">symbols</Ch>. You handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
-        Cadenza's <Ch to="/numbers">integers</Ch> and <Ch to="/floats">floating-point numbers</Ch>{" "}
-        behave.
+        Cadenza's numbers behave — checked <Ch to="/numbers">integers</Ch>,{" "}
+        <Ch to="/sized-integers">sized integers</Ch>, and{" "}
+        <Ch to="/floats">floating-point numbers</Ch>, none of them ever converting silently.
+      </P>
+      <P>
+        And you've seen what makes Cadenza its own language:{" "}
+        <Ch to="/effects">effects &amp; handlers</Ch>, where a handler decides what a performed operation
+        means; <Ch to="/modules">modules</Ch> that are just records of their exports; and{" "}
+        <Ch to="/units">units of measure</Ch> that catch a dimensional mistake at compile time and then
+        vanish before the program runs.
       </P>
       <P>
         More importantly, you've seen the ideas underneath — the{" "}
