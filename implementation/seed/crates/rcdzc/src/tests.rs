@@ -28397,6 +28397,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_delegating_a_value_definition_is_rejected() {
+        // A `host` delegates EFFECTS to the boundary (capabilities-and-effects.md §Host Delegation Is An
+        // Entrypoint's Prerogative). `(host (foo) …)` where `foo` is a top-level `(def foo …)` names a VALUE,
+        // not an effect — a malformed grant. It used to compile and run silently (the bogus delegation was
+        // dropped by a `filter_map` in `check_no_home`, computing an empty manifest). Now `check_no_home`
+        // rejects a delegated name that resolves to a value def CDZ0201. CONSERVATIVE: it flags only an
+        // unambiguous value def (`def_by_name`), never a nested-module effect (which is absent from the
+        // top-level registries), so a valid delegation is never false-flagged.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def foo 5) (def (main) (host (foo) 5)) (export main))",
+        )))
+        .expect_err("delegating a value definition to the host must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("foo") && d.message.contains("effect"),
+            "the message names the offending value and explains a host delegates effects: {}",
+            d.message
+        );
+        // A valid effect delegation still compiles (regression): the effect's op is reached in the body, so
+        // it is neither latent nor a non-effect.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (ask.ask))) (export main))",
+            )))
+            .is_ok(),
+            "a valid host delegation of a declared effect must compile"
+        );
+        // A nested-module effect delegated inside that module is NOT false-flagged (its effect decl is not in
+        // the top-level registry — the check must not treat it as a non-effect).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                 (def (main) (host (log) ((. log emit) \"hi\")))) 0)) (export main))",
+            )))
+            .is_ok(),
+            "a nested-module effect delegation must not be false-flagged as a non-effect"
+        );
+    }
+
+    #[test]
     fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
         // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
         // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a

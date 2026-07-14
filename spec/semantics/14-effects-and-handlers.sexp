@@ -1276,6 +1276,17 @@
             (def (main) (resume 1 0)) (export main)))
   (error  CDZ0201))
 
+(case "a host delegating a value definition rather than an effect is rejected"
+  (doc    "A `host` delegates EFFECTS to the boundary — it grants exactly the effects its body reaches
+           (capabilities-and-effects.md #Host Delegation Is An Entrypoint's Prerogative). `(host (foo) …)`
+           where `foo` is a value definition names a VALUE, not an effect: there is nothing to delegate, so
+           it is a malformed grant, rejected at compile time (CDZ0201) rather than silently accepted as a
+           no-op that computes an empty manifest. Pins that a delegation names a declared effect.")
+  (input  (do
+            (def foo 5)
+            (def (main) (host (foo) 5)) (export main)))
+  (error  CDZ0201))
+
 (case "an effect operation reached with neither a handler nor a delegation is rejected"
   (doc    "`Ask` is a routing-agnostic effect; `main` performs `(Ask.ask)` with no enclosing handler and
            no enclosing entrypoint `host` delegation, so the effect would escape ungranted — rejected at
