@@ -482,34 +482,81 @@ fn run_test_file(
     trials: u64,
     seed: u64,
 ) -> Result<(usize, usize), ()> {
-    // Parse the source once; the arenas feed BOTH the test-name enumeration (a `Db`) and the emit compile.
-    let (_source, arenas) = match load_program(file) {
-        Ok(v) => v,
+    // Follow the entry file's IMPORT CLOSURE so a test in a module that imports a sibling (e.g. a pass
+    // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
+    // `cdz check FILE` does. A file that imports nothing loads as a lone file, byte-identical to a
+    // standalone single-file test compile; only a file carrying an `(import …)` pulls its siblings in.
+    let closure = match load_import_closure(file) {
+        Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
             return Err(());
         }
     };
+    let is_package = !declared_import_paths(&closure[0].arenas).is_empty();
 
-    // Encode the `ast` ONCE — it feeds both the test-name enumeration (decoded into a compiler `Db`) and
-    // the emit compile below. The front-end (`cadenza_syntax`) and compiler (`rcdzc`) have DISTINCT arena
-    // types; the canonical binary form is the bridge, so `Db::load` reads a `codec::decode` of these bytes.
-    let ast = cadenza_syntax::codec::encode(&arenas);
+    // Encode each closure file's `ast` ONCE — the per-file artifacts feed BOTH the `Db` that enumerates
+    // the ENTRY file's `@test` names and the package emit compile below. The front-end (`cadenza_syntax`)
+    // and compiler (`rcdzc`) have DISTINCT arena types; the canonical binary form is the bridge.
+    let ast_arts: Vec<rcdzc::Artifact> = closure
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
 
-    // The `@test` definitions' SOURCE names, in declaration order (`db.test_defs` returns `defs` indices
-    // sorted). Building a `Db` here is the same load the compile does; it is cheap relative to emit and
-    // gives the runner the names to `--call` + report. Filter by `--filter` (a name-substring) if given.
-    let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast) else {
-        eprintln!("{PROG}: {file}: could not decode the program's AST");
-        return Err(());
+    // Build the compiler `Db` used to enumerate test names + solve property-test param types. A single
+    // file decodes directly (`Db::load`, byte-identical to before); a PACKAGE links every closure file
+    // into one arena and loads it WITH its linkage (`Db::load_linked`), so a cross-file name resolves. On
+    // a package, `linkage` also maps a test def back to its file so we run ONLY the ENTRY file's own
+    // tests — an imported library's tests run when THAT file is itself the entry (a directory run visits
+    // each), never double-counted through an importer.
+    let (mut db, entry_filter) = if is_package {
+        let mut rcdzc_files = Vec::with_capacity(ast_arts.len());
+        for art in &ast_arts {
+            let Some(a) = rcdzc::codec::decode(&art.bytes) else {
+                eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
+                return Err(());
+            };
+            rcdzc_files.push((art.name.clone(), a));
+        }
+        let program = match rcdzc::link::link(&rcdzc_files, &closure[0].name) {
+            Ok(p) => p,
+            Err(r) => {
+                eprintln!("{PROG}: {file}: {}", r.message);
+                return Err(());
+            }
+        };
+        let linkage = program.linkage();
+        let entry_ix = program.entry;
+        let db = rcdzc::db::Db::load_linked(program.arenas, Some(linkage.clone()));
+        (db, Some((linkage, entry_ix)))
+    } else {
+        let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
+            eprintln!("{PROG}: {file}: could not decode the program's AST");
+            return Err(());
+        };
+        (rcdzc::db::Db::load(rcdzc_arenas), None)
     };
-    let mut db = rcdzc::db::Db::load(rcdzc_arenas);
     // Each test's name PLUS the generators for its parameters (empty = a plain nullary test, run once;
     // non-empty = a PROPERTY test, run `trials` times with generated inputs). A param whose type is not a
     // generatable scalar makes `param_generators` return `None` — reported per test, not aborting the run.
     let mut tests: Vec<(String, Option<Vec<GenKind>>)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for i in db.test_defs() {
+        // In a PACKAGE, `test_defs()` sees every linked file's `@test`s — keep only the ENTRY file's own,
+        // so an imported library's tests aren't run through its importer (they run when that library is
+        // itself the entry). A def's file is the file whose id-range holds its signature node.
+        if let Some((linkage, entry_ix)) = &entry_filter {
+            match linkage.file_of(db.defs[i].sig_occ) {
+                Some(fi) if fi == *entry_ix => {}
+                _ => continue,
+            }
+        }
         let name = db.defs[i].name.clone();
         if filter.is_some_and(|needle| !name.contains(needle)) {
             continue;
@@ -527,16 +574,20 @@ fn run_test_file(
         return Ok((0, 0));
     }
 
-    // Compile the test component: the `ast` (encoded above) + an `EmitTests` sidecar request. `EmitTests`
+    // Compile the test component: every closure file's `ast` + an `EmitTests` sidecar request. `EmitTests`
     // lays the boundary out from the `@test` defs (`layout::compute_tests`), not the `(export …)` clauses.
-    let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast),
-        rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
-            "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
-        ),
-    ];
+    // For a package, the `entry` marker names which file's imports drive linking; a single file needs none
+    // (identical to before). `compute_tests` still exports ALL linked `@test`s — the entry-file filter above
+    // decides which we RUN, but a library test kept in the component is harmless (unreached, uncalled).
+    let mut inputs = ast_arts;
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
+    ));
+    if is_package {
+        inputs.push(compiler_cli::entry_artifact(&closure[0].name));
+    }
     let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let Some(component) = out.artifact("component") else {
         // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,

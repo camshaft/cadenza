@@ -328,3 +328,63 @@ fn a_filter_selects_a_subset() {
     );
     assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
 }
+
+/// `cdz test` FOLLOWS the entry file's import closure — a test in a module that imports a sibling type
+/// links against it and runs, the same closure `cdz check` walks. Before this, `cdz test` compiled the
+/// single file alone → `import` was "not modeled" and the imported name was unbound.
+#[test]
+fn a_test_follows_an_import_and_uses_a_cross_file_type() {
+    let d = dir("xfile-import");
+    // `lib` owns a sum type + a function over it, exports the type WITH its constructors (`.*`).
+    write(
+        &d,
+        "lib.sexp",
+        "(do (type Ty (Var Int64) (Con String)) \
+           (def (name-of (: t Ty)) (match t (((. Ty Var) _) \"v\") (((. Ty Con) n) n))) \
+           (export (. Ty *)) (export name-of))",
+    );
+    // `app` imports the type + fn, and its `@test` constructs an imported constructor + calls the fn.
+    let app = write(
+        &d,
+        "app.sexp",
+        "(do (import \"lib\" (Ty name-of)) \
+           (@ test (def (uses-imported) (if (= (name-of ((. Ty Con) \"z\")) \"z\") unit (trap \"x\")))) \
+           (export uses-imported))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &app]);
+    assert!(ok, "cross-file test should pass: {stdout}{stderr}");
+    assert!(stdout.contains("PASS uses-imported"), "{stdout}");
+    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+}
+
+/// In a DIRECTORY run, a library's OWN `@test` runs exactly once (when that library is the entry), not
+/// AGAIN through an importer — the entry-file filter keeps each file's tests to that file's run, so the
+/// combined total is not inflated by a shared imported module's tests.
+#[test]
+fn an_imported_library_test_is_not_double_counted() {
+    let d = dir("xfile-nodup");
+    write(
+        &d,
+        "lib.sexp",
+        "(do (type Ty (Con String)) \
+           (def (name-of (: t Ty)) (match t (((. Ty Con) n) n))) \
+           (@ test (def (lib-own) (if (= (name-of ((. Ty Con) \"a\")) \"a\") unit (trap \"l\")))) \
+           (export (. Ty *)) (export name-of))",
+    );
+    write(
+        &d,
+        "app.sexp",
+        "(do (import \"lib\" (Ty name-of)) \
+           (@ test (def (app-own) (if (= (name-of ((. Ty Con) \"b\")) \"b\") unit (trap \"a\")))) \
+           (export app-own))",
+    );
+    let (ok, stdout, stderr) = run(&["test", d.to_str().unwrap()]);
+    assert!(ok, "directory run should pass: {stdout}{stderr}");
+    // `lib-own` runs once (lib as entry) and `app-own` once (app as entry): two tests, not three.
+    assert!(stdout.contains("PASS lib-own"), "{stdout}");
+    assert!(stdout.contains("PASS app-own"), "{stdout}");
+    assert!(
+        stdout.contains("TOTAL: 2 passed, 0 failed"),
+        "lib-own must not be double-counted via app: {stdout}"
+    );
+}
