@@ -15828,6 +15828,38 @@ mod match_engine {
     }
 
     #[test]
+    fn two_equalities_to_different_constants_do_not_subsume() {
+        // ⚠ MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
+        // wrongly included `Eq` — so `(and (= x 5) (= x 6))` was "subsumed" to `(= x 6)` (returns 1 at x=6),
+        // but the correct value is ALWAYS FALSE (x cannot equal both 5 and 6). `Eq` does NOT subsume: two
+        // equalities to DIFFERENT constants are a contradiction under `and` and a 2-point set under `or` —
+        // neither keeps just one. The fold now excludes `Eq` (ordering operators only). Pins the VALUE
+        // (runtime, since the standalone export was the miscompiling path) — a constant fold masks it.
+        use wasmtime::component::Val;
+        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: x Int64)) {body}) (export f))"
+        )))).expect("compile");
+        // `(and (= x 5) (= x 6))` is always false — including at x=5 and x=6 (the miscompiled points).
+        let andeq = f("(if (and (= x 5) (= x 6)) 1 0)");
+        for x in [5, 6, 7, 0] {
+            assert_eq!(run_returns_with::<i64>(&andeq, "f", &[Val::S64(x)]), 0, "and-two-eq @{x} must be 0");
+        }
+        // `(or (= x 5) (= x 6))` is the 2-point set {5,6}.
+        let oreq = f("(if (or (= x 5) (= x 6)) 1 0)");
+        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(5)]), 1);
+        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(6)]), 1);
+        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(7)]), 0);
+        // Same-CONSTANT equality still folds (idempotence, not subsumption): `(and (= x 5) (= x 5))` = x==5.
+        let sameeq = f("(if (and (= x 5) (= x 5)) 1 0)");
+        assert_eq!(run_returns_with::<i64>(&sameeq, "f", &[Val::S64(5)]), 1);
+        assert_eq!(run_returns_with::<i64>(&sameeq, "f", &[Val::S64(6)]), 0);
+        // Legitimate ORDERING subsumption is unaffected: `(and (>= x 5) (>= x 10))` = `(>= x 10)`.
+        let ge = f("(if (and (>= x 5) (>= x 10)) 1 0)");
+        assert_eq!(run_returns_with::<i64>(&ge, "f", &[Val::S64(7)]), 0);
+        assert_eq!(run_returns_with::<i64>(&ge, "f", &[Val::S64(12)]), 1);
+    }
+
+    #[test]
     fn opposite_direction_comparisons_fold_when_disjoint_or_covering() {
         // DISJOINT/COVERING INTERVAL: two OPPOSITE-direction comparisons on the same operand `v` form an
         // upper half-line `v <= U` and a lower one `v >= L`. `and` (∩ `L <= v <= U`) is EMPTY iff `L > U` →
