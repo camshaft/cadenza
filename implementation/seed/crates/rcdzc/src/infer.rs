@@ -3939,6 +3939,59 @@ fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
     }
 }
 
+/// The NEXT-STATE of a tail `(resume value next-state)` in an arm body `node`. `None` if the arm does not
+/// tail-resume. The state-side twin of [`tail_resume_value`].
+fn tail_resume_next_state(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Resume { next_state, .. } => Some(next_state),
+        _ => None,
+    }
+}
+
+/// Check a handler arm's tail NEXT-STATE against the handler's SEED type — the state-side companion of
+/// [`check_resume_result_type`]. A handler threads a STATE fixed by its `init` seed; the next state in
+/// `(resume value next-state)` continues that fold, so it MUST have the seed's type. A mismatch —
+/// `(resume 5 "x")` under an Int64 seed — would change the state's type mid-fold (a type-confusion
+/// miscompile if accepted). CDZ0201, anchored at the next-state, with the same numeric/text coercion fix
+/// every expected-vs-actual site offers. GUARDED with `agrees_with` so an undetermined seed/state
+/// (`Any`/`Var` — a recursive handler whose state type inference has not fixed, or an unconstrained seed)
+/// is never falsely flagged; only a DEFINITE clash faults. Only a TAIL resume is checked (the shipping
+/// surface), matching `check_resume_result_type`.
+fn check_resume_next_state_type(
+    db: &mut Db,
+    init: StructId,
+    arm: &crate::resolved::HandleArm,
+    out: &mut Vec<Reject>,
+) {
+    let seed_ty = type_of(db, init);
+    // An undetermined seed type carries no constraint — skip (never a false reject). The `agrees_with`
+    // below would also pass, but bailing early keeps the common recursive-handler case cheap.
+    if matches!(seed_ty, Ty::Any | Ty::Var(_)) {
+        return;
+    }
+    let Some(next_state) = tail_resume_next_state(db, arm.body) else {
+        return; // no tail resume — out of scope
+    };
+    let next_ty = type_of(db, next_state);
+    if !next_ty.agrees_with(&seed_ty) {
+        trace!(target: "rcdzc::infer", next_state = next_state.0, "fault: resume next-state type does not match the handler's seed/state type (CDZ0201)");
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "a handler resumes with a next-state of type {} but the handler's state type is {} \
+                 (the seed fixes the state type; each resume threads a state of that type)",
+                next_ty.render_name(),
+                seed_ty.render_name()
+            ),
+        )
+        .at(next_state);
+        if let Some(fix) = numeric_text_coercion_fix(db, &seed_ty, &next_ty, next_state) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
+    }
+}
+
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
@@ -7820,6 +7873,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // result-type companion of the perform-argument check). Without this the fold silently
                 // substitutes the mistyped value as the perform's result (a type-confusion miscompile).
                 check_resume_result_type(db, arm, out);
+                // NEXT-STATE / SEED-TYPE CHECK. A handler folds a STATE across the operations its body
+                // performs, threading it purely (`capabilities-and-effects.md` §Discharging An Operation
+                // Produces … The Next State Carried Forward). The state's type is fixed by the handle's
+                // SEED (`init`); the NEXT state in `(resume value next-state)` continues that fold, so it
+                // MUST have the seed's type. A mismatch — `(resume 5 "x")` under an Int64 seed — would
+                // change the state's type mid-fold; it was SILENTLY ACCEPTED (the fold dropped the type
+                // discrepancy, a type-confusion miscompile), the state-side companion of the resume-VALUE
+                // check above. CDZ0201, anchored at the next-state.
+                check_resume_next_state_type(db, init, arm, out);
                 collect(db, arm.body, out);
             }
             // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405,
