@@ -11883,6 +11883,48 @@ mod match_engine {
     }
 
     #[test]
+    fn an_integer_operator_on_two_floats_offers_the_float_sibling_operator_swap() {
+        // `(+ 1.0 2.0)` — an INTEGER arithmetic operator applied to two FLOAT operands. The whole-
+        // operation repair is to SWAP the operator to its float sibling (`+.`), NOT to retype an operand
+        // (retyping one leaves the other float, so `fix --all` could never converge, and two float
+        // literals mean float math). The fix rewrites the OPERATOR NAME node. Each of `+`/`-`/`*`/`/`
+        // maps to `+.`/`-.`/`*.`/`/.` (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
+        // To A Fix; `numeric-model.md` §Numeric Types Do Not Silently Promote).
+        for (op, sibling) in [("+", "+."), ("-", "-."), ("*", "*."), ("/", "/.")] {
+            let src = format!("(module m (def (main) ({op} 1.0 2.0)) (export main))");
+            let d = reject_full(&src).unwrap_or_else(|| panic!("`{op}` on two floats must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+            assert!(
+                d.message.contains("integer arithmetic") && d.message.contains(sibling),
+                "names the float sibling `{sibling}`: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some(sibling),
+                "swaps the operator to `{sibling}`: {}",
+                d.message
+            );
+        }
+        // A genuine int/float MIX (`(+ 1 2.0)`) is NOT the both-float case — it keeps the per-operand
+        // coercion fix (one operand is already an integer), NOT the operator swap.
+        let mix = reject_full("(module m (def (main) (+ 1 2.0)) (export main))").expect("reject");
+        assert!(
+            !mix.message.contains("integer arithmetic"),
+            "an int/float mix keeps per-operand coercion, not the operator swap: {}",
+            mix.message
+        );
+        // `%` has no float sibling → no operator-swap fix (it falls through to the generic path).
+        let rem = reject_full("(module m (def (main) (% 5.0 2.0)) (export main))").expect("reject");
+        assert!(
+            !rem.message
+                .contains("integer arithmetic, but both operands"),
+            "`%` has no float sibling to swap to: {}",
+            rem.message
+        );
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text

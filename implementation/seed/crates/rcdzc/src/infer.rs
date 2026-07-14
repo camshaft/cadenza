@@ -3041,6 +3041,25 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
     }
 }
 
+/// The INTEGER-arithmetic operator spelling and its FLOAT-arithmetic sibling spelling `(int, float)`,
+/// or `None` for a prim with no float sibling. The four arithmetic operators `+`/`-`/`*`/`/` each have a
+/// width-generic float twin `+.`/`-.`/`*.`/`/.` (`prelude.rs`); the comparisons `<`/`=`/… are ALREADY
+/// polymorphic over floats (no separate spelling), and `%`/bit-ops have no float form. Used to repair
+/// `(+ 1.0 2.0)` — an integer operator applied to two FLOAT operands — by swapping the operator name,
+/// the whole-operation fix (rewriting one operand to an int leaves the other float; the author clearly
+/// wants float math). Returns both spellings so the message names the written operator and the fix names
+/// the sibling.
+fn float_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
+    use crate::resolved::Prim;
+    match prim {
+        Prim::Add => Some(("+", "+.")),
+        Prim::Sub => Some(("-", "-.")),
+        Prim::Mul => Some(("*", "*.")),
+        Prim::Div => Some(("/", "/.")),
+        _ => None,
+    }
+}
+
 /// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
 /// different conversions (`units-of-measure.md` §A Named Unit's Conversion Is Unique) — and push CDZ0502
 /// for each. A name conflicts when its reduced unit (`base` scaled by `num/den`) differs from the
@@ -3143,6 +3162,50 @@ fn check_application(
             ));
         }
         collect(db, args[1], out);
+        return;
+    }
+    // An INTEGER arithmetic operator (`+`/`-`/`*`/`/`) applied to two FLOAT operands — `(+ 1.0 2.0)`.
+    // The whole-operation repair is to SWAP the operator to its float sibling (`+.`), NOT to rewrite an
+    // operand: `+`'s scheme is `(Int a)`, so the generic unify below would fault the FIRST operand and
+    // offer to drop its `.0` — a fix that leaves the SECOND operand float (so `fix --all` rightly refuses
+    // it) and misreads the intent (two float literals mean float math). Detect it here and emit ONE clean
+    // CDZ0301 whose fix rewrites the OPERATOR NAME node (the app's first child) to the float sibling, then
+    // return so the generic path does not also add the misleading per-operand fix. Gated on BOTH operands
+    // being `Ty::Float` (a genuine int/float MIX — `(+ 1 2.0)` — keeps the per-operand coercion, which is
+    // the right call there: one operand is already an integer). `numeric-model.md` §Numeric Types Do Not
+    // Silently Promote (the explicit-conversion discipline) + `diagnostics.md` §A Diagnostic Carries A
+    // Route To A Fix.
+    if args.len() == 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+        && let Some((int_op, sibling)) = float_sibling_operator(prim)
+        && let a0 = type_of(db, args[0])
+        && let b0 = type_of(db, args[1])
+        && matches!(a0, Ty::Float(_))
+        && matches!(b0, Ty::Float(_))
+    {
+        // The operator NAME occurrence is the application's first child (`(+ …)` → the `+` atom). Fall
+        // back to an unfixed reject if the shape is unexpected (never mis-target a fix).
+        let op_name_node = match db.ast.get(app) {
+            crate::ast::Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        trace!(target: "rcdzc::infer", head = head.0, int_op, sibling, "fault: integer arithmetic operator on two floats — swap to the float sibling (CDZ0301)");
+        let mut reject = Reject::coded(
+            Code::NumericMismatch,
+            format!(
+                "`{int_op}` is integer arithmetic, but both operands are {} — use the floating-point \
+                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
+                a0.render_name(),
+            ),
+        )
+        .at(app);
+        if let Some(node) = op_name_node {
+            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
+        }
+        out.push(reject);
+        for &arg in args {
+            collect(db, arg, out);
+        }
         return;
     }
     // The RECORD + TUPLE ROW OPERATIONS have NO HM scheme (a label-list / literal-position operand is not
