@@ -4696,8 +4696,32 @@
             (def (f (: r Rec)) (match r ((Rec.Mk a b p) (+ (Int64.wrap a) (if p b 0))) ((Rec.Z) -1)))
             (def (main (: k Int64)) (f (Rec.Mk (UInt8.wrap 5) k true)))
             (export main)))
+  (needs  sum-type-declaration)
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
+
+(case "a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern"
+  (doc    "One arm-set over `(P Int64 (Option Int64)) | Q` mixes THREE pattern kinds at nested depths: a
+           LITERAL on the first payload + a nested `(Some n)` on the second (`(P 0 (Some n))`); a WILDCARD
+           on the first + the same nested `Some` (`(P _ (Some n))`); a nested `None` (`(P _ (None))`); and
+           the nullary `Q`. The decision tree probes the first payload against the literal `0`, falls to the
+           wildcard otherwise, and descends into the `Option` payload either way. `(f (P 0 (Some 7)))`
+           matches the literal-0 arm → 7. Pins that a literal test, a wildcard, and a nested-sum pattern
+           compose in one arm-set over a multi-payload variant — the decision tree orders the literal before
+           the wildcard and threads the nested Option match under both.")
+  (input  (do
+            (type T (P Int64 (Option Int64)) (Q))
+            (def (f (: t T))
+              (match t
+                ((T.P 0 (Option.Some n)) n)
+                ((T.P _ (Option.Some n)) (+ n 1000))
+                ((T.P _ (Option.None))   -1)
+                ((T.Q)                   -2)))
+            (def (main (: k Int64)) (f (T.P 0 (Option.Some k))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
 
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
