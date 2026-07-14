@@ -1017,10 +1017,16 @@ the component type. The new work:
   via `closure_call_list_tuple_arg_functype_interleaved`. Corpus: among-scalars × List/Bytes/compound results
   + tuple-before-scalar × List, all e2e. Still declines: among-scalars + list result on the MULTI/MIXED/
   DISTINCT-SIG paths (their emit fns don't yet interleave — the helpers now exist, a mechanical follow-on).
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple with a
-  list<u8>-crossing result on the MULTI/MIXED/distinct-sig paths (the single-export interleaving applied to
-  those cores' arg-push + per-group functypes — mechanical, the shared helper + interleaved functype exist); a
-  VARIABLE-LENGTH collection arg
+- **✅ tuple-among-scalars composes with EVERY result shape on the MULTI-EXPORT path** (`@d2c1737f`→landed
+  next). The three multi list-result cores already interleave via the shared `emit_closure_call_args`; the
+  only wiring was the envelope functype — `assemble_multi_closure_bytes_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_bytes_borrow_tuple` gained `tuple_prefix_bytes`/`tuple_suffix_bytes`
+  feeding `closure_call_list_tuple_arg_functype_interleaved`. The multi among-scalars decline is GONE. Corpus:
+  multi-export among-scalars × List/Bytes/compound, e2e. The MIXED path still detects a SOLE tuple only.
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the MIXED
+  path (any result) and with a list<u8>-crossing result on the distinct-sig path (the single-export/multi
+  interleaving applied to those cores' arg-push + per-group functypes — mechanical, the shared helper +
+  interleaved functype exist); a VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
