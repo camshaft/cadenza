@@ -7002,6 +7002,39 @@ mod runtime_ops {
             ),
             "a runtime-divisor rem must still trap on ÷0 (not trap-free)"
         );
+
+        // WRAPPING ARITHMETIC IS TRAP-FREE: `wrapping-add`/`wrapping-mul` emit the raw machine add/mul with
+        // NO overflow guard (they wrap modulo the slot — that is their whole purpose), so they never trap.
+        // A discarding annihilator `(* 0 <wrapping-mul>)` → 0 now DROPS the wrapping-mul (no `i64.mul`
+        // remains); the CHECKED `(* 0 (* x x))` keeps its operand (a checked `*` can overflow → trapping, so
+        // its trap must be preserved even when the product is annihilated).
+        let muls = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Mul)).count();
+        assert_eq!(
+            muls(&lir("(: x Int64)", "(* 0 ((. Int64 wrapping-mul) x x))")),
+            0,
+            "a dead wrapping-mul is dropped by the annihilator fold (it is trap-free)"
+        );
+        assert!(
+            muls(&lir("(: x Int64)", "(* 0 (* x x))")) >= 1,
+            "a dead CHECKED mul is KEPT (it can overflow → trapping, so the trap is preserved)"
+        );
+        // VALUE PARITY: the annihilated wrapping product is 0; a live wrapping fold computes correctly.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(* 0 ((. Int64 wrapping-mul) x x))",
+                &[Val::S64(7)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x))",
+                &[Val::S64(6)]
+            ),
+            42 // 6 + 6*6
+        );
     }
 
     #[test]
@@ -31994,6 +32027,35 @@ mod stage1 {
                 diags.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
         }
+        // (d) A handler arm's OP-PARAMETER list is LINEAR too — `(two (x x) s …)` binds `x` twice, the same
+        // CDZ0102 a def/lambda/pattern duplicate is (it silently read one and shadowed the other). The
+        // remaining binder-list site that skipped the linearity check (M121's sibling-site sweep).
+        let dup = "(module m (effect E (op two (-> Int64 Int64 Int64))) \
+                   (def (main) (handle E 0 ((two (x x) s (resume (+ x x) s))) (E.two 3 4))) (export main))";
+        let dd = crate::diagnostics(&mut crate::db::Db::load(parse(dup)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0102"))
+            .expect("a handler arm's duplicate parameter is CDZ0102");
+        assert!(
+            dd.message.contains("bound more than once"),
+            "names the non-linear binder: {}",
+            dd.message
+        );
+        assert_eq!(
+            dd.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x2"),
+            "the handler-arm dup param carries the rename fix: {}",
+            dd.message
+        );
+        // NO false reject: distinct arm params are clean.
+        let ok = "(module m (effect E (op two (-> Int64 Int64 Int64))) \
+                   (def (main) (handle E 0 ((two (x y) s (resume (+ x y) s))) (E.two 3 4))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0102")),
+            "distinct handler-arm params are not flagged"
+        );
     }
 
     #[test]
@@ -49462,6 +49524,62 @@ mod cross_component_oracle {
             "a well-typed extern application declines cleanly (emit pending), never a type reject"
         );
         let _ = &mut db;
+    }
+
+    /// A MALFORMED `(extern …)` — its first element (the peer interface) missing or a bare NAME instead of
+    /// a STRING literal — is CDZ0201, not silently dropped. `scan_extern_decl` returns `None` for such a
+    /// form (`as_str(*tail.first()?)?`), so it registered no `ExternDecl` and any op it would bind went
+    /// unbound, surfacing a misleading "unbound name `neg` — did you mean `Neg`?" (an unrelated prelude
+    /// type). Now the extern form is rejected naming the real fix (the interface is a string), and the
+    /// consequent unbound-name faults for the extern's own op names are DEDUPED — one primary "no".
+    #[test]
+    fn a_malformed_extern_interface_is_cdz0201_not_a_silent_drop() {
+        use crate::testkit::parse;
+        // (a) a non-string interface (`foo` a bare name) — CDZ0201, and the `neg` it binds is NOT reported
+        // unbound (the malformed-extern reject explains the real defect).
+        let bad = "(do (extern foo (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a peer INTERFACE as a string")),
+            "a non-string extern interface is CDZ0201: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("unbound name `neg`")),
+            "the consequent unbound-`neg` is deduped: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (b) a bare `(extern)` with no interface at all — likewise CDZ0201.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (extern) (def (main) 1) (export main))"
+            )))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a peer INTERFACE")),
+            "a bare (extern) with no interface is CDZ0201"
+        );
+        // (c) NO REGRESSION: a well-formed extern (string interface) is clean, and a GENUINELY unbound name
+        // unrelated to any extern is still reported.
+        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) (def (main) (neg 5)) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.message.contains("names a peer INTERFACE")),
+            "a well-formed extern is not flagged"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (frobnicate 5)) (export main))"
+            )))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("unbound name `frobnicate`")),
+            "a genuine unbound name (no extern) is still CDZ0101"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------

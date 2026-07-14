@@ -154,7 +154,13 @@ pub struct Import {
 
 /// One file's link-time surface: the names it makes public (`(export …)`) and the names it pulls in
 /// (`(import …)`). Parallel to `LinkedProgram.files` (same spliced index). A file's importable surface
-/// IS its export list (`modules-and-namespaces.md` §Visibility Is Explicit — one mechanism, reused).
+/// IS its export list (`modules-and-namespaces.md` §Visibility Is Explicit — one mechanism, reused): a
+/// definition's cross-file visibility is the explicit `(export …)` rule (not its source position), and a
+/// name a file does not export is not importable by another (the sibling-import path rejects it).
+//= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+//# Whether a definition is visible outside its module MUST be determined by an explicit rule fixed by this specification, not by its position in the source.
+//= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+//# A definition that is not made visible MUST NOT be importable by another module.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct FileScope {
     /// The public names this file exports (its `(export …)` clause names).

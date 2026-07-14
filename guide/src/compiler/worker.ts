@@ -220,13 +220,15 @@ const api = {
   /// CompileOutcome (component + diagnostics) exactly like `compile`, so the caller runs the component
   /// through the same run worker. The buffer's exports are dropped; the expression becomes the sole
   /// entry, so a scalar OR compound result flows through the normal run path.
-  async replEval(buffer: string, expr: string, from: Surface): Promise<CompileOutcome> {
+  async replEval(buffer: string, expr: string, from: Surface, exact = false): Promise<CompileOutcome> {
     await ensureReady();
     // Like `compile`, `wasmReplEval` throws on unparseable buffer/expr — surface it as a decline so a
     // syntax error in a REPL entry doesn't reject the promise (which would hang the REPL call).
+    // `exact` selects the calculator's forced-rational mode (a bare `1 / 3` is `1/3`); the playground
+    // passes false.
     let r: ReturnType<typeof wasmReplEval>;
     try {
-      r = wasmReplEval(buffer, expr, from);
+      r = wasmReplEval(buffer, expr, from, exact);
     } catch (e) {
       return { component: null, diagnostics: [parseErrorDiag(e)] };
     }

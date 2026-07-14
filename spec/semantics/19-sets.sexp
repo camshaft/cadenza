@@ -281,3 +281,46 @@
   (input  (do (def (main (: x Int64)) (Set.contains (Set.of (list 1 2 x)) x)) (export main)))
   (call   main (: 9 Int64)) (output (: true Bool))
   (call   main (: 2 Int64)) (output (: true Bool)))
+
+; --- `Set.insert` / `Set.remove` at a RUNTIME element: the functional single-element edits -------------
+; The `Set.insert`/`Set.remove` cases above use CONSTANT elements, so the result folds. Inserting or
+; removing a RUNTIME element (a boundary parameter) into/from a constant set cannot fold — the edit runs on
+; the persistent CHAMP at run time (the operand set folds to a constant, but the edit element is dynamic).
+; These pin that the runtime edit preserves the uniqueness invariant (insert of a present element is a
+; no-op, remove of an absent element is a no-op), observed through membership and cardinality.
+
+(case "inserting a runtime element adds it or is a no-op if already present"
+  (doc    "`(Set.len (Set.insert (Set.of (list 1 2 3)) x))` is 4 when `x` is a NEW element (4 → the set
+           grows) and 3 when `x` is already present (2 → held once, insert is a no-op value,
+           collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that a runtime insert
+           preserves uniqueness — the cardinality reflects present-vs-absent decided at run time, deferring
+           to the runtime `set-insert`.")
+  (input  (do (def (main (: x Int64)) (Set.len (Set.insert (Set.of (list 1 2 3)) x))) (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64)))
+
+(case "inserting a runtime element yields a set that contains it"
+  (doc    "`(Set.contains (Set.insert (Set.of (list 1 2)) x) x)` is true for every `x` — the element just
+           inserted at run time is present. Pins that a runtime `set-insert` actually adds the element
+           (found by value afterward), the membership companion of the cardinality case.")
+  (input  (do (def (main (: x Int64)) (Set.contains (Set.insert (Set.of (list 1 2)) x) x)) (export main)))
+  (call   main (: 5 Int64)) (output (: true Bool))
+  (call   main (: 1 Int64)) (output (: true Bool)))
+
+(case "removing a runtime element drops it or is a no-op if absent"
+  (doc    "`(Set.contains (Set.remove (Set.of (list 1 2 3)) x) 2)` — removing `x` from {1,2,3} then testing
+           for 2: when `x`=2 the removed element IS 2, so 2 is gone (false); when `x`=9 (absent) the set is
+           unchanged and still holds 2 (true — removal is total, collections-and-text.md #A Set Is A
+           Collection Of Unique Elements). Pins that a runtime `set-remove` drops exactly the named element
+           and is a no-op on an absent one.")
+  (input  (do (def (main (: x Int64)) (Set.contains (Set.remove (Set.of (list 1 2 3)) x) 2)) (export main)))
+  (call   main (: 2 Int64)) (output (: false Bool))
+  (call   main (: 9 Int64)) (output (: true Bool)))
+
+(case "removing a runtime element lowers the cardinality only when present"
+  (doc    "`(Set.len (Set.remove (Set.of (list 1 2 3)) x))` is 2 when `x` ∈ {1,2,3} (one element dropped)
+           and 3 when `x` is absent (removal is total, the set is unchanged). The cardinality companion of
+           the membership case, over the runtime `set-remove`.")
+  (input  (do (def (main (: x Int64)) (Set.len (Set.remove (Set.of (list 1 2 3)) x))) (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 3 Int64)))

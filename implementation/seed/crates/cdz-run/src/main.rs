@@ -48,6 +48,14 @@ struct Cli {
     /// order when it performs an operation. The value is coerced to the operation's boundary result type.
     #[arg(long = "host-response", value_name = "OP=VALUE")]
     host_responses: Vec<String>,
+
+    /// A PEER Cadenza component to compose across the live boundary (X4b), repeatable —
+    /// `<interface>=<path>` (e.g. `--peer cadenza:math/api=math.wasm`). The component being run is the
+    /// CONSUMER; each peer's exported interface is bound into the consumer's like-named `(extern …)`
+    /// import, all sharing one value-heap runtime instance (component-abi.md §Cross-Component Value
+    /// Exchange). Absent (the common case) → an ordinary single-component run.
+    #[arg(long = "peer", value_name = "INTERFACE=PATH")]
+    peers: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -108,6 +116,40 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         })
         .collect();
 
+    // Parse each `--peer interface=path` and read the peer component bytes. A peer that itself imports the
+    // runtime is composed against the SAME shared instance `run_with_peers` binds (X4b/X5).
+    let peers: Vec<cdz_run::Peer> = cli
+        .peers
+        .iter()
+        .map(|s| {
+            let (iface, path) = s
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--peer expects `interface=path`, got `{s}`"))?;
+            let bytes = std::fs::read(path)
+                .map_err(|e| anyhow::anyhow!("read peer component {path}: {e}"))?;
+            Ok(cdz_run::Peer {
+                bytes,
+                interface: iface.to_string(),
+            })
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    // If any peer needs the runtime but the consumer did not, resolve it too (they share one instance).
+    let runtime = match runtime {
+        Some(r) => Some(r),
+        None if !peers.is_empty() => {
+            let mut rt = None;
+            for peer in &peers {
+                if let Some(req) = cdz_run::required_runtime(&peer.bytes)? {
+                    rt = Some(resolve_runtime(cli, &req)?);
+                    break;
+                }
+            }
+            rt
+        }
+        None => None,
+    };
+
     let opts = cdz_run::RunOpts {
         export: cli.call.clone(),
         args: cli.args.clone(),
@@ -115,6 +157,22 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         runtime_cache_dir,
         host_responses,
     };
+
+    if !peers.is_empty() {
+        // Compose the CONSUMER with its peers across the live boundary; the observed host calls are not
+        // captured on this path (a cross-component run is not a host-effect run).
+        let outcome = cdz_run::run_with_peers(&component_bytes, &peers, &opts)?;
+        return match outcome {
+            cdz_run::Outcome::Value(text) => {
+                println!("{text}");
+                Ok(ExitCode::SUCCESS)
+            }
+            cdz_run::Outcome::Trap(msg) => {
+                eprintln!("cdz-run: trap: {msg}");
+                Ok(ExitCode::FAILURE)
+            }
+        };
+    }
 
     let (outcome, observed) = cdz_run::run_capturing(&component_bytes, &opts)?;
     // Emit the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order — the corpus gate

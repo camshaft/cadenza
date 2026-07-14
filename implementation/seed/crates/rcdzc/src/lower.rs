@@ -10393,9 +10393,13 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         | Core::Unit
         | Core::Param { .. }
         | Core::LocalRef { .. } => true,
-        // Bitwise ops are total; a comparison never traps — trap-free if their operands are.
+        // Bitwise ops are total; a comparison never traps — trap-free if their operands are. The WRAPPING
+        // arithmetic ops (`wrapping-add`/`wrapping-mul`) are ALSO total: they emit the raw machine
+        // `add`/`mul` with NO overflow guard (wasm's op wraps modulo the slot — that is their whole point vs
+        // checked `+`/`*`), so they never trap and are trap-free when their operands are. (Checked `Add`/
+        // `Mul` — with an overflow guard — stay in the possibly-trapping `_` arm below.)
         Core::Arith {
-            op: Prim::BitAnd | Prim::BitOr | Prim::BitXor,
+            op: Prim::BitAnd | Prim::BitOr | Prim::BitXor | Prim::WrappingAdd | Prim::WrappingMul,
             lhs,
             rhs,
         }

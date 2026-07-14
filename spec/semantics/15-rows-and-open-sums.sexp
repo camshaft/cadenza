@@ -305,6 +305,17 @@
   (input  (Tuple.pop (tuple 1 2 3)))
   (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64)))))
 
+(case "popping a tuple with a runtime element separates the head from the rest"
+  (doc    "The runtime companion: `(Tuple.pop (tuple n 20 30))` with `n` a boundary parameter splits the
+           head element 0 (`n`) from the rest `(tuple 20 30)`, built on the value heap because `n` is
+           runtime. Reading the popped head (`.0` = `n`) and the rest's last element (`.1 .1` = 30) and
+           summing gives `n + 30`: 9+30 = 39. Pins that a runtime `Tuple.pop` places the operand's element
+           0 as the head and the remaining elements as the rest tuple, both read back by projection.")
+  (input  (do (def (main (: n Int64))
+                (+ (. (Tuple.pop (tuple n 20 30)) 0) (. (. (Tuple.pop (tuple n 20 30)) 1) 1))) (export main)))
+  (call   main (: 9 Int64)) (output (: 39 Int64))
+  (call   main (: 0 Int64)) (output (: 30 Int64)))
+
 (case "a match on an open sum with an open-tail arm is exhaustive"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm: an open sum
            carries variants the module does not close; a match covering the known variant plus an

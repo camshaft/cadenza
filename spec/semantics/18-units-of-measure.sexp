@@ -123,6 +123,28 @@
             (+ (Qty.of 1.0 (Qty.unit y)) (Qty.of 2.0 (Unit.base #"second")))))
   (error  CDZ0501))
 
+(case "Qty.unit recovers the unit of a quantity whose magnitude is a runtime value"
+  (doc    "`(Qty.unit (Qty.of n meter))` with `n` a boundary parameter recovers the unit — meter — from the
+           quantity's TYPE, which is a compile-time concern independent of the runtime magnitude `n`. Building
+           a new quantity `(Qty.of 1 <that unit>)` and adding it to another meter succeeds and yields 5
+           (1 + 4), for every `n`. Pins that unit extraction reads the type (not the value), so it works over
+           a runtime-magnitude quantity, and the recovered unit is a REAL meter that mixes with an explicit
+           meter — the value-level `same unit as this one` idiom on the runtime path.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (+ (Qty.of 1 (Qty.unit (Qty.of n (Unit.base #"meter")))) (Qty.of 4 (Unit.base #"meter"))))) (export main)))
+  (call   main (: 3 Int64)) (output (: 5 Int64))
+  (call   main (: 100 Int64)) (output (: 5 Int64)))
+
+(case "the unit recovered from a runtime-magnitude quantity is dimensionally checked"
+  (doc    "The recovered unit is checked like any other even when read off a runtime-magnitude quantity:
+           `(+ (Qty.of 1 (Qty.unit (Qty.of n meter))) (Qty.of 2 second))` adds the extracted meter to a
+           second — incompatible dimensions — so it is CDZ0501, regardless of `n`. Pins that `Qty.unit` over
+           a runtime magnitude still yields a real dimension the type checker enforces at compile time (the
+           runtime companion of the constant dimensional-check case above).")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (+ (Qty.of 1 (Qty.unit (Qty.of n (Unit.base #"meter")))) (Qty.of 2 (Unit.base #"second"))))) (export main)))
+  (call   main (: 3 Int64)) (error CDZ0501))
+
 ; ============================================================================================
 ; Addition and subtraction — same dimension required, dimension preserved
 ; ============================================================================================

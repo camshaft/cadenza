@@ -1180,6 +1180,33 @@
             (def (main) (List.len (cat (list 1 2 3) (list 4 5 6 7)))) (export main)))
   (output (: 7 Int64)))
 
+; The concatenations above run over CONSTANT lists (even the helper case passes literals), so the whole
+; value is compile-time-known. A concat whose element is a boundary PARAMETER cannot fold — the emitted
+; `vec-concat` joins the two runtime lists. These read the result back to a scalar (length, and an element
+; at a position PAST the first operand) so a parameterized export returns, pinning that a runtime concat
+; appends the second operand's elements after the first's and reports the combined length.
+
+(case "concatenating lists with a runtime element appends in order and totals the length"
+  (doc    "`(List.len (List.concat (list 1 2) (list x x x)))` with `x` a boundary parameter cannot fold —
+           the second operand carries a runtime element, so `vec-concat` runs at run time. The length is
+           2 + 3 = 5 regardless of `x`. Pins the runtime concat's combined length (the `code-cat` emit
+           idiom), distinct from the constant fold.")
+  (input  (do (def (main (: x Int64)) (List.len (List.concat (list 1 2) (list x x x)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: -1 Int64)) (output (: 5 Int64)))
+
+(case "a runtime concat places the second operand's elements after the first's"
+  (doc    "Reading positions 0 and 2 of `(List.concat (list 10 20) (list x 40))` — position 0 is the first
+           operand's element (10), position 2 is the SECOND operand's element 0 (the runtime `x`, landing
+           just past the first operand's two elements). Their sum is `10 + x`: x=99 → 109. Pins that a
+           runtime concat preserves element ORDER across the seam — the second list's elements follow the
+           first's, not interleaved or shifted.")
+  (input  (do (def (main (: x Int64))
+                (+ (match (List.at (List.concat (list 10 20) (list x 40)) 0) ((Some v) v) (None -1))
+                   (match (List.at (List.concat (list 10 20) (list x 40)) 2) ((Some v) v) (None -1)))) (export main)))
+  (call   main (: 99 Int64)) (output (: 109 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
 (case "concatenating lists of different element types is a type error"
   (doc    "`(List.concat (list 1 2) (list true))` joins an `Int64` list with a `Bool` list — but a list
            has ONE element type (collections-and-text.md §A List Is An Ordered Homogeneous Sequence),
