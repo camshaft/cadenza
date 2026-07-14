@@ -3610,6 +3610,32 @@ fn a_let_bound_selfcall_then_perform_declines_cleanly_without_leaking_an_interna
     );
 }
 
+/// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
+/// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
+/// then the perform reads the recursion's OUT-state, which the single-return specialization does not carry.
+/// Before the `do`-sequencing arm of `selfcall_precedes_perform_in_operands`, this MISCOMPILED (folded the
+/// perform against the INCOMING state — the recursive-call thread arm returns `cur` unchanged as the
+/// out-state — giving 0 on BOTH backends where the answer is 2). It must DECLINE, not miscompile. The
+/// perform-BEFORE-self-call form `(do (Ctr.tick) (walk …))` still folds (the corpus case) — only self-call-
+/// THEN-perform in a `do` is the gap.
+#[test]
+fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (do (walk (- n 1)) (Ctr.tick)))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    // Must DECLINE (the out-state shape) rather than compile to the wrong value (2, computed against the
+    // incoming state as 0). A clean decline is the correct behavior until the out-state calling convention.
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "the out-state-observing do-sequence post-order shape must decline, not miscompile",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
