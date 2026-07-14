@@ -139,6 +139,8 @@ pass	a closure captures a sum value and matches it inside its lifted body throug
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
+pass	a closure captures the result of a build-time host op called with an argument
+pass	a closure capturing a build-time host effect preserves the order of two host calls
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure capturing two values is made and called by the host

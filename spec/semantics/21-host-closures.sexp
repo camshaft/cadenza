@@ -241,8 +241,10 @@
            this is NOT an escaping effect and must not be rejected CDZ0406 (contrast the escaping case
            above, where `ask.ask` is INSIDE the returned closure). The escape check scans the returned
            closure's body, not the whole export body. With `ask.ask` responding 10 and the call argument 3,
-           the result is 3 + 10 = 13; running it needs the export-time host-call boundary (a later
-           increment), so a generation without it declines rather than over-rejecting CDZ0406.")
+           the result is 3 + 10 = 13. The component imports BOTH the effect interface (`host`) and the
+           value-heap runtime (`heap`, for the closure cell) — the export-time host-call boundary composed
+           with the closure resource, so the host response flows into the captured `v` and the returned
+           closure is a plain callable.")
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
@@ -251,6 +253,40 @@
                   (fn ((: x Int64)) (+ x v))))) (export main)))
   (call   main (: 3 Int64))
   (host-responses (respond ask.ask (: 10 Int64)))
+  (output (: 13 Int64)))
+
+(case "a closure capturing a build-time host effect preserves the order of two host calls"
+  (doc    "The build-time host-capture composes with MULTIPLE host calls in the make code, consumed in the
+           order made: `(let ((a (ask.ask)) (b (ask.ask))) …)` binds `a` to the first response and `b` to
+           the second. Both are captured as plain values into the returned closure `(fn (x) (+ (+ x a) b))`.
+           With responses 10 then 20 and the call argument 3, the result is 3 + 10 + 20 = 33 — the host-call
+           order is observable through the captured values (host-calls asserts the two calls).")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((a (ask.ask)) (b (ask.ask)))
+                  (fn ((: x Int64)) (+ (+ x a) b))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond ask.ask (: 10 Int64))
+                  (respond ask.ask (: 20 Int64)))
+  (host-calls (call ask.ask) (call ask.ask))
+  (output (: 33 Int64)))
+
+(case "a closure captures the result of a build-time host op called with an argument"
+  (doc    "The build-time host op may take an ARGUMENT: `(calc.dbl 5)` crosses the boundary passing 5, the
+           host returns its response, and the closure captures it as a plain value. With `calc.dbl`
+           responding 10 (the host's answer for input 5) and the call argument 3, the result is 3 + 10 = 13.
+           Exercises a scalar host-op parameter composing with the closure-capture path.")
+  (input  (do
+            (effect calc (op dbl (-> Int64 Int64)))
+            (def (main)
+              (host (calc)
+                (let ((v (calc.dbl 5)))
+                  (fn ((: x Int64)) (+ x v))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond calc.dbl (: 10 Int64)))
+  (host-calls (call calc.dbl))
   (output (: 13 Int64)))
 
 ; MULTI-EXPORT closures — a program that exports SEVERAL closures of the same signature crosses as ONE
