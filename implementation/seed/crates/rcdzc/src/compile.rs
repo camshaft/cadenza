@@ -3527,6 +3527,46 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         }
     }
 
+    // MATCH-ARM PATTERN BINDERS. A variant/tuple pattern binder — `x` in `(match o ((Some x) …) …)` —
+    // that its arm body never references is unused, exactly like an unused `let` binding or parameter, and
+    // should be `_`-prefixed. It is NOT tracked by the `used`-occ set: a reference to a match binder
+    // resolves to a `SumPayload` (reading the scrutinee) or a scalar-match `Ref` (to the scrutinee), never
+    // to the binder's OWN occurrence. So — like the parameter path — use a scope-correct NAME check: a
+    // binder is used iff some name occurrence in its arm BODY resolves to a match binder of that name
+    // (`resolves_to_match_binder`). Collected per `(match …)` arm; a `_`-prefixed binder is skipped (the
+    // shared loop filters `_` too, but a variant head / literal in the pattern is not a binder anyway).
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) {
+            continue;
+        }
+        let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
+            continue;
+        };
+        for (pat, body) in arms.iter() {
+            // The arm's pattern binders (variant payloads, tuple elements, scalar binders); a `_`/`..`
+            // separator and a literal bind nothing.
+            let pat_binders = crate::resolve::arm_pattern_binders(db, *pat);
+            if pat_binders.is_empty() {
+                continue;
+            }
+            // The binder NAMES the arm body references (resolving to a match binder) — one walk per arm.
+            let referenced = used_match_binder_names(db, *body);
+            for (name, name_occ) in pat_binders {
+                if name.starts_with('_') || referenced.contains(&name) {
+                    continue;
+                }
+                binders.push(Binder {
+                    name_occ,
+                    target: name_occ,
+                    name,
+                    kind: "match binding",
+                    precomputed_unused: true, // decided by the name scan, not the `used` occ set
+                });
+            }
+        }
+    }
+
     // A non-exported top-level DEFINITION that nothing references is unused (an exported def is part of
     // the interface — used by definition). A def's target is its body (a `Ref` to a nullary def points
     // at the body) OR — for a def-with-params — the reference resolves to a `Lambda { body }`, which is
@@ -3734,6 +3774,55 @@ fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<St
     let mut out = std::collections::HashSet::new();
     walk(db, body, &mut out);
     out
+}
+
+/// The binder NAMES referenced in a match-arm BODY that resolve to a MATCH BINDER — the match-arm
+/// analogue of [`used_param_names`]. A reference to a variant-pattern binder resolves to a `SumPayload`
+/// (reading the scrutinee's payload); a scalar/whole-scrutinee binder resolves to a `Ref` whose target is
+/// the SCRUTINEE (not a param/let binding). So a name occurrence is a match-binder use iff its resolution
+/// is a `SumPayload`, OR a `Ref` to a target that is itself NOT a param/let/def binding (i.e. the
+/// scrutinee occurrence). Skips a `let`-binding NAME occurrence (a `let` in the arm body is its own
+/// binder, not a match-binder use). Scope-correct: `resolved_of` honors shadowing, so a name shadowed by
+/// an inner `let`/pattern resolves to the inner binder, not the arm's — no false "used".
+fn used_match_binder_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
+    fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
+        if let Some(name) = db.ast.as_name(id).map(str::to_string)
+            && !is_let_binding_name(db, id)
+            && resolves_to_match_binder(db, id)
+        {
+            out.insert(name);
+        }
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            for c in kids.clone() {
+                walk(db, c, out);
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
+}
+
+/// Whether `id` resolves to a MATCH-ARM pattern binder — a `SumPayload` (a variant/nested-payload binder),
+/// or a `Ref` to a SCRUTINEE occurrence (a scalar / whole-value binder resolves to `Ref { value:
+/// scrutinee }`, where the scrutinee is neither a param nor a let/def binding). A `Ref` to a param/let/def
+/// is an ordinary variable use, not a match-binder use — excluded so a genuinely-used match binder is not
+/// confused with (nor confuses) the param/let checks.
+fn resolves_to_match_binder(db: &mut Db, id: StructId) -> bool {
+    match crate::resolve::resolved_of(db, id) {
+        crate::resolved::Resolved::SumPayload { .. } => true,
+        crate::resolved::Resolved::Ref { value } => matches!(
+            crate::resolve::resolved_of(db, value),
+            // The scrutinee occurrence a scalar-match binder points at is itself a value expression
+            // (an application/literal/param-ref), NOT a `Param`/`Ref`-to-binding declaration site. A `Ref`
+            // to a Param/Ref is an ordinary variable use; only a Ref to a non-binding target is a
+            // scalar-match binder reading the scrutinee.
+            crate::resolved::Resolved::Apply { .. }
+                | crate::resolved::Resolved::Int(_)
+                | crate::resolved::Resolved::Member { .. }
+        ),
+        _ => false,
+    }
 }
 
 /// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a

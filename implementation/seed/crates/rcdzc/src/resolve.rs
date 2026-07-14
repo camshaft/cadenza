@@ -1001,7 +1001,7 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
 /// surfaces if it is the NEAREST to the typo, and the arm's own names are exactly what is in scope). The
 /// separators `_` (wildcard) and `..` (rest marker) bind nothing and are skipped. Bounded recursion over
 /// the pattern tree; a pattern is shallow, so no depth guard is needed.
-fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
+pub(crate) fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
     let mut out: Vec<(String, StructId)> = Vec::new();
     collect_arm_binder_leaves(db, pat, &mut out);
     out

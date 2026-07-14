@@ -28210,6 +28210,50 @@ mod diagnostics {
         assert!(u[0].contains("`z`"), "{u:?}");
     }
 
+    /// A MATCH-ARM pattern binder its arm body never references is unused — the match-arm analogue of an
+    /// unused `let` binding / parameter, warned CDZ0306 with a `_`-prefix fix. A reference to a match
+    /// binder resolves to a `SumPayload`/scrutinee-`Ref` (not the binder's own occ), so the `used`-occ set
+    /// misses it; a scope-correct NAME check (`used_match_binder_names`) decides usage. Shadowing is
+    /// honored (the arm binder resolution wins over an outer same-named param).
+    #[test]
+    fn an_unused_match_arm_binder_warns_with_an_underscore_fix() {
+        // A variant-payload binder never used in its arm → CDZ0306 + a `_x` fix.
+        let d = unused_diags(
+            "(module m (def (main) (match (Some 5) ((Some x) 0) ((None) 1))) (export main))",
+        );
+        assert_eq!(d.len(), 1, "the unused variant binder x warns: {d:?}");
+        assert!(d[0].message.contains("`x`"), "{d:?}");
+        assert_eq!(
+            d[0].fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("_x"),
+            "carries the `_`-prefix fix: {d:?}"
+        );
+        // A tuple-pattern binder unused (b), the other (a) used → only b warns.
+        let tup = unused_of(
+            "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) a))) (export g))",
+        );
+        assert_eq!(
+            tup.len(),
+            1,
+            "only the unused tuple binder b warns: {tup:?}"
+        );
+        assert!(tup[0].contains("`b`"), "{tup:?}");
+        // NO false positive: a USED binder (bare, nested, tuple), a `_`-prefixed binder, and a binder used
+        // in a nested payload are all clean.
+        for ok in [
+            "(module m (def (main) (match (Some 5) ((Some x) x) ((None) 1))) (export main))",
+            "(module m (def (main) (match (Some 5) ((Some _x) 0) ((None) 1))) (export main))",
+            "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) (+ a b)))) (export g))",
+            "(module m (def (g (: o (Option (Option Int64)))) (match o ((Some (Some y)) y) (_ 0))) (export g))",
+        ] {
+            assert!(
+                unused_of(ok).is_empty(),
+                "a used/underscored match binder must not warn: {ok} -> {:?}",
+                unused_of(ok)
+            );
+        }
+    }
+
     #[test]
     fn a_wide_parameter_list_flags_exactly_the_unused_parameters() {
         // The unused-parameter check collects the SET of body-referenced parameter names in ONE walk (was
