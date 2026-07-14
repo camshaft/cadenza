@@ -209,8 +209,16 @@ pub fn is_reserved(text: &str) -> bool {
 /// Member access and application bind tightest.
 pub const PREC_MEMBER: u8 = 12;
 
-/// Type ascription `e : T` binds loosest of all — looser than every arithmetic/logical operator — so
-/// `2 + 2 : Int64` groups as `(: (+ 2 2) Int64)`: the ascription wraps the whole expression.
+/// Sequencing `a ; b` binds LOOSEST of all — looser even than ascription — so a statement in a
+/// sequence is a whole expression (`a : T ; b` groups as `(do (: a T) b)`, not `(: a (do T b))`).
+/// It is right-associative and folds a run into a single flat `(do a b c)` (see [`is_right_assoc`]
+/// and the parser's Pratt loop): `a; b; c` is `(do a b c)`, the last element the sequence's value.
+/// Modelled as `let _ = a in b` — evaluate `a` for effect, then `b`.
+pub const PREC_SEQ: u8 = 0;
+
+/// Type ascription `e : T` binds looser than every arithmetic/logical operator (but tighter than
+/// sequencing) — so `2 + 2 : Int64` groups as `(: (+ 2 2) Int64)`: the ascription wraps the whole
+/// expression.
 pub const PREC_ASCRIPTION: u8 = 1;
 
 /// The function-type arrow `A -> B` -> `(-> A B)`. The loosest TYPE constructor, just above ascription,

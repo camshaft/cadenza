@@ -38,6 +38,7 @@ pub fn print(arenas: &Arenas, width: usize) -> String {
         a: arenas,
         doc: Doc::new(),
         shadowed_ctors: shadowed_ctors(arenas),
+        delimit_body: false,
     };
     // A `do` at the ROOT is the program's top-level form sequence — print its forms BARE (blank-line
     // separated), not wrapped in `do { … }`. A nested `do` (reached via `expr`) keeps the block form.
@@ -67,6 +68,14 @@ struct Printer<'a> {
     /// a NAME-headed occurrence of one is a user application to render as a call — never sugared to a
     /// literal. Computed once per print (a whole-tree scan); see [`shadowed_ctors`].
     shadowed_ctors: CtorSet,
+    /// Set while printing a top-level form that is immediately FOLLOWED by another form whose first
+    /// surface token is "open" (a non-keyword — a name/number/`(`/…). A function/`fn` body that is a
+    /// PLAIN expression (parsed greedily at `expr(0)`) must then be PARENTHESIZED: without a delimiter
+    /// its trailing token would fuse with the next form (`def f(n) = n + 1` then `f(9)` re-lexes `1 f`
+    /// as the quantity literal `1 f`), and a `;` cannot help — the greedy body would just swallow it.
+    /// The parens are the "genuine ambiguity" delimiter. Cleared otherwise, so the common keyword-led
+    /// case (`… def …`, `… export …`) keeps the clean bare `= n + 1` body. See `body_after_eq`.
+    delimit_body: bool,
 }
 
 /// The four compound-value constructors that have a `{…}`/`(…)`/`[…]`/`#{…}` surface literal AND a
@@ -688,8 +697,9 @@ impl<'a> Printer<'a> {
         self.print_return_type(ret_ty);
         self.doc.word(" =>");
         // A block-like body hugs the `=>` (breaks internally); a plain body drops to an indented
-        // line if it overflows — same discipline as a def's `=` body.
-        self.body_after_eq(body);
+        // line if it overflows — same discipline as a def's `=` body. A `fn` body is a sequence-tail
+        // position, so a `(do …)` body prints bare.
+        self.body_after_eq(body, true);
         if paren {
             self.doc.word(")");
         }
@@ -730,7 +740,8 @@ impl<'a> Printer<'a> {
             self.print_return_type(ret_ty);
             self.doc.word(" =");
         }
-        self.body_after_eq(body);
+        // A function body is a sequence-tail position — a `(do …)` body prints bare.
+        self.body_after_eq(body, true);
         self.doc.end();
     }
 
@@ -745,7 +756,8 @@ impl<'a> Printer<'a> {
         self.doc.word("def ");
         self.expr(name, 0);
         self.doc.word(" =");
-        self.body_after_eq(value);
+        // A value def binds a single expression (a VALUE position) — a `(do …)` value parenthesizes.
+        self.body_after_eq(value, false);
         self.doc.end();
     }
 
@@ -803,12 +815,45 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Emit ` body` after a `=`/`in`-style keyword: a block-like body (a `match`, `let`, `if`, …
-    /// that manages its own multi-line layout) HUGS the `=` — a plain space keeps it on the line so
-    /// it breaks internally (`fn f(x) = match … {` … ). A plain-expression body uses a breakable
-    /// space so a long flat expression instead drops to an indented line (`fn f(x) =\n  a + b + …`).
-    fn body_after_eq(&mut self, body: StructId) {
-        if self.is_block_body(body) {
+    /// Emit ` body` after a `=`/`in`-style keyword. `seq_ok` is true in a SEQUENCE-TAIL position — a
+    /// function/`fn` body, whose `;`-run is delimited by the next top-level form — where a `(do …)`
+    /// body prints BARE (`= a;⏎b;⏎c`, no parens), the exact surface the parser folds back into that
+    /// `(do …)`. It is false in a VALUE position (a value def's RHS), where a `(do …)` must PARENTHESIZE
+    /// (`= (a; b)`) or the `;` would escape into the enclosing sequence.
+    ///
+    /// A block-like body (a `match`, `let`, `if`, … that manages its own multi-line layout) HUGS the
+    /// `=` — a plain space keeps it on the line so it breaks internally (`fn f(x) = match … {` … ). A
+    /// plain-expression body uses a breakable space so a long flat expression instead drops to an
+    /// indented line (`fn f(x) =\n  a + b + …`).
+    fn body_after_eq(&mut self, body: StructId, seq_ok: bool) {
+        // DELIMIT: the next top-level form is "open" (would fuse onto this body's tail — see
+        // `print_root_forms`), so close the body off in parens: ` = (body)`. Parens work for EVERY body
+        // shape (a plain expr `(n + 1)`, a sequence `(a; b)`, a `match`/`let`/`if`), and a `)` cannot
+        // fuse with the following name/number/`(`. Consume the flag so it does not leak into the body.
+        if std::mem::take(&mut self.delimit_body) {
+            self.doc.ibox(INDENT);
+            self.doc.space();
+            self.doc.word("(");
+            // The body is a full sequence position inside the parens (`seq_ok` there is implicit — the
+            // parens delimit it), so a `(do …)` renders as a `;`-run; any other body prints plainly.
+            if let Some(stmts) = self.as_do_seq(body) {
+                self.print_do_stmts(&stmts);
+            } else {
+                self.expr(body, 0);
+            }
+            self.doc.word(")");
+            self.doc.end();
+            return;
+        }
+        if seq_ok && let Some(stmts) = self.as_do_seq(body) {
+            // A bare sequence body: ` =` then each statement on its own indented line, `;`-separated.
+            // A consistent box so the interior hardbreaks (between statements) force the leading break
+            // to fire too — the body drops under the `=` rather than sitting flat after it.
+            self.doc.cbox(INDENT);
+            self.doc.space();
+            self.print_do_stmts(&stmts);
+            self.doc.end();
+        } else if self.is_block_body(body) {
             // Hug: a plain space keeps the block on the `=` line; it breaks internally at its own
             // indentation (the def box is at offset 0, so no extra level is added).
             self.doc.word(" ");
@@ -820,6 +865,21 @@ impl<'a> Printer<'a> {
             self.doc.space();
             self.expr(body, 0);
             self.doc.end();
+        }
+    }
+
+    /// If `id` is a `(do e1 e2 …)` sequence of at LEAST TWO elements, return the element list — the
+    /// shape that prints as a bare `;`-separated statement run. A one-element `(do e)` is NOT returned
+    /// (it has no faithful bare ML spelling — the surface never builds one — so it falls through to the
+    /// parenthesizing `expr` path, matching the pre-sequencing behavior).
+    fn as_do_seq(&self, id: StructId) -> Option<Vec<StructId>> {
+        match self.a.get(id) {
+            Struct::List(items)
+                if items.len() >= 3 && self.head_name(items[0]).as_deref() == Some("do") =>
+            {
+                Some(items[1..].to_vec())
+            }
+            _ => None,
         }
     }
 
@@ -872,16 +932,51 @@ impl<'a> Printer<'a> {
     /// The statements of a sequence, bare: `a;⏎b;⏎c` — each on its own line, `;` after every statement
     /// except the last, at the current column. Shared by the parenthesized `print_do`, the bare `let`
     /// body (`print_stmt`), and the program root.
+    ///
+    /// A non-final statement whose rendering ends in a GREEDY open tail — a `match`/`fn`/`let`/`handle`/
+    /// `host` body, all parsed at `expr(0)` — must be PARENTHESIZED: without a closer, that body would
+    /// swallow the following `; rest` on re-parse (`match … | _ => 99` then `; next` becomes the arm body
+    /// `(99; next)`). `if` is NOT greedy-tailed (its branches parse at `PREC_SEQ + 1`), so it never needs
+    /// this. The LAST statement takes no `;` and so needs no wrapping.
     fn print_do_stmts(&mut self, stmts: &[StructId]) {
         for (i, &s) in stmts.iter().enumerate() {
             if i > 0 {
                 self.doc.hardbreak();
             }
-            self.print_stmt(s);
-            if i + 1 < stmts.len() {
+            let last = i + 1 == stmts.len();
+            if !last && self.has_greedy_tail(s) {
+                self.doc.word("(");
+                self.expr(s, 0);
+                self.doc.word(")");
+            } else {
+                self.print_stmt(s);
+            }
+            if !last {
                 self.doc.word(";");
             }
         }
+    }
+
+    /// True if `id` renders with a GREEDY trailing body — a `match`/`fn`/`let`/`handle`/`host` — whose
+    /// last sub-expression is parsed at `expr(0)` and so would absorb a following `;` in a bare sequence
+    /// (see [`Self::print_do_stmts`]). `if` is excluded: its branches parse at `PREC_SEQ + 1`, so a `;`
+    /// after an `if` belongs to the enclosing sequence, not the `else` branch.
+    fn has_greedy_tail(&self, id: StructId) -> bool {
+        // A `(comment "text" inner)` wrapper is transparent — the tail is `inner`'s tail.
+        if let Some(a) = self.a.as_form(id, "comment")
+            && a.len() == 2
+            && self.is_string(a[0])
+        {
+            return self.has_greedy_tail(a[1]);
+        }
+        let head = match self.a.get(id) {
+            Struct::List(items) if !items.is_empty() => items[0],
+            _ => return false,
+        };
+        matches!(
+            self.head_name(head).as_deref(),
+            Some("match" | "fn" | "let" | "handle" | "host")
+        )
     }
 
     /// Print an expression in a VALUE position (a let-binding value). A construct that "eats forward"
@@ -912,10 +1007,22 @@ impl<'a> Printer<'a> {
             && self.is_let_shape(&items[1..]))
     }
 
-    /// The program root's top-level form sequence, printed bare (no wrapper) — the root counterpart of
-    /// a nested `do`, using the same `;` sequencing so the construct reads identically everywhere:
-    /// each form on its own line, `;` after every form except the last. A `(doc …)` form renders as
-    /// its `///` line (no `;`).
+    /// The program root's top-level form sequence, printed bare (no wrapper). Top-level forms are
+    /// JUXTAPOSED — blank-line separated (like the members of a `module` block) — because `;` is the
+    /// WITHIN-body sequencing operator, not a top-level separator; a body's `;`-run stays inside that
+    /// body's own `(do …)`.
+    ///
+    /// The ONE hazard is that the previous form's tail could absorb the next form. It arises only when
+    /// the next form is NOT keyword-led (a keyword / `///` can never be absorbed into a preceding
+    /// expression). Then, by what THIS form is:
+    ///   • a `def` — parenthesize its `= body` (`def f(n) = (n + 1)` before `f(9)`); a def's greedy body
+    ///     would SWALLOW a trailing `;`, so the body parens are the delimiter. (via `delimit_body`)
+    ///   • a greedy-tailed form (`match`/`fn`/`let`/`handle`/`host`, whose last body parses at `expr(0)`)
+    ///     — wrap the WHOLE form in parens; likewise a `;` would be swallowed by that trailing body.
+    ///   • a plain bare expression — a trailing `;`. It re-parses as a stmt-level `(do prev next)` that
+    ///     `push_root_form` splices back flat, preserving the tree. (Parens would be WRONG: `(5)` then
+    ///     `(x)` re-lexes `)(` as application.)
+    /// No `;` is emitted between keyword-led forms at all.
     fn print_root_forms(&mut self, forms: &[StructId]) {
         self.doc.cbox(0);
         for (i, &form) in forms.iter().enumerate() {
@@ -937,12 +1044,72 @@ impl<'a> Printer<'a> {
                 self.print_doc(a[0]);
                 continue;
             }
-            self.expr(form, 0);
-            if i + 1 < forms.len() {
-                self.doc.word(";");
+            // Separate this form from the next when the next is non-keyword-led — see the doc comment
+            // for the three mechanisms (def-body parens / whole-form parens / trailing `;`).
+            let need = i + 1 < forms.len() && !self.form_starts_with_keyword(forms[i + 1]);
+            if need && self.form_routes_delimit(form) {
+                self.delimit_body = true;
+                self.expr(form, 0);
+                self.delimit_body = false;
+            } else if need && self.has_greedy_tail(form) {
+                // A greedy-tailed form (`match`/`fn`/`let`/`handle`/`host`) can't take a `;` (its body
+                // would swallow it) — wrap the whole form so its tail is closed.
+                self.doc.word("(");
+                self.expr(form, 0);
+                self.doc.word(")");
+            } else {
+                self.expr(form, 0);
+                if need {
+                    self.doc.word(";");
+                }
             }
         }
         self.doc.end();
+    }
+
+    /// True if `form` is a `def` (function or value) — a form that routes a pending `delimit_body`
+    /// through `body_after_eq`, parenthesizing just its `= body` rather than taking a trailing `;`
+    /// (which its greedy body would swallow).
+    fn form_routes_delimit(&self, form: StructId) -> bool {
+        matches!(self.a.get(form), Struct::List(items) if !items.is_empty()
+            && self.head_name(items[0]).as_deref() == Some("def"))
+    }
+
+    /// True when `id` prints with a leading RESERVED word (a keyword form) or a `///`/`//` comment lead —
+    /// a form whose first surface token cannot be absorbed into a preceding expression's tail, so no `;`
+    /// separator is needed before it at the top level (see [`Self::print_root_forms`]). A `(comment …)`
+    /// wrapper is transparent (its inner form's first token is what a preceding parse would meet). A
+    /// `(doc …)` prints `///`, itself a lead — treated as safe.
+    fn form_starts_with_keyword(&self, id: StructId) -> bool {
+        // A comment wrapper `(comment "text" inner)` — the boundary token is `inner`'s first token.
+        if let Some(a) = self.a.as_form(id, "comment")
+            && a.len() == 2
+            && self.is_string(a[0])
+        {
+            return self.form_starts_with_keyword(a[1]);
+        }
+        let head = match self.a.get(id) {
+            Struct::List(items) if !items.is_empty() => items[0],
+            _ => return false,
+        };
+        matches!(
+            self.head_name(head).as_deref(),
+            Some(
+                "def"
+                    | "type"
+                    | "effect"
+                    | "module"
+                    | "import"
+                    | "export"
+                    | "let"
+                    | "if"
+                    | "fn"
+                    | "match"
+                    | "handle"
+                    | "host"
+                    | "doc",
+            )
+        )
     }
 
     /// A blank line: two hard breaks, so a consistent box emits an empty line between the two
@@ -2222,6 +2389,73 @@ mod tests {
     }
 
     #[test]
+    fn multi_statement_function_body_prints_bare() {
+        // A `(do …)` FUNCTION body prints as a bare `;`-separated statement run under the `=` — the
+        // exact surface the parser folds back into that `(do …)`. No wrapping parens.
+        let a = sexpr::read("(def (f) (do (g 20) (g 5) (h)))").unwrap();
+        assert_eq!(print(&a, 80), "def f() =\n  g(20);\n  g(5);\n  h()");
+        // and it round-trips from that ML surface
+        assert_eq!(
+            assert_roundtrip("def f() =\n  g(20);\n  g(5);\n  h()", 80),
+            "def f() =\n  g(20);\n  g(5);\n  h()"
+        );
+    }
+
+    #[test]
+    fn top_level_forms_have_no_semicolons_between_keyword_forms() {
+        // An all-declaration program (every next form keyword-led) prints with NO `;` at all — `;` is
+        // the within-body sequencer, not a top-level separator.
+        let a = sexpr::read("(do (def (f) 1) (def (g) 2) (export f))").unwrap();
+        assert_eq!(print(&a, 80), "def f() = 1\n\ndef g() = 2\n\nexport { f }");
+    }
+
+    #[test]
+    fn bare_body_before_open_next_form_is_delimited() {
+        // A def whose plain body is followed by a NON-keyword form (`f(9)`) parenthesizes the body, so
+        // the trailing token cannot fuse with the next form (`1 f` would re-lex as a quantity literal).
+        // The `def`'s greedy body cannot instead take a `;` (it would swallow it), hence body parens.
+        let a = sexpr::read("(do (def (f n) (+ n 1)) (f 9))").unwrap();
+        assert_eq!(print(&a, 80), "def f(n) = (n + 1)\n\nf(9)");
+        assert_eq!(
+            assert_roundtrip("def f(n) = (n + 1)\n\nf(9)", 80),
+            "def f(n) = (n + 1)\n\nf(9)"
+        );
+    }
+
+    #[test]
+    fn bare_expression_before_open_next_form_takes_a_semicolon() {
+        // Two bare top-level expressions where the second could fuse onto the first take a `;` — which
+        // re-parses as a stmt-level `(do …)` the root splices flat, preserving the tree. (Parens would
+        // be wrong: `(5)` then `(x)` re-lexes `)(` as application.)
+        let a = sexpr::read("(do (def x 5) (+ x 1))").unwrap();
+        assert_eq!(print(&a, 80), "def x = (5)\n\nx + 1");
+        assert_eq!(
+            assert_roundtrip("def x = (5)\n\nx + 1", 80),
+            "def x = (5)\n\nx + 1"
+        );
+    }
+
+    #[test]
+    fn greedy_tailed_statement_in_a_sequence_is_parenthesized() {
+        // A non-final `match` (greedy-tailed) inside a value-position bare sequence is wrapped so its
+        // last arm body does not swallow the following `; rest`.
+        let a = sexpr::read("(def (f) (do (match 0 (0 a) (_ 99)) (next)))").unwrap();
+        let out = print(&a, 80);
+        assert!(
+            out.contains("| _ => 99);"),
+            "the match wraps before the `;`, got: {out:?}"
+        );
+        // And a greedy-tailed form at the ROOT, before a non-keyword form, is wrapped whole (a `)`
+        // closes its tail; no `;` — the wrapping alone prevents the swallow).
+        let r = sexpr::read("(do (match 0 (0 a) (_ 99)) (next))").unwrap();
+        let rout = print(&r, 80);
+        assert!(
+            rout.starts_with("(match 0 with") && rout.contains("| _ => 99)\n"),
+            "root match wraps whole before `next()`, got: {rout:?}"
+        );
+    }
+
+    #[test]
     fn module_block() {
         // Members are blank-line separated so a wall of defs reads with breathing room; the first
         // member still hugs the `{`.
@@ -2237,21 +2471,22 @@ mod tests {
 
     #[test]
     fn top_level_defs_are_blank_separated() {
-        // Consecutive top-level definitions get a blank line between them (readability), and the
-        // layout round-trips (blank lines are whitespace).
+        // Consecutive top-level definitions are JUXTAPOSED — blank-line separated, NO `;` between them
+        // (`;` is the within-body sequencing operator, not a top-level separator) — and the layout
+        // round-trips (blank lines are whitespace).
         assert_eq!(
             assert_roundtrip("def a = 1 def b = 2 def c = 3", 80),
-            "def a = 1;\n\ndef b = 2;\n\ndef c = 3"
+            "def a = 1\n\ndef b = 2\n\ndef c = 3"
         );
     }
 
     #[test]
     fn doc_line_hugs_its_def_no_blank() {
         // A `///` doc line stays glued to the def it documents (single break), while distinct
-        // definitions are still blank-separated.
+        // definitions are still blank-separated — again with no `;` between the top-level forms.
         assert_eq!(
             assert_roundtrip("/// first\ndef a = 1\n/// second\ndef b = 2", 80),
-            "/// first\ndef a = 1;\n\n/// second\ndef b = 2"
+            "/// first\ndef a = 1\n\n/// second\ndef b = 2"
         );
     }
 
