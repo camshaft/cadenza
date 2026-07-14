@@ -641,6 +641,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 {
                     Core::ConstBool(v)
                 }
+                // EQUALITY-VS-RANGE: one operand is `(= x c)`, the other an ordering comparison `(cmp x k)`
+                // on the SAME `x`. Whether `c` satisfies `(cmp c k)` (a compile-time test) decides:
+                //   `and`: `sat` → `(= x c)` (the range is redundant given equality); `!sat` → `false`
+                //          (equality contradicts the range). `(and (= x 5) (> x 0))` → `(= x 5)`,
+                //          `(and (= x 5) (> x 100))` → false.
+                //   `or`:  `sat` → `(cmp x k)` (equality is subsumed by the range it satisfies); `!sat` →
+                //          keep both (not a constant — `x==c` adds one point outside the range).
+                // Each DISCARDS one operand — gated on that operand's `is_trap_free`. `eq_vs_range` returns
+                // `(eq_node, range_node, sat)`.
+                _ if let Some((eq_node, range_node, sat)) = eq_vs_range(db, lhs, rhs) => {
+                    if is_and {
+                        if sat && is_trap_free(db, range_node) {
+                            core_of(db, eq_node) // range redundant → keep the equality
+                        } else if !sat && is_trap_free(db, eq_node) && is_trap_free(db, range_node) {
+                            Core::ConstBool(false) // contradiction
+                        } else {
+                            Core::And { lhs, rhs, is_and }
+                        }
+                    } else if sat && is_trap_free(db, eq_node) {
+                        core_of(db, range_node) // `or`: equality subsumed → keep the range
+                    } else {
+                        Core::And { lhs, rhs, is_and }
+                    }
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -7176,6 +7200,75 @@ fn disjoint_or_covering(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool)
         // Union `v <= upper || v >= lower` covers all iff the pieces touch/overlap: `lower <= upper + 1`.
         (lower <= upper + 1).then_some(true)
     }
+}
+
+/// For two comparisons where one is an EQUALITY `(= x c)` and the other an ORDERING comparison `(cmp x k)`
+/// on the SAME `x` (both constants), return `(eq_node, range_node, sat)` — `sat` = whether `c` satisfies
+/// the range predicate `(cmp c k)`, computed at compile time. The caller decides the fold: for `and`, `sat`
+/// keeps the equality (range redundant) / `!sat` is `false` (contradiction); for `or`, `sat` keeps the
+/// range (equality subsumed). `None` unless exactly one side is a scalar `Eq` and the other a scalar
+/// ordering comparison (`< > <= >=`), both on the SAME `x` (`core_equiv`) against i64 constants.
+fn eq_vs_range(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId, bool)> {
+    let as_const_i64 = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // Extract `(x, c)` from a `(= x c)` / `(= c x)` node (equality is symmetric).
+    let eq_of = |db: &mut Db, id: StructId| -> Option<(StructId, i64)> {
+        let Core::Compare {
+            op: Prim::Eq,
+            lhs: a,
+            rhs: b,
+        } = core_of(db, id)
+        else {
+            return None;
+        };
+        match (as_const_i64(db, b), as_const_i64(db, a)) {
+            (Some(c), _) => Some((a, c)),
+            (_, Some(c)) => Some((b, c)),
+            _ => None,
+        }
+    };
+    // Extract `(x, effective-op-with-x-on-left, k)` from an ordering comparison `(cmp x k)` / `(cmp k x)`.
+    let range_of = |db: &mut Db, id: StructId| -> Option<(StructId, Prim, i64)> {
+        let Core::Compare { op, lhs: a, rhs: b } = core_of(db, id) else {
+            return None;
+        };
+        if !matches!(op, Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge) {
+            return None;
+        }
+        match (as_const_i64(db, b), as_const_i64(db, a)) {
+            (Some(k), _) => Some((a, op, k)), // `(op x k)`
+            (_, Some(k)) => Some((
+                b,
+                match op {
+                    // `(op k x)` mirrors to x on the left.
+                    Prim::Lt => Prim::Gt,
+                    Prim::Gt => Prim::Lt,
+                    Prim::Le => Prim::Ge,
+                    Prim::Ge => Prim::Le,
+                    other => other,
+                },
+                k,
+            )),
+            _ => None,
+        }
+    };
+    // Try both assignments (eq on the left or right).
+    let (eq_node, range_node, ex, c, rx, rop, k) =
+        if let (Some((ex, c)), Some((rx, rop, k))) = (eq_of(db, lhs), range_of(db, rhs)) {
+            (lhs, rhs, ex, c, rx, rop, k)
+        } else if let (Some((ex, c)), Some((rx, rop, k))) = (eq_of(db, rhs), range_of(db, lhs)) {
+            (rhs, lhs, ex, c, rx, rop, k)
+        } else {
+            return None;
+        };
+    if !core_equiv(db, ex, rx) {
+        return None; // same `x`
+    }
+    // Does the equality's value `c` satisfy the range predicate `(rop c k)`?
+    let sat = compare_ord(rop, c.cmp(&k));
+    Some((eq_node, range_node, sat))
 }
 
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands

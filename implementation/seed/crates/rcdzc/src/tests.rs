@@ -15864,6 +15864,77 @@ mod match_engine {
     }
 
     #[test]
+    fn an_equality_combined_with_a_range_comparison_folds() {
+        // EQUALITY-VS-RANGE: `(= x c)` combined with `(cmp x k)` on the same `x`. Whether `c` satisfies the
+        // range decides: `and` sat → `(= x c)` (range redundant), `!sat` → false (contradiction); `or` sat
+        // → `(cmp x k)` (equality subsumed), `!sat` → kept. `(and (= x 5) (> x 0))` → `(= x 5)`, `(and (= x
+        // 5) (> x 100))` → false, `(or (= x 5) (>= x 0))` → `(>= x 0)`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Eq | Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // `and` sat → equality kept (1 cmp); `and` contradiction → const false (0 cmp).
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 0)) Bool)")), 1, "and sat → (= x 5)");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 100)) Bool)")), 0, "and contradiction → false");
+        // `or` sat → range kept (1 cmp); `or` not-sat → both kept (2 cmp, x==c adds a point).
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (= x 5) (>= x 0)) Bool)")), 1, "or sat → (>= x 0)");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (= x 5) (> x 100)) Bool)")), 2, "or not-sat kept");
+        // A DISTINCT variable is not folded.
+        assert_eq!(cmps(&lir("(: x Int64) (: y Int64)", "(: (and (= x 5) (> y 0)) Bool)")), 2, "distinct var kept");
+
+        // VALUE PARITY.
+        use wasmtime::component::Val;
+        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: x Int64)) {body}) (export f))"
+        )))).expect("compile");
+        for (x, w) in [(5, true), (3, false), (200, false)] {
+            assert_eq!(run_returns_with::<bool>(&f("(and (= x 5) (> x 0))"), "f", &[Val::S64(x)]), w, "and-sat @{x}");
+        }
+        for x in [5, 3, 200] {
+            assert!(!run_returns_with::<bool>(&f("(and (= x 5) (> x 100))"), "f", &[Val::S64(x)]), "contradiction @{x}");
+        }
+        for (x, w) in [(5, true), (3, true), (-5, false)] {
+            assert_eq!(run_returns_with::<bool>(&f("(or (= x 5) (>= x 0))"), "f", &[Val::S64(x)]), w, "or-subsume @{x}");
+        }
+        // The not-subsumed `or` keeps the extra equality point.
+        assert!(run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(5)]), "or @5 = true (the point)");
+        assert!(!run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(50)]));
+        // TRAP SAFETY: a trapping operand in the contradiction case keeps its trap.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (= (/ 10 z) 5) (> (/ 10 z) 100)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping operand keeps its trap");
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
