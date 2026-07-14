@@ -12153,6 +12153,55 @@ mod match_engine {
     }
 
     #[test]
+    fn using_an_option_where_its_payload_is_expected_says_to_match_it() {
+        // The INVERSE of "wrap in `Some`": a fallible read returns `(Option T)` and the author uses it
+        // directly where the bare payload `T` is expected — `(+ ((. List at) xs 0) 1)`, `(f opt)` for an
+        // `Int64` param. An `Option` has NO total unwrap (it is eliminated only by matching its `None`
+        // case), so there is no mechanical fix — but the message must say HOW to fix it (match it), not
+        // only name two types. Both the ANNOTATION/arg site and the BINOP unify site carry the hint.
+        let ann = reject_full(
+            "(module m (def (h (: n Int64)) n) (def (g (: o (Option Int64))) (h o)) (export g))",
+        )
+        .expect("using an Option where Int64 is expected rejects");
+        assert_eq!(ann.code.as_deref(), Some("CDZ0203"), "got: {}", ann.message);
+        assert!(
+            ann.message.contains("the value is optional")
+                && ann.message.contains("match it")
+                && ann.message.contains("(Some x)"),
+            "names the match-it route: {}",
+            ann.message
+        );
+        assert!(
+            ann.fix.is_none(),
+            "no mechanical fix (Option has no total unwrap): {:?}",
+            ann.fix
+        );
+
+        // The BINOP unify site (`(+ (Option Int64) Int64)`) carries the same hint.
+        let binop = reject_full(
+            "(module m (def (g (: xs (List Int64))) (+ ((. List at) xs 0) 1)) (export g))",
+        )
+        .expect("adding an optional read result rejects");
+        assert!(
+            binop.message.contains("the value is optional") && binop.message.contains("match it"),
+            "the binop mismatch also names the match-it route: {}",
+            binop.message
+        );
+
+        // NO false positive: a GENUINELY unrelated mismatch (payload does NOT match the expected type) gets
+        // no Option hint — `(Option Int64)` where `Bool` is expected is not an unwrap-needed shape.
+        let unrelated = reject_full(
+            "(module m (def (h (: b Bool)) b) (def (g (: o (Option Int64))) (h o)) (export g))",
+        )
+        .expect("Option Int64 vs Bool rejects");
+        assert!(
+            !unrelated.message.contains("the value is optional"),
+            "an unrelated-payload mismatch gets no unwrap hint: {}",
+            unrelated.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the

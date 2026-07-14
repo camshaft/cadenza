@@ -3052,6 +3052,31 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
     hit
 }
 
+/// An actionable message TAIL (no fix) when the mismatch is the common "used an optional value directly"
+/// shape: `actual` is `(Option T)` and `expected` is exactly its payload `T` — a fallible read (`List.at`,
+/// `String.at`, `from-bytes`) whose optional result was used where the bare payload was wanted. An
+/// `(Option T)` has NO total unwrap (it is eliminated only by matching its `None` case, which is the
+/// author's decision), so there is no mechanical fix — but the diagnostic can still say HOW to fix it
+/// rather than only naming two types. `None` unless `actual` is `(Option <expected>)` (so a genuine
+/// unrelated mismatch — `Int64` vs `String` — is untouched). Detects Option by the built-in sum's `name`
+/// plus a single type argument (the `(Option a)` prelude shape), payload compared by `agrees_with` so a
+/// deferred/`Any` payload still matches. An honest "match it" route where no one-shot spelling exists —
+/// the diagnostic-carries-a-route-to-a-fix rule of `spec/capabilities/diagnostics.md`.
+fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if let Ty::Sum { name, args, .. } = actual
+        && name == "Option"
+        && let [payload] = args.as_slice()
+        && payload.agrees_with(expected)
+    {
+        return Some(
+            " — the value is optional; match it to handle the absent (`None`) case, \
+             e.g. `(match v ((Some x) …) ((None) …))`"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
@@ -4717,6 +4742,16 @@ fn check_application(
                             ")",
                             format!("wrap the value in `{variant}`"),
                         )));
+                    } else if let Some(hint) = option_payload_mismatch_hint(&sparam, &sat) {
+                        // The INVERSE of the wrap-variant case: the ARGUMENT is `(Option T)` where the
+                        // param wants the bare payload `T` — a fallible read (`(+ ((. List at) xs i) 1)`)
+                        // used directly. No total unwrap exists (an Option is matched, not unwrapped), so no
+                        // fix; append the actionable "match it" hint to the unify message so the diagnostic
+                        // says how to fix it, not just that two types differ.
+                        out.push(Reject {
+                            message: format!("{}{hint}", reject.message),
+                            ..reject
+                        });
                     } else {
                         out.push(reject);
                     }
@@ -6480,13 +6515,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // When NO conversion wrap bridges the mismatch, one common shape still has an
+                            // actionable explanation: the value is an `(Option T)` used where its PAYLOAD
+                            // `T` is expected — a fallible read (`List.at`, `String.at`) whose optional
+                            // result was used directly. There is no TOTAL unwrap (an `Option` is eliminated
+                            // only by matching its `None` case — the author's choice), so no mechanical fix;
+                            // but the message can say WHY + how to fix it ("the value is optional — match it
+                            // to handle the absent (`None`) case") instead of only naming two types. Tail
+                            // only (no fix), and only when the wrap chain found nothing.
+                            let option_tail = if wrap.is_none() {
+                                option_payload_mismatch_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
+                            let tail = wrap
+                                .as_ref()
+                                .map(|w| w.3.clone())
+                                .or(option_tail)
+                                .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
                                 format!(
-                                    "annotation type {} does not match value type {}{}",
+                                    "annotation type {} does not match value type {}{tail}",
                                     annot_ty.render_name(),
                                     expr_ty.render_name(),
-                                    wrap.as_ref().map(|w| w.3.as_str()).unwrap_or(""),
                                 ),
                             );
                             if let Some((prefix, suffix, verb, _)) = wrap {
