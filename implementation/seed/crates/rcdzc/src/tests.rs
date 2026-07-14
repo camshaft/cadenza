@@ -33510,6 +33510,52 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_def_with_a_post_recursion_sibling_perform_declines_cleanly() {
+        // OUT-STATE-OBSERVING SIBLING PERFORM. A recursive-effectful def whose SELF-CALL precedes a PERFORM
+        // on a strict spine — `(- (build (- n 1)) (Idx.next))`, `((. List push) (build …) (Idx.next))` — has
+        // the perform read the recursion's OUT-state, which the single-return specialization cannot carry.
+        // It must DECLINE, and CLEANLY: NOT leak the internal synthesized `build#eff…$s0` name in a
+        // confusing CDZ0101 (the pre-guard behavior — an unspellable compiler-internal name with a
+        // nonsensical did-you-mean). Regression pin: the decline is codeless (a "not yet reducible" todo)
+        // and never mentions an `#eff` name.
+        for src in [
+            "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) (list) ((. List push) (build (- n 1)) (Idx.next)))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3)))) (export main))",
+            "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) 0 (- (build (- n 1)) (Idx.next)))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))",
+        ] {
+            let r = compile_component(&crate::codec::encode(&parse(src)));
+            let d = r.expect_err("an out-state-observing sibling perform must decline");
+            assert!(
+                d.code.is_none(),
+                "the decline must be codeless (a clean todo), not a coded CDZ error — got {:?}: {}",
+                d.code,
+                d.message
+            );
+            assert!(
+                !d.message.contains("#eff"),
+                "the decline must NOT leak the internal specialization name — got: {}",
+                d.message
+            );
+        }
+        // The MIRROR shape — a perform BEFORE the self-call (reads pre-recursion = incoming state) — still
+        // FOLDS (guard is precise): `(- (Idx.next) (build (- n 1)))` seeded 1 → 2.
+        let folds = "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) 0 (- (Idx.next) (build (- n 1))))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(folds)))
+                    .expect("a perform BEFORE the self-call folds"),
+                "main",
+            ),
+            2
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a

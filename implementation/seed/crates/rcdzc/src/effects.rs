@@ -3324,6 +3324,68 @@ fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usi
     }
 }
 
+/// Whether `node` contains a call resolving to `callee_def` (a recursive self-call), anywhere.
+fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && callee_def_index_of(db, head) == Some(callee_def)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| contains_self_call(db, c, callee_def)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` reaches ANY perform — discharged by `ctx` OR foreign — anywhere in the subtree.
+/// `arg_reaches_any_perform` already detects both (a bare `effect_op_of` head is a perform regardless of
+/// which handler owns it), so it is the precise detector reused for the spine-order guard.
+fn contains_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    arg_reaches_any_perform(db, node, ctx)
+}
+
+/// Whether the recursive body has a strict application in which a SELF-CALL operand PRECEDES a
+/// PERFORM operand (a discharged or foreign effect) — the shape the single-return specialization CANNOT
+/// thread soundly: a strict operator evaluates its operands left-to-right, so a perform AFTER the self-call
+/// reads the recursion's OUT-state, which the specialized `f#ctx` does not return (it threads only the
+/// INCOMING state to each perform). Threading it anyway produces a body that resumes the later perform
+/// against the incoming state — the wrong state — and leaves a stray unresolvable resume that surfaces the
+/// internal `f#ctx$s0` name in a confusing CDZ0101. Declining UP FRONT keeps the decline clean (a "not yet
+/// compiled" todo) and PROTECTS against the wrong-state miscompile. The associative `+`/`*` cases never
+/// reach here — accumulator-introduction rewrites them to tail form before the effect fold. See
+/// `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`: a perform BEFORE the self-call
+/// (reads pre-recursion state = the incoming state) folds fine; only self-call-THEN-perform is the gap.
+fn selfcall_precedes_perform_in_operands(
+    db: &mut Db,
+    node: StructId,
+    callee_def: usize,
+    ctx: &HandlerCtx,
+) -> bool {
+    // At a strict application, scan operands left-to-right: once an operand contains a self-call, any LATER
+    // operand that reaches a perform is the offending shape. (A perform in the SAME or an EARLIER operand
+    // than the self-call is fine — it reads pre-recursion state.)
+    if let Resolved::Apply { args, .. } = resolved_of(db, node) {
+        let mut seen_self_call = false;
+        for &a in args.iter() {
+            if seen_self_call && contains_any_perform(db, a, ctx) {
+                return true;
+            }
+            if contains_self_call(db, a, callee_def) {
+                seen_self_call = true;
+            }
+        }
+    }
+    // Recurse structurally — the shape can be nested inside a branch/let/operand.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| selfcall_precedes_perform_in_operands(db, c, callee_def, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Recursive worker for [`recursive_self_calls_all_tail`]: verify every self-call (a call resolving to
 /// `callee_def`) occurs only at a `tail` position. Returns `false` at the first off-tail self-call.
 fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -> bool {
@@ -3407,6 +3469,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         .map(|s| s.state_ty.clone())
         .collect::<Option<Vec<_>>>()?;
     if slot_tys.iter().any(ty_has_any) {
+        return None;
+    }
+    // OUT-STATE-OBSERVING SIBLING PERFORM: decline cleanly. The single-return specialization threads each
+    // perform against the INCOMING state, which is correct only when the perform is evaluated no later than
+    // the self-call on a strict spine. When a SELF-CALL operand PRECEDES a PERFORM operand (`(- (build …)
+    // (Idx.next))`, `((. List push) (build …) (Idx.next))`), the perform reads the recursion's OUT-state —
+    // which `f#ctx` does not return. Threading it produces a wrong-state body and a stray resume that leaks
+    // the internal `f#ctx$s0` name in a confusing CDZ0101. Declining here keeps the decline clean AND
+    // protects against the wrong-state miscompile (see
+    // `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`). The associative `+`/`*` cases
+    // are rewritten to tail form by accumulator-introduction before the fold, so they never reach here.
+    if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) {
         return None;
     }
 
