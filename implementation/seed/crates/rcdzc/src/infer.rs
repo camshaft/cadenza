@@ -3136,6 +3136,28 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     Some(format!(" — {}", parts.join("; ")))
 }
 
+/// An actionable message TAIL when `expected` and `actual` are BOTH tuples of DIFFERENT ARITY — the value
+/// has more or fewer elements than the type. Naming both full tuple types (`(Tuple Int64 Int64 Int64)` vs
+/// `(Tuple Int64 Int64)`) buries the count difference; this names the arities (rustc's "expected a tuple
+/// with 3 elements, found one with 2"). `None` unless both are tuples with DIFFERENT lengths (a
+/// same-arity per-position TYPE mismatch — `(Tuple Int64 Bool)` vs `(Tuple Int64 Int64)` — is left to the
+/// full render, which already shows the differing element clearly, exactly as the record helper leaves a
+/// same-field-set type mismatch alone).
+fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual)
+        && want.len() != got.len()
+    {
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        return Some(format!(
+            " — expected a tuple with {} element{}, but this one has {}",
+            want.len(),
+            plural(want.len()),
+            got.len(),
+        ));
+    }
+    None
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
@@ -6675,6 +6697,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // fields instead (rustc's "missing field `y`" / "no field `z`"). Tail only.
                             let record_tail = if wrap.is_none() && option_tail.is_none() {
                                 record_field_diff_hint(&annot_ty, &expr_ty)
+                                    .or_else(|| tuple_arity_mismatch_hint(&annot_ty, &expr_ty))
                             } else {
                                 None
                             };

@@ -12266,6 +12266,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tuple_arity_mismatch_names_the_element_counts() {
+        // The tuple analogue of the record field-set hint: a tuple of the wrong ARITY names the element
+        // counts (rustc's "expected a tuple with 3 elements, found one with 2") instead of dumping both
+        // full tuple renders. Fires only on an arity difference; a same-arity per-position TYPE mismatch is
+        // left to the full render.
+        let fewer = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64 Int64))) (. t 0)) \
+               (def (g) (h (tuple 1 2))) (export g))",
+        )
+        .expect("a 2-tuple where a 3-tuple is wanted rejects");
+        assert_eq!(
+            fewer.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            fewer.message
+        );
+        assert!(
+            fewer
+                .message
+                .contains("expected a tuple with 3 elements, but this one has 2"),
+            "names the arity delta: {}",
+            fewer.message
+        );
+        // More elements than the type has room for.
+        let more = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64))) (. t 0)) \
+               (def (g) (h (tuple 1 2 3))) (export g))",
+        )
+        .expect("a 3-tuple where a 2-tuple is wanted rejects");
+        assert!(
+            more.message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "names the arity delta the other direction: {}",
+            more.message
+        );
+        // NO arity hint when the arities MATCH but an element's TYPE differs.
+        let type_diff = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Bool))) (. t 0)) \
+               (def (g) (h (tuple 1 2))) (export g))",
+        )
+        .expect("a same-arity element-type mismatch rejects");
+        assert!(
+            !type_diff.message.contains("expected a tuple with"),
+            "a same-arity element-type mismatch gets no arity hint: {}",
+            type_diff.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
