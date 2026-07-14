@@ -73,7 +73,11 @@ fn compile_a_compound_provider_with_a_component_name_imports_the_runtime() {
     // This is the source-provider path the U6 library test runs end-to-end; here we prove the CLI drives it.
     let dir = temp_dir("compound");
     let src = dir.join("pair.sexp");
-    std::fs::write(&src, "(do (def (pair (: x Int64)) (tuple x x)) (export pair))").unwrap();
+    std::fs::write(
+        &src,
+        "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+    )
+    .unwrap();
     let (ok, _out, err) = run(&[
         "compile",
         src.to_str().unwrap(),
@@ -104,7 +108,12 @@ fn without_a_component_name_the_export_stays_top_level() {
     let dir = temp_dir("plain");
     let src = dir.join("neg.sexp");
     std::fs::write(&src, "(do (def (neg (: x Int64)) (- 0 x)) (export neg))").unwrap();
-    let (ok, _out, err) = run(&["compile", src.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    let (ok, _out, err) = run(&[
+        "compile",
+        src.to_str().unwrap(),
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
     assert!(ok, "plain compile failed: {err}");
     let bytes = std::fs::read(dir.join("neg.wasm")).unwrap();
     assert!(
