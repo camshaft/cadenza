@@ -2056,3 +2056,82 @@
               (export mk) (export asnum) (export aslist)))
   (call   asnum (: 8 Int64))
   (output (: 9 Int64)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) consumer RESULT on the DISTINCT-SIGNATURE ROUND-TRIP path —
+; closures of DIFFERENT signatures each cross as their own resource type, and a consumer of one of them
+; applies its handed-back closure and RETURNS a collection. That collection crosses as `list<u8>` rendered by
+; the runtime `value-encode(rep, desc)` op against the consumer's OWN shape descriptor, written PAST all
+; compound-template data (disjoint memory) — the last collection sub-shape. A collection consumer and a
+; scalar/compound/byte-rope consumer of another signature coexist in one component.
+
+(case "distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list"
+  (doc    "`mka : () -> (-> Int64 Int64)`, `mkb : () -> (-> Bool Int64)` are distinct sigs → two resource
+           types. `appa : (own<t0>, Int64) -> (List Int64)` returns `(list x (g x))`. Host produces via `mka`,
+           hands to `appa(handle, 5)` → the closure yields 6, so `value-encode` renders `(: (list 5 6) (List
+           Int64))`. Pins the variable-length collection consumer result on the distinct-sig round-trip path.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar"
+  (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
+           (own<t1>, Bool) -> Int64` → `appb(handle, true)` = 10 (by value, NOT a value-encoded document).
+           Confirms the scalar consumer is unaffected by the sibling collection consumer's memory/value-encode.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: TWO collection consumers of different sigs — the List"
+  (doc    "Both consumers return a collection of DIFFERENT signature: `appa` a List, `appb` a Map.
+           `appa(mka-handle, 40)` → `(: (list 40 41) (List Int64))`. Each consumer value-encodes against its
+           OWN per-consumer shape descriptor.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (0 (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 40 Int64))
+  (output (: (list 40 41) (List Int64))))
+
+(case "distinct-sig round-trip: TWO collection consumers of different sigs — the Map"
+  (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, true)` → `(: (map (0 7)) (Map Int64 Int64))`.
+           Confirms each distinct-sig consumer value-encodes its own descriptor.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (0 (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: (map (0 7)) (Map Int64 Int64))))
+
+(case "distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list"
+  (doc    "A COLLECTION consumer (`appa` → List, value-encode) AND a COMPOUND consumer (`appb` → tuple, static
+           value-form template) of DISTINCT signatures coexist. `appa(mka-handle, 3)` → `(: (list 3 4) (List
+           Int64))` — its value-encoded doc written PAST the sibling's compound template (disjoint memory).")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (tuple y (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 3 Int64))
+  (output (: (list 3 4) (List Int64))))
+
+(case "distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound"
+  (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, false)` → `(: (tuple false 8) (Tuple Bool
+           Int64))`. Confirms the compound consumer walks its own template while a sibling collection consumer
+           value-encodes — three result-assembly mechanisms coexisting across two resource types.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (tuple y (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: false Bool))
+  (output (: (tuple false 8) (Tuple Bool Int64))))
