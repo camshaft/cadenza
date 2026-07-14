@@ -2006,14 +2006,33 @@ fn resolve_not(db: &Db, id: StructId) -> Resolved {
 fn resolve_quote(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "quote").unwrap_or(&[]);
     if tail.len() != 1 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
+        return Resolved::Poison(arity_one_operand_reject(
+            id,
+            tail,
             "quote takes exactly one operand — the form it denotes",
         ));
     }
     Resolved::Poison(Reject::decline(
         "quote produces an AST value (not yet built)",
     ))
+}
+
+/// The "takes exactly one operand" reject shared by `quote`/`quasiquote`/`unquote`/`unquote-splicing`,
+/// anchored at the form `id`. When there are TOO MANY operands (`(quote 1 2)`), the mechanical repair is
+/// to DELETE the surplus — remove the SECOND operand (`tail[1]`), the first extra, so `cdz fix --all`
+/// converges (each pass removes one until exactly one remains), mirroring the operator-arity surplus-arg
+/// delete fix. A ZERO-operand form (`(quote)`) carries NO fix — there is nothing to delete, and inserting
+/// a form the author must supply is not a mechanical edit. Heuristic: which surplus to drop is a guess,
+/// but removing this one moves toward the one-operand shape.
+fn arity_one_operand_reject(id: StructId, tail: &[StructId], message: &'static str) -> Reject {
+    let reject = Reject::coded(Code::Malformed, message).at(id);
+    match tail.get(1) {
+        Some(&surplus) => reject.with_fix(crate::diag::Fix::delete_heuristic(
+            surplus,
+            "remove the extra operand",
+        )),
+        None => reject,
+    }
 }
 
 /// Resolve `(unquote e)` / `(unquote-splicing e)` — the quasiquote escapes (reader-desugared from `,e` /
@@ -2032,10 +2051,21 @@ fn resolve_quote(db: &Db, id: StructId) -> Resolved {
 fn resolve_unquote(db: &Db, id: StructId, head: &str) -> Resolved {
     let tail = db.ast.as_form(id, head).unwrap_or(&[]);
     if tail.len() != 1 {
-        return Resolved::Poison(Reject::coded(
+        // `head` is `unquote`/`unquote-splicing` (a `&'static str` — the grammar heads), so the message
+        // formats to a `'static`-lived string only for the leak-free lifetime the helper needs; build the
+        // reject inline here (the message interpolates `head`) but reuse the surplus-delete shape.
+        let reject = Reject::coded(
             Code::Malformed,
             format!("{head} takes exactly one operand — the expression to evaluate and embed"),
-        ));
+        )
+        .at(id);
+        return Resolved::Poison(match tail.get(1) {
+            Some(&surplus) => reject.with_fix(crate::diag::Fix::delete_heuristic(
+                surplus,
+                "remove the extra operand",
+            )),
+            None => reject,
+        });
     }
     if !inside_quasiquote(db, id) {
         return Resolved::Poison(Reject::coded(
@@ -2058,8 +2088,9 @@ fn resolve_unquote(db: &Db, id: StructId, head: &str) -> Resolved {
 fn resolve_quasiquote(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "quasiquote").unwrap_or(&[]);
     if tail.len() != 1 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
+        return Resolved::Poison(arity_one_operand_reject(
+            id,
+            tail,
             "quasiquote takes exactly one operand — the template it denotes",
         ));
     }
