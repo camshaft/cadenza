@@ -661,6 +661,22 @@ fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
     }
 }
 
+/// The INNER-VALUE argument node of a `(Qty.of <value> <unit>)` application — the `<value>` a coercion fix
+/// retypes when two quantities of one dimension have mismatched inner numeric types (`(Qty.of 5 m) +
+/// (Qty.of 3.0 m)` → retype the `5`). `None` when `node` is not a directly-written `Qty.of` application
+/// (a quantity bound to a variable / returned from a call has no inner-value node to edit here).
+fn qty_of_value_arg(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf)
+                && args.len() == 2 =>
+        {
+            Some(args[0])
+        }
+        _ => None,
+    }
+}
+
 /// The NOUN for the same operation — "addition", "subtraction", "comparison" — used in the "… requires
 /// equal dimensions" clause of a CDZ0501 message. Falls back to "this operation".
 fn additive_op_noun(prim: Option<crate::resolved::Prim>) -> &'static str {
@@ -4876,7 +4892,26 @@ fn check_application(
                             // Same dimension — the INNER numeric types must still agree (no promotion
                             // under a unit): unify them and report a numeric mismatch as CDZ0301.
                             let mut subst = Subst::new();
-                            if let Err(reject) = crate::unify::unify(&mut subst, ia, ib) {
+                            if let Err(mut reject) = crate::unify::unify(&mut subst, ia, ib) {
+                                // The SAME numeric mismatch a bare `(+ 5 3.0)` gets — so it should offer the
+                                // SAME coercion fix (drop the `.0`, or `<Float>.of-int …`), just applied to
+                                // the INNER value of the offending quantity rather than the whole `(Qty.of
+                                // …)`. The inner value is the FIRST argument of each operand's `Qty.of`
+                                // application; retype whichever inner the coercion bridges (`(Qty.of 5 …) +
+                                // (Qty.of 3.0 …)` → `5` becomes `5.0`), mirroring the bare-numeric path's
+                                // one-shot repair. Only attaches when the inner value node is recoverable
+                                // (a directly-written `(Qty.of n u)` operand) and a coercion applies.
+                                let inner_a = qty_of_value_arg(db, args[0]);
+                                let inner_b = qty_of_value_arg(db, args[1]);
+                                let fix = inner_a
+                                    .and_then(|n| numeric_text_coercion_fix(db, ib, ia, n))
+                                    .or_else(|| {
+                                        inner_b
+                                            .and_then(|n| numeric_text_coercion_fix(db, ia, ib, n))
+                                    });
+                                if let Some(fix) = fix {
+                                    reject = reject.with_fix(fix);
+                                }
                                 out.push(reject);
                             }
                         }

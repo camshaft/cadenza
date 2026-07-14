@@ -23255,6 +23255,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_numeric_inner_mismatch_under_a_unit_offers_the_same_coercion_fix_as_a_bare_number() {
+        // Two quantities of ONE dimension whose INNER numeric types differ — `(Qty.of 5 m) + (Qty.of 3.0
+        // m)` (Int64 vs Float64 under the same unit) — is the SAME CDZ0301 no-promotion mismatch a bare
+        // `(+ 5 3.0)` gets, so it should offer the SAME one-shot coercion fix (retype the int literal to a
+        // float) — just applied to the INNER value of the offending `Qty.of`, not the whole quantity.
+        let d = reject_full(
+            "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3.0 (Unit.of #\"meter\")))) (export g))",
+        )
+        .expect("an Int-meter + Float-meter mismatch rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("an inner-value coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "5.0",
+            "retypes the Int inner literal to a Float: {}",
+            d.message
+        );
+        // The applied fix type-checks — both inners then Float, the same-unit add is well-formed.
+        assert!(
+            reject_full(
+                "(module m (def (g) (+ (Qty.of 5.0 (Unit.of #\"meter\")) (Qty.of 3.0 (Unit.of #\"meter\")))) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "retyping the inner to a float resolves the numeric mismatch"
+        );
+        // An in-range same-inner-type quantity add is clean (no false positive).
+        assert!(
+            reject_full(
+                "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3 (Unit.of #\"meter\")))) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "same-inner-type quantities add cleanly"
+        );
+    }
+
+    #[test]
     fn an_unknown_unit_in_a_quantity_literal_is_named_with_a_suggestion() {
         // A `(Qty.of n (Unit.of #"name"))` naming a unit that is neither a built-in family nor a user
         // `Unit.define` (`zorks`, the British `metre`, a typo `secnd`) fails to reduce and otherwise
