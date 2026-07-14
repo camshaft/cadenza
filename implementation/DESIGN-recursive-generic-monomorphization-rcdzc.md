@@ -513,89 +513,136 @@ the callee's own), closing the caller-capture gap the `own`-only check missed.
 
 ---
 
-# ADDENDUM 4: `opaque` definitions — the INVERSE of inlining (emit once, don't inline)
+# ADDENDUM 4: INLINE POLICY — `inline-never` / `inline-always`, default always-inline, heuristic deferred
 
 Status: DESIGN (operator: design now, build later — the compiler-port pivot takes priority). Operator's
 concern (2026-07-14): the compiler inlines EVERY non-recursive call unconditionally, so a helper called
-N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). `opaque`
-gives the author control over that — the inverse of `const`.
+N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). Wanted:
+author control over inlining, in the Rust `inline`/`inline(never)`/`inline(always)` spirit.
 
-## THE KEY INTENT (operator, 2026-07-14): `opaque` COMPOSES WITH `const`/generics
-`opaque` must be "avoid the inline but STILL get polymorphism." It is NOT mutually exclusive with `const`
-or generic monomorphization — it is orthogonal:
+## Why Cadenza is NOT Rust here (this reframes the whole feature)
+In Rust, codegen emits CALLS and inlining is an OPTIMIZATION on top. In Cadenza, the compiler LOWERS BY
+β-reduction — inlining IS the fundamental lowering, and a `Core::Call` is the FALLBACK it is forced into
+only when it cannot inline (recursion). So the default is already maximal inlining, which inverts the
+three Rust knobs:
+- **`inline(always)`** = the CURRENT DEFAULT — every non-recursive call already does this.
+- **`inline(never)`** = the genuinely new lever — force a `Core::Call` instead of β-reducing (the `opaque`
+  idea). The one knob that adds a capability TODAY.
+- **`inline` (hint)** = ~meaningless — the default is already maximal inlining.
+
+## DECISION (operator, 2026-07-14): two explicit markers now, cost heuristic LATER
+- **Default (unannotated) = ALWAYS INLINE**, exactly as today. Kept because during the compiler-port-to-
+  Cadenza work, always-inline gives fully-specialized, call-free output that is trivial to reason about
+  and diff, and a component's content hash does NOT depend on any inliner-threshold tuning.
+- **`inline-never`** — emit as ONE real wasm function; every call is a `Core::Call`, never β-reduced. The
+  real lever (the former `opaque`). Always correct.
+- **`inline-always`** — explicit "always fold me." A NO-OP vs. the default TODAY, but forward-compatible:
+  the day the heuristic lands it becomes the override meaning "ignore the cost model, always inline."
+- **COST HEURISTIC — DEFERRED.** A cost-based default (inline small/few-use, emit-call for big/many-use)
+  is appealing for code size but (a) flips the default codegen strategy, (b) makes emitted bytes depend on
+  threshold constants, and (c) needs the MANDATORY-INLINE invariant below. Right thresholds come from real
+  code-size data the self-hosted compiler will produce — tune it THEN, as a separate measured change. When
+  it lands, the unannotated default becomes "heuristic", and `inline-always`/`inline-never` are its overrides.
+
+## 🚧 The invariant a future heuristic MUST respect: inlining is MANDATORY when the result is demanded
+A cost heuristic can NOT be "cost over everything." Inlining is REQUIRED, not optional, whenever a call's
+result is needed at COMPILE TIME: a `const` argument, a type-valued position, a generic instantiation, or
+ordinary constant folding (`(+ (double 3) 1)` → `7` only because `double` inlines). If the heuristic emitted
+such a call as a runtime `Core::Call`, the "must be compile-time-known" contract (Addendum 3) breaks. So
+the rule is: **inline when the result is compile-time-DEMANDED (mandatory); otherwise a cost heuristic
+picks inline-vs-emit for an ORDINARY runtime call.** `inline-never` on a compile-time-demanded call is
+therefore itself a conflict → a coded reject ("this call's result is needed at compile time; it cannot be
+`inline-never`"), NOT a silent miscompile.
+
+## THE KEY INTENT (operator, 2026-07-14): `inline-never` COMPOSES WITH `const`/generics
+`inline-never` must be "avoid the inline but STILL get polymorphism." It is orthogonal to `const`/generic
+monomorphization:
 - `const`/generic decides HOW a call is SPECIALIZED (a const dict / type erased into a per-instantiation
   copy — the polymorphism).
-- `opaque` decides how the (specialized) callee is EMITTED — as one real function, called, not inlined.
-So an `opaque` def with a `const` dictionary parameter: the dict is STILL inlined into the specialized
-copy (polymorphism kept — direct op, no `call_indirect`, dict erased from the signature), and that copy is
-emitted ONCE and `Core::Call`ed at every site of that instantiation (inline avoided). You get monomorphic
-polymorphism WITHOUT the per-call-site body duplication. This falls out for free (see below).
+- `inline-never` decides how the (specialized) callee is EMITTED — as one real function, called.
+So an `inline-never` def with a `const` dictionary parameter: the dict is STILL inlined into the
+specialized copy (polymorphism kept — direct op, no `call_indirect`, dict erased from the signature), and
+that copy is emitted ONCE and `Core::Call`ed at every site of that instantiation (inline avoided).
+Monomorphic polymorphism WITHOUT per-call-site body duplication. This falls out for free (see below).
 
-## The problem (measured)
-A non-recursive user call ALWAYS β-reduces at the call site (`lower.rs` ~943, `apply_lambda` → inline the
-reduced body). Great for folding, but code size grows with (call sites × body size), and there is no way
-to say "keep this a real function." (A recursive def is already emitted once — it CAN'T inline — so this
-is only about non-recursive defs.)
-
-## The surface — an `opaque` def marker
-`opaque` wraps a definition to mean "emit as ONE real wasm function; every call is a `Core::Call`, never
-inlined":
+## The surface — def-level inline-policy markers
 ```
-(opaque (def (big x) (+ (* x 7) …)))     ; s-expr
-opaque def big(x) = (x * 7) + …          ; ML
+(inline-never  (def (big x) …))          ; s-expr           opaque-never def big(x) = …   ; ML: `inline-never def`
+(inline-always (def (big x) …))          ;                  inline-always def big(x) = …
 ```
-Chosen (over a call-site `(no-inline …)` or a full optimization barrier): a def-level marker is the common
-need, local, and SYMMETRIC with `const` — where `const` says "fold me away", `opaque` says "keep me a
-function". This addendum is code-LAYOUT control (emit-once), NOT an analysis barrier — the compiler may
-still reason about `big`'s type/result; it just does not duplicate its body. (A full black-box-to-analysis
+Def-level markers (chosen over a call-site `(inline-never (big a))` or a full optimization barrier): the
+common need is per-def, local, and SYMMETRIC with `const`. `inline-never` is code-LAYOUT control
+(emit-once), NOT an analysis barrier — the compiler still reasons about `big`'s type/result + specializes
+its const/generic args; it just does not duplicate the residual body. (A full black-box-to-analysis
 barrier is a heavier, separate feature; deferred.)
 
 ## Why it's small — it REUSES the recursive-call emission path
 The `Core::Call` machinery already exists for recursion: `lower_recursive_call_or_decline` emits a
 `Core::Call { callee }`, `layout` reaches the callee and emits it once, `def_scheme` gives the callee its
-signature. An `opaque` NON-recursive def rides the SAME path. Seams (mirroring `const`/`strip_def_docs`):
-1. **`db.rs strip_opaque_defs`** — a load pass (like `strip_const_params`) unwraps `(opaque (def …))` →
-   `(def …)` in place and records the def's body occurrence in a new `db.opaque_defs: FxHashSet<StructId>`
-   (keyed by body occ, the identity `lower`/`layout` already use). Every downstream reader sees a plain
-   `(def …)`; opacity lives only in the set.
+signature. An `inline-never` NON-recursive def rides the SAME path. Seams (mirroring `const`/`strip_def_docs`):
+1. **`db.rs strip_inline_policy`** — a load pass (like `strip_const_params`) unwraps `(inline-never (def …))`
+   / `(inline-always (def …))` → `(def …)` in place and records the def's body occ in `db.inline_never:
+   FxHashSet<StructId>` (and, once the heuristic exists, `db.inline_always`). Every downstream reader sees a
+   plain `(def …)`; the policy lives only in the set(s). `inline-always` is recorded but INERT until the
+   heuristic lands (the default already always-inlines).
 2. **`lower.rs` the apply path (~943)** — BEFORE β-reducing a lambda head, if the callee's body is in
-   `db.opaque_defs` (via `callee_def_index`), route to the SAME code `lower_recursive_call_or_decline`
-   runs: it (a) reads `def_scheme(callee)` (an opaque def needs a determined signature, like a recursive
-   one; undetermined → the "annotate its parameters" decline), and (b) if the scheme is GENERIC or the
-   callee has a `const` param, calls `type_specialize` — which erases the const dict/type into a
+   `db.inline_never` (via `callee_def_index`), route to the SAME code `lower_recursive_call_or_decline`
+   runs: it (a) reads `def_scheme(callee)` (an `inline-never` def needs a determined signature, like a
+   recursive one; undetermined → the "annotate its parameters" decline), and (b) if the scheme is GENERIC
+   or the callee has a `const` param, calls `type_specialize` — which erases the const dict/type into a
    per-instantiation copy and returns a `Core::Call` to it; else a plain `Core::Call { callee }`. 🎯 THIS
-   IS WHERE `opaque` + `const`/generics COMPOSES FOR FREE: routing an opaque call through the recursive
-   emit path means an opaque GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept)
-   AND emitted once + called (inline avoided) — no extra logic, the existing `type_specialize` branch does
-   both. Factor the generic/const/plain decision out of `lower_recursive_call_or_decline` into a shared
-   `emit_call_or_specialize(callee, args)` both the recursion decline and the opaque path call.
-3. **`layout`** — no change: a `Core::Call` to the opaque def already grows the reachable set + emits it
-   once. `def_params`/`select_function` emit its body once with its solved param types.
-4. **`cadenza-syntax` printer + parser** — emit/accept `opaque` before a `def` (mirrors the `const` param
-   work): the printer prefixes `opaque `, the parser accepts a leading `opaque` keyword on a def. Round-trip.
+   IS WHERE `inline-never` + `const`/generics COMPOSES FOR FREE: routing the call through the recursive
+   emit path means an `inline-never` GENERIC or `const`-dict def is specialized (polymorphism + dict
+   erasure kept) AND emitted once + called (inline avoided) — no extra logic, the existing `type_specialize`
+   branch does both. Factor the generic/const/plain decision out of `lower_recursive_call_or_decline` into
+   a shared `emit_call_or_specialize(callee, args)` both the recursion decline and the `inline-never` path
+   call. ⚠ MANDATORY-INLINE guard: if the call's RESULT is compile-time-demanded (feeds a `const` param /
+   type position / a constant fold) an `inline-never` def is a conflict → a coded reject (see the invariant
+   above), not a silent runtime call.
+3. **`layout`** — no change: a `Core::Call` to the callee already grows the reachable set + emits it once.
+   `def_params`/`select_function` emit its body once with its solved param types.
+4. **`cadenza-syntax` printer + parser** — emit/accept `inline-never` / `inline-always` before a `def`
+   (mirrors the `const` param work): the printer prefixes the keyword, the parser accepts a leading
+   `inline-never`/`inline-always` on a def. Round-trip both. (These are hyphenated identifiers, not lexer
+   keywords, like `const` — a bare def named that stays a name.)
 
 ## Interactions to pin at build time
-- **`const` + `opaque` — THE HEADLINE (operator: "avoid the inline but still get polymorphism")** — a
-  `const` dictionary param on an `opaque` def: the dict is STILL inlined into the specialized copy (so
-  `(. d op)` folds to a direct op — polymorphism kept, dict erased from the signature), and that copy is
-  emitted ONCE per instantiation and `Core::Call`ed everywhere it is used at that instantiation (inline
+- **`const` + `inline-never` — THE HEADLINE (operator: "avoid the inline but still get polymorphism")** —
+  a `const` dictionary param on an `inline-never` def: the dict is STILL inlined into the specialized copy
+  (so `(. d op)` folds to a direct op — polymorphism kept, dict erased from the signature), and that copy
+  is emitted ONCE per instantiation and `Core::Call`ed everywhere it is used at that instantiation (inline
   avoided). Monomorphic polymorphism without per-call-site body duplication — exactly the goal. One
   emitted fn per DISTINCT const instantiation (the `type_specialize` memo already dedups); calls at the
   same instantiation share it.
-- **Generics** — an `opaque` GENERIC def (a free scheme var) still monomorphizes per type — one real
-  emitted function per concrete type, called (not inlined) at each use. `opaque` stops the *inline*, not
-  the *specialize*.
-- **A NULLARY opaque def** — today a nullary non-exported def inlines at its (one) call; `opaque` keeps it
-  a function. Low value but consistent.
-- **Effects** — an opaque def that performs an effect still needs its handler in scope; opacity is about
-  emission, not effect routing. Likely a clean decline if it complicates the handler specialization
-  (`effects::specialize_recursive` already emits real functions).
+- **Generics** — an `inline-never` GENERIC def (a free scheme var) still monomorphizes per type — one real
+  emitted function per concrete type, called (not inlined) at each use. `inline-never` stops the *inline*,
+  not the *specialize*.
+- **A NULLARY `inline-never` def** — today a nullary non-exported def inlines at its (one) call;
+  `inline-never` keeps it a function. Low value but consistent.
+- **Effects** — an `inline-never` def that performs an effect still needs its handler in scope; the policy
+  is about emission, not effect routing. Likely a clean decline if it complicates the handler
+  specialization (`effects::specialize_recursive` already emits real functions).
+- **`inline-always`** — today a NO-OP (the default already inlines); recorded for when the heuristic lands,
+  where it becomes "ignore the cost model, always fold." An `inline-always` on a RECURSIVE def is a
+  conflict (it can't inline) → a coded reject.
 
 ## Gate targets (when built)
-- `(opaque (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5 muls, not
-  15); an un-marked `big` stays fully inlined (byte-identical to today).
-- 🎯 `(opaque (def (fold-n (const (: d …)) n acc) …))` called at ONE const dict from several sites → ONE
-  emitted `fold-n#mono` with the dict INLINED (0 `call_indirect`, dict-less signature) + a `Core::Call`
+- `(inline-never (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5
+  muls, not 15); an un-marked `big` stays fully inlined (byte-identical to today).
+- 🎯 `(inline-never (def (fold-n (const (: d …)) n acc) …))` called at ONE const dict from several sites →
+  ONE emitted `fold-n#mono` with the dict INLINED (0 `call_indirect`, dict-less signature) + a `Core::Call`
   at each site (not N inlined copies). At TWO distinct dicts → two emitted specializations. This is the
   "avoid the inline but keep polymorphism" acceptance test.
-- `opaque` round-trips s-expr↔ML; an opaque generic still monomorphizes per type.
+- `inline-never` round-trips s-expr↔ML; an `inline-never` generic still monomorphizes per type.
+- `inline-never` on a compile-time-demanded call (result feeds a `const` param) → coded reject; on a
+  recursive def → no-op (already emitted once).
+- `inline-always` parses + round-trips and is a NO-OP vs. the default (byte-identical) until the heuristic.
+
+## FUTURE: the cost heuristic (a separate, measured change — NOT this addendum)
+When the self-hosted compiler gives real code-size data, add a cost-based default for the UNANNOTATED,
+NON-compile-time-demanded, non-recursive call: inline when cheap (small body, or few call sites — roughly
+`body_size × (call_sites − 1) < threshold`), else route to `emit_call_or_specialize` (a real function).
+At that point: unannotated default = heuristic; `inline-always` overrides it to always-fold; `inline-never`
+overrides it to always-call. The MANDATORY-INLINE invariant above is unconditional — the heuristic only
+ever chooses for a call whose result is NOT compile-time-demanded. Tuning the threshold is the measured
+part; the mechanism (route the not-inlined case through `emit_call_or_specialize`) already exists.

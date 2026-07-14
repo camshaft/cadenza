@@ -1088,6 +1088,13 @@ the component type. The new work:
   `nested_tuple_type_count`. e2e: two DIFFERENT nested sigs → 113, 110 (Bool leaf at depth), × List.
   **A nested fixed-shape compound ARG now crosses on ALL FOUR export shapes (single/multi/mixed/distinct-sig)
   for every result shape.**
+- **✅ NESTED compound ARG AMONG scalar args (single-export)** (`d818f772`, scalar + list results). Composes
+  the nesting + interleaving features: a nested tuple/record at any position among aliased-width scalars. New
+  `nested_compound_among_scalars` classifier (mirrors `single_compound_among_scalars` via
+  `nested_fixed_shape_tuple_arg`); `NestedCompoundArgBoundary` gained prefix/suffix; the recursive rebuild's
+  `base_param` shifts past the prefix + the interleaved envelope functype already surrounds the minted types.
+  Also witnessed a record-with-a-tuple-field + a triply-nested record (already worked). e2e: prefix→1113,
+  prefix+suffix→1114, × List. (Multi/mixed/distinct-sig nested stay SOLE-arg — a mechanical follow-on.)
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65

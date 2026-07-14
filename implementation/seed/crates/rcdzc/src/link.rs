@@ -50,6 +50,14 @@ use crate::diag::Reject;
 /// single-file compile; absent + multiple `ast` = a package with no named entry, which declines.
 pub const KIND_ENTRY: &str = "entry";
 
+/// The input-artifact kind that names the INTERFACE a PROVIDER component publishes its exports under
+/// (X4b, `DESIGN-cross-component-interop-rcdzc.md`). Its bytes are the interface name (`cadenza:pkg/iface`)
+/// a peer consumer's `(extern "cadenza:pkg/iface" …)` binds to. Rides the artifact stream like
+/// `KIND_ENTRY`. Absent (the common case) → the component exports its boundary funcs at top level
+/// (byte-identical to before); present → `emit` wraps them as that named interface instance so a peer can
+/// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).
+pub const KIND_COMPONENT_NAME: &str = "component-name";
+
 /// The OUTPUT-artifact kind carrying the diagnostics DEMUX table for a linked package
 /// (`DESIGN-package-linking.md` §6). A cross-file diagnostic's `node` is a GLOBAL merged `StructId`;
 /// with several files spliced into one arena, that global id no longer maps to a single file's span

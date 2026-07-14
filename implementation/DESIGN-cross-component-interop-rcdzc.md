@@ -271,16 +271,25 @@ composition; no wasmparser in the compile path, no external interface artifact n
   args/result. Byte-neutral (only extern-using programs take the new path — gate 1924 pass / 0 fail / 0
   regressions after `xtask build`; suite 1371; clippy clean). ⚠ stale-runtime false alarm again (536 →
   0 after `xtask build`).
-- **X4b-provider — the component's OWN interface name.** 🔑 (operator, 2026-07-14): the PROVIDER must
-  publish its exports under the interface name the consumer's `(extern "cadenza:math/api" …)` binds to, so
-  the compile REQUEST needs to specify it — a `KIND_COMPONENT_NAME` input artifact (the `KIND_ENTRY`
-  pattern). Provider emit wraps its boundary exports as that named interface instance (the X3 provider
-  oracle's `provider_interface_component` shape) instead of bare top-level funcs.
-- **X4b-4 — runner/CLI delivery + e2e.** `cdz-run`/CLI delivers the peer set (a `Peer` per bound
-  interface) to `run_with_peers` (X4a). Then a SOURCE program calling a peer runs end-to-end. Multi-
-  component gate/corpus shape (corpus is single-`(input)` — `DESIGN-package-linking.md §8.1` names the same
-  gap; a Rust integration test first, like package-linking's 12 tests). Absorbs the resolver half deferred
-  from X2.
+- **X4b-provider — the component's OWN interface name. ✅ DONE (`spec`) — TWO SOURCE COMPONENTS LINK.**
+  🔑 (operator): the PROVIDER publishes its exports under the interface name the consumer binds to, named
+  by the compile REQUEST — a `KIND_COMPONENT_NAME` input artifact (the `KIND_ENTRY` pattern), read in
+  `compile()` into `Db::component_name`. `envelope::assemble_provider` wraps the scalar boundary exports
+  as a named INTERFACE INSTANCE (a component-instance export-items section `5` bundling the lifted funcs,
+  exported under the interface name via `export_instance_item`) instead of bare top-level funcs; `emit`
+  routes there when `db.component_name` is set (bare scalar case). **Proven e2e (`x4b_provider_*`): a
+  PROVIDER `(def (neg (: x Int64)) (- 0 x)) (export neg)` compiled with `component-name = cadenza:math/api`
+  + a CONSUMER `(extern "cadenza:math/api" (neg (-> Int64 Int64))) … (neg x)`, BOTH from source, composed
+  via `run_with_peers` → main(5) = -5.** 🪤 two byte bugs fixed by `wasm-tools print`: the top-level
+  instance export AND each instance MEMBER name are component EXTERN names (`0x00 <len> <name>` +
+  `export_instance_item`'s trailing `0x00`), not bare strings. Byte-neutral (only a `component-name`
+  request takes the provider path — gate 1926 pass / 0 fail / 0 regressions). SCOPE: scalar/unit exports
+  (a compound interface member is a later increment); bare (no runtime) provider.
+- **X4b-4 — runner/CLI delivery + e2e.** The library path (`run_with_peers`) is proven; what remains is
+  the CLI/tooling surface so the operator drives it without a Rust test: `cdz` delivers the peer set + the
+  `component-name`/`extern` artifacts. Multi-component gate/corpus shape (corpus is single-`(input)` —
+  `DESIGN-package-linking.md §8.1` names the same gap). The RESOLVER + EMIT + RUNNER are all done (the
+  two-source e2e passes as a Rust integration test); X4b-4 is the CLI ergonomics layer over them.
 
 **X5 — COMPOUND values cross as shared `value` handles (the payoff).** Extend X3/X4: a compound arg crosses
 as `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap, hands the

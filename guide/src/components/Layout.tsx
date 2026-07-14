@@ -173,6 +173,12 @@ function Header({ onOpenNav }: { onOpenNav: () => void }) {
         </div>
         <div className="flex items-center gap-3">
           <NavLink
+            to="/calculator"
+            className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
+          >
+            Calculator →
+          </NavLink>
+          <NavLink
             to="/playground"
             className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
           >

@@ -633,6 +633,28 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // (CDZ0201), not a reference to a name. So a digit-led unbound name is Malformed, not Unbound.
     if name.starts_with(|c: char| c.is_ascii_digit()) {
         trace!(target: "rcdzc::resolve", node = id.0, %name, "digit-led token is a MALFORMED literal (CDZ0201)");
+        // A `N`-suffixed literal (`→ BigInt`) whose body is written in FLOAT FORM — a decimal point or an
+        // exponent, `0.5N` / `2.0N` / `1e3N` — is the common suffix slip: `N` means BigInt, an UNBOUNDED
+        // INTEGER, which is spelled as a plain integer (no `.`/exponent), so a float-form body is not a
+        // BigInt literal. The generic "malformed numeric literal" reads as a lexer complaint; name the
+        // actual cause and the fix (a decimal is a `Rational`, so the `R` suffix — which admits a float
+        // body — is what fits). Detected self-contained (no cross-crate literal re-parse): a digit-led
+        // token ending in `N` whose body contains a `.` or an exponent marker. `R` admits both integer and
+        // float bodies, so it never reaches here; a genuinely garbled token (`0xGG`, `12abc`) keeps the
+        // generic message.
+        if let Some(body) = name.strip_suffix('N')
+            && body.starts_with(|c: char| c.is_ascii_digit())
+            && (body.contains('.') || body.contains('e') || body.contains('E'))
+        {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "the `N` suffix means BigInt (an unbounded integer), which is written as a plain \
+                     integer, but `{name}` is in decimal/float form — for a decimal value use the `R` \
+                     (Rational) suffix: `{body}R`"
+                ),
+            ));
+        }
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
             format!("malformed numeric literal `{name}`"),

@@ -1903,6 +1903,28 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a list pattern in a sum-variant payload matches a runtime node by its child count"
+  (doc    "THE COMPILER-AST SHAPE: a sum-variant whose payload is a LIST — `(type Node (Lit Int64) (Call
+           (List Node)))`, a node carrying a list of children — matched over a RUNTIME node by a LIST
+           PATTERN in the payload position: `((Call (list _ .. rest)) …)`. This is a *Patterns Compose*
+           binder position (`core-semantics.md` §145: a constructor pattern's binder MAY be a nested element
+           pattern), and it dispatches by the child list's LENGTH at run time — the decision-tree matcher
+           reads `vec-len` of the payload's list handle and compares it (`>= n` for a rest pattern, `== n`
+           for a fixed one), falling through on a mismatch exactly as a literal payload test does. Before,
+           a runtime list payload DECLINED (only a constant folded). `build 2` produces `Call [Lit 2, Call
+           [Lit 1, Lit 7]]` — a non-empty Call, so the `(Call (list _ .. rest))` arm matches → 99. The exact
+           idiom a self-hosted compiler's tree-walk over an n-ary node (a call's argument list, a block's
+           statements) uses.")
+  (input  (do
+            (type Node (Lit Int64) (Call (List Node)))
+            (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call (list (Lit k) (build (- k 1))))))
+            (def (top (: n Node)) (match n
+                                    ((Lit v)                 v)
+                                    ((Call (list _ .. rest)) 99)
+                                    (_                       0)))
+            (def (main) (top (build 2))) (export main)))
+  (output (: 99 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime
