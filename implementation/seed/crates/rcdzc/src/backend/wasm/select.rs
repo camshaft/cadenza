@@ -1821,8 +1821,13 @@ pub fn select_function_of(
     if loops && !mutual {
         let self_d = self_def.expect("a loop has a self_def");
         let inv_params = invariant_param_binders(db, body, params, &slot_of, &loop_members, self_d);
+        // The body's DOMINATING FRONTIER — the always-evaluated positions (the loop condition, a match
+        // scrutinee, an always-run prefix). A trapping invariant in the frontier is hoisted (trap-
+        // equivalent, since it runs on entry either way); one buried in a conditional branch is not.
+        let mut frontier: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+        collect_dominating_frontier(db, body, &mut frontier);
         let mut hoist: Vec<StructId> = Vec::new();
-        collect_hoistable(db, body, &inv_params, &mut hoist);
+        collect_hoistable(db, body, &inv_params, &frontier, &mut hoist);
         for node in hoist {
             // The hoisted value's machine slot. Skip anything without a machine rep (a heap-handle
             // invariant is fine — it is an i32 handle — but a rep-less type cannot be stashed).
@@ -2344,12 +2349,22 @@ fn collect_hoistable(
     db: &mut Db,
     id: StructId,
     inv_params: &std::collections::HashSet<StructId>,
+    frontier: &std::collections::HashSet<StructId>,
     out: &mut Vec<StructId>,
 ) {
-    // A trap-free, invariant, non-trivial node is a maximal hoist root — record it, don't descend.
+    // A non-trivial INVARIANT node is a maximal hoist root when hoisting it before the loop adds no trap.
+    // Two ways that holds:
+    //   • it is TRAP-FREE — hoisting can add no trap regardless of position; OR
+    //   • it is in the loop body's DOMINATING FRONTIER — an ALWAYS-EVALUATED position (the loop condition
+    //     `(< i (* n 2))` runs on entry AND on every exit check, even for a 0-iteration loop). Such a node
+    //     is evaluated ≥1 time whenever the loop is reached, so pulling it before the loop is TRAP-
+    //     EQUIVALENT: a trapping invariant (a checked `(* n 2)`) traps on the first condition check either
+    //     way. (A trapping invariant BURIED IN A BRANCH is NOT in the frontier — it might run zero times —
+    //     so it stays put, keeping the `is_trap_free` guard for those.)
+    // Record it and don't descend (maximal — its invariant sub-parts ride along in the one slot).
     if !licm_trivial(db, id)
-        && crate::lower::is_trap_free(db, id)
         && licm_invariant(db, id, inv_params)
+        && (crate::lower::is_trap_free(db, id) || frontier.contains(&id))
     {
         if !out.contains(&id) {
             out.push(id);
@@ -2360,7 +2375,7 @@ fn collect_hoistable(
     // exactly the pure operator operands + the control-flow / match sub-positions + call args + the common
     // heap-op operands. An unlisted variant simply is not descended (a missed hoist, never a wrong one).
     for child in licm_children(db, id) {
-        collect_hoistable(db, child, inv_params, out);
+        collect_hoistable(db, child, inv_params, frontier, out);
     }
 }
 

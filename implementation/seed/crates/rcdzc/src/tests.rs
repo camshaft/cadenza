@@ -11536,6 +11536,81 @@ mod recursion {
             "go(10, 999, 0) = 10 * (999 & 255)"
         );
     }
+
+    #[test]
+    fn a_trapping_loop_invariant_in_the_condition_is_hoisted() {
+        // A loop-invariant CHECKED op — `(* n 2)`, a checked multiply (NOT trap-free) — sits in the loop
+        // CONDITION `(< i (* n 2))`, an ALWAYS-EVALUATED position (the exit check runs even for a 0-
+        // iteration loop). LICM hoists it out of the loop even though it can trap, because doing so is
+        // trap-EQUIVALENT: the condition evaluates `(* n 2)` on entry either way. The `(* n 2)`
+        // strength-reduces to `i64.shl` (cycle-21) + its overflow round-trip guard; the whole thing must
+        // appear BEFORE the loop, not inside. (A trapping invariant BURIED IN A BRANCH would stay put —
+        // the frontier restriction — but here it is in the always-run condition.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (go (: i Int64) (: n Int64) (: acc Int64)) \
+                       (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc)) \
+                     (def (f (: x Int64)) (go 0 x 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("go").expect("go");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("go compiles to a loop");
+        // The invariant `(* n 2)` → `i64.shl` is hoisted BEFORE the loop; none remains inside.
+        let shl_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64Shl))
+            .count();
+        let shl_inside = code[loop_ix..]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64Shl))
+            .count();
+        assert_eq!(
+            shl_before, 1,
+            "the invariant `(* n 2)` is hoisted (one `i64.shl` before the loop): {code:?}"
+        );
+        assert_eq!(
+            shl_inside, 0,
+            "no `(* n 2)` shift remains inside the loop body: {code:?}"
+        );
+
+        // VALUE + TRAP PARITY. go(0, 3, 0) sums i for i<6 = 0+1+2+3+4+5 = 15; n=0 runs 0 iterations → 0
+        // (no trap, `0*2` fits). The 0-iteration overflow case (n so large `n*2` overflows) is gate-
+        // verified in binding-and-control.sexp — the hoisted trapping multiply still traps on the entry
+        // condition check, exactly as it would in the loop.
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
+            15,
+            "go(0, 3, 0) sums i for i in [0,6)"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]),
+            0,
+            "n=0 runs zero iterations and does not trap"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
