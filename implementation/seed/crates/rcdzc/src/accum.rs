@@ -83,33 +83,59 @@ struct Match {
     /// The original `(def sig body)` FORM occurrence — its body child is swapped to the seed call.
     def_form: StructId,
     /// Every parameter's binder NAME, in order (e.g. `[n]` or `[n, k]`). The synthesized accumulator
-    /// reuses these spellings so the reused `base_cond`/`term`/`rec_args` occurrences resolve to it.
+    /// reuses these spellings so the reused dispatch/`term`/`rec_args` occurrences resolve to it.
     param_names: Vec<String>,
-    /// The base-case condition occurrence `(= n 0)` — reused verbatim in the accumulator's `if`.
-    base_cond: StructId,
-    /// Which `if` branch holds the BASE value in the original: `true` = THEN (`(if (= n 0) base combine)`,
-    /// the guide's shape), `false` = ELSE (a FLIPPED `(if (> n 0) combine base)`). `apply` places the
-    /// accumulator's branches in the SAME order so the reused condition still selects correctly.
-    base_is_then: bool,
+    /// How the original DISPATCHES between the base and combine branches — an `(if …)` on a numeric
+    /// recursion, or a `(match xs …)` on a LIST fold. `apply` reconstructs the accumulator's body in the
+    /// same shape (reusing the original condition / arm patterns + scrutinee verbatim, since the discarded
+    /// original body's occurrences have no other live parent after the seed-call rewrite).
+    dispatch: Dispatch,
     /// The associative op's OCCURRENCE — a bare `Name` (`+`/`*`) or a member access `(. T wrapping-add)`.
     /// `apply` CLONES it (via `copy_subtree`) into the accumulator, so either spelling reconstructs
     /// correctly (a bare name rebuild couldn't represent the dotted form).
     op_occ: StructId,
     identity: i64,
-    /// The per-step TERM occurrence `g` (the `+`'s non-recursive operand, e.g. `n` or `(* n k)`).
+    /// The per-step TERM occurrence `g` (the `+`'s non-recursive operand, e.g. `n`, `(* n k)`, or the
+    /// list head `x`).
     term: StructId,
-    /// The self-call's ARGUMENT occurrences (`(- n 1)`, `k`, …), one per parameter — threaded UNCHANGED
-    /// into the accumulator's tail self-call. Reassociation preserves the final value for ANY number of
-    /// parameters (recursion variables and pass-throughs alike), since `+`/`*` are associative.
+    /// The self-call's ARGUMENT occurrences (`(- n 1)`, `k`, `rest`, …), one per parameter — threaded
+    /// UNCHANGED into the accumulator's tail self-call. Reassociation preserves the final value for ANY
+    /// number of parameters (recursion variables and pass-throughs alike), since `+`/`*` are associative.
     rec_args: Vec<StructId>,
 }
 
+/// The branch-selecting form of a recognized recursion — the ONE part that differs between the numeric
+/// `if` shape and the list-`match` fold. Everything else (the associative op, term, and recursion args)
+/// is shared, since a list fold `(match xs ((list) 0) ((list x .. rest) (+ x (f rest))))` is the SAME
+/// linear accumulation as `(if (= n 0) 0 (+ n (f (- n 1))))` — only its base/recursive cases are chosen
+/// by matching a list's shape instead of testing a scalar condition.
+enum Dispatch {
+    /// `(if COND base combine)` (base in THEN — the guide's shape) or `(if COND combine base)` (a FLIPPED
+    /// condition, base in ELSE). `cond` is reused verbatim; `base_is_then` records which slot the base
+    /// occupied so `apply` places the accumulator's branches in the matching order.
+    IfCond { cond: StructId, base_is_then: bool },
+    /// A LIST fold `(match SCRUT (empty-pat base) (cons-pat combine))` — SCRUT a bare parameter, one arm
+    /// the empty-list pattern `(list)` (body = the op identity), the other a cons pattern `(list … .. rest)`
+    /// (body = the combine). `apply` reuses the scrutinee + both arm PATTERNS verbatim, rebuilding only the
+    /// arm BODIES (empty → the bare accumulator; cons → the tail self-call). `empty_is_first` records the
+    /// original arm order so the reused patterns keep selecting the same cases.
+    ListMatch {
+        scrut: StructId,
+        empty_pat: StructId,
+        cons_pat: StructId,
+        empty_is_first: bool,
+    },
+}
+
 /// Match a def against the linear-accumulator shape. Returns `None` (leave the def alone) unless it is
-/// `(def (f p…) (if COND …))` where one `if` branch is `OP`'s identity `ID` and the other is the combine
-/// `(OP g (f REC…))` — `OP` associative, the single self-call in one `OP` operand. Either branch ordering
-/// is accepted (base in THEN, the guide's shape; or base in ELSE, a flipped condition). Any number of
-/// parameters is accepted — every self-call argument is threaded through the accumulator unchanged
-/// (reassociation is sound whether a parameter is a recursion variable or a pass-through).
+/// either
+///  - `(def (f p…) (if COND …))` — a NUMERIC recursion, or
+///  - `(def (f p…) (match SCRUT (empty-pat 0) (cons-pat (OP head (f … rest …)))))` — a LIST fold,
+///
+/// where one branch is `OP`'s identity `ID` and the other is the combine `(OP g (f REC…))` — `OP`
+/// associative, the single self-call in one `OP` operand. Either branch/arm ordering is accepted. Any
+/// number of parameters is accepted — every self-call argument is threaded through the accumulator
+/// unchanged (reassociation is sound whether a parameter is a recursion variable or a pass-through).
 fn match_linear_recursion(
     ast: &Arenas,
     d: &Def,
@@ -127,31 +153,11 @@ fn match_linear_recursion(
         .map(|p| param_binder_name(ast, *p))
         .collect::<Option<_>>()?;
     let body = d.body?;
-    // Body must be `(if COND THEN ELSE)` — the cheap structural gate FIRST, so a non-`if` def (the common
-    // case) rejects before any map lookup.
-    let if_tail = ast.as_form(body, "if")?;
-    let [cond, then_, else_] = if_tail else {
-        return None;
-    };
-    // One branch is the base value (the OP identity), the other the recursive combine `(OP g (f REC…))`.
-    // Either ordering is accepted: the base condition may select the BASE branch when true (`(if (= n 0)
-    // base combine)` — the guide's shape, base in THEN) or the RECURSIVE branch when true (a FLIPPED
-    // condition `(if (> n 0) combine base)` — base in ELSE). Try ELSE as the combine first (guide shape),
-    // then THEN (flipped). `base_is_then` records which slot holds the base, so `apply` places the
-    // accumulator's branches in the matching order (the condition is reused verbatim).
-    let (base_is_then, base_val, op_occ, identity, term, rec_args) = if let Some((op, id, t, r)) =
-        match_combine(ast, *else_, &d.name, param_names.len())
-    {
-        (true, *then_, op, id, t, r)
-    } else if let Some((op, id, t, r)) = match_combine(ast, *then_, &d.name, param_names.len()) {
-        (false, *else_, op, id, t, r)
-    } else {
-        return None;
-    };
-    // The base value must be the op's identity literal.
-    if int_literal(ast, base_val)? != identity {
-        return None;
-    }
+    // The body is either an `(if …)` (numeric) or a `(match …)` (list fold) — the cheap structural gate
+    // FIRST, so a non-matching def (the common case) rejects before any map lookup.
+    let (dispatch, op_occ, identity, term, rec_args) =
+        match_if_shape(ast, body, &d.name, &param_names)
+            .or_else(|| match_list_fold_shape(ast, body, &d.name, &param_names))?;
     // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
     // index is not built yet at load time, so this is an O(1) read of the prebuilt `sig_occ → form` index
     // (was a per-def linear scan of the module items → O(defs²)). Only reached once every cheaper check
@@ -160,13 +166,118 @@ fn match_linear_recursion(
     Some(Match {
         def_form,
         param_names,
-        base_cond: *cond,
-        base_is_then,
+        dispatch,
         op_occ,
         identity,
         term,
         rec_args,
     })
+}
+
+/// Match the NUMERIC `(if COND THEN ELSE)` body shape: one branch is the OP identity literal, the other
+/// the combine `(OP g (f REC…))`. Either ordering (base in THEN, the guide's shape; or base in ELSE, a
+/// flipped condition). Returns the `Dispatch::IfCond` plus the shared combine decomposition, or `None`.
+fn match_if_shape(
+    ast: &Arenas,
+    body: StructId,
+    name: &str,
+    param_names: &[String],
+) -> Option<(Dispatch, StructId, i64, StructId, Vec<StructId>)> {
+    let [cond, then_, else_] = ast.as_form(body, "if")? else {
+        return None;
+    };
+    let (cond, then_, else_) = (*cond, *then_, *else_);
+    // One branch is the base value (the OP identity), the other the recursive combine `(OP g (f REC…))`.
+    // Try ELSE as the combine first (guide shape, base in THEN), then THEN (flipped, base in ELSE).
+    let (base_is_then, base_val, op_occ, identity, term, rec_args) =
+        if let Some((op, id, t, r)) = match_combine(ast, else_, name, param_names.len()) {
+            (true, then_, op, id, t, r)
+        } else if let Some((op, id, t, r)) = match_combine(ast, then_, name, param_names.len()) {
+            (false, else_, op, id, t, r)
+        } else {
+            return None;
+        };
+    // The base value must be the op's identity literal.
+    if int_literal(ast, base_val)? != identity {
+        return None;
+    }
+    Some((
+        Dispatch::IfCond { cond, base_is_then },
+        op_occ,
+        identity,
+        term,
+        rec_args,
+    ))
+}
+
+/// Match the LIST-FOLD `(match SCRUT (empty-pat BASE) (cons-pat COMBINE))` body shape — the user's `sum`:
+///
+/// ```text
+/// (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
+/// ```
+///
+/// SCRUT must be a bare PARAMETER; exactly two arms, one an empty-list pattern `(list)` whose body is the
+/// OP identity, the other a cons pattern `(list … .. rest)` whose body is the combine `(OP g (f REC…))`.
+/// The self-call must thread the REST binder back through the SCRUTINEE's parameter position and every
+/// OTHER argument unchanged — so the accumulator reproduces the original's element sequence exactly. The
+/// per-step term `g` is the list HEAD binder (bound by a LEADING element position). Returns the
+/// `Dispatch::ListMatch` plus the shared combine decomposition, or `None`.
+fn match_list_fold_shape(
+    ast: &Arenas,
+    body: StructId,
+    name: &str,
+    param_names: &[String],
+) -> Option<(Dispatch, StructId, i64, StructId, Vec<StructId>)> {
+    let mtail = ast.as_form(body, "match")?;
+    let (scrut, arms) = mtail.split_first()?;
+    let scrut = *scrut;
+    // Exactly two arms, each a `(pattern body)` pair.
+    let [arm0, arm1] = arms else {
+        return None;
+    };
+    let (pat0, body0) = arm_parts(ast, *arm0)?;
+    let (pat1, body1) = arm_parts(ast, *arm1)?;
+    // The scrutinee must be a bare PARAMETER — its position among the params drives how `rest` is threaded
+    // back through the tail self-call.
+    let scrut_name = ast.as_name(scrut)?;
+    let scrut_ix = param_names.iter().position(|p| p == scrut_name)?;
+    // One arm is the empty-list pattern `(list)` (BASE = the op identity); the other is a cons pattern
+    // `(list … .. rest)` (COMBINE). Try (empty=arm0, cons=arm1) then flipped — `empty_is_first` records it.
+    let ((empty_pat, base_val), (cons_pat, combine), empty_is_first) =
+        if list_pattern_is_empty(ast, pat0) {
+            ((pat0, body0), (pat1, body1), true)
+        } else if list_pattern_is_empty(ast, pat1) {
+            ((pat1, body1), (pat0, body0), false)
+        } else {
+            return None;
+        };
+    let (op_occ, identity, term, rec_args) = match_combine(ast, combine, name, param_names.len())?;
+    // BASE must be the op's identity literal.
+    if int_literal(ast, base_val)? != identity {
+        return None;
+    }
+    // SOUNDNESS: the cons pattern must bind a REST sublist `(list … .. rest)`, and the self-call must
+    // thread that rest binder back through the SCRUTINEE's position, so the accumulator peels elements in
+    // the EXACT SAME order as the original recursion — binding head/rest (and every other param) identically
+    // at each depth, and combining the identical per-step terms. That order-preservation is what makes the
+    // reassociation to a left fold value-exact; the OTHER self-call arguments may vary freely (threaded
+    // unchanged, exactly like the numeric shape's `(- n 1)`), each evaluated at its step's bindings.
+    let rest_name = cons_pattern_rest_binder(ast, cons_pat)?;
+    if ast.as_name(*rec_args.get(scrut_ix)?)? != rest_name {
+        return None;
+    }
+    Some((
+        Dispatch::ListMatch {
+            scrut,
+            empty_pat,
+            cons_pat,
+            empty_is_first,
+        },
+        op_occ,
+        identity,
+        term,
+        rec_args,
+    ))
 }
 
 /// If `combine` is `(OP g (f REC…))` or `(OP (f REC…) g)` — an ASSOCIATIVE op (with known identity) whose
@@ -229,8 +340,9 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     // The recursive branch: `(acc_name rec_arg… (OP acc term))` — the tail self-call, passing every
     // original recursion argument unchanged plus the folded accumulator.
     // The combine `(OP acc term)`: LEFT-fold order — acc first. Reuse the ORIGINAL `term` occurrence
-    // (it references the params, which bind to this def's params). CLONE the op occurrence so a member
-    // access like `(. Int64 wrapping-add)` reconstructs correctly (not just a bare-name `+`/`*`).
+    // (it references the params / a list-arm binder, which bind to this def's params / the reused arm
+    // pattern). CLONE the op occurrence so a member access like `(. Int64 wrapping-add)` reconstructs
+    // correctly (not just a bare-name `+`/`*`).
     let op_ref = copy_subtree(ast, m.op_occ);
     let acc_ref_in_op = push_name(ast, acc_var);
     let combined = push_list(ast, vec![op_ref, acc_ref_in_op, m.term]);
@@ -238,16 +350,43 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     rec_call_children.extend(m.rec_args.iter().copied());
     rec_call_children.push(combined);
     let rec_call = push_list(ast, rec_call_children);
-    // `(if base_cond THEN ELSE)` — reuse the original `base_cond` occurrence, placing the base and
-    // recursive branches in the SAME order the original used (so the reused condition still selects the
-    // base case correctly, whether it was written `(if (= n 0) base rec)` or `(if (> n 0) rec base)`).
-    let if_head = push_name(ast, "if");
-    let (then_branch, else_branch) = if m.base_is_then {
-        (base_ref, rec_call)
-    } else {
-        (rec_call, base_ref)
+    // The accumulator's body reconstructs the ORIGINAL dispatch shape, reusing its condition / arm patterns
+    // + scrutinee verbatim, so the same case selection still holds. The base branch returns the bare
+    // accumulator; the recursive branch is the tail self-call.
+    let acc_body = match m.dispatch {
+        // `(if base_cond BASE-OR-REC …)` — reuse the condition, keeping the base/recursive branches in the
+        // SAME order the original used (whether `(if (= n 0) base rec)` or `(if (> n 0) rec base)`).
+        Dispatch::IfCond { cond, base_is_then } => {
+            let if_head = push_name(ast, "if");
+            let (then_branch, else_branch) = if base_is_then {
+                (base_ref, rec_call)
+            } else {
+                (rec_call, base_ref)
+            };
+            push_list(ast, vec![if_head, cond, then_branch, else_branch])
+        }
+        // `(match scrut (empty-pat acc) (cons-pat (acc_name rest… (OP acc head))))` — reuse the scrutinee
+        // and BOTH arm patterns verbatim, replacing only the arm BODIES. The empty arm returns the bare
+        // accumulator (the fold's running total); the cons arm is the tail self-call. Arm order matches the
+        // original so the reused patterns select the same cases (the head/rest binders the reused `term`
+        // and `rec_args` reference resolve to the reused cons pattern, re-parented by the rebuilt index).
+        Dispatch::ListMatch {
+            scrut,
+            empty_pat,
+            cons_pat,
+            empty_is_first,
+        } => {
+            let match_head = push_name(ast, "match");
+            let empty_arm = push_list(ast, vec![empty_pat, base_ref]);
+            let cons_arm = push_list(ast, vec![cons_pat, rec_call]);
+            let (arm_first, arm_second) = if empty_is_first {
+                (empty_arm, cons_arm)
+            } else {
+                (cons_arm, empty_arm)
+            };
+            push_list(ast, vec![match_head, scrut, arm_first, arm_second])
+        }
     };
-    let acc_body = push_list(ast, vec![if_head, m.base_cond, then_branch, else_branch]);
     // Signature `(acc_name p… acc)` and the whole `(def sig acc_body)` form.
     let sig = push_list(ast, sig_children);
     let def_head = push_name(ast, "def");
@@ -352,6 +491,44 @@ fn associative_op_identity(ast: &Arenas, op_occ: StructId) -> Option<i64> {
         "wrapping-mul" => Some(1),
         _ => None,
     }
+}
+
+/// The `(pattern body)` parts of a match ARM — a two-element list. `None` for a guard arm or any other
+/// shape (a guard `((guard …) body)` is out of scope: the accumulator transform only handles the plain
+/// two-arm empty/cons fold).
+fn arm_parts(ast: &Arenas, arm: StructId) -> Option<(StructId, StructId)> {
+    let c = list_children(ast, arm)?;
+    let [pat, body] = c.as_slice() else {
+        return None;
+    };
+    Some((*pat, *body))
+}
+
+/// The element occurrences of a `(list …)` match PATTERN, recognizing BOTH the string-headed ctor spelling
+/// (`"list"`, what the reader desugars to) and a bare `(list …)` form — mirrors the resolver's
+/// `as_ctor_form(…, "list").or_else(as_form(…, "list"))`.
+fn list_pattern_elems(ast: &Arenas, pat: StructId) -> Option<&[StructId]> {
+    ast.as_ctor_form(pat, "list")
+        .or_else(|| ast.as_form(pat, "list"))
+}
+
+/// Whether `pat` is the EMPTY-list pattern `(list)` — a `(list …)` pattern with no elements (the base arm).
+fn list_pattern_is_empty(ast: &Arenas, pat: StructId) -> bool {
+    list_pattern_elems(ast, pat).is_some_and(|e| e.is_empty())
+}
+
+/// The REST binder name of a cons pattern `(list … .. rest)` — the single element immediately after the
+/// `..` marker. `None` if there is no `..` or its binder is missing / `_` (a wildcard rest can't be
+/// threaded as the accumulator's scrutinee argument). Mirrors resolve's `list_pattern_rest_binds`.
+fn cons_pattern_rest_binder(ast: &Arenas, pat: StructId) -> Option<String> {
+    let elems = list_pattern_elems(ast, pat)?;
+    let dd = elems.iter().position(|&e| ast.as_name(e) == Some(".."))?;
+    let rest_occ = *elems.get(dd + 1)?;
+    let name = ast.as_name(rest_occ)?;
+    if name == "_" {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// The binder name of a parameter occurrence — a bare `name`, or the inner name of `(: name T)`.
@@ -576,6 +753,96 @@ mod tests {
         assert!(
             db.def_by_name("f$acc").is_none(),
             "a non-associative member op must NOT be reassociated"
+        );
+    }
+
+    // ── LIST-FOLD shape: the user's `sum` — `(match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))`
+    // is the SAME linear accumulation as the numeric `if`, dispatched by matching a list's shape instead
+    // of testing a scalar. It transforms to a TAIL fold `(sum$acc xs acc)` the `select` loop transform
+    // then compiles to a constant-stack loop. ─────────────────────────────────────────────────────────
+
+    /// The user's EXACT non-tail list `sum` gains a synthesized accumulator and re-seeds to `(sum$acc xs 0)`.
+    #[test]
+    fn introduce_adds_an_accumulator_for_a_non_tail_list_fold() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) (export sum))",
+        );
+        let db = Db::load(ast);
+        let acc = db
+            .def_by_name("sum$acc")
+            .expect("a non-tail list fold gains an accumulator def");
+        assert_eq!(
+            db.defs[acc].params.len(),
+            2,
+            "accumulator carries the original param (xs) plus acc"
+        );
+        assert_eq!(
+            db.defs[db.def_by_name("sum").unwrap()].params.len(),
+            1,
+            "sum still has (xs)"
+        );
+    }
+
+    /// A FLIPPED arm order (cons arm first, empty arm second) also transforms — the matcher recognizes the
+    /// empty/cons arms in either position and keeps the same order so the reused patterns select the same
+    /// cases.
+    #[test]
+    fn introduce_handles_a_flipped_list_arm_order() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list x .. rest) (+ x (sum rest))) ((list) 0))) (export sum))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("sum$acc").is_some(),
+            "a flipped-arm-order list fold is accumulator-transformed"
+        );
+    }
+
+    /// A list fold whose base value is NOT the op's identity (`100`, not `0`) must NOT transform —
+    /// reassociating it to a left fold seeded with the identity would change the result.
+    #[test]
+    fn introduce_declines_a_list_fold_with_a_non_identity_base() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 100) ((list x .. rest) (+ x (sum rest))))) (export sum))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("sum$acc").is_none(),
+            "a non-identity list-fold base must NOT be reassociated"
+        );
+    }
+
+    /// A cons arm with a WILDCARD rest (`(list x .. _)`) can't be threaded as the accumulator's scrutinee
+    /// argument, so the fold is left alone. (It also isn't a real recursion over the tail.)
+    #[test]
+    fn introduce_declines_a_list_fold_with_a_wildcard_rest() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 0) ((list x .. _) (+ x (sum x))))) (export sum))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("sum$acc").is_none(),
+            "a wildcard-rest fold is not transformed"
+        );
+    }
+
+    /// A list fold whose self-call does NOT thread the rest binder through the scrutinee position (here it
+    /// re-passes the WHOLE list `xs`, an infinite recursion shape) must NOT transform — the accumulator
+    /// would fold a different element sequence.
+    #[test]
+    fn introduce_declines_when_the_self_call_does_not_recurse_on_rest() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum xs))))) (export sum))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("sum$acc").is_none(),
+            "a self-call not recursing on the rest sublist must NOT be reassociated"
         );
     }
 }

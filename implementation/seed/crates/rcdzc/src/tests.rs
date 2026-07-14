@@ -18866,6 +18866,94 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() {
+        // THE USER'S EXACT PROGRAM: `(def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum
+        // rest)))))`. The recursive call `(sum rest)` sits in an OPERAND of `+`, so it is NOT a tail call
+        // — it would compile to a stack-growing `call` (a long list overflows). `accum::introduce` now
+        // recognizes the LIST-FOLD shape (empty arm = the `+` identity `0`, cons arm = the combine, self
+        // call threading `rest` through the scrutinee position) and rewrites it to a TAIL accumulator
+        // `(sum$acc xs acc) = (match xs ((list) acc) ((list x .. rest) (sum$acc rest (+ acc x))))` +
+        // reseeds `sum` to `(sum$acc xs 0)`. The MatchList loop transform (Bug-1 fix) then compiles the
+        // synthesized accumulator to a `loop` — so the user's natural non-tail sum runs in O(1) stack.
+        //
+        // First: the transform fired — a `sum$acc` def was synthesized and `sum` still takes one param.
+        let db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) (export sum))",
+        ));
+        assert!(
+            db.def_by_name("sum$acc").is_some(),
+            "the non-tail list fold gained a synthesized accumulator def"
+        );
+
+        // The synthesized accumulator compiles to a LOOP (no residual self-`call`/`return_call`). Select
+        // `sum$acc` with `self_def` set (as the pipeline does) and pin the `loop` at the Lir level.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (sum (: xs (List Int64))) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+             (def (f (: a Int64) (: b Int64)) (sum (list a b))) (export f))",
+        ));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let acc = db
+            .def_by_name("sum$acc")
+            .expect("accumulator synthesized for the annotated fold");
+        let ps: Vec<_> = db.defs[acc]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[acc].body.expect("acc body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(acc))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the synthesized accumulator compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` in the accumulator — it became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: build [0, N) then fold it with the NON-TAIL `sum`. N = 100000
+        // would overflow a recursive stack; the accumulator-introduced loop folds it fine. [0,100) = 4950.
+        let prog = |n: i64| {
+            format!(
+                "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+                   (def (main) (sum (build 0 {n} (list)))) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(100), vec![]) else {
+            eprintln!("runtime wasm not found; skipping non-tail list-fold loop run");
+            return;
+        };
+        assert_eq!(
+            small, "4950",
+            "sum [0,100) via the accumulator-introduced loop"
+        );
+        assert_eq!(
+            run_heap_value(&prog(100000), vec![]).unwrap(),
+            "4999950000",
+            "the user's non-tail sum folds [0,100000) in constant stack (would overflow if recursive)"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
