@@ -1715,7 +1715,7 @@ todo	Type is a first-class value
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
-todo	a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound
+todo	a compound closure ARG on the DIRECT-CALL path is declined — an IMPLEMENTATION gap (oracle-proven)
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
