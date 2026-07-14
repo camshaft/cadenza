@@ -20,8 +20,14 @@ export default function MapsSets() {
 
       <H2>Sets: membership, without duplicates</H2>
       <P>
-        Build one from a list with <C>Set.of</C>. A set collapses duplicates and forgets order, so its{" "}
-        <C>Set.len</C> counts <em>distinct</em> elements — here the two <C>2</C>s become one:
+        Build one from a list with <C>Set.of</C>. A set collapses duplicates and forgets order — return
+        one and you'll see the collapse directly: the two <C>2</C>s in the input become a single{" "}
+        <C>2</C>, so the set holds <C>1 2 3</C>:
+      </P>
+      <Runnable source={`(Set.of (list 1 2 2 3))`} />
+      <P>
+        Because those duplicates are gone, <C>Set.len</C> counts <em>distinct</em> elements — <C>3</C>
+        here, not the four you passed in:
       </P>
       <Runnable source={`(Set.len (Set.of (list 1 2 2 3)))`} />
       <P>
