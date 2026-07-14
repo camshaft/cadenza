@@ -88,6 +88,12 @@ pub enum Request {
 
 /// A read of a fact column — the query half of the request vocabulary. Each arm names the column it
 /// reads; the answer is total (a node with no answer yields a defined "unknown", never a crash).
+///
+/// The `TypeOf`/`TypeAt` queries expose the types the compiler INFERRED in a machine-readable form: a
+/// `cdz type`/`type-at` answers with the queried node's rendered type as an output artifact (data), not
+/// human-formatted prose — so an agent reads an inferred type programmatically.
+//= spec/capabilities/agent-authoring.md#every-compiler-output-is-machine-readable
+//# The compiler MUST expose the types it inferred in a machine-readable form.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Query {
     /// The solved type of a top-level definition, BY NAME — a read of the type column

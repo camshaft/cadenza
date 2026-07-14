@@ -62,6 +62,11 @@ pub enum Severity {
 /// Span-free like the diagnostic: the edit names a NODE INDEX the consumer maps to a text region, so an
 /// agent applies the structural edit (replace node `node` with `replacement`) directly rather than
 /// re-deriving the repair from the message prose.
+///
+/// The fix AND its verified-or-applicability status (`verified`, from `Fix::applicability`) ride in this
+/// machine-readable record, so an agent consumes the route to a compliant program programmatically.
+//= spec/capabilities/agent-authoring.md#a-diagnostic-s-fix-is-machine-readable
+//# A diagnostic's proposed fix and its verified-or-applicability status MUST be part of the compiler's machine-readable output, so an agent consumes the route to a compliant program programmatically.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DiagnosticFix {
     /// A one-line human label for the edit (`replace with `foo``, `add the missing match arms`).
@@ -176,6 +181,8 @@ impl DiagnosticFix {
 ///
 //= spec/capabilities/diagnostics.md#diagnostics-are-machine-readable
 //# The compiler MUST expose its diagnostics in a machine-readable form rather than only as human-formatted text.
+//= spec/capabilities/agent-authoring.md#every-compiler-output-is-machine-readable
+//# The compiler MUST expose its diagnostics in a machine-readable form.
 //= spec/contracts/build-tool-interface.md#a-diagnostic-carries-a-severity-a-code-and-a-message
 //# A diagnostic MUST carry the machine-readable code and message fixed by the diagnostics-schema, so that a diagnostic in this interface is the same machine-actionable record the rest of the specification uses.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -251,6 +258,8 @@ impl Diagnostic {
 /// output carries machine-readable `Diagnostic`s (code + span + message), never an opaque error.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
 //# The build tool MUST produce, on success, a content-addressed component together with the capability manifest against which its imports are bound.
+//= spec/capabilities/agent-authoring.md#every-compiler-output-is-machine-readable
+//# The compiler MUST expose the capability manifest it produced in a machine-readable form.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
 //# The build tool MUST produce, on failure, machine-readable diagnostics rather than an opaque error.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
