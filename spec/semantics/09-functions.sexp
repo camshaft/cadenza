@@ -517,6 +517,25 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+; The FINE discriminator: the decline above is specific to an INLINE-LAMBDA argument (whose body references
+; its OWN param). Passing the SAME shape a TOP-LEVEL DEF as the closure argument WORKS — a def reference is a
+; global that re-resolves by name (no pinned own-param to dangle), so the returned lambda captures it and
+; dispatches cleanly. So the gap is precisely: an inline lambda arg (with an own-param body ref) substituted
+; for a closure param and captured into a returned lambda that lifts — NOT closure-param capture in general.
+
+(case "a returned lambda captures+applies a closure param bound to a TOP-LEVEL def"
+  (doc    "The same `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returning a closure that captures its
+           closure param `g` — but here `g`'s argument is a TOP-LEVEL def `inc`, not an inline lambda.
+           `((mk inc) n)` with n = 5 → the returned closure applies `inc` to 5 = 6. Works: a def reference is a
+           global (re-resolves by name, no pinned own-param), so it captures + dispatches cleanly — isolating
+           the decline above to the INLINE-lambda argument specifically.")
+  (input  (do (def (inc (: y Int64)) (+ y 1))
+              (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
+              (def (main (: n Int64)) ((mk inc) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a closure argument is another closure's result"
   (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
            (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
