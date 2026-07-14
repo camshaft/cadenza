@@ -10418,6 +10418,68 @@ mod recursion {
     }
 
     #[test]
+    fn a_self_referential_value_definition_names_the_cycle_not_a_resource_limit() {
+        // `(def (g) g)` — a nullary VALUE defined in terms of itself with no base case — names nothing
+        // (`g = g`). It used to reduce until the depth guard fired, mislabeled "expression nests too deeply
+        // (a recursion/resource limit)" (reads as a compiler resource problem). Now it is rejected CDZ0201
+        // naming the real cause — a value cannot reference itself — with the fix route. (Contrast the mutual
+        // FUNCTIONS above, which run: a function's self-reference is legitimate recursion.)
+        let single = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g) g) (export g))",
+        )));
+        let d = single
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a self-referential value def is rejected");
+        assert!(
+            d.message
+                .contains("defined in terms of itself with no base value"),
+            "names the cycle, not a resource limit: {}",
+            d.message
+        );
+        assert!(
+            single
+                .iter()
+                .all(|d| !d.message.contains("nests too deeply")),
+            "the misleading resource-limit decline is suppressed: {single:?}"
+        );
+        // A MUTUAL value cycle (`a = b`, `b = a`) is caught too — each cyclic def reports once, and the
+        // "nests too deeply" decline is deduped away (exactly 2 errors, both the clear cycle message).
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (a) b) (def (b) a) (export a))",
+        )));
+        assert_eq!(
+            ds.iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+                .count(),
+            2,
+            "each of the two mutually-cyclic values is named: {ds:?}"
+        );
+        assert!(
+            ds.iter().all(|d| !d.message.contains("nests too deeply")),
+            "no leftover resource-limit decline in the mutual cycle: {ds:?}"
+        );
+        // NO false positive: a def referring to ANOTHER def with a base value is fine; a recursive FUNCTION
+        // is fine (it has params → a lambda, not a bare Ref cycle).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) 5) (def (b) a) (export b))",
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a def referencing another def with a concrete value is valid"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: n Int64)) (if (< n 1) 0 (f (- n 1)))) (def (main) (f 5)) (export main))",
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a recursive function is legitimate, not a value cycle"
+        );
+    }
+
+    #[test]
     fn a_tail_recursive_loop_runs_in_constant_stack() {
         use wasmtime::component::Val;
         // A tail-recursive accumulator over a RUNTIME count: the SELF tail-call is compiled as a LOOP

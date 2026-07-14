@@ -463,6 +463,33 @@ fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
     }
 }
 
+/// Whether the nullary-def body `body` is a SELF-REFERENTIAL VALUE with no base case — a value defined
+/// directly in terms of itself (`(def (g) g)`) or a mutual cycle (`(def (a) b) (def (b) a)`), where each
+/// body resolves to a bare `Resolved::Ref` to another (or the same) body, forming a `Ref` cycle that
+/// bottoms out in no value. Such a def has no meaning (`g = g` names nothing), and the reduction would
+/// spin until the depth guard fires, mislabeling it "expression nests too deeply (a resource limit)".
+/// This detects the cycle STRUCTURALLY — follow the `Ref` chain, tracking visited body nodes; a revisit
+/// closes the cycle — WITHOUT reducing, so it names the real fault before the limit is hit.
+///
+/// Only a BARE-`Ref` chain is a cycle here: a body that does COMPUTATION (`(def (g) (+ g 1))` — an
+/// `Apply`, not a `Ref`) is NOT reported (its non-termination needs reduction analysis to distinguish
+/// from a legitimately-deep program), and a recursive FUNCTION (`(def (f n) …)` — params, so `def_as_
+/// resolved` yields a `Lambda`, never a bare `Ref`) is untouched. Conservative: reports only an
+/// unambiguous value cycle, never a false alarm on a well-formed program.
+pub(crate) fn value_ref_cycle(db: &mut Db, body: StructId) -> bool {
+    let mut cur = body;
+    let mut seen: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(cur) {
+            return true; // revisited a body node — a Ref cycle with no base value
+        }
+        match resolved_of(db, cur) {
+            Resolved::Ref { value } => cur = value,
+            _ => return false, // the chain reaches a real value (or computation) — not a bare cycle
+        }
+    }
+}
+
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
