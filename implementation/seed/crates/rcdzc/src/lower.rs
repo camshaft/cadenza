@@ -8381,6 +8381,18 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         let text = b.atom_leaf(Leaf::Str(s));
         return Some(b.list(vec![symbol_of, text]));
     }
+    // A TYPE-VALUE renders its concrete type's NAME surface — `(: Int64 Type)`, whose VALUE node is the
+    // atom `Int64` (the type node is `Type`, built by `type_ast`'s `Ty::Type` arm). A type is a first-class
+    // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
+    // Values), and it is FULLY compile-time-known, so its boundary form is baked from the reduced type
+    // rather than a runtime representation — recover the concrete `Ty` with `typeval_of` (the same reducer
+    // `Type.of`/`Type.eq`/an annotation position use) and render its type surface as the value node.
+    // Checked FIRST (before the core match) because the erased core of a type expression is not a scalar.
+    if matches!(crate::infer::type_of(db, id), crate::ty::Ty::Type)
+        && let Some(concrete) = crate::eval::typeval_of(db, id)
+    {
+        return type_ast(b, &concrete);
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
             value: v,
@@ -8791,9 +8803,14 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
         // underlying value form (built by the value walker, which sees through the tag).
         Ty::Nominal { name, .. } => Some(b.name(name.clone())),
-        // A function/type-value has no boundary value form, so no type surface. A program that would
-        // escape one declines before reaching the escape.
-        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
+        // The TYPE OF TYPES — the type surface of a type-VALUE (`(: Int64 Type)`). A type is a first-class
+        // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
+        // Values), so a bare type-value crosses the boundary; its TYPE node is the atom `Type` (the value
+        // node is the concrete type's name, built by `const_value_ast`'s `Ty::Type` arm). `render_name`.
+        Ty::Type => Some(b.name("Type".to_string())),
+        // A function has no boundary value form, so no type surface. A still-free type variable / `Any`
+        // has no determined serialization. A program that would escape one declines before the escape.
+        Ty::Fn(_, _) | Ty::Var(_) | Ty::Any => None,
     }
 }
 

@@ -1252,7 +1252,7 @@ pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping multiplication wraps rather than trapping
 todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	Result propagates errors without trapping
-pass	Type is a first-class value bound to a name and flowed to a type position
+todo	Type is a first-class value
 todo	a 32-bit-float closure crosses the host boundary
 todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary

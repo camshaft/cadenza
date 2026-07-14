@@ -889,7 +889,7 @@ todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
 todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Result propagates errors without trapping
-pass	Type is a first-class value bound to a name and flowed to a type position
+todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 todo	a CBOR head decodes its major type and big-endian argument from the input bytes

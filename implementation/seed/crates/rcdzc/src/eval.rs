@@ -2268,6 +2268,19 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         return Some(crate::ty::Ty::Var(binder.0));
     }
     match resolved_of(db, id) {
+        // A `let`-bound (or otherwise referenced) name whose init IS a type expression — `(let ((t Int64))
+        // t)`, the body `t` a `Ref` to the binding's init `Int64`. Follow the reference to its value and
+        // reduce THAT, so a type-value flows through a binding exactly as a unit does through `unit_of`'s
+        // `Ref` arm. Guarded to a Ref whose OWN `(meta t)` projection is absent (a ground-type MODULE
+        // record like `Int64` is also `Resolved::Ref`-shaped but reduces via its `(meta t)` below), so the
+        // module path is unchanged; only a binding-to-a-type-expression takes this follow-through.
+        Resolved::Ref { value }
+            if value != id
+                && project_meta(db, id, "t").is_none()
+                && variant_disc_of(db, id).is_none() =>
+        {
+            typeval_of(db, value)
+        }
         // A ground-type record: read its `(meta t)`, which holds the type-value.
         Resolved::Record { .. } | Resolved::Ref { .. } => {
             // A VARIANT-CONSTRUCTOR record is NOT a type-value even though it carries a `(meta t)` — its
@@ -2299,6 +2312,11 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         Resolved::Prim(p) => p.ground_type(),
         // A built `(typeval …)` node carries the type directly.
         Resolved::TypeVal(t) => Some(t),
+        // A `let` whose BODY is a type expression — `(let ((t Int64)) t)` evaluates to the body's value,
+        // a type-value. The bindings are pure (they only introduce names the body's `Ref`s resolve
+        // through), so the `let`'s type-value IS its body's. Reduce the body (its `t` reference follows to
+        // the binding's init `Int64` via the `Ref` arm above). Lets a bound type flow to a boundary export.
+        Resolved::Let { body, .. } => typeval_of(db, body),
         // A type-constructor application — reduce it, then read the built value's type.
         Resolved::Apply { head, args } => {
             let prim = meta_apply_of(db, head)?;

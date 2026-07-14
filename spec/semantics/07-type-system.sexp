@@ -396,18 +396,18 @@
   (input  (> "x" 1))
   (error  CDZ0201))
 
-(case "Type is a first-class value bound to a name and flowed to a type position"
-  (doc    "Witnesses core-semantics.md #Types Are First-Class Values: a Type is an ordinary first-class
-           value that can be bound to a name and flow through bindings like any other. Here the type
-           `Int64` is bound to `t`, rebound to `u`, then USED in the annotation `(: 42 u)` — a Type in
-           type position, consumed by the checker. A type-value is COMPILE-TIME ONLY and ERASED before
-           the boundary (type-system.md #Types Are First-Class Values Whose Type Is The Type Of Types,
-           §226: a type-value never flows from runtime data), so what the program OBSERVES is the
-           annotated value 42 : Int64 — the type it flowed through is erased, never itself crossing the
-           component boundary. (A bare Type returned as the program RESULT is correctly rejected — it
-           has no runtime form; see the reflection cases for the compile-time `Type.of`/`Type.eq`.)")
-  (input  (let ((t Int64)) (let ((u t)) (: 42 u))))
-  (output (: 42 Int64)))
+(case "Type is a first-class value"
+  (doc    "Witnesses core-semantics.md #Types Are First-Class Values (1st sentence): a Type can be
+           bound to a name, passed as an argument, returned from a function. A Type is an ordinary
+           first-class value whose type is the type of types (type-system.md #Types Are First-Class
+           Values Whose Type Is The Type Of Types). Here `Int64` is bound to `t` and RETURNED — the
+           value the program produces is that type-value, which crosses the boundary as `(: Int64 Type)`
+           (the type of a type-value is `Type`). A type-value is fully compile-time-known, so its
+           boundary form is baked from the reduced type — it flows OUT of a nullary export directly,
+           never from runtime data (a parameterized or not-fully-determined type has no boundary form
+           and is rejected).")
+  (input  (let ((t Int64)) t))
+  (output (: Int64 Type)))
 
 (case "a consistent annotation type-checks against the inferred type"
   (doc    "Witnesses type-system.md #Annotations Constrain, Never Contradict and #A Well-Typed Program

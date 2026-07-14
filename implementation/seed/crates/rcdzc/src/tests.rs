@@ -12259,13 +12259,14 @@ mod match_engine {
     }
 
     #[test]
-    fn a_type_valued_export_reports_one_coded_error_not_a_cascade() {
-        // Exporting a TYPE — `(def (main) Int64)` — is compile-time-only and can't cross the boundary.
-        // The emit path declined the same body through FOUR no-runtime-form paths (type-value / nullary
-        // lambda / bare prim / closure param) — a 4-error cascade for one root cause. `collect_faults` now
-        // reports ONE coded CDZ0201 "is a TYPE, not a runtime value" at the export clause, and
-        // `dedup_faults` drops the downstream declines. One clear, actionable error, not four "not built
-        // yet" declines an agent would flail on.
+    fn a_bakeable_type_valued_export_crosses_the_boundary() {
+        // A Type is a FIRST-CLASS value that can be returned and inspected at run time (core-semantics.md
+        // §Types Are First-Class Values). A NULLARY export whose type-value reduces to a concrete type —
+        // `(def (main) Int64)` — CROSSES the boundary via the constant value-form escape: `constant_value_form`
+        // bakes `(: Int64 Type)` from the reduced type (the type is fully compile-time-known, its runtime
+        // footprint nil). So it compiles CLEAN — no error, no residual no-runtime-form decline (the cascade
+        // that once fired is dropped by `dedup_faults`'s bakeable-type-export gate, since the escape, not a
+        // reject, is the answer). It runs to `(: Int64 Type)` (see the `07-type-system` corpus case).
         let out = crate::compile::compile(
             &[crate::abi::Artifact::new(
                 crate::abi::Artifact::KIND_AST,
@@ -12279,19 +12280,93 @@ mod match_engine {
             .iter()
             .filter(|d| d.severity == crate::abi::Severity::Error)
             .collect();
+        assert!(
+            errors.is_empty(),
+            "a bakeable (nullary, concrete) type export compiles clean, got: {:?}",
+            out.diagnostics
+        );
+        // No residual no-runtime-form declines leak either (the bakeable-export gate drops them).
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                )
+            }),
+            "no no-runtime-form decline accompanies a bakeable type export: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_type_value_crosses_the_boundary_rendering_as_its_type_of_types() {
+        // 07-type-system §Types Are First-Class Values: a Type is returned from a nullary export and
+        // crosses the boundary as `(: <TypeName> Type)` — the type of a type-value is `Type`. The value is
+        // fully compile-time-known, so `constant_value_form` bakes the reduced type's name. Both a bare type
+        // name and one FLOWED through `let` bindings reduce (via `typeval_of`'s Ref/Let arms). Crosses via
+        // the constant resource-escape (a compound-shaped result), so decode with `run_heap_value_escape`.
+        for (src, want) in [
+            (
+                "(module m (def (main) Int64) (export main))",
+                "(: Int64 Type)",
+            ),
+            (
+                "(module m (def (main) Bool) (export main))",
+                "(: Bool Type)",
+            ),
+            (
+                "(module m (def (main) (let ((t Int64)) t)) (export main))",
+                "(: Int64 Type)",
+            ),
+            (
+                "(module m (def (main) (let ((t String)) (let ((u t)) u))) (export main))",
+                "(: String Type)",
+            ),
+        ] {
+            if let Some(v) = run_heap_value_escape(src) {
+                assert_eq!(v, want, "a type-value export crosses as {want}: {src}");
+            }
+            // (No runtime store in the build → `None`; the corpus gate exercises the run end-to-end.)
+        }
+    }
+
+    #[test]
+    fn a_non_bakeable_type_valued_export_reports_one_coded_error_not_a_cascade() {
+        // The complement of the bakeable case: a type-value that CANNOT be baked is still rejected. A
+        // PARAMETERIZED export — `(def (main (: n Int64)) Int64)` — would have its result depend on a
+        // runtime argument, but a type-value never flows from runtime data (type-system.md §226), so it has
+        // no boundary form. `collect_faults` reports ONE coded CDZ0201 at the export clause; `dedup_faults`
+        // drops the downstream no-runtime-form declines. One clear error, not four "not built yet" declines.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main (: n Int64)) Int64) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
         assert_eq!(
             errors.len(),
             1,
-            "a type-valued export = one error, got: {:?}",
+            "a non-bakeable type-valued export = one error, got: {:?}",
             out.diagnostics
         );
         assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
         assert!(
-            errors[0].message.contains("is a TYPE, not a runtime value"),
+            errors[0].message.contains("is a TYPE that cannot cross"),
             "the surviving error names the real cause: {}",
             errors[0].message
         );
-        // None of the four downstream declines accompany it.
+        // None of the downstream declines accompany it.
         assert!(
             !out.diagnostics.iter().any(|d| {
                 matches!(

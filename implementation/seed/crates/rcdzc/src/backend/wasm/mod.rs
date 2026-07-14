@@ -157,6 +157,13 @@ fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
             | Ty::Rational
             | Ty::Nominal { .. }
             | Ty::Qty { .. }
+            // A TYPE-VALUE is a first-class value that crosses the boundary (core-semantics.md §Types Are
+            // First-Class Values — "returned from a function, and inspected at runtime"). It is fully
+            // compile-time-known, so it crosses via the CONSTANT value-form escape: `constant_value_form`
+            // bakes `(: <TypeName> Type)` from the reduced type (nullary export only — a type-valued export
+            // has no parameter to depend on). Its runtime footprint is nil (the type is erased); the escape
+            // carries only the baked rendering.
+            | Ty::Type
     )
 }
 
