@@ -118,6 +118,19 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   escapes correctly (verified: `mk`/`sumt` over a depth param, and a `(List Ast)` count). So the decode
   design should thread POSITION separately (not `(tuple ast pos)`) — e.g. return the sum bare and track
   the cursor another way — to sidestep this entirely until the loop-transform fix lands.
+  🔬 **ROOT-CAUSED (2026-07-14): it is an i32/i64 SLOT-ALIASING bug in the loop-transform emit**
+  (`backend/wasm/select.rs`). Minimal reproducer `repros/miscompile-slot-alias-i32i64-loop-tupleproj.sexp`
+  (`cdz check` clean → invalid wasm "type mismatch: expected i32, found i64"). In the emitted
+  `read-leaves` loop, ONE wasm local (slot 4 in the WAT) is `local.set` at **i64** for the `pos+1`
+  arithmetic temp AND used as **i32** for the handle returned by the recursive tuple-returning
+  `read-varu` — the loop-transform's scratch allocator reuses a slot across the two widths. The
+  jointly-required ingredients (each removed individually → compiles + runs): (1) the loop advances its
+  position via a helper that PROJECTS BOTH fields of a recursive tuple-returning call
+  (`(+ (. v 1) (. v 0))`), (2) the loop pushes a COMPOUND-payload sum into a `(List …)` accumulator,
+  (3) it is a self-tail loop. THRESHOLD-DEPENDENT on total locals — smaller variants of the same shape
+  stay under the aliasing threshold and pass, which is why it resists further minimization. This is the
+  same defect as the tail-loop-wrong-value and sibling-ifs-invalid-wasm surfaces above — one slot-typing
+  root, several faces. It DIRECTLY blocks a `decode` that advances its cursor with a varint-width helper.
 
 **Confirmed WORKING (stress-swept 2026-07-14):** recursive sum types (build + fold, const + runtime),
 HOFs (fn args, closures capturing env, curried/partial application, recursive HOF), Map insert/lookup,
