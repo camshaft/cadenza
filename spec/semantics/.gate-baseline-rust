@@ -1567,7 +1567,7 @@ todo	comparing same-shape nominal types is a type error
 todo	concatenating byte sequences built at run time appends their bytes in order
 todo	concatenating tuples preserves each element's type
 todo	constructing a runtime value that does not fit its segment traps
-todo	converting a BigInt back to a fixed width is checked and traps when out of range
+pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a scalar-valued integer to a char yields Some
 todo	converting a surrogate code point to a char yields None
@@ -1760,4 +1760,4 @@ todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	updating a list index replaces that element, leaving others
-todo	wrapping arithmetic uses the distinct wrapping type
+pass	wrapping arithmetic uses the named wrapping form of the operator
