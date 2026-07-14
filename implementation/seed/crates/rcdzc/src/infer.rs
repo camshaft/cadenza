@@ -1101,18 +1101,25 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
 /// read-only scan — it never mutates `db.param_types` and only READS argument types the caller already
 /// has (a caller's own params were solved by its own pass, or are concrete literals/constructors).
 fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Option<Ty>> {
-    // Collect candidate call sites first (immutable scan), then type their args (mutable `type_of`).
-    let mut call_args: Vec<Vec<StructId>> = Vec::new();
-    let def_count = db.defs.len();
-    for other in 0..def_count {
-        let Some(other_body) = db.defs[other].body else {
-            continue;
-        };
-        if other_body == own_body {
-            continue; // this def's own body — a self-call carries no external type information
-        }
-        collect_calls_to(db, other_body, def, &mut call_args);
-    }
+    // The call sites of `def` — from the CALL-SITE INDEX (built once), not a fresh whole-program scan per
+    // query (which was O(defs × program) → O(N²) for N mutually-recursive defs each seeded this way). A
+    // call site in `def`'s OWN body carries no external type info (its args reference the very params
+    // being solved), so those are excluded when the index is built (keyed to exclude the callee's own body
+    // is not possible — a def can call itself — so the index records the CALLER body with each site and we
+    // skip `own_body` here).
+    ensure_call_site_index(db);
+    let call_args: Vec<Vec<StructId>> = db
+        .call_sites_by_callee
+        .as_ref()
+        .and_then(|m| m.get(&def))
+        .map(|sites| {
+            sites
+                .iter()
+                .filter(|(caller_body, _)| *caller_body != own_body)
+                .map(|(_, args)| args.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     // The widest arg list seen determines the result arity; take the first call site that fixes each
     // position (a determined `type_of`), so multiple call sites together can seed distinct positions.
     let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
@@ -1163,18 +1170,44 @@ fn arg_is_other_def_param(db: &mut Db, arg: StructId) -> Option<(usize, usize)> 
     Some((d, pos))
 }
 
-/// Walk `node` collecting the ARGUMENT lists of every application whose head resolves to def `target`
-/// (`callee_def_index_for_infer`). Recurses through all structural children so a call nested anywhere in
-/// the body is found. Read-only over the AST (append-only into `out`).
-fn collect_calls_to(db: &mut Db, node: StructId, target: usize, out: &mut Vec<Vec<StructId>>) {
+/// Build the CALL-SITE INDEX (`db.call_sites_by_callee`) if not already built: `callee def index → the
+/// (caller-body, argument-occurrences) of every application whose head resolves to that callee`. ONE
+/// whole-program walk over every def body (`callee_def_index_for_infer` per application) replaces the
+/// per-query all-bodies scan `call_site_arg_types` did — O(program) once instead of O(defs × program).
+/// The caller body is recorded with each site so `call_site_arg_types` can skip the callee's OWN body (a
+/// self-call carries no external type info). A pure function of the resolved program.
+fn ensure_call_site_index(db: &mut Db) {
+    if db.call_sites_by_callee.is_some() {
+        return;
+    }
+    let mut index: crate::db::CallSiteIndex = crate::fxhash::FxHashMap::default();
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    for body in bodies {
+        collect_calls_into_index(db, body, body, &mut index);
+    }
+    db.call_sites_by_callee = Some(index);
+}
+
+/// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
+/// resolves to a user def — keyed by that callee's index, valued by `(caller_body, argument-occurrences)`.
+/// Recurses through all structural children so a call nested anywhere is found.
+fn collect_calls_into_index(
+    db: &mut Db,
+    node: StructId,
+    caller_body: StructId,
+    index: &mut crate::db::CallSiteIndex,
+) {
     if let Resolved::Apply { head, args } = resolved_of(db, node)
-        && callee_def_index_for_infer(db, head) == Some(target)
+        && let Some(callee) = callee_def_index_for_infer(db, head)
     {
-        out.push(args.to_vec());
+        index
+            .entry(callee)
+            .or_default()
+            .push((caller_body, args.to_vec()));
     }
     if let crate::ast::Struct::List(children) = db.ast.get(node) {
         for c in children.clone() {
-            collect_calls_to(db, c, target, out);
+            collect_calls_into_index(db, c, caller_body, index);
         }
     }
 }

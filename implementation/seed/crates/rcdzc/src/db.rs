@@ -335,6 +335,10 @@ pub struct BuildKey {
     pub args: Vec<i64>,
 }
 
+/// The call-site index (`Db::call_sites_by_callee`): `callee def index → the (caller-body, argument-
+/// occurrences) of every application calling that callee`. Named to keep the field type legible.
+pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, Vec<StructId>)>>;
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -742,6 +746,15 @@ pub struct Db {
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
     pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
 
+    /// CALL-SITE index for `infer::call_site_arg_types`: `callee def index → the argument-occurrence lists
+    /// of every application (in ANY def body) whose head resolves to that callee`. Call-site inference
+    /// (seed an open param from a caller's argument) needs "every call of `def`"; computing it by scanning
+    /// EVERY def body per query was O(defs × program) → O(N²) for N mutually-recursive defs each needing
+    /// the seed (a decoder pipeline: N pairs = 15.9s @1600). Built ONCE by one whole-program walk
+    /// (`infer::build_call_site_index`), then each query is an O(1) map lookup. `None` until first
+    /// materialized; a pure function of the resolved program (a def's body is fixed after load).
+    pub(crate) call_sites_by_callee: Option<CallSiteIndex>,
+
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
     /// (`reference-compiler.md` §The Core Representation Is In A-Normal Form). Populated while lowering
@@ -1139,6 +1152,7 @@ impl Db {
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),
+            call_sites_by_callee: None,
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

@@ -15419,6 +15419,31 @@ mod match_engine {
     }
 
     #[test]
+    fn many_pass_through_defs_each_infer_their_param_via_the_call_site_index() {
+        // Call-site inference (`call_site_arg_types`) seeds an open param from a caller's argument — it
+        // needs "every call of this def", which it now reads from a CALL-SITE INDEX built once, not by
+        // re-scanning every def body per query (the O(defs × program) = O(N²) a decoder pipeline of N
+        // pass-through pairs hit). This locks in that the index preserves the inference at width: 12
+        // INDEPENDENT pass-through chains `a{i}(b) → c{i}(b) → (List.len b)` — each `a{i}`'s param `b` is
+        // decided ONLY transitively through its own chain's call site — all compile to valid wasm (the
+        // seed threaded each `b` to `(List Int64)`; a broken index would leave `b` `Any` and decline).
+        let n = 12;
+        let mut defs = String::new();
+        for i in 0..n {
+            defs.push_str(&format!(
+                "(def (a{i} b) (c{i} b)) (def (c{i} b) (+ (List.len b) {i})) "
+            ));
+        }
+        let src = format!("(module m {defs} (def (main) (a0 (list 1 2))) (export main))");
+        // Compiles (every `a{i}`/`c{i}` param inferred `(List Int64)` via the call-site seed) — a broken
+        // index (missing a chain's call site) would leave a param `Any` and decline.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
+            "every pass-through chain's param is inferred via the call-site index"
+        );
+    }
+
+    #[test]
     fn a_sum_expect_in_a_tuple_beside_an_i64_element_emits_valid_wasm() {
         // Regression guard for the scratch-slot clash: a `(tuple <Option.expect result> <i64 arith>)` — an
         // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
