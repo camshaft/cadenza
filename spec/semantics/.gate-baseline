@@ -9,18 +9,24 @@ pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sig
 pass	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
 pass	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
 pass	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
+pass	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
+pass	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
 pass	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
 pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
 pass	DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)
 pass	DISTINCT-SIG: driving the Int64/Bool-inner scalar-then-NESTED closure (Bool leaf at depth)
+pass	DISTINCT-SIG: driving the Result-arg group (Err)
 pass	DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple
+pass	DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export
 pass	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — driving the Int64-inner group
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
 pass	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
+pass	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -757,6 +763,7 @@ pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
+pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match not covering the scrutinee is a compile-time rejection

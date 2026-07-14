@@ -54827,6 +54827,7 @@ mod closure_host_resource {
                 ret_template: None,
                 ret_descriptor: None,
                 tuples: vec![],
+                sums: vec![],
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -54841,6 +54842,7 @@ mod closure_host_resource {
                 ret_template: None,
                 ret_descriptor: None,
                 tuples: vec![],
+                sums: vec![],
             },
         ];
 
