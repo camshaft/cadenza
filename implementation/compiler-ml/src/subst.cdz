@@ -1,0 +1,73 @@
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+def subst(env: Map(String, Ast), node: Ast) = match node with
+  | Ast.Name(n) => (match Map.lookup(env, n) with
+    | Option.Some(rep) => rep
+    | Option.None(_) => node
+  )
+  | Ast.List(es) => Ast.List(subst-list(env, es))
+  | _ => node
+
+def subst-list(env: Map(String, Ast), es: List(Ast)) = match es with
+  | [] => []
+  | [h, .. r] => List.concat([subst(env, h)], subst-list(env, r))
+
+def is-int(node: Ast, v: Int64) = match node with
+  | Ast.Int(x) => x == v
+  | _ => false
+
+def is-name(node: Ast, s: String) = match node with
+  | Ast.Name(x) => x == s
+  | _ => false
+
+def len-is(node: Ast, n: Int64) = match node with
+  | Ast.List(es) => List.len(es) == n
+  | _ => false
+
+def env1() = Map.insert(#{}, "x", Ast.Int(42))
+
+def env2() = Map.insert(Map.insert(#{}, "x", Ast.Int(1)), "y", Ast.Name("z"))
+
+@test
+def subst-hit() = if is-int(subst(env1(), Ast.Name("x")), 42) then unit else trap("x -> 42")
+
+@test
+def subst-miss() = match subst(env1(), Ast.Name("y")) with
+  | Ast.Name(_) => unit
+  | _ => trap("y stays a Name")
+
+@test
+def subst-int-leaf() =
+  if is-int(subst(env1(), Ast.Int(7)), 7) then unit else trap("int leaf unchanged")
+
+@test
+def subst-rename() = if is-name(subst(env2(), Ast.Name("y")), "z") then unit else trap("y -> z")
+
+@test
+def subst-preserves-shape() =
+  if len-is(subst(env1(), Ast.List([Ast.Name("x"), Ast.Name("x"), Ast.Int(0)])), 3) then
+    unit
+  else
+    trap("shape preserved")
+
+@test
+def subst-in-list-head() = match subst(env1(), Ast.List([Ast.Name("x"), Ast.Int(5)])) with
+  | Ast.List(es) => (if is-int(Option.expect(List.at(es, 0), "a"), 42) then
+    unit
+  else
+    trap("head x -> 42"))
+  | _ => trap("still a list")
+
+@test
+def subst-nested-shape() =
+  if len-is(subst(env1(), Ast.List([Ast.List([Ast.Name("x")])])), 1) then
+    unit
+  else
+    trap("nested outer len 1")
+
+export { subst }
