@@ -977,12 +977,21 @@ the component type. The new work:
   shared multi list<u8> tuple envelope. Pure ROUTING — `emit_mixed_closure_resource`'s list-result guard GONE,
   its 3 branches thread `tuple_arg` + route to the tuple envelope with the plain exports riding alongside.
   Corpus: a List-returning tuple-arg closure `mk` + plain `twice` → closure (list 10 3) + plain twice(21)=42.
-- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export, multi-export, AND mixed across EVERY result shape, plus
-  distinct-sig at SCALAR result; still to widen: DISTINCT-SIG + a LIST-result + tuple arg (its per-group
-  list-result `call-g` bodies + envelope functypes need the thread — the last list-result gap); a compound arg
-  ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving
-  flattened-tuple fields with pass-through scalars); a
+- **✅✅ TUPLE ARG × LIST-RESULT on the DISTINCT-SIG path — the tuple-arg × RESULT × EXPORT matrix is CLOSED**
+  (`@ed3e160e`, baseline `@fbe5f259`). The last list-result gap: closures of DIFFERENT signatures each taking a
+  fixed-shape scalar tuple arg AND returning a list<u8>-crossing result, each per-group `call-g<n>` rebuilding
+  its own flattened tuple arg. Threaded `gr.tuple_arg` into all three per-group list-result `call-g` branches
+  (collection/value-form/byte-rope, shared helpers); the per-group envelope functype sites (outer + inner
+  import/export) emit a 4-type block (handle + tuple + list<u8> + `(self,tuple)->list<u8>`) for a both-group,
+  `n_bytes + n_tuple` counting the extra types. `emit_distinct_sig_resource`'s guard GONE + the used-ops set
+  gains the rebuild ops (arr-alloc/arr-set + per-field box ops the groups reference — else `import_index` panic
+  for a group whose body builds no cell). Corpus: mk-a (Tuple Int64 Int64 → List) + mk-b (Tuple Int64 Bool →
+  List) of distinct sigs → (list 10 3) / (list 7). 🎯 A FIXED-SHAPE SCALAR compound closure ARG now composes
+  with EVERY result shape (scalar/byte-rope/fixed-compound/collection) across ALL FOUR export shapes
+  (single/multi/mixed/distinct-sig). The direct-call tuple-arg surface is complete.
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — a compound arg ALONGSIDE other args
+  (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving flattened-tuple
+  fields with pass-through scalars); a
   VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
