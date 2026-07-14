@@ -7666,6 +7666,81 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// value-encode of a NESTED-COLLECTION value: a `Map Int (List Int)` — the map VALUE is itself a
+    /// collection walked recursively (`Shape::Map`'s `val` shape can be any encodable shape, not just a
+    /// scalar; the arm's comment says so but every other map/set test uses a scalar value). This is the
+    /// shape the compiler's "sum + nested-collection compound results" work now escapes via value-encode,
+    /// so the recursive value-walk (map → each entry's value → List → vec elements) must be exercised. Assert
+    /// byte-identity to the recursive oracle (which mirrors the nested walk) + entries in canonical KEY
+    /// order with each value list intact.
+    #[test]
+    fn value_encode_map_of_lists_walks_the_nested_value() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: [0]=Int (key), [1]=Int (list elem), [2]=List(elem→1), [3]=Map(key→0, val→2); root=3.
+        // Tags: 0=Int, 7=List, 13=Map.
+        let desc: &[u8] = &[
+            0x04, // table_len = 4
+            0x00, // [0] Int
+            0x00, // [1] Int
+            0x07, 0x01, // [2] List(elem → 1)
+            0x0d, 0x00, 0x02, // [3] Map(key → 0, val → 2)
+            0x03, // root = 3
+        ];
+        // Build { 2: [20,21], 1: [10], 3: [] } — inserted OUT of key order (so the canonical sort reorders),
+        // an EMPTY value list (the zero-element assembler under a map value), and multi-element lists.
+        let mk_list = |elems: &[i64]| -> Handle {
+            let mut v = op_vec_empty();
+            for &e in elems {
+                v = op_vec_push(v, op_box_int(e));
+            }
+            v
+        };
+        let mut m = op_map_empty();
+        m = op_map_insert(m, op_box_int(2), mk_list(&[20, 21]));
+        m = op_map_insert(m, op_box_int(1), mk_list(&[10]));
+        m = op_map_insert(m, op_box_int(3), mk_list(&[]));
+        let doc = op_value_encode_form(m, desc).expect("encode a Map of Lists");
+
+        // Differential: the recursive oracle (its S::Map recurses the value shape) must agree byte-for-byte.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
+        assert_eq!(doc, b.finish(root), "iterative and recursive Map-of-Lists encode must agree");
+
+        // The int leaves, in emission order, are the keys+values interleaved in canonical KEY order:
+        // (1 [10]) (2 [20 21]) (3 []) → 1, 10, 2, 20, 21, 3. (Empty list contributes no int leaf.)
+        let mut ints: Vec<i64> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            if kind == 0 {
+                let len = doc[i] as usize;
+                i += 1;
+                let mut v = 0i64;
+                for &byte in &doc[i..i + len] {
+                    v = (v << 8) | byte as i64;
+                }
+                ints.push(v);
+                i += len;
+            } else if kind == 10 {
+                let len = doc[i] as usize;
+                i += 1 + len;
+            } else {
+                panic!("unexpected leaf kind {kind} in a Map-of-Lists document");
+            }
+        }
+        assert_eq!(
+            ints,
+            vec![1, 10, 2, 20, 21, 3],
+            "keys in numeric order, each followed by its value list's elements (empty list adds none)"
+        );
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     /// value-encode of EMPTY collections — the zero-element assembler edge (`SetOf`/`MapOf`/`List` with
     /// 0 children, `list_head_tail` with an empty tail, the `checked_sub(0)` in the assemblers). An empty
     /// collection returned to the host is common; a zero-element bug (underflow, dropped head, wrong form)
