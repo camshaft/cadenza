@@ -303,9 +303,14 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
         )?;
     }
 
-    // Instantiate each peer and forward its exported interface funcs into the consumer's like-named
-    // import. A peer that imports the runtime gets the SAME shared instance bound into its linker (so its
-    // handles index the one shared heap); its funcs live in the SHARED store.
+    // Instantiate each peer and forward its exported interface funcs into the consumer's like-named import.
+    // A peer that imports the runtime gets the SAME shared instance bound into its linker (so its handles
+    // index the one shared heap); its funcs live in the SHARED store. A peer may ALSO import ANOTHER peer's
+    // interface (an A→B→C chain, where B binds A and publishes its own for C, U11): peers are given in
+    // DEPENDENCY order, so each peer's linker is pre-bound with the interfaces of every EARLIER-instantiated
+    // peer. The extracted interface funcs (`(iface, [(fname, Func)])`) are collected as we go, so a later
+    // peer's linker and finally the consumer's linker bind against them.
+    let mut peer_ifaces: Vec<(String, Vec<(String, wasmtime::component::Func)>)> = Vec::new();
     for (peer, peer_component) in peers.iter().zip(peer_components.iter()) {
         let mut peer_linker: Linker<()> = Linker::new(&engine);
         if let (Some(req), Some((rt_instance, names))) =
@@ -320,6 +325,9 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
                 names,
             )?;
         }
+        // Bind every EARLIER peer's interface into this peer's linker (dependency order): a peer that
+        // imports `cadenza:pairs/api` sees it because the peer providing it was given first.
+        bind_peer_ifaces_into(&mut peer_linker, &peer_ifaces)?;
         let peer_instance = peer_linker
             .instantiate(&mut store, peer_component)
             .map_err(|e| anyhow!("instantiate peer `{}`: {e}", peer.interface))?;
@@ -347,9 +355,7 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
                     peer.interface
                 )
             })?;
-        let mut iface = linker
-            .instance(&peer.interface)
-            .map_err(|e| anyhow!("linker instance {}: {e}", peer.interface))?;
+        let mut funcs = Vec::new();
         for fname in &func_names {
             let fidx = peer_instance
                 .get_export_index(&mut store, Some(&iface_idx), fname)
@@ -357,13 +363,13 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
             let f = peer_instance
                 .get_func(&mut store, fidx)
                 .ok_or_else(|| anyhow!("peer export `{fname}` is not a func"))?;
-            iface.func_new(fname, move |mut ctx, params, results| {
-                f.call(&mut ctx, params, results)?;
-                f.post_return(&mut ctx)?;
-                Ok(())
-            })?;
+            funcs.push((fname.clone(), f));
         }
+        peer_ifaces.push((peer.interface.clone(), funcs));
     }
+
+    // Bind every peer's exported interface into the CONSUMER's linker (the top of the chain imports them).
+    bind_peer_ifaces_into(&mut linker, &peer_ifaces)?;
 
     // Bind the consumer's HOST-effect imports (if any), skipping the peer interfaces already bound above
     // so a peer interface is never double-bound as a host effect.
@@ -584,6 +590,31 @@ fn instantiate_runtime(
         .instantiate(&mut *store, &runtime)
         .map_err(|e| anyhow!("instantiate runtime: {e}"))?;
     Ok((rt_instance, heap_func_names))
+}
+
+/// Forward each already-extracted PEER interface into `linker`, so a component importing `cadenza:pkg/iface`
+/// resolves it to the like-named peer's exported funcs (U11 chain support). Each entry is
+/// `(interface, [(fname, Func)])` — the funcs pulled off an earlier-instantiated peer instance. Shared by
+/// each peer's linker (dependency order) and the consumer's linker. A `func_new` closure calls the peer
+/// func then its `post_return`, exactly as the inline single-pass binding did.
+fn bind_peer_ifaces_into(
+    linker: &mut Linker<()>,
+    peer_ifaces: &[(String, Vec<(String, wasmtime::component::Func)>)],
+) -> Result<()> {
+    for (interface, funcs) in peer_ifaces {
+        let mut iface = linker
+            .instance(interface)
+            .map_err(|e| anyhow!("linker instance {interface}: {e}"))?;
+        for (fname, f) in funcs {
+            let f = *f;
+            iface.func_new(fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Forward each heap-op function of an already-instantiated runtime instance into `linker` under

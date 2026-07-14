@@ -50779,6 +50779,7 @@ mod cross_component_oracle {
             &exports,
             &["cadenza:peer/api"],
             &extern_fns,
+            None,
         )
     }
 
@@ -51850,40 +51851,89 @@ mod cross_component_oracle {
         }
     }
 
+    // ------------------------------------------------------------------------------------------------
+    // U11 — an A→B→C CHAIN: a MIDDLE component B is BOTH a consumer (binds A) AND a provider (publishes its
+    // own interface for C). The fused consumer+provider envelope: B imports A's interface (as a peer),
+    // computes, and BUNDLES its own boundary export into a named interface instance for C — instead of
+    // exporting top-level. Threaded end-to-end by `run_with_peers`, which now binds each earlier peer's
+    // interface into later peers' linkers (dependency order) so B (peer) can import A (peer).
+    // ------------------------------------------------------------------------------------------------
+
     #[test]
-    fn u10_a_consumer_that_is_also_a_provider_declines() {
-        use crate::abi::Artifact;
-        use crate::backend::Target;
+    fn u11_a_middle_component_is_both_consumer_and_provider() {
         use crate::testkit::parse;
-        // A MIDDLE-OF-CHAIN source: it BINDS a peer (`(effect P)` + `(bind P …)`) AND is compiled with a
-        // `--component-name` (means to publish `main` as `cadenza:mid/api`). The consumer+provider fused
-        // envelope is not yet emitted, so this must DECLINE honestly rather than silently export top-level.
-        let src = "(do \
-            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
-            (bind P \"cadenza:pairs/api\") \
-            (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+        // A (provider): `pair x = (tuple x x)` published as cadenza:pairs/api (compound).
+        let a = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        // B (MIDDLE — consumer of A AND provider for C): binds P→cadenza:pairs/api, reads element 0 of the
+        // tuple and adds 1, published as `mid` under cadenza:mid/api. B both IMPORTS a peer and PUBLISHES
+        // its own interface — the fused envelope. (It inspects a compound handle → uses the runtime.)
+        let b = compile_provider(
+            "(do \
+                (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+                (bind P \"cadenza:pairs/api\") \
+                (def (mid (: x Int64)) (host (P) (+ (. (P.pair x) 0) 1))) \
+                (export mid))",
+            "cadenza:mid/api",
+        );
+        // B must publish its own interface (a named instance), NOT export `mid` top-level, AND import both
+        // A's interface and the runtime.
+        assert!(
+            contains_bytes(&b, b"cadenza:mid/api")
+                && contains_bytes(&b, b"cadenza:pairs/api"),
+            "the middle component publishes cadenza:mid/api AND imports cadenza:pairs/api"
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&b).expect("the middle component validates");
+        }
+        // C (top consumer): binds M→cadenza:mid/api, calls `mid`.
+        let c_src = "(do \
+            (effect M (op mid (-> Int64 Int64))) \
+            (bind M \"cadenza:mid/api\") \
+            (def (main (: x Int64)) (host (M) (M.mid x))) \
             (export main))";
-        let ast = crate::codec::encode(&parse(src));
-        let out = crate::host::run_with_compiler_stack(|| {
-            crate::compile(
-                &[
-                    Artifact::new(Artifact::KIND_AST, "mid", ast),
-                    crate::cli::component_name_artifact("cadenza:mid/api"),
-                ],
-                &[Target::Wasm],
-            )
-        });
-        assert!(
-            out.artifact(Target::Wasm.artifact_kind()).is_none(),
-            "a consumer+provider must decline, not emit a component that drops its --component-name"
-        );
-        assert!(
-            out.diagnostics.iter().any(|d| d
-                .message
-                .contains("both binds a peer interface AND publishes its own")),
-            "expected the consumer+provider decline; got: {:?}",
-            out.diagnostics
-        );
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(c_src)))
+            .unwrap_or_else(|d| panic!("chain top consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("chain consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U11] runtime wasm not found; skipping");
+            return;
+        };
+        // Peers in DEPENDENCY ORDER: A first (B imports it), then B (C imports it).
+        let peers = vec![
+            cdz_run::Peer {
+                bytes: a,
+                interface: "cadenza:pairs/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: b,
+                interface: "cadenza:mid/api".to_string(),
+            },
+        ];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("an A->B->C chain runs")
+        {
+            // C.main(9) → B.mid(9) → (A.pair(9)=(9,9)).0 + 1 = 9 + 1 = 10. A value flows A→B→C, with B both
+            // consuming A and providing to C over the fused envelope.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "a value flows through the A->B->C chain (B is both consumer and provider)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("chain run trapped: {t}"),
+        }
     }
 
     /// Substring search over bytes (dependency-free) — used to assert a component embeds an import name.

@@ -881,6 +881,7 @@ pub fn assemble_extern(
     exports: &[BoundaryExport],
     op_ifaces: &[&str],
     extern_fns: &[HostFn],
+    publish_iface: Option<&str>,
 ) -> Vec<u8> {
     let p = extern_fns.len();
     let m = exports.len();
@@ -1011,13 +1012,39 @@ pub fn assemble_extern(
         section(sec::CANON, &wasm_vec(m, &items))
     };
 
-    // sec 11: export each lifted component func (`p+j`) under its verbatim boundary name.
-    let export_sec = {
-        let mut items = Vec::new();
-        for (j, e) in exports.iter().enumerate() {
-            items.extend_from_slice(&comp_export_item(&e.name, (p + j) as u32));
+    // sec 5 + 11 (publish) OR sec 11 (top-level): when this component is ALSO a provider (`publish_iface`
+    // = `Some(iface)`, a MIDDLE-of-chain component that both binds a peer and publishes its own interface,
+    // U11), BUNDLE the lifted boundary funcs (comp funcs `p..p+m`) into a component instance and export
+    // THAT under `iface` — exactly the `assemble_provider` shape, but with the peer imports/lowers ahead of
+    // it. The bundle is comp instance `g` (after the g imported peer instances `0..g`). Otherwise
+    // (`None`, a pure consumer) export each lifted func at TOP LEVEL under its verbatim name (byte-identical
+    // to the X3 shape — the `instance_sec` is empty and never appended).
+    let (instance_sec, export_sec) = match publish_iface {
+        Some(iface) => {
+            let mut item = vec![0x01]; // export-items form
+            let mut members = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                let name = super::kebab_extern_name(&e.name);
+                members.extend_from_slice(&extern_name(&name));
+                members.push(0x01); // ComponentExportKind::Func
+                uleb128((p + j) as u64, &mut members);
+            }
+            item.extend_from_slice(&wasm_vec(m, &members));
+            let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
+            let iface_name = super::kebab_extern_name(iface);
+            let export_sec = section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(1, &export_instance_item(&iface_name, g as u32)),
+            );
+            (instance_sec, export_sec)
         }
-        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+        None => {
+            let mut items = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                items.extend_from_slice(&comp_export_item(&e.name, (p + j) as u32));
+            }
+            (Vec::new(), section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)))
+        }
     };
 
     let mut out = Vec::new();
@@ -1031,7 +1058,8 @@ pub fn assemble_extern(
     out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
     out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
     out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
-    out.extend_from_slice(&export_sec); // 11: export
+    out.extend_from_slice(&instance_sec); // 5: (publish) bundle lifts into an instance — empty for a consumer
+    out.extend_from_slice(&export_sec); // 11: export the instance (publish) or each func (top-level)
     out
 }
 
@@ -1072,6 +1100,7 @@ pub fn assemble_extern_runtime(
     extern_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
+    publish_iface: Option<&str>,
 ) -> Vec<u8> {
     let p = extern_fns.len();
     let k = imports.len();
@@ -1236,13 +1265,38 @@ pub fn assemble_extern_runtime(
         section(sec::CANON, &wasm_vec(m, &items))
     };
 
-    // sec 11: export each lifted component func (`p+k+j`) under its verbatim boundary name.
-    let export_sec = {
-        let mut items = Vec::new();
-        for (j, e) in exports.iter().enumerate() {
-            items.extend_from_slice(&comp_export_item(&e.name, (p + k + j) as u32));
+    // sec 5 + 11 (publish) OR sec 11 (top-level): when this component is ALSO a provider (`publish_iface`
+    // = `Some(iface)`, a MIDDLE-of-chain component binding a peer AND publishing its own interface while
+    // inspecting a compound handle, U11), BUNDLE the lifted boundary funcs (comp funcs `p+k..p+k+m`) into a
+    // component instance and export THAT under `iface`. The bundle is comp instance `g+1` (after the g
+    // imported peer instances `0..g` and the runtime instance `g`). Otherwise (`None`, a pure consumer)
+    // export each lifted func at TOP LEVEL (byte-identical to the X5 shape — `instance_sec` stays empty).
+    let (instance_sec, export_sec) = match publish_iface {
+        Some(iface) => {
+            let mut item = vec![0x01]; // export-items form
+            let mut members = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                let name = super::kebab_extern_name(&e.name);
+                members.extend_from_slice(&extern_name(&name));
+                members.push(0x01); // ComponentExportKind::Func
+                uleb128((p + k + j) as u64, &mut members);
+            }
+            item.extend_from_slice(&wasm_vec(m, &members));
+            let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
+            let iface_name = super::kebab_extern_name(iface);
+            let export_sec = section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(1, &export_instance_item(&iface_name, (g + 1) as u32)),
+            );
+            (instance_sec, export_sec)
         }
-        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+        None => {
+            let mut items = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                items.extend_from_slice(&comp_export_item(&e.name, (p + k + j) as u32));
+            }
+            (Vec::new(), section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)))
+        }
     };
 
     let mut out = Vec::new();
@@ -1256,7 +1310,8 @@ pub fn assemble_extern_runtime(
     out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
     out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
     out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
-    out.extend_from_slice(&export_sec); // 11: export
+    out.extend_from_slice(&instance_sec); // 5: (publish) bundle lifts into an instance — empty for a consumer
+    out.extend_from_slice(&export_sec); // 11: export the instance (publish) or each func (top-level)
     out
 }
 

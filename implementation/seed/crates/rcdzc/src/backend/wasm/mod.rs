@@ -835,20 +835,14 @@ pub fn emit(
     // instance exports every lowered op FLAT by name, so op names must be globally UNIQUE across the bound
     // interfaces; a cross-interface collision declines (the merged instance would export the name twice).
     if !extern_imports.is_empty() {
-        // A MIDDLE-OF-CHAIN component that is BOTH a consumer (binds a peer) AND a provider (compiled with a
-        // `--component-name`, so it means to publish its exports as a named interface) is not yet emitted:
-        // the extern envelope exports the consumer's boundary at TOP LEVEL, so the provider intent would be
-        // silently dropped and a downstream consumer binding this component's interface would fail to link.
-        // DECLINE honestly (decline-don't-miscompile) rather than emit a component that ignores its
-        // `--component-name`. The fused consumer+provider envelope (an A→B→C chain, B both imports A's
-        // interface and publishes its own) is a later increment.
-        if db.component_name.is_some() {
-            return Err(Reject::decline(
-                "a component that both binds a peer interface AND publishes its own (--component-name) is \
-                 not yet emitted (the consumer+provider chain envelope is a later increment); compile it \
-                 as either a consumer or a provider, not both",
-            ));
-        }
+        // A MIDDLE-OF-CHAIN component is BOTH a consumer (binds a peer) AND a provider (compiled with a
+        // `--component-name`): it imports its peer(s), computes, and PUBLISHES its own boundary as a named
+        // interface instance for a downstream consumer (U11). `publish_iface` = `db.component_name`; when
+        // set, the extern envelope bundles the consumer's lifted boundary funcs into an instance exported
+        // under that name instead of exporting them top-level. `None` (a pure consumer) is byte-identical
+        // to the X3/X5 top-level-export shape. This makes an A→B→C chain work: B binds A's interface and
+        // publishes its own for C.
+        let publish_iface = db.component_name.clone();
         let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         for e in &extern_imports {
             if let Some(&prior) = seen.get(e.op.as_str())
@@ -889,6 +883,7 @@ pub fn emit(
                 &extern_fns,
                 &imports,
                 &import_name,
+                publish_iface.as_deref(),
             ));
         }
         return Ok(envelope::assemble_extern(
@@ -896,6 +891,7 @@ pub fn emit(
             &boundary,
             &op_ifaces,
             &extern_fns,
+            publish_iface.as_deref(),
         ));
     }
 

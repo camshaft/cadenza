@@ -143,15 +143,19 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   `main(9)=neg(pair(9).0)=-9` (a value from EACH peer, via `assemble_extern_runtime` g=2) — plus `u9b_*` the
   same-op-name collision decline. 12 cross-component tests.
 
-- **U10 — a consumer+provider (middle of a chain) DECLINES honestly. ✅ DONE (`spec`).** A component that
-  is BOTH a consumer (binds a peer) AND a provider (compiled with `--component-name`) previously took the
-  extern branch and returned BEFORE the provider branch — silently exporting its boundary top-level and
-  DROPPING its `--component-name`, so a downstream consumer binding its interface would fail to link. Added
-  a guard at the top of the extern branch (`db.component_name.is_some()`) that DECLINES ("both binds a peer
-  interface AND publishes its own … the consumer+provider chain envelope is a later increment") rather than
-  miscompile (decline-don't-miscompile, `reference-compiler.md §Outcomes Are Ordered By Safety`). Test
-  `u10_*`. Byte-neutral (no corpus program is both peer-bound and named); gate 2126/0/0. The fused
-  consumer+provider envelope for a real A→B→C chain is the next widening. 13 cross-component tests.
+- **U10 → U11 — a MIDDLE component is BOTH consumer AND provider (an A→B→C chain). ✅ DONE (`spec`).**
+  U10 first made the consumer+provider combination an honest DECLINE; U11 turned it into a working feature.
+  A component B that binds a peer (A) AND is compiled with `--component-name` now imports A's interface,
+  computes, and BUNDLES its own boundary export into a named interface instance for a downstream consumer
+  (C) — the fused envelope. Implemented as an `Option<&str> publish_iface` param on `assemble_extern` /
+  `assemble_extern_runtime`: `None` (a pure consumer) exports each boundary func TOP-LEVEL (byte-identical
+  to X3/X5), `Some(iface)` bundles the lifted funcs into a component instance (the `assemble_provider`
+  shape — comp instance `g` peer-only / `g+1` with runtime) and exports it under `iface`. The runner
+  (`run_with_peers`) now binds each EARLIER peer's interface into later peers' linkers (peers in dependency
+  order, `bind_peer_ifaces_into`), so B (a peer) can import A (a peer). Test `u11_*`: A publishes
+  `cadenza:pairs/api` (`pair`), B binds it + publishes `cadenza:mid/api` (`mid x = pair(x).0 + 1`), C binds
+  `cadenza:mid/api` → `main(9)=10`, a value flowing A→B→C. Byte-neutral (`publish_iface=None` is the old
+  shape); gate 2141/0/0. 14 cross-component tests + 8 cdz-run tests.
 
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
