@@ -2015,8 +2015,13 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // and an unbound name surfaces its own CDZ0101 at the reference; only an unambiguous non-effect def is a
     // certain mis-bind. Uses `def_by_name` — a top-level value def — exactly as the host-delegates-a-value
     // check does, since `effect_decl_by_name` is a top-level-only registry.)
+    // Scan only the TOP-LEVEL `(bind …)` directives — the same scope `scan_effect_bindings` uses. An
+    // arena-wide scan (`0..structure.len()`) also matches a `(bind …)` list NESTED in a handler arm — an
+    // effect declaring an operation named `bind`, whose arm is `(bind (params) s body)` — and misreads it
+    // as a malformed peer-binding (arity ≠ 2) → a spurious CDZ0201 on a legal operation name. `bind` is an
+    // ordinary identifier; only a top-level `(bind …)` is a peer-binding directive.
     let mut bound_effects: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+    for form in db.top_bind_forms() {
         let Some(btail) = db.ast.as_form(form, "bind").map(<[_]>::to_vec) else {
             continue;
         };

@@ -52223,6 +52223,22 @@ mod cross_component_oracle {
             "a duplicate (bind E …) is CDZ0201: {:?}",
             d4.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (e) NO FALSE POSITIVE: an effect declaring an OPERATION named `bind` — whose handler arm is a
+        // NESTED `(bind (params) s body)` list — is NOT a peer-binding directive and MUST NOT be flagged.
+        // The malformed-`(bind …)` scan reads only TOP-LEVEL `(bind …)` (via `top_bind_forms`); an
+        // arena-wide scan would misread the arity-3 arm as a malformed directive → a spurious CDZ0201 on a
+        // legal operation name. `bind` is an ordinary identifier.
+        let bind_op = "(do (effect Scope (op bind (-> Int64 Int64)) (op depth (-> Unit Int64))) \
+                       (def (main) (handle Scope 0 ((bind (v) d (resume (+ v d) (+ d 1))) \
+                       (depth (u) d (resume d d))) (let ((a (Scope.bind 10))) (Scope.depth)))) (export main))";
+        let d5 = crate::diagnostics(&mut crate::db::Db::load(parse(bind_op)));
+        assert!(
+            !d5.iter()
+                .any(|d| d.message.contains("(bind")
+                    || d.message.contains("binds an EFFECT to a peer")),
+            "an effect operation named `bind` must not be misread as a peer-binding directive: {:?}",
+            d5.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component

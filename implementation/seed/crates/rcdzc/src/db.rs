@@ -2735,6 +2735,19 @@ impl Db {
         out
     }
 
+    /// The TOP-LEVEL `(bind …)` peer-binding directives — the same scope `scan_effect_bindings` reads. A
+    /// `(bind …)` is a top-level DIRECTIVE (like `def`/`export`/`effect`); a `(bind …)` list appearing
+    /// NESTED (e.g. a handler arm for an effect operation named `bind` — `((bind (k) s body) …)`) is NOT a
+    /// peer-binding and MUST NOT be scanned as one. The malformed-`(bind …)` diagnostic uses this so it
+    /// matches the binding scanner's scope exactly (an arena-wide scan misreads a nested `(bind …)` arm as
+    /// a malformed directive → a spurious CDZ0201 on a legal `bind` operation name).
+    pub fn top_bind_forms(&self) -> Vec<StructId> {
+        top_items(&self.ast)
+            .into_iter()
+            .filter(|&item| self.ast.as_form(item, "bind").is_some())
+            .collect()
+    }
+
     /// Malformed elements of top-level `(export …)` clauses. An export clause names one or more
     /// definitions — `(export a)` / `(export a b …)` (the multi-name surface) — so EVERY tail element must
     /// be a bare NAME. A NON-name element — `(export (g x))`, `(export 5)`, `(export a 5)` — and an EMPTY

@@ -1527,6 +1527,24 @@
   (output (: 5 Int64))
   (host-calls))
 
+(case "an effect operation may be named `bind` — the interop directive keyword is not reserved for op names"
+  (doc    "`bind` is the head of the top-level peer-binding DIRECTIVE `(bind Effect \"cadenza:pkg/iface\")`,
+           but that keyword is reserved only at the top level — an effect operation, like any member, may
+           be named `bind`. `(effect Scope (op bind (-> Int64 Int64)) (op depth (-> Unit Int64)))` declares
+           a `bind` operation whose handler arm is the NESTED list `(bind (v) d (resume (+ v d) (+ d 1)))`.
+           Seeded 0: `(Scope.bind 10)` reads d=0 → `10 + 0` = 10 (state → 1), `(Scope.bind 20)` reads d=1 →
+           `20 + 1` = 21 (state → 2), `(Scope.depth)` reads 2, so `(+ 10 (+ 21 2))` = 33. Pins that the
+           malformed-`(bind …)` diagnostic scopes to TOP-LEVEL directives only: an arena-wide scan misreads
+           the arity-3 handler arm as a malformed peer-binding (wrong arity) and rejects the program with a
+           spurious CDZ0201 — a false positive on a legal operation name, fixed by scoping the scan to
+           top-level `(bind …)` forms.")
+  (input  (do
+            (effect Scope (op bind (-> Int64 Int64)) (op depth (-> Unit Int64)))
+            (def (main)
+              (handle Scope 0 ((bind (v) d (resume (+ v d) (+ d 1))) (depth (u) d (resume d d)))
+                (let ((a (Scope.bind 10))) (let ((b (Scope.bind 20))) (+ a (+ b (Scope.depth))))))) (export main)))
+  (output (: 33 Int64)))
+
 ; The dual of the collision-free cross-effect case: WITHIN one effect, an operation name declared TWICE
 ; is ill-formed. capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
 ; Operations: an effect declaration "binds each of its operations to an operation type, so that the set of
