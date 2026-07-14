@@ -1609,6 +1609,19 @@ fn emit_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
+    // A fixed-shape scalar tuple/record ARGUMENT is supported only with a SCALAR result this increment: the
+    // byte-rope/compound/collection RESULT paths use SEPARATE core serializers (`closure_bytes_/value_/
+    // value_encode_resource_core_module`) that inline their own `call` bodies + do NOT thread the
+    // `TupleArgRebuild`, and their envelopes take `arg_bytes` (empty for a tuple arg) — so combining the two
+    // would emit a scalar-arg envelope over a flattened-field core (an INVALID component). Decline cleanly
+    // (a later widening: thread the rebuild through the three list-result serializers + their envelopes).
+    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/collection RESULT \
+             is not yet emitted (the compound-result core serializers do not yet rebuild a flattened tuple \
+             argument — a later widening; a scalar-result compound arg works)",
+        ));
+    }
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
@@ -2186,6 +2199,15 @@ fn emit_multi_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
+    // A fixed-shape compound ARG is supported only with a SCALAR result (the list-result multi cores don't
+    // thread the `TupleArgRebuild`, so combining would emit a scalar-arg envelope over a flattened-field core
+    // — an INVALID component). Decline cleanly (mirrors the single-export + distinct-sig guards).
+    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a multi-export closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/\
+             collection RESULT is not yet emitted (a later widening; a scalar-result compound arg works)",
+        ));
+    }
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
@@ -2592,6 +2614,15 @@ fn emit_mixed_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
+    // A fixed-shape compound ARG is supported only with a SCALAR result (the list-result mixed cores don't
+    // thread the `TupleArgRebuild`, so combining would emit a scalar-arg envelope over a flattened-field core
+    // — an INVALID component). Decline cleanly (mirrors the single-export + distinct-sig guards).
+    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a mixed closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/collection \
+             RESULT is not yet emitted (a later widening; a scalar-result compound arg works)",
+        ));
+    }
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {

@@ -2660,6 +2660,26 @@
   (call   mk-eq (: (tuple 5 5) (Tuple Int64 Int64)))
   (output (: true Bool)))
 
+; A fixed-shape compound ARGUMENT combined with a COMPOUND (or byte-rope / collection) RESULT is not yet
+; emitted: the list-returning result cores (`closure_value_/bytes_/value_encode_resource_core_module`) inline
+; their own `call` bodies and do NOT thread the `TupleArgRebuild`, while their envelopes take the scalar
+; `arg_bytes` (empty for a tuple arg) — so combining the two once emitted a scalar-arg envelope over a
+; flattened-field core, an INVALID component. The compiler now DECLINES cleanly (a `todo`) rather than emit a
+; module that fails to parse. A SCALAR-result compound arg works (the cases above); threading the rebuild
+; through the three list-result serializers + their envelopes is a later widening.
+
+(case "a fixed-shape Tuple ARG with a Tuple RESULT is declined (compound-result core lacks the rebuild)"
+  (doc    "`(fn (p) (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1))))` — a `(Tuple Int64 Int64)` argument AND a
+           `(Tuple Int64 Int64)` result. The arg would cross flattened as a native `tuple<s64,s64>` (rebuilt
+           in-guest), but the compound-RESULT core serializer does not yet thread that rebuild, so the compiler
+           DECLINES rather than emit an invalid component (a scalar-arg envelope over a flattened-field core).
+           A scalar-result tuple arg works; this compound-arg + compound-result combination is a later widening.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 13 7) (Tuple Int64 Int64))))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

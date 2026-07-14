@@ -42758,6 +42758,31 @@ mod closure_host_resource {
         );
     }
 
+    /// A fixed-shape compound ARGUMENT combined with a COMPOUND (or byte-rope / collection) RESULT must
+    /// DECLINE cleanly — NOT emit an invalid component. The list-returning result cores inline their own
+    /// `call` bodies and do not thread the `TupleArgRebuild`, while their envelopes take the scalar `arg_bytes`
+    /// (empty for a tuple arg), so combining the two once emitted a scalar-arg envelope over a flattened-field
+    /// core (a module that fails to parse). Regression guard for that miscompile-turned-decline. A
+    /// scalar-result compound arg still emits (the companion test above).
+    #[test]
+    fn a_compound_arg_with_a_compound_result_declines_not_miscompiles() {
+        use crate::testkit::parse;
+        // A `(Tuple Int64 Int64)` argument AND a `(Tuple Int64 Int64)` result.
+        let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+                   (tuple (. p 0) (. p 1)))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a compound arg + compound result must DECLINE (the compound-result core lacks the tuple rebuild)",
+        );
+        assert!(
+            err.message.contains("compound ARGUMENT")
+                && err.message.contains("RESULT")
+                && err.code.is_none(),
+            "expected the compound-arg + compound-result decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
     #[test]
     fn a_partial_application_escaping_as_a_result_declines_with_an_arity_message() {
         use crate::testkit::parse;
