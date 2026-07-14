@@ -988,6 +988,8 @@ pass	a runtime negative dividend divided by a constant power of two truncates to
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
+pass	a runtime product's derived dimension cancels correctly through a divide
+pass	a runtime product's derived dimension is enforced against an incompatible add
 pass	a runtime record built behind a recursive call escapes to the host
 pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
@@ -1036,8 +1038,12 @@ pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
+pass	a runtime-magnitude product multiplies the erased magnitudes
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
+pass	a runtime-magnitude quotient divides the erased magnitudes
+pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
+pass	a runtime-magnitude same-unit sum adds the erased magnitudes
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)

@@ -135,6 +135,34 @@
   (input  (+ (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter"))))
   (output (: (Qty.of 5.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+; The same-dimension add/sub above fold at compile time (both magnitudes constant). A RUNTIME magnitude —
+; a boundary parameter — cannot fold: the underlying integer add/sub runs as an emitted instruction, with
+; the unit still a compile-time-only obligation contributing nothing to the arithmetic. These pin that a
+; same-UNIT sum/difference (no scale conversion — contrast the mixed-unit runtime sum later in this file,
+; whose *1000 conversion IS emitted) reads the parameter's magnitude and adds it, `Qty.value` recovering
+; the erased result. The unit layer is erased before run time, so only the numeric core's op is emitted.
+
+(case "a runtime-magnitude same-unit sum adds the erased magnitudes"
+  (doc    "`(+ (Qty.of n meter) (Qty.of 5 meter))` with `n` a boundary Int64 parameter: both operands are
+           meters (equal dimension, no conversion), so the unit layer adds nothing and the erased `n + 5`
+           runs as a plain integer add — 3+5 = 8, 100+5 = 105. Pins that a same-unit sum emits the numeric
+           core's add on a runtime magnitude, distinct from the mixed-unit runtime sum (which additionally
+           emits a scale conversion). `Qty.value` recovers the erased sum.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (+ (Qty.of n (Unit.base #"meter")) (Qty.of 5 (Unit.base #"meter"))))) (export main)))
+  (call   main (: 3 Int64)) (output (: 8 Int64))
+  (call   main (: 100 Int64)) (output (: 105 Int64)))
+
+(case "a runtime-magnitude same-unit difference subtracts the erased magnitudes"
+  (doc    "The subtraction companion: `(- (Qty.of n meter) (Qty.of 5 meter))` emits the erased `n - 5` as a
+           plain integer subtract (the checked Int64 subtract of the numeric core), 20-5 = 15. Pins that `-`
+           over equal dimensions runs the numeric core's subtract on a runtime magnitude, contributing no
+           dimensional arithmetic — the operator-class obligation is compile-time only.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (- (Qty.of n (Unit.base #"meter")) (Qty.of 5 (Unit.base #"meter"))))) (export main)))
+  (call   main (: 20 Int64)) (output (: 15 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 (case "adding quantities of incompatible dimension is a compile-time error"
   (doc    "`(+ (Qty.of 1.0 meter) (Qty.of 1.0 second))` combines a length with a time — incompatible
            dimensions — so the compiler rejects it at COMPILE TIME with CDZ0501 (units-of-measure.md
@@ -170,6 +198,56 @@
   (input  (/ (Qty.of 6.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"second"))))
   (output (: (Qty.of 3.0 (Unit./ (Unit.base #"meter") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.base #"second"))))))
+
+; The product/quotient above fold (constant magnitudes). A RUNTIME magnitude cannot fold: the erased
+; multiply/divide is emitted, while the DIMENSION composes at compile time (meter·second, meter/second).
+; These pin runtime `*`/`/` on a quantity — the magnitude arithmetic runs, and the derived dimension is
+; still tracked statically (the round-trip case reads back through a cancelling divide, and the mismatch
+; case shows the composed dimension is enforced against a later add). The unit is erased at run time.
+
+(case "a runtime-magnitude product multiplies the erased magnitudes"
+  (doc    "`(* (Qty.of n meter) (Qty.of 2 second))` with `n` a runtime Int64: the dimension composes to
+           meter·second at compile time, and the erased `n * 2` runs as a plain integer multiply — 3·2 = 6,
+           7·2 = 14. Pins that a runtime product emits the numeric core's multiply on the magnitude while
+           the dimension is derived statically (contributing nothing to the emitted arithmetic).")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (* (Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"second"))))) (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64))
+  (call   main (: 7 Int64)) (output (: 14 Int64)))
+
+(case "a runtime-magnitude quotient divides the erased magnitudes"
+  (doc    "`(/ (Qty.of n meter) (Qty.of 2 second))` derives the velocity dimension meter/second and emits
+           the erased integer `n / 2` (the checked Int64 division of the numeric core) — 6/2 = 3, 10/2 = 5.
+           The runtime companion of the constant velocity, exercising the emitted divide on a runtime
+           magnitude while the derived dimension is a compile-time concern.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (/ (Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"second"))))) (export main)))
+  (call   main (: 6 Int64)) (output (: 3 Int64))
+  (call   main (: 10 Int64)) (output (: 5 Int64)))
+
+(case "a runtime product's derived dimension cancels correctly through a divide"
+  (doc    "`(/ (* (Qty.of n meter) (Qty.of 3 second)) (Qty.of 3 second))` composes meter·second then
+           divides by second, cancelling to meter — the derived dimension arithmetic (`m·s / s = m`) is
+           tracked through the runtime ops at compile time, and the erased magnitude is `n·3 / 3 = n` (4 →
+           4). Pins that the composed dimension of a RUNTIME product is a correct group element, not lost or
+           mis-derived — the divide's dimension quotient sees the product's meter·second.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (/ (* (Qty.of n (Unit.base #"meter")) (Qty.of 3 (Unit.base #"second")))
+                              (Qty.of 3 (Unit.base #"second"))))) (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 30 Int64)) (output (: 30 Int64)))
+
+(case "a runtime product's derived dimension is enforced against an incompatible add"
+  (doc    "The composed dimension of a runtime product is CHECKED like any other: `(+ (* (Qty.of n meter)
+           (Qty.of 2 second)) (Qty.of 1 meter))` adds a meter·second (an area-like product) to a plain
+           meter — incompatible dimensions — so the compiler rejects it (CDZ0501) even though the product's
+           magnitude is a runtime parameter. Pins that a runtime `*` derives a real dimension the type
+           checker enforces, not an erased-to-anything magnitude — the dimension mismatch is a compile-time
+           event regardless of the runtime value.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (+ (* (Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"second")))
+                              (Qty.of 1 (Unit.base #"meter"))))) (export main)))
+  (call   main (: 3 Int64)) (error CDZ0501))
 
 (case "scaling a quantity by a dimensionless quantity keeps its dimension"
   (doc    "`(* (Qty.of 2.0 meter) (Qty.of 3.0 Unit.one))` multiplies a length by a dimensionless scalar:
