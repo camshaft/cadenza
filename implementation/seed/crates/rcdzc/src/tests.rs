@@ -19172,6 +19172,25 @@ mod diagnostics {
             "no coercion fix Bool→Int64 let-binder: {:?}",
             d.fix
         );
+        // The let-binder now shares the FULL `numeric_text_coercion_fix` (M65), not just int-width — so
+        // int→Float and String→Bytes coercions fire here exactly as at the argument/annotation sites.
+        // An int init annotated Float64 → wrap in `(Float64.of-int …)`.
+        let f = first_error("(module m (def (main) (let (((: x Float64) 5)) x)) (export main))");
+        assert_eq!(
+            f.fix.as_ref().map(|x| x.replacement.as_str()),
+            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE).as_str()),
+            "int init annotated Float64 wraps in of-int: {}",
+            f.message
+        );
+        // A String init annotated Bytes → wrap in `(String.to-bytes …)`.
+        let b =
+            first_error("(module m (def (f (: s String)) (let (((: b Bytes) s)) b)) (export f))");
+        assert_eq!(
+            b.fix.as_ref().map(|x| x.replacement.as_str()),
+            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE).as_str()),
+            "String init annotated Bytes wraps in to-bytes: {}",
+            b.message
+        );
     }
 
     #[test]
