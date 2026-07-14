@@ -189,17 +189,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
-- **OPEN (seed `rcdzc` — effect specialization leaks an internal name): a mutually-recursive effectful
-  group where the perform is in a DIFFERENT branch from the mutual call.**
-  `repros/miscompile-mutually-recursive-effectful-functions.sexp`. `cdz check` CLEAN; `cdz compile`
-  fails with `unbound name ev#eff3$s0` (an effect-specialization mangled name leaking as unbound). The
-  seed HANDLES mutual-recursive effect specialization when the perform and the mutual call sit in the
-  SAME strict expression (`(+ (Ctr.tick) (od …))` — its own passing test), but when the perform is in
-  the base-case branch and the mutual `(od …)` call is in the other branch, the `#ctx$s0` specialization
-  is left dangling. NOT a blanket "mutual recursion fails" (a blanket decline would regress the working
-  same-branch shape) — the fix must tie the memo knot for the separate-branch case. A SINGLE
-  self-recursive effectful fn is fine (see `src/fresh.cdz`), so the port threads fresh ids with
-  self-recursion for now.
+- **✅ LEAK FIXED (seed `rcdzc`, 2026-07-14 — landed by THIS loop) → now a clean DECLINE (feature still a
+  Todo): a mutually-recursive effectful group where the perform is in a DIFFERENT branch from the mutual
+  call.** `repros/decline-mutually-recursive-effectful-split-branch.sexp`. Was: `cdz compile` leaked
+  `unbound name ev#eff3$s0` (a specialization mangled name). Now `cdz check`/`cdz compile` both decline
+  cleanly: "this handler is not yet reducible by the tail-resumptive fold." FIX
+  (`effects.rs::specialize_recursive`): a syntactic guard `perform_and_mutual_call_in_separate_branches`
+  declines up front for exactly this shape. NOT a blanket decline — the seed still specializes the
+  working same-branch / same-strict-spine mutual shape (`(+ (Ctr.tick) (od …))`); a unit test locks in
+  that the decline doesn't leak the internal name, and the gate's mutual-effect corpus case still passes.
+  BUILDING the separate-branch specialization (tie the memo knot with per-branch state distribution)
+  remains the Todo. A SINGLE self-recursive effectful fn works (see `src/fresh.cdz`).
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): two live `String` sum-payloads across a
   recursion drop a per-node result.** `repros/miscompile-two-live-string-payloads-across-recursion.sexp`.

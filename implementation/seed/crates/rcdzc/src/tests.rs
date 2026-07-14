@@ -37331,6 +37331,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly() {
+        // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
+        // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
+        // (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`) is NOT yet reducible: the branch-distributed
+        // state threading + the cross-def memo knot would leave a `$s{k}` state reference dangling and leak
+        // the internal `ev#eff…$s0` name in a confusing CDZ0101. It must DECLINE CLEANLY (a "not yet
+        // reducible" fold decline), never leak the internal name. Contrast the SAME-strict-spine mutual
+        // shape (`(def (od n) (+ (Ctr.tick) (ev …)))`), which specializes fine (the test above).
+        let split = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
+                   (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
+                   (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (ev 3))) (export main))";
+        // It must FAIL to compile — but with a CLEAN decline, not the leaked internal name. The Err IS the
+        // decline diagnostic.
+        let d = compile_component(&crate::codec::encode(&parse(split)))
+            .expect_err("the split-branch mutual-effect group must decline");
+        assert!(
+            !d.message.contains("$s0") && !d.message.contains("#eff"),
+            "the decline must NOT leak the internal specialization name: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("not yet reducible"),
+            "the decline names the tail-resumptive-fold limit: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn two_abortive_performs_on_a_strict_spine_the_first_wins() {
         // E4 abortive FIRST-WINS (a MISCOMPILE regression). Two abortive performs on one strict spine —
         // `(+ (Bail.bail 7) (Bail.bail 9))` — evaluate LEFT-TO-RIGHT, and an abort ABANDONS the rest, so the
