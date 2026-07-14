@@ -86,6 +86,9 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
+pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
+pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
+pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
