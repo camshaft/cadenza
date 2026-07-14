@@ -4571,6 +4571,60 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a constructor STORED in a tuple is extracted and applied as a first-class closure"
+  (doc    "A bare constructor `W.Mk` is stored in a TUPLE `(tuple W.Mk 5)` — a heap data structure — then
+           extracted `(. pair 0)` and applied to the sibling element `(. pair 1)`. Unlike a constructor
+           passed straight to an inlined HOF (which folds), a constructor held in a heap value cannot be
+           inlined away: it must exist as a genuine first-class CLOSURE (a funcref, exactly as a `(fn …)` or
+           a named function stored in a tuple does). The constructor eta-expands to `(fn (p) (W.Mk p))`,
+           lifted to a closure. `(. pair 0)` reads it back, `((. pair 0) 5)` builds `(W.Mk 5)` → 5. Pins that
+           a payload constructor is a first-class closure value storable in a data structure, not only an
+           apply-head or a HOF argument. (Realizable on the wasm backend, which stores closures on the heap;
+           the Rust backend does not yet render a closure inside a tuple — a closures-as-tuple-elements
+           vertical, not sum-specific — so this is a wasm-oracle witness.)")
+  (input  (do
+            (type W (Mk Int64) (N))
+            (def (main (: k Int64))
+              (let ((pair (tuple W.Mk 5)))
+                (match ((. pair 0) (. pair 1)) ((W.Mk n) n) ((W.N) -1))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "a constructor CHOSEN by matching one sum is applied to build another"
+  (doc    "A helper `pick : Sel → (-> Int64 W)` dispatches on a selector sum `Sel` and RETURNS one of `W`'s
+           constructors — `((Sel.UseA) W.A)`, `((Sel.UseB) W.B)` — as a first-class value; the caller
+           applies the chosen one to a payload. `((pick UseA) 7)` picks `W.A`, builds `(W.A 7)` → 7. The
+           match-dispatch companion of the `if`-selected-constructor case: the constructor value is produced
+           by a MATCH ARM (not an `if`), threaded out, and applied. Pins that a match arm may yield a bare
+           constructor as a first-class function that is then applied — on every backend.")
+  (input  (do
+            (type Sel (UseA) (UseB))
+            (type W (A Int64) (B Int64))
+            (def (pick (: s Sel)) (match s ((Sel.UseA) W.A) ((Sel.UseB) W.B)))
+            (def (main (: k Int64)) (match ((pick (Sel.UseA)) k) ((W.A n) n) ((W.B n) (+ n 100))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a nullary constructor is a plain first-class value stored in a tuple"
+  (doc    "A NULLARY constructor `W.N` carries no payload, so it is not a function — it is a plain value.
+           Stored in a tuple `(tuple W.N k)`, projected `(. pair 0)`, and matched, it selects the `N` arm.
+           `(match (. pair 0) ((W.Mk n) n) ((W.N) (. pair 1)))` = the sibling `k` = 5. Pins that a nullary
+           constructor is a first-class VALUE (no closure lift needed — distinct from a payload constructor,
+           which eta-expands to a closure), storable and matchable in a data structure. All backends.")
+  (input  (do
+            (type W (Mk Int64) (N))
+            (def (main (: k Int64))
+              (let ((pair (tuple W.N k)))
+                (match (. pair 0) ((W.Mk n) n) ((W.N) (. pair 1)))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "nullary constructor patterns are uniform with unary"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (4th sentence): patterns are uniform `(Ctor binder)`. A nullary variant

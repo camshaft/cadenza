@@ -2421,3 +2421,71 @@ fn compile_locates_a_source_error_instead_of_leaking_a_node_id() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn doc_by_name_reads_a_user_doc_a_builtin_and_a_keyword() {
+    // `cdz doc NAME FILE` surfaces a definition's `(doc "…")`, and falls back to a built-in module's
+    // `(meta doc)` channel / a grammar keyword's help. All in ONE binary (front-end + compiler).
+    let dir = scratch_dir("docname");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def answer (doc \"the ultimate answer\") 42) (def (main) answer) (export main))\n",
+    )
+    .unwrap();
+    let path = f.to_str().unwrap();
+    // A user def's docstring.
+    let (ok, stdout, _) = run(&["doc", "answer", path], "");
+    assert!(ok, "doc succeeds: {stdout}");
+    assert_eq!(stdout.trim(), "the ultimate answer");
+    // A built-in module — read off its record's `(meta doc)` channel, not a name match.
+    let (ok, stdout, _) = run(&["doc", "List", path], "");
+    assert!(ok);
+    assert!(
+        stdout.contains("persistent") && stdout.contains("sequence"),
+        "List's built-in doc: {stdout}"
+    );
+    // A grammar keyword — from the keyword doc table.
+    let (ok, stdout, _) = run(&["doc", "if", path], "");
+    assert!(ok);
+    assert!(
+        stdout.starts_with("Conditional"),
+        "if's keyword doc: {stdout}"
+    );
+    // Total: an undocumented / unknown name is a defined line, exit 0.
+    let (ok, stdout, _) = run(&["doc", "ghost", path], "");
+    assert!(ok, "an unknown name still exits 0 (total): {stdout}");
+    assert_eq!(stdout.trim(), "no documentation for `ghost`");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn doc_at_offset_reads_the_doc_at_a_use_and_at_the_definition() {
+    // `cdz doc-at FILE OFFSET` resolves the cursor to a node, then to the definition it is or references,
+    // and prints that definition's docstring — the "documentation at cursor" hover.
+    let dir = scratch_dir("docat");
+    let f = dir.join("prog.sexp");
+    let src =
+        "(module m (def helper (doc \"a helper value\") 7) (def (main) helper) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let path = f.to_str().unwrap();
+    // Hover the USE of `helper` in main (the last occurrence).
+    let use_off = src.rfind("helper").unwrap();
+    let (ok, stdout, _) = run(&["doc-at", path, &use_off.to_string()], "");
+    assert!(ok, "doc-at succeeds: {stdout}");
+    assert_eq!(stdout.trim(), "a helper value");
+    // Hover the DEFINITION's own name occurrence (`helper` in the def signature).
+    let def_off = src.find("def helper").unwrap() + 4;
+    let (ok, stdout, _) = run(&["doc-at", path, &def_off.to_string()], "");
+    assert!(ok);
+    assert_eq!(stdout.trim(), "a helper value");
+    // A node that documents nothing (the `7` literal) — a defined "no documentation" line, exit 0.
+    let lit_off = src.find(") 7)").unwrap() + 2;
+    let (ok, stdout, _) = run(&["doc-at", path, &lit_off.to_string()], "");
+    assert!(ok, "a node with no doc still exits 0 (total): {stdout}");
+    assert!(
+        stdout.contains("no documentation"),
+        "empty hover message: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

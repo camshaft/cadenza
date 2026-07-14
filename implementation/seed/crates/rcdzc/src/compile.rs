@@ -1799,6 +1799,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             && r.message
                 .contains(crate::diag::RESUME_RESULT_MISMATCH_MARKER)
     });
+    // Likewise: a handler arm that binds the WRONG NUMBER of parameters (CDZ0201) also makes the handler
+    // unfoldable — the same relationship the malformed-handler and resume-result rejects have with the
+    // "not yet reducible" decline. Suppress the decline when such a reject is present so a wrong-arity arm
+    // reports ONE primary error naming the real defect (the arm's parameter count), not a coded reject
+    // shadowed by the leaky fold-decline.
+    let has_arm_arity_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed) && r.message.contains(crate::diag::HANDLER_ARM_ARITY_MARKER)
+    });
     // Likewise: a NON-CANONICAL handle (the retired effect-name-less shape) is rejected at resolve time
     // (`resolve_noncanonical_handle`, a CDZ0201). Because the handle never resolved as a handler, its
     // body's perform is seen by the entrypoint no-home walk as reached with NO enclosing handler → a
@@ -1994,7 +2002,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
-            if (has_malformed_handler_reject || has_resume_result_reject)
+            if (has_malformed_handler_reject || has_resume_result_reject || has_arm_arity_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {

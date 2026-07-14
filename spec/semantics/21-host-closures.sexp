@@ -2827,6 +2827,26 @@
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
   (output (: (map (1 100) (2 200)) (Map Int64 Int64))))
 
+(case "a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary"
+  (doc    "A tuple arg + a `String` result — the byte-rope-result core copies the UTF-8 bytes out as
+           `list<u8>` AFTER rebuilding the flattened tuple arg. `(fn (p) (if (= p.0 p.1) \"eq\" \"ne\"))` with
+           `(5, 5)` → `\"eq\"` = the raw bytes `(101 113)`. Confirms the tuple-arg rebuild threads through the
+           byte-rope `call` for a String result (representationally identical to Bytes).")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (if (= (. p 0) (. p 1)) "eq" "ne")))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)))
+  (output (: (101 113) Bytes)))
+
+(case "a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary"
+  (doc    "A tuple arg + an `(Option Int64)` result — a SUM crosses as `list<u8>` rendered by the runtime
+           `value-encode(rep, desc)` walker (the shape descriptor covers Option). `(fn (p) (if (= p.0 p.1)
+           (Some p.0) None))` with `(5, 5)` → `(Some 5)`. Confirms a tuple arg composes with the sum
+           value-encode result path (distinct from the fixed-compound static-template path).")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (if (= (. p 0) (. p 1)) (Some (. p 0)) None)))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)))
+  (output (: (: (Some 5) (Option Int64)) (Option Int64))))
+
 ; The tuple-arg × list-result composition extends to the MULTI-EXPORT shape: N same-signature closures sharing
 ; ONE list-returning `call` each rebuild the flattened tuple arg cell (the multi bytes/value-form/value-encode
 ; cores + the shared multi list<u8> envelope thread the `TupleArgRebuild`).

@@ -12,8 +12,8 @@ description: >-
   can't answer: the type of a definition (`cdz type`), every source location that references a
   name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
   "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), the bindings
-  visible at a point (`cdz scope`, variable scope tracking), or a module's exported interface
-  (`cdz exports`). Covers the
+  visible at a point (`cdz scope`, variable scope tracking), a module's exported interface
+  (`cdz exports`), or a definition's/built-in's documentation (`cdz doc` / `cdz doc-at`). Covers the
   `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
@@ -209,7 +209,7 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports` / `cdz doc`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
@@ -252,6 +252,20 @@ prog.cdz:1:22: p : Int64
 $ cdz exports prog.cdz
 prog.cdz:1:17: inc : (-> Int64 Int64)
 prog.cdz:1:49: v : Int64
+
+# cdz doc NAME FILE — a definition's documentation (its (doc "…") text), or a built-in's help.
+$ cdz doc inc prog.cdz
+increments its argument
+$ cdz doc List prog.cdz             # a built-in module: read off its (meta doc) channel
+A persistent, immutable sequence indexed from 0. …
+$ cdz doc if prog.cdz               # a grammar keyword: from the keyword doc table
+Conditional: (if cond then else). …
+$ cdz doc ghost prog.cdz           # total: a name that documents nothing is a defined answer
+no documentation for `ghost`
+
+# cdz doc-at FILE OFFSET — documentation at cursor: the doc of the definition the node is/references.
+$ cdz doc-at prog.cdz 49
+increments its argument
 ```
 
 > **Hover reads as a presentation, not a raw type** (`type-at`): a grammar keyword shows `keyword def`
@@ -287,6 +301,15 @@ prog.cdz:1:49: v : Int64
   scope panel rides on.
 - **`exports`** drives `Query::Exports` — the module's interface: each `(export …)` name paired with
   its def's type (signature), at the def's location. The "what does this module offer" view.
+- **`doc`**/**`doc-at`** drive `Query::DocOf`/`Query::DocAt` — the DOCUMENTATION companion of
+  `type`/`type-at`. A definition may carry a leading `(doc "…")` form; the compiler strips it off the
+  def body at load but CAPTURES its text in a doc column keyed by the def's signature, so `doc NAME`
+  and `doc-at OFFSET` both read it (by name, or by resolving a cursor node to its def). When the name
+  is not a user def, `doc` falls back — a **built-in module** is just a record, so its documentation is
+  a `(meta doc)` channel read GENERICALLY off that record (never a name match, honoring
+  no-keys-outside-the-prelude), and a **grammar keyword** (`if`/`let`/`match`/…), not a binding, gets
+  its help from a small keyword table (the doc analogue of the hardcoded grammar set). Total: a name
+  that documents nothing is a defined "no documentation" line.
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 

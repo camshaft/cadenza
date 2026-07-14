@@ -808,6 +808,37 @@
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "a performed operation composes as a RECORD field value that is then projected"
+  (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
+           is a strict, unconditional position, so it composes and the surrounding projection is a pure
+           one-hole context. `(. (record (x (Ask.get)) (y 3)) x)` builds a record whose `x` field is the
+           performed value, then projects `x` — `C = (. (record (x []) (y 3)) x)`, a strongly-pure context
+           around the single perform. `Ask.get` resumes 7, so the record is `{x: 7, y: 3}` and the projection
+           yields 7. Pins that the fold threads through a record field the same as a tuple element — a
+           performed value is an ordinary sub-expression in a compound constructor.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume 7 s)))
+                (. (record (x (Ask.get)) (y 3)) x))) (export main)))
+  (output (: 7 Int64)))
+
+(case "two performs bound by nested lets thread the handler state in order"
+  (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
+           evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
+           counter that hands back `s` and threads `s + 10` (seeded 0): the first `Ask.get` binds `a = 0`
+           (state → 10), the second binds `b = 10` (state → 20), so `(+ a b)` = `(+ 0 10)` = 10. The `let`
+           inits run unconditionally in sequence — a strict spine the threading fold walks left to right —
+           so each perform sees the state the previous one advanced, not the seed. Pins sequential
+           state-threading through a chain of let bindings (had the state not threaded, both reads would be
+           0 and the sum 0), the essential shape of a pass pulling several fresh values in a row.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume s (+ s 10))))
+                (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
+  (output (: 10 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
@@ -1705,3 +1736,61 @@
             (def (main)
               (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
   (error  CDZ0403))
+
+(case "an effect operation returning a SUM is resumed with a sum value and matched"
+  (doc    "The effect/sum intersection: `Ask`'s operation `query` is typed `(-> Int64 Resp)` where `Resp`
+           is a user sum `(Yes Int64) | No`. An in-program handler discharges it by RESUMING with a
+           constructed sum value `(Resp.Yes n)`, and the body MATCHES the operation's result on `Resp`'s
+           variants. `(handle Ask unit ((query (n) s (resume (Resp.Yes n) s))) (match (Ask.query 5) …))`
+           resumes with `(Yes 5)`, the match binds `v = 5` → 5. Pins that a sum flows through an effect
+           operation's result — constructed in the handler arm, resumed, and deconstructed at the perform
+           site — the sum companion of the Int/Unit-resuming handler cases (none of which resume a sum).")
+  (input  (do
+            (type Resp (Yes Int64) (No))
+            (effect Ask (op query (-> Int64 Resp)))
+            (def (main (: k Int64))
+              (handle Ask unit ((query (n) s (resume (Resp.Yes n) s)))
+                (match (Ask.query k) ((Resp.Yes v) v) ((Resp.No) -1))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "an effect operation taking a SUM parameter matches it in the handler arm"
+  (doc    "The mirror of the sum-RESULT case: `Exec.run` is typed `(-> Cmd Int64)` where `Cmd` is a user
+           sum `(Add Int64) | (Mul Int64)`. The PERFORM passes a runtime-built sum `(Exec.run (Cmd.Mul k))`,
+           and the handler arm MATCHES the operation's `Cmd` parameter to dispatch — `Cmd.Mul n` resumes
+           `(* n 2)`, `Cmd.Add n` resumes `(+ n 1)`. `(Exec.run (Cmd.Mul 5))` → `2*5` = 10. Pins that a sum
+           flows INTO an effect operation as its argument, built at the perform site and deconstructed by
+           the handler — the operand companion of the sum-result case above.")
+  (input  (do
+            (type Cmd (Add Int64) (Mul Int64))
+            (effect Exec (op run (-> Cmd Int64)))
+            (def (main (: k Int64))
+              (handle Exec unit
+                ((run (c) s (match c ((Cmd.Add n) (resume (+ n 1) s)) ((Cmd.Mul n) (resume (* n 2) s)))))
+                (Exec.run (Cmd.Mul k))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "a SUM is threaded as a handler's folded state across operations"
+  (doc    "A handler's STATE is a user sum `St = (Cnt Int64)` — the value threaded across the operations it
+           discharges (capabilities-and-effects.md #A Handler Threads State Across The Operations It
+           Discharges). Seeded `(St.Cnt 0)`, each `bump` arm reads the current count out of the sum state
+           (`cur`), resumes with it, and threads the incremented sum (`nxt`) as the new state — so two
+           `(Tick.bump)`s see 0 then 1. `(+ (bump) (bump))` = 0 + 1 = 1. Pins that a sum is a valid handler
+           state value, deconstructed and rebuilt across resumes (the sum companion of the Int-state cases).")
+  (input  (do
+            (type St (Cnt Int64))
+            (effect Tick (op bump (-> Unit Int64)))
+            (def (cur (: s St)) (match s ((St.Cnt c) c)))
+            (def (nxt (: s St)) (match s ((St.Cnt c) (St.Cnt (+ c 1)))))
+            (def (main (: k Int64))
+              (handle Tick (St.Cnt 0) ((bump (u) s (resume (cur s) (nxt s))))
+                (+ (Tick.bump) (Tick.bump))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))

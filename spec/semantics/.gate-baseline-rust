@@ -1691,6 +1691,7 @@ todo	round-trip: a consumer returns a byte-rope built from a single closure resu
 todo	round-trip: a consumer returns a list of tuples from repeated closure application
 todo	round-trip: a consumer returns a record built from the closure result
 todo	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
+todo	a constructor STORED in a tuple is extracted and applied as a first-class closure
 todo	round-trip: a consumer returns an Option built from the closure result
 todo	round-trip: a consumer returns an Option of a tuple
 todo	round-trip: a consumer returns an Option whose payload is a List

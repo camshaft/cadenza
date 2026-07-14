@@ -1881,6 +1881,13 @@ fn body_has_member_tail_call(db: &mut Db, id: StructId, members: &[usize]) -> bo
         Core::Match { arms, .. } => arms
             .iter()
             .any(|a| body_has_member_tail_call(db, a.body, members)),
+        // A LIST match's arm bodies are tail positions too — `emit_tail` threads the loop context into
+        // each (a tail self-call in a `(list …)` arm iterates the loop), so a member tail-call in any arm
+        // makes the function loopable. This is what lets a tail list fold `(sa xs acc) = (match xs ((list)
+        // acc) ((list x .. rest) (sa rest (+ acc x))))` become a constant-stack loop.
+        Core::MatchList { arms, .. } => arms
+            .iter()
+            .any(|a| body_has_member_tail_call(db, a.body, members)),
         _ => false,
     }
 }
@@ -1907,6 +1914,11 @@ fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             }
         }
         Core::Match { arms, .. } => {
+            for arm in arms {
+                tail_callees(db, arm.body, out);
+            }
+        }
+        Core::MatchList { arms, .. } => {
             for arm in arms {
                 tail_callees(db, arm.body, out);
             }
@@ -2373,6 +2385,65 @@ fn emit_tail(
                 block_ty,
                 slots,
                 base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                TailPos::Tail(tl),
+            )
+        }
+        // A LIST match in tail position: dispatch by length, each ARM BODY in tail position (a self-tail
+        // call in a `(list …)` arm becomes a `return_call` / loop iteration). Mirrors the scalar `Match`
+        // arm — materialize the handle + `vec-len` once, then `emit_list_arms_tailable` with `Tail(tl)`.
+        // Without this, `MatchList` fell through to non-tail `emit`, so a tail list fold never looped
+        // (`(sa xs acc) = (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))` stack-recursed).
+        Core::MatchList { scrutinee, arms } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "list match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let handle_slot = *high;
+            *high = handle_slot + 1;
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                handle_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(handle_slot));
+            let len_slot = *high;
+            *high = len_slot + 1;
+            scratch_ty.insert(len_slot, ValType::I32);
+            out.push(Lir::LocalGet(handle_slot));
+            out.push(Lir::CallImport(OP_VEC_LEN));
+            out.push(Lir::LocalSet(len_slot));
+            let mut arm_slots = slots.clone();
+            arm_slots.insert(scrutinee, handle_slot);
+            let arm_base = *high;
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
+            emit_list_arms_tailable(
+                db,
+                &arms,
+                len_slot,
+                block_ty,
+                result_it,
+                &arm_slots,
+                arm_base,
                 high,
                 scratch_ty,
                 layout,
@@ -4603,55 +4674,23 @@ fn emit(
             let mut arm_slots = slots.clone();
             arm_slots.insert(scrutinee, handle_slot);
             let arm_base = *high;
-            fn emit_list_arms(
-                db: &mut Db,
-                arms: &[crate::core::ListArm],
-                len_slot: u32,
-                block_ty: BlockType,
-                arm_slots: &HashMap<StructId, u32>,
-                arm_base: u32,
-                high: &mut u32,
-                scratch_ty: &mut HashMap<u32, ValType>,
-                layout: &Layout,
-                out: &mut Emit,
-            ) -> Result<(), Reject> {
-                let Some((first, rest)) = arms.split_first() else {
-                    out.push(Lir::Unreachable);
-                    return Ok(());
-                };
-                let is_tail =
-                    rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any);
-                if is_tail {
-                    return emit(
-                        db, first.body, arm_slots, arm_base, high, scratch_ty, layout, out,
-                    );
-                }
-                out.push(Lir::LocalGet(len_slot));
-                match first.cond {
-                    crate::core::ListArmCond::LenEq(n) => {
-                        out.push(Lir::ConstI32(n as i32));
-                        out.push(Lir::I32Eq);
-                    }
-                    crate::core::ListArmCond::LenGe(k) => {
-                        out.push(Lir::ConstI32(k as i32));
-                        out.push(Lir::I32GeU);
-                    }
-                    crate::core::ListArmCond::Any => unreachable!("Any is the tail"),
-                }
-                out.push(Lir::If(block_ty));
-                emit(
-                    db, first.body, arm_slots, arm_base, high, scratch_ty, layout, out,
-                )?;
-                out.push(Lir::Else);
-                emit_list_arms(
-                    db, rest, len_slot, block_ty, arm_slots, arm_base, high, scratch_ty, layout,
-                    out,
-                )?;
-                out.push(Lir::End);
-                Ok(())
-            }
-            emit_list_arms(
-                db, &arms, len_slot, block_ty, &arm_slots, arm_base, high, scratch_ty, layout, out,
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
+            emit_list_arms_tailable(
+                db,
+                &arms,
+                len_slot,
+                block_ty,
+                result_it,
+                &arm_slots,
+                arm_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                TailPos::NonTail,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -6146,6 +6185,87 @@ fn emit_arm_body(
         TailPos::Tail(tl) => emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl),
         TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out),
     }
+}
+
+/// Emit a runtime LIST match's arms as a length-dispatch `if`-chain, each ARM BODY at [`TailPos`] `tail`.
+/// The list handle is already materialized (its slot is in `arm_slots` under the scrutinee) and `len_slot`
+/// holds `vec-len`. Each non-final arm tests its length condition and, on match, emits its body; the final
+/// (or `Any`) arm is the unconditional `else`. In TAIL position each arm body is emitted via `emit_arm_body`
+/// (so a tail self-call in an arm becomes a `return_call` / loop iteration) — and since each preceding
+/// non-final arm nests the remaining arms one `if` DEEPER, the threaded `TailLoop.depth` bumps +1 per level
+/// (via `deeper_tail`) so a self-loop `br` targets the loop top correctly. `result_it` grounds a
+/// bare-`ConstInt` arm body to the match's integer result width (as `emit_arm_body` does for scalar arms).
+#[allow(clippy::too_many_arguments)]
+fn emit_list_arms_tailable(
+    db: &mut Db,
+    arms: &[crate::core::ListArm],
+    len_slot: u32,
+    block_ty: BlockType,
+    result_it: Option<IntTy>,
+    arm_slots: &HashMap<StructId, u32>,
+    arm_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+    tail: TailPos,
+) -> Result<(), Reject> {
+    let Some((first, rest)) = arms.split_first() else {
+        out.push(Lir::Unreachable);
+        return Ok(());
+    };
+    let is_tail_arm = rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any);
+    if is_tail_arm {
+        // The unconditional final arm — its body is in the SAME tail position as the whole match.
+        return emit_arm_body(
+            db, first.body, result_it, arm_slots, arm_base, high, scratch_ty, layout, out, tail,
+        );
+    }
+    out.push(Lir::LocalGet(len_slot));
+    match first.cond {
+        crate::core::ListArmCond::LenEq(n) => {
+            out.push(Lir::ConstI32(n as i32));
+            out.push(Lir::I32Eq);
+        }
+        crate::core::ListArmCond::LenGe(k) => {
+            out.push(Lir::ConstI32(k as i32));
+            out.push(Lir::I32GeU);
+        }
+        crate::core::ListArmCond::Any => unreachable!("Any is the tail arm"),
+    }
+    out.push(Lir::If(block_ty));
+    // This arm's body sits inside the freshly-opened `if`; a self-loop `br` from it must target one level
+    // further out, so bump the tail depth.
+    emit_arm_body(
+        db,
+        first.body,
+        result_it,
+        arm_slots,
+        arm_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+        deeper_tail(tail),
+    )?;
+    out.push(Lir::Else);
+    // The remaining arms are ALSO one `if` deeper — pass the bumped tail.
+    emit_list_arms_tailable(
+        db,
+        rest,
+        len_slot,
+        block_ty,
+        result_it,
+        arm_slots,
+        arm_base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+        deeper_tail(tail),
+    )?;
+    out.push(Lir::End);
+    Ok(())
 }
 
 /// Emit a GUARDED arm's body gated on its guard (the caller has already established that the arm's

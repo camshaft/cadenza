@@ -317,7 +317,88 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         names.insert(name.to_string(), float_module_record(ast, width));
     }
 
+    // Attach a `(meta doc "…")` channel to a starter set of built-in module records, so the `DocOf`
+    // query can surface a built-in's documentation the SAME way it surfaces a user def's — as data on the
+    // record, read back generically (`eval::project_meta(_, "doc")`), never by matching the name in the
+    // query. A built-in module is just a record, so its documentation is just another meta field on it —
+    // exactly as its type (`(meta t)`) and its apply behaviour (`(meta apply)`) already are. Grammar
+    // KEYWORDS (`if`/`let`/…) are not bindings in this map, so their docs live in a small table the query
+    // consults as its final fallback (`sidecar::grammar_keyword_doc`), the doc analogue of the already-
+    // hardcoded `resolve::GRAMMAR` set.
+    attach_builtin_docs(ast, &mut names);
+
     names
+}
+
+/// The documentation text for each built-in NAME carrying a `(meta doc)` channel — one `(name, text)`
+/// row per documented module/operator. A starter set (the common collections, text, and arithmetic
+/// surface); more rows are added as their docs are written, never a behaviour change. The text is a
+/// single line (a doc summary), matching a user `(doc "…")` form's one-string shape.
+fn builtin_doc_table() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "List",
+            "A persistent, immutable sequence indexed from 0. Operations (len, push, concat, update, at) each yield a new list and leave the operand unchanged.",
+        ),
+        (
+            "Map",
+            "A persistent, immutable map associating each key with at most one value. Operations (empty, insert, lookup, remove, size) each yield a new map; lookup and remove are total.",
+        ),
+        (
+            "Set",
+            "A persistent, immutable set of distinct elements. Operations (of, contains, len, insert, remove, union, intersection, difference) each yield a new set.",
+        ),
+        (
+            "String",
+            "An immutable sequence of Unicode scalar values. Reachable operations project by member access (String.scalar-len, String.byte-len).",
+        ),
+        (
+            "Bytes",
+            "An immutable sequence of bytes. Reachable operations project by member access (Bytes.of, Bytes.len).",
+        ),
+        (
+            "+",
+            "Integer addition. Width-generic: (+ a b) : (Int a) -> (Int a) -> (Int a).",
+        ),
+        (
+            "-",
+            "Integer subtraction. Width-generic: (- a b) : (Int a) -> (Int a) -> (Int a).",
+        ),
+        (
+            "*",
+            "Integer multiplication. Width-generic: (* a b) : (Int a) -> (Int a) -> (Int a).",
+        ),
+        (
+            "compare",
+            "Three-way comparison yielding an Ordering (Less/Equal/Greater) — the total order the boolean operators (<, >, =, ...) agree with.",
+        ),
+    ]
+}
+
+/// Append a `(meta doc "text")` channel to each record named in [`builtin_doc_table`], IN PLACE. Uses the
+/// same [`meta_field`] helper the `(meta t)`/`(meta apply)` channels use, so a doc is one more meta field
+/// on the record — read back by `eval::project_meta(_, "doc")` and INVISIBLE to member access (a `(meta
+/// doc)` key is namespaced, so `(. List doc)` does not project it) and to record typing (which reads
+/// `(meta t)`/`(meta apply)`, not the field set). A name absent from `names`, or whose occurrence is not a
+/// `(record …)` list, is skipped — the table stays a pure addition that cannot break a record's shape.
+fn attach_builtin_docs(ast: &mut Arenas, names: &mut BTreeMap<String, StructId>) {
+    for (name, text) in builtin_doc_table() {
+        let Some(&rec) = names.get(*name) else {
+            continue;
+        };
+        // Only a `(record …)` list carries meta channels; a bare atom (e.g. `unit`) has none to extend.
+        if !matches!(ast.get(rec), Struct::List(_)) {
+            continue;
+        }
+        let text_node = push_atom(ast, Leaf::Str(text.to_string()));
+        let doc_field = meta_field(ast, "doc", text_node);
+        let Struct::List(children) = ast.get(rec) else {
+            continue;
+        };
+        let mut kids = children.clone();
+        kids.push(doc_field);
+        ast.structure[rec.0 as usize] = Struct::List(kids);
+    }
 }
 
 /// An `(intrinsic NAME)` node — the arena form a native primitive value takes. `resolve` turns it
