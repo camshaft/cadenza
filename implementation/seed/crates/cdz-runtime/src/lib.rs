@@ -9643,6 +9643,56 @@ mod tests {
         assert_eq!(live_object_count(), 0, "no BigInt leak");
     }
 
+    /// `bigint-div` TRUNCATES toward zero across the FULL sign matrix, and `bigint-cmp` orders negatives
+    /// correctly — the ops the compiler now emits for a runtime `/` and comparison (B3b `@acb1768f`). The
+    /// op-level glue test only checked `7/2` and `-7/2`; the other two sign combos + the truncation
+    /// DIRECTION (toward zero, NOT floor: `-7/2` is `-3` not `-4`) + negative cmp ordering were unpinned
+    /// at the op level (the library `divmod` is differential-tested, but a box/unbox sign-flag bug would
+    /// slip past that). A wrong truncation direction is a silent wrong answer for runtime negative BigInt
+    /// division.
+    #[test]
+    fn bigint_div_truncates_toward_zero_all_signs_and_cmp_orders_negatives() {
+        reset();
+        let before = live_object_count();
+        let div = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hr = op_bigint_div(ha, hb);
+            let r = op_bigint_to_i64_checked(hr);
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+            r
+        };
+        // Truncation toward zero (Rust `/` on i64 is the reference): all four sign combos.
+        for &(a, b) in &[(7, 2), (-7, 2), (7, -2), (-7, -2), (1, 3), (-1, 3), (1, -3), (-1, -3), (100, 7), (-100, 7)] {
+            assert_eq!(
+                div(a, b),
+                a / b,
+                "bigint-div {a}/{b} truncates toward zero (matches i64 /)"
+            );
+        }
+        // Exact division has no rounding either way; a dividend smaller than the divisor → 0 (toward zero).
+        assert_eq!(div(6, 3), 2);
+        assert_eq!(div(-6, 3), -2);
+        assert_eq!(div(2, 5), 0, "|dividend| < |divisor| → 0");
+        assert_eq!(div(-2, 5), 0, "…and stays 0, not -1 (toward zero, not floor)");
+        // bigint-cmp orders negatives correctly: -5 < -3 < 0 < 3 < 5.
+        let cmp = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let c = op_bigint_cmp(ha, hb);
+            op_drop(ha);
+            op_drop(hb);
+            c
+        };
+        assert_eq!(cmp(-5, -3), -1, "-5 < -3");
+        assert_eq!(cmp(-3, -5), 1, "-3 > -5");
+        assert_eq!(cmp(-3, 3), -1, "-3 < 3");
+        assert_eq!(cmp(-3, -3), 0, "-3 == -3");
+        assert_eq!(cmp(0, -1), 1, "0 > -1");
+        assert_eq!(cmp(-1, 0), -1, "-1 < 0");
+        assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
     /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them
     /// (`champ_hash`) — exactly like Bytes/String. So two BigInts that are EQUAL BY VALUE but reached by
     /// DIFFERENT arithmetic MUST produce byte-IDENTICAL leaves, else they'd be distinct map/set keys and
