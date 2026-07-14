@@ -582,6 +582,23 @@
   (call   isz (: 0 Int64))
   (output (: true Bool)))
 
+; Each distinct-signature group's per-group `call-g<n>` is a repeatable `borrow<t_g>` method too (C-HOST-6,
+; the last borrow widening): a `make-<name>` handle serves repeated `call-g<n>`s (the host keeps it; the
+; `t-dtor` reclaims). The gate drives one `(call …)`; repeatability is pinned by
+; `a_distinct_sig_call_g_is_repeatable` (one `make-inc` handle → `call-g(5)`=6 then `call-g(40)`=41). This
+; closes the borrow surface: EVERY closure `call` in every shape is now a repeatable borrow<t> handle.
+
+(case "a distinct-signature per-group call-g is a repeatable (borrow<t>) callback"
+  (doc    "The SAME two-resource-type program witnessed as a borrow<t> per-group call: `make-inc()` → a handle
+           the host keeps (resource t0), its `call-g<n>(5)` = 6. `call-g<n>` borrows the handle (does NOT
+           consume it), so the same handle serves repeated calls (proven twice-over in the unit test); the
+           distinct `isz` group's `call-g<n>` is independently repeatable.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export inc) (export isz)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "three distinct closure signatures cross as three resource types"
   (doc    "`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`, `dbl : (-> Int64 Int64)` — note `inc` and
            `dbl` SHARE a signature (one resource type, two makes), while `isz` is distinct (its own).

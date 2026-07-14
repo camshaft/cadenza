@@ -2068,6 +2068,76 @@ impl ComposedRuntime {
         (first, second)
     }
 
+    /// DISTINCT-SIGNATURE driver + repeatability probe: mint a named `make-<name>` handle, find the
+    /// `call-g<n>` whose `self` resource type matches that make's result type (as `cdz-run` does), and call
+    /// it TWICE on the SAME handle. Proves the per-group `call-g<n>` is a repeatable `borrow<t_g>` method.
+    /// Returns both scalar results.
+    fn closure_make_call_distinct_g_twice(
+        &mut self,
+        make_name: &str,
+        call_args_1: &[wasmtime::component::Val],
+        call_args_2: &[wasmtime::component::Val],
+    ) -> (wasmtime::component::Val, wasmtime::component::Val) {
+        use wasmtime::component::{Type, Val};
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let get = |store: &mut wasmtime::Store<()>,
+                   program: &wasmtime::component::Instance,
+                   name: &str|
+         -> wasmtime::component::Func {
+            let idx = program
+                .get_export_index(&mut *store, Some(&iface), name)
+                .unwrap_or_else(|| panic!("distinct-sig closure `{name}` exported"));
+            program
+                .get_func(&mut *store, idx)
+                .unwrap_or_else(|| panic!("`{name}` is a function"))
+        };
+        let make = get(&mut self.store, &self.program, make_name);
+        // `make`'s result resource type — pair it with the `call-g<n>` whose first param is that same type.
+        let want_res = match make.results(&self.store).first().cloned() {
+            Some(Type::Own(rt)) | Some(Type::Borrow(rt)) => rt,
+            other => panic!("`{make_name}` does not return a resource ({other:?})"),
+        };
+        // Find the matching `call-g<n>` among the interface's funcs.
+        let call_name = (0..8)
+            .map(|n| format!("call-g{n}"))
+            .find(|cn| {
+                let Some(idx) = self
+                    .program
+                    .get_export_index(&mut self.store, Some(&iface), cn)
+                else {
+                    return false;
+                };
+                let Some(cf) = self.program.get_func(&mut self.store, idx) else {
+                    return false;
+                };
+                matches!(cf.params(&self.store).first().map(|(_, t)| t.clone()),
+                    Some(Type::Own(rt)) | Some(Type::Borrow(rt)) if rt == want_res)
+            })
+            .expect("a call-g<n> matching the make's resource type");
+        let call = get(&mut self.store, &self.program, &call_name);
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, &[], &mut handle).expect("make");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut a1 = vec![handle[0].clone()];
+        a1.extend_from_slice(call_args_1);
+        let mut o1 = [Val::Bool(false)];
+        call.call(&mut self.store, &a1, &mut o1)
+            .expect("first call-g");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let mut a2 = vec![handle[0].clone()];
+        a2.extend_from_slice(call_args_2);
+        let mut o2 = [Val::Bool(false)];
+        call.call(&mut self.store, &a2, &mut o2)
+            .expect("second call-g on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        (o1[0].clone(), o2[0].clone())
+    }
+
     /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
     /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
     /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
@@ -38976,6 +39046,7 @@ mod closure_host_resource {
             &groups,
             &[],
             &layout,
+            false,
         )
         .expect("distinct-signature closure-resource core serializes");
 
@@ -39468,6 +39539,36 @@ mod closure_host_resource {
         assert_eq!(
             first, second,
             "the SAME make-lo handle yields the SAME value form on a repeated shared call — borrow<t> keeps it live"
+        );
+    }
+
+    /// C-HOST-6, DISTINCT-SIG: each group's per-signature `call-g<n>` is a repeatable `borrow<t_g>` method —
+    /// a `make-<name>` handle serves repeated `call-g<n>`s (the last borrow widening; own<t> would consume it
+    /// on the first). Two distinct-signature closures (`inc : Int64->Int64`, `isz : Int64->Bool`) → two
+    /// resource types; driving `make-inc`'s `call-g<n>` twice on the SAME handle. `#[ignore]` — needs the
+    /// runtime wasm in the store.
+    #[test]
+    #[ignore]
+    fn a_distinct_sig_call_g_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // ONE make-inc handle, its call-g<n> twice: (+ x 1) on 5 then 40 → 6, 41.
+        let (first, second) =
+            rt.closure_make_call_distinct_g_twice("make-inc", &[Val::S64(5)], &[Val::S64(40)]);
+        assert_eq!(first, Val::S64(6), "make-inc's call-g(5) = 6");
+        assert_eq!(
+            second,
+            Val::S64(41),
+            "the SAME make-inc handle, call-g(40) = 41 — borrow<t_g> keeps it live (repeatable)"
         );
     }
 
