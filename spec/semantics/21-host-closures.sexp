@@ -3256,6 +3256,43 @@
   (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64))))
 
+; The NESTED compound ARG extends to the MIXED shape too: a nested-tuple-arg closure exported ALONGSIDE a
+; plain (non-closure) export. The shared `call` rebuilds the nested cell recursively + mints the inner
+; `tuple<…>` types by index (`tuple_shape`); the plain export rides alongside as a top-level func — for a
+; scalar result AND a list<u8>-crossing result.
+
+(case "MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) Int64)` beside a plain `two`. The shared `call`
+           rebuilds the nested cell. `make()` → handle, `call(handle, (100, (10, 3)))` → `p.0 + p.1.0 + p.1.1`
+           = 113.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: 113 Int64)))
+
+(case "MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure"
+  (doc    "The SAME mixed component, driving the plain `two` — it coexists with the nested-tuple-arg closure
+           interface. `two()` → 2.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` beside a plain `two`. The value-encode
+           `call` rebuilds the nested cell, dispatches, value-encodes the returned List. `call(handle, (100,
+           (10, 3)))` → `(list 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (list 100 10 3) (List Int64))))
+
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
 
