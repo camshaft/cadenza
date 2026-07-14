@@ -60,7 +60,7 @@ def node-count-nested() =
 
 @test
 def head-name-on-form() = match head-name(Ast.List([Ast.Name("add"), Ast.Int(1)])) with
-  | Option.Some(n) => unit
+  | Option.Some(_) => unit
   | Option.None(_) => trap("head-name of (add 1) should be Some")
 
 @test
