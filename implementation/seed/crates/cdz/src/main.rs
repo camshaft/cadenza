@@ -294,6 +294,11 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     if let Some(entry) = args.entry() {
         inputs.push(compiler_cli::entry_artifact(entry));
     }
+    // A `--component-name <INTERFACE>` names the interface a cross-component PROVIDER publishes its exports
+    // under — inject it as a `KIND_COMPONENT_NAME` artifact (X4b), same as the artifacts-in `run` path.
+    if let Some(iface) = args.component_name() {
+        inputs.push(compiler_cli::component_name_artifact(iface));
+    }
     compiler_cli::run_prepared(inputs, &targets, args.out_path(), PROG)
 }
 
