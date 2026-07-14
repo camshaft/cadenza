@@ -167,4 +167,4 @@ def parse-precedence-shapes-depth() =
   else
     trap("1+2*3 depth 3")
 
-export { parse, eval-expr, run, depth }
+export { Tok.*, Expr.*, parse, eval-expr, run, depth }

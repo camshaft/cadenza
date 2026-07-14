@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 252 tests total across 27 modules):
+top. Current `src/` modules (each with same-file `@test`s — 262 tests total across 28 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -181,6 +181,16 @@ top. Current `src/` modules (each with same-file `@test`s — 252 tests total ac
   precedence (not just parsed), it EVALUATES the result: `1+2*3 == 7` (not 9), `(1+2)*3 == 9`,
   `10-3-2 == 5` (left-assoc), plus a structural `depth` observation. 11 `@test`s. Confirmed WORKING — the
   mutual tuple-cursor threading is correct; no new bug from the parser.
+- `src/codegen.cdz` — a STACK-MACHINE BACKEND, and the port's FIRST genuinely MULTI-FILE module in the
+  running suite: it `import { Tok, Expr, parse, run } from "parse"` (cross-file), lowers a parsed `Expr`
+  to a flat postfix `List Instr`, then EXECUTES it on an integer operand stack. Its correctness contract
+  is that the stack backend AGREES with `parse`'s tree-walking `run` for every expression (`exec(compile
+  e) == run(tokens)`), verified end-to-end through lex-free token lists. 10 `@test`s. Confirmed WORKING —
+  the cross-file link (importing a sum TYPE + its constructors + functions) is correct. 🔑 UNBLOCK: the
+  "prelude-collision forces same-file" constraint only bites a type SHADOWING a prelude name (`List`/
+  `Bool`); a custom type like `Expr` crosses files fine via `export { Expr.* }` (wildcard ctors) +
+  `import { Expr } from "…"`. This retires the port's long-standing single-file limitation for
+  non-colliding types.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -302,6 +312,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   newtype over `Record(…)`: `type R = R(Record(a(Int64)))`. Low-severity; parser-consistency + a confusing
   diagnostic. (Companion of the tuple-type gap above — both are paren-comma-vs-annotation surface
   mismatches in type position.)
+
+- **OPEN (seed `rcdzc` — DIAGNOSTIC QUALITY, iter 36; diagnostics-`/loop` territory): a lowercase type-var
+  annotation `def id(x: a) = x` gives a bare "unbound name `a`", identical to an unknown uppercase type
+  `Foo`.** Cadenza infers generics from UNANNOTATED params (`def id(x) = x` — HM solves the tyvar; there
+  is no surface `forall`/tyvar-binder, by design — resolve.rs "`a` is an ordinary parameter, not a
+  special type variable"). A programmer from Rust/ML/Haskell reasonably expects a lowercase `a` in a type
+  annotation to be a type variable. Ideal diagnostic: recognize a lowercase (esp. single-letter) type
+  annotation and hint "generics are inferred — drop the annotation" rather than a generic CDZ0101. Not a
+  miscompile — a message-actionability gap. (No repro: it is a message-quality issue, and the diagnostics
+  `/loop` owns this class.) 🔑 the WORKING generic spelling: omit the annotation — `def id(x) = x`,
+  `def swap(p) = (p.1, p.0)` both compile + monomorphize correctly.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
