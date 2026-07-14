@@ -58,6 +58,15 @@ pub const KIND_ENTRY: &str = "entry";
 /// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).
 pub const KIND_COMPONENT_NAME: &str = "component-name";
 
+/// The input-artifact kind that OVERRIDES effect→peer bindings at COMPILE time (U3, the effects-unification
+/// of cross-component interop). Its bytes are newline-separated `Effect=cadenza:pkg/iface` lines that WIN
+/// over a program's in-source `(bind …)` defaults: `Effect=<iface>` rebinds an effect to a different peer;
+/// `Effect=` (empty value) UNBINDS it (so the effect escapes to the host, or a test's in-program `(handle
+/// Effect …)` handles it locally). The precedence — in-source default < compile-request override <
+/// in-program handler — lets the same source be a real build (source/request binding) or a unit test (drop
+/// the binding + handle it). Absent → the in-source bindings stand.
+pub const KIND_EFFECT_BIND: &str = "effect-bind";
+
 /// The OUTPUT-artifact kind carrying the diagnostics DEMUX table for a linked package
 /// (`DESIGN-package-linking.md` §6). A cross-file diagnostic's `node` is a GLOBAL merged `StructId`;
 /// with several files spliced into one arena, that global id no longer maps to a single file's span

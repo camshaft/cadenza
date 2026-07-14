@@ -70,6 +70,14 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   neutral (routing fires only when `effect_bindings` non-empty — gate 2041/0/0). SCOPE: scalar ops, a
   bound-effect + unbound-host-effect in one program still declines (the extern+host coexistence guard);
   extern+runtime already composes.
+- **U3 — COMPILE-REQUEST override of an effect's peer binding. ✅ DONE (`spec`).** A `KIND_EFFECT_BIND`
+  input artifact (newline `Effect=iface` lines) merged over `db.effect_bindings` AFTER load, WINNING over
+  the in-source `(bind …)` default: `Effect=<iface>` REBINDS, `Effect=` (empty) UNBINDS (→ escape to host,
+  or a test's in-program handler). **Proven e2e (`u3_*`): the SAME U2 source (bound to `cadenza:math/api`,
+  an ADD peer) rebound by the request to `cadenza:mathv2/api` (a MUL peer) → main(5) = Math.add(5,5) = 5*5 =
+  25, not 10.** Realizes the FULL precedence ladder the operator asked for: **in-source default <
+  compile-request override < in-program `(handle …)`** (the handler discharges before escape, free from
+  U2). Byte-neutral (the artifact only affects a program that supplies it — gate 2046/0/0).
 
 ⚠ The X0–X5d/X4b-4 work below LANDED as the `extern` surface — it is the low-level mechanism the effects
 surface now sits on. The transport/envelope/runner/provider stay; the `extern` front-end is removed in U4.

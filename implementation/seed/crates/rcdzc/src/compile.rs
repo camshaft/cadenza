@@ -117,6 +117,28 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    // A compile-request `effect-bind` artifact OVERRIDES the program's in-source `(bind …)` defaults (U3):
+    // newline-separated `Effect=iface` REBINDS an effect to a peer; `Effect=` (empty) UNBINDS it (so it
+    // escapes to the host, or a test handles it in-program). Request wins over the source default; an
+    // in-program `(handle …)` still wins over both (it discharges the effect before it escapes).
+    if let Some(a) = inputs.iter().find(|a| a.kind == link::KIND_EFFECT_BIND) {
+        for line in String::from_utf8_lossy(&a.bytes).lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match line.split_once('=') {
+                Some((effect, "")) => {
+                    db.effect_bindings.remove(effect.trim()); // UNBIND (empty value)
+                }
+                Some((effect, iface)) => {
+                    db.effect_bindings
+                        .insert(effect.trim().to_string(), iface.trim().to_string()); // REBIND
+                }
+                None => {} // a bare token with no `=` is ignored (malformed)
+            }
+        }
+    }
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
 
     // Decode the optional `sidecar` request list — the program that DRIVES this compilation
