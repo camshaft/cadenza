@@ -7971,6 +7971,26 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // the identities that are SAFE at every width and never trap are applied (see `arith_identity`);
         // the RESULT keeps the op's solved type because the runtime operand shares it (binary-op
         // unification), and a `0`/`1` constant grounds to that width at selection.
+        // A CONSTANT-ZERO DIVISOR with a RUNTIME numerator — `(/ n 0)` / `(% n 0)`. The divisor is the
+        // compile-time literal `0`, so the operation ALWAYS traps regardless of `n` — there is no runtime
+        // value of `n` that makes it valid. Reject CDZ0304 (the same code the both-constant `(/ 10 0)`
+        // gets), rather than emitting a component that traps at run time (`numeric-model.md` §A Constant
+        // Operation With No Value Is Rejected At Compile Time). This inherits the const-trap machinery's
+        // BRANCH SHIELDING: the reached-poison walk does not descend an untaken `if` branch, so `(if false
+        // (/ n 0) 1)` is NOT rejected (the trap is unreachable), exactly as the both-constant case is
+        // shielded there. Distinct from `(/ n z)` with a runtime `z` that HAPPENS to be 0 at a call (a
+        // genuine runtime trap — `z` is a variable, not the literal `0`, so this never fires for it).
+        (_, Core::ConstInt(ref b)) if matches!(op, Prim::Div | Prim::Rem) && b.is_zero() => {
+            trace!(target: "rcdzc::lower", op = intrinsic_name(op), "divide by a constant zero → CDZ0304 (always traps)");
+            Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                format!(
+                    "`{}` by the constant 0 always traps (divide by zero) — guard the divisor or remove \
+                     the division",
+                    intrinsic_name(op)
+                ),
+            ))
+        }
         (lc, rc) => {
             if let Some(simplified) = arith_identity(db, op, args[0], &lc, args[1], &rc) {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic identity simplified (op elided)");
