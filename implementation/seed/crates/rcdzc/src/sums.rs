@@ -254,7 +254,93 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         children.push(push_list(ast, vec![ek, expect_op]));
     }
 
+    // The `encode`/`decode` ACCESSOR fields — the binary bijection (`ast-encoding.md` §The Encoding Is A
+    // Bijection With One Canonical Byte Form). Present on a sum that is a RECURSIVE NODE TREE — one with a
+    // variant whose payload is `(List Self)`, the "tree of nodes, each a symbol applied to an ordered
+    // sequence of child nodes" the encoding contract is defined over. Added by SHAPE, not by name (like
+    // `expect`): the built-in `Ast` sum matches, and a user sum of the same recursive-list-of-self shape
+    // would too. `encode : Sum → Bytes`, `decode : Bytes → (Result Sum e)` (total — a non-canonical byte
+    // sequence yields `Err`, never a trap). A sum that is NOT such a tree gets no fields (and `(. T
+    // encode)` declines through the ordinary closed-record projection, not a name special-case).
+    if is_node_tree_sum(ast, decl) {
+        let self_ty = sum_applied(ast, decl);
+        let encode_ty = {
+            let bytes = intrinsic_node(ast, "bytes-ty");
+            arrow_type(ast, self_ty, bytes) // (-> Sum Bytes)
+        };
+        let encode_op = intrinsic_op_record(ast, encode_ty, "ast-encode");
+        let ek = push_atom(ast, Leaf::Name("encode".to_string()));
+        children.push(push_list(ast, vec![ek, encode_op]));
+
+        // `decode : Bytes → (Result Sum e)` — total; `e` is a free error type (a fresh lambda param so the
+        // caller unifies it), the sum reference re-built fresh so it does not share the encode occurrence.
+        let decode_ty = decode_type_scheme(ast, decl);
+        let decode_op = intrinsic_op_record(ast, decode_ty, "ast-decode");
+        let dk = push_atom(ast, Leaf::Name("decode".to_string()));
+        children.push(push_list(ast, vec![dk, decode_op]));
+    }
+
     (push_list(ast, children), ctors)
+}
+
+/// Whether `decl` is a RECURSIVE NODE TREE — a sum with a variant whose sole payload is `(List Self)`
+/// (a homogeneous list of the sum itself). This is the structural shape the AST-encoding bijection is
+/// defined over (`ast-encoding.md`: "a tree of nodes, each a symbol applied to an ordered sequence of
+/// child nodes"), so a sum matching it carries the `encode`/`decode` fields. A SHAPE test, not a name
+/// test — the built-in `Ast` matches (its `List` variant is `(List Ast)`), and nothing is privileged by
+/// name. Reads the raw payload TYPE occurrence: a 2-element list `(h x)` with `h` = `List` (the built-in
+/// list constructor) and `x` = the sum's own name.
+fn is_node_tree_sum(ast: &Arenas, decl: &TypeDecl) -> bool {
+    decl.variants.iter().any(|v| {
+        v.payloads.len() == 1
+            && matches!(ast.get(v.payloads[0]), Struct::List(items)
+                if items.len() == 2
+                    && ast.as_name(items[0]) == Some("List")
+                    && ast.as_name(items[1]) == Some(decl.name.as_str()))
+    })
+}
+
+/// An operation record `(record ((meta t) TYPE) ((meta apply) (intrinsic PRIM)))` — the operator-record
+/// shape whose `(meta apply)` is the named intrinsic, so projecting the field and applying it rides the
+/// ordinary `(meta apply)` dispatch to the intrinsic's lowering. The generic form of `expect_op_record`.
+fn intrinsic_op_record(ast: &mut Arenas, type_scheme: StructId, prim: &str) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", type_scheme);
+    let builder = intrinsic_node(ast, prim);
+    let apply_field = meta_field(ast, "apply", builder);
+    push_list(ast, vec![head, t_field, apply_field])
+}
+
+/// `(intrinsic "NAME")` — a type-value / builder reference node. The sums-local twin of the same helper
+/// in `prelude` (a bare name would mis-resolve inside the record being built).
+fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
+    let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+    let who = push_atom(ast, Leaf::Name(name.to_string()));
+    push_list(ast, vec![ih, who])
+}
+
+/// `(-> L R)` — a function-type expression node.
+fn arrow_type(ast: &mut Arenas, l: StructId, r: StructId) -> StructId {
+    let arrow = push_atom(ast, Leaf::Name("->".to_string()));
+    push_list(ast, vec![arrow, l, r])
+}
+
+/// The `decode` field's type — `Bytes → (Result Sum e)`, wrapped in a `(fn (e) …)` type-lambda so the
+/// error type `e` is a fresh scheme variable the caller unifies (the corpus discards it as `(Err _)`).
+/// `Sum` is the sum's applied type-value (`sum_applied`); `Result` is the built-in generic sum.
+fn decode_type_scheme(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
+    let result_sum_e = {
+        let result = push_atom(ast, Leaf::Name("Result".to_string()));
+        let sum = sum_applied(ast, decl);
+        let e = push_atom(ast, Leaf::Name("e".to_string()));
+        push_list(ast, vec![result, sum, e])
+    };
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    let body = arrow_type(ast, bytes, result_sum_e); // (-> Bytes (Result Sum e))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let e_param = push_atom(ast, Leaf::Name("e".to_string()));
+    let params = push_list(ast, vec![e_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The `expect` field's type scheme — `∀params. (Sum params) → String → <payload0>` — as a `(meta t)`

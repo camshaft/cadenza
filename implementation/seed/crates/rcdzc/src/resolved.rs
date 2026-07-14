@@ -347,6 +347,22 @@ pub enum Prim {
     /// nodes; a runtime list operand declines (the runtime map is a later increment). Int-only lift, the
     /// splice companion of the active-unquote `(Ast.Int e)` wrap.
     AstSpliceLift,
+    /// `Ast.encode` — serialize an AST value to its canonical binary form: `Ast → Bytes` (the `(meta
+    /// apply)` of the `encode` field of the `Ast` sum record). Realizes `ast-encoding.md` §The Encoding
+    /// Is A Bijection With One Canonical Byte Form: each tree has EXACTLY ONE encoding, equal trees encode
+    /// identically. Constant-fold ONLY this increment — a compile-time-visible `Ast` value (a `Core::SumNew`
+    /// tree of the `Int`/`Name`/`List` variants) folds to a `Core::BytesOf` of the canonical bytes; a
+    /// runtime `Ast` declines. The canonical byte format is a DECLARED-DEFAULT choice (the contract pins
+    /// the bijection, not the concrete bytes) — see `lower::encode_ast_value` for the tag layout.
+    AstEncode,
+    /// `Ast.decode` — the TOTAL inverse of `Ast.encode`: `Bytes → (Result Ast e)` (the `(meta apply)` of
+    /// the `decode` field of the `Ast` sum record). Total over POSSIBLY-EXTERNAL bytes (`value-interchange.md`
+    /// §A Decode Over External Bytes Is Total): a byte sequence that is the canonical encoding of an AST →
+    /// `(Ok ast)`; anything else (ill-formed, truncated, or valid-prefix-plus-trailing) → `(Err …)`, NEVER
+    /// a trap. Constant-fold ONLY this increment — a compile-time-visible `Core::BytesOf` parses to `(Ok
+    /// <SumNew tree>)` / `(Err unit)`; a runtime `Bytes` declines (the runtime deserializer is a later
+    /// increment). The decode companion of `AstEncode`; the format is `lower::decode_ast_value`.
+    AstDecode,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -703,6 +719,8 @@ impl Prim {
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),
             "ast-splice-lift" => Some(Prim::AstSpliceLift),
+            "ast-encode" => Some(Prim::AstEncode),
+            "ast-decode" => Some(Prim::AstDecode),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),

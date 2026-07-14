@@ -1264,6 +1264,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                          splice map is not yet built)",
                     )),
                 },
+                // `Ast.encode` — serialize an AST value to its canonical bytes (`ast-encoding.md` §The
+                // Encoding Is A Bijection). FOLD a compile-time-visible `Ast` value (a `Core::SumNew` tree
+                // of the Int/Name/List variants) to a `Core::BytesOf` of the canonical byte form; a runtime
+                // Ast declines (the runtime serializer is a later increment). Equal trees fold to identical
+                // bytes — the byte-identity the corpus asserts.
+                Some(Prim::AstEncode) if args.len() == 1 => lower_ast_encode(db, id, args[0]),
+                // `Ast.decode` — the TOTAL inverse: parse canonical bytes back to `(Ok ast)` / `(Err …)`.
+                // FOLD a compile-time-visible `Core::BytesOf`: a well-formed WHOLE encoding → `(Ok <SumNew
+                // tree>)`, anything else (ill-formed, truncated, or valid-prefix-plus-trailing) → `(Err
+                // unit)`, NEVER a trap. A runtime Bytes declines (the runtime deserializer is a later
+                // increment).
+                Some(Prim::AstDecode) if args.len() == 1 => lower_ast_decode(db, id, args[0]),
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
@@ -1791,6 +1803,255 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
         wrapped.push(node);
     }
     Some(Core::ListNew { elems: wrapped })
+}
+
+// ── AST binary encoding — the canonical byte form (`ast-encoding.md`) ────────────────────────────
+//
+// A DECLARED-DEFAULT byte format (the contract pins the bijection, not the concrete bytes). Each node
+// is a TAG byte then its payload, so the container form is independent of the node kinds:
+//   Int  n   →  0x00, then `n` as 8 bytes little-endian (two's-complement i64)
+//   Name s   →  0x01, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes
+//   List es  →  0x02, then `count` as 4 bytes LE, then each element encoded in order
+// The encoding is a pure function of the tree (equal trees → identical bytes) and is self-delimiting
+// (every node carries its own length), so `decode` consumes the WHOLE input or reports an error.
+const AST_TAG_INT: u8 = 0x00;
+const AST_TAG_NAME: u8 = 0x01;
+const AST_TAG_LIST: u8 = 0x02;
+
+/// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
+/// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
+fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, ast_val) {
+        return Core::Poison(r);
+    }
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "Ast.encode: the built-in Ast sum is unavailable",
+        ));
+    };
+    let mut bytes = Vec::new();
+    if encode_ast_value(db, ast_val, &disc, &mut bytes).is_none() {
+        return Core::Poison(Reject::decline(
+            "Ast.encode of a runtime AST value is not yet computed (constant AST values only)",
+        ));
+    }
+    trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical bytes");
+    Core::BytesOf {
+        elems: bytes_to_elems(db, &bytes),
+    }
+}
+
+/// The Int/Name/List discriminants of the built-in `Ast` sum (read by name so a reordering does not
+/// silently mis-tag). `None` if the sum or a variant is missing.
+struct AstDiscs {
+    int: u32,
+    name: u32,
+    list: u32,
+    ty: crate::ty::Ty,
+}
+fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
+    let ty = {
+        let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
+        db.normalize_sum(occ, "Ast".to_string(), Vec::new())
+    };
+    Some(AstDiscs {
+        int: variant_disc_by_name(db, &ty, "Int")?,
+        name: variant_disc_by_name(db, &ty, "Name")?,
+        list: variant_disc_by_name(db, &ty, "List")?,
+        ty,
+    })
+}
+
+/// Serialize a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) into `out`.
+/// Returns `None` if the value is not a fully-constant AST (a runtime node, or a payload that is not the
+/// expected constant shape) — the caller then declines.
+fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<u8>) -> Option<()> {
+    let Core::SumNew { disc: d, payloads } = core_of(db, node) else {
+        return None;
+    };
+    if d == disc.int && payloads.len() == 1 {
+        let Core::ConstInt(v) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let n = v.to_i64()?;
+        out.push(AST_TAG_INT);
+        out.extend_from_slice(&n.to_le_bytes());
+        Some(())
+    } else if d == disc.name && payloads.len() == 1 {
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let sb = s.as_bytes();
+        out.push(AST_TAG_NAME);
+        out.extend_from_slice(&(u32::try_from(sb.len()).ok()?).to_le_bytes());
+        out.extend_from_slice(sb);
+        Some(())
+    } else if d == disc.list && payloads.len() == 1 {
+        let Core::ListNew { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push(AST_TAG_LIST);
+        out.extend_from_slice(&(u32::try_from(elems.len()).ok()?).to_le_bytes());
+        for e in elems {
+            encode_ast_value(db, e, disc, out)?;
+        }
+        Some(())
+    } else {
+        None
+    }
+}
+
+/// Build the `Core::BytesOf` element occurrences for a raw byte slice — each a fresh `UInt8` `Leaf::Int`
+/// (the shape `String.to-bytes` / `Bytes.of` build).
+fn bytes_to_elems(db: &mut Db, bytes: &[u8]) -> Vec<StructId> {
+    bytes
+        .iter()
+        .map(|&b| {
+            db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i64(b as i64),
+                radix: crate::ast::Radix::Dec,
+            })
+        })
+        .collect()
+}
+
+/// Lower `(Ast.decode b)` — the TOTAL inverse of encode. FOLD a compile-time-visible `Core::BytesOf`:
+/// parse the WHOLE input as one canonical AST node → `(Ok <SumNew tree>)`; ill-formed / truncated /
+/// trailing bytes → `(Err unit)`. NEVER a trap (a bad byte sequence is DATA). A runtime `Bytes` declines;
+/// a poison operand propagates.
+fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    // `decode` returns `(Result Ast e)`; read the Ok/Err discriminants off the result Option/Result sum.
+    let Some((disc_ok, disc_err)) = result_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Ast.decode result is not the built-in Result sum",
+        ));
+    };
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "Ast.decode: the built-in Ast sum is unavailable",
+        ));
+    };
+    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes declines.
+    let Core::BytesOf { elems } = core_of(db, bytes) else {
+        return Core::Poison(Reject::decline(
+            "Ast.decode of a runtime byte sequence is not yet computed (constant Bytes only)",
+        ));
+    };
+    let mut raw = Vec::with_capacity(elems.len());
+    for e in elems {
+        match core_of(db, e) {
+            Core::ConstInt(v) => match v.to_i64() {
+                Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
+                _ => {
+                    return Core::Poison(Reject::decline(
+                        "Ast.decode: a byte element is not in 0..=255",
+                    ));
+                }
+            },
+            Core::Poison(r) => return Core::Poison(r),
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "Ast.decode of a runtime byte sequence is not yet computed (constant Bytes only)",
+                ));
+            }
+        }
+    }
+    // Parse ONE node from the front; the decode succeeds only if it consumes the ENTIRE input (a valid
+    // prefix followed by trailing bytes is an error — the encoding is a bijection over the WHOLE tree).
+    let ok = match decode_ast_value(db, &raw, &disc) {
+        Some((node, consumed)) if consumed == raw.len() => Some(node),
+        _ => None,
+    };
+    match ok {
+        Some(node) => {
+            trace!(target: "rcdzc::fold", node = id.0, "Ast.decode folds canonical bytes to (Ok ast)");
+            Core::SumNew {
+                disc: disc_ok,
+                payloads: vec![node],
+            }
+        }
+        None => {
+            trace!(target: "rcdzc::fold", node = id.0, "Ast.decode folds non-canonical bytes to (Err …)");
+            let unit = synth_core(db, Core::Unit, crate::ty::Ty::Unit);
+            Core::SumNew {
+                disc: disc_err,
+                payloads: vec![unit],
+            }
+        }
+    }
+}
+
+/// Parse ONE canonical AST node from the FRONT of `raw`, returning the synthesized `Ast` value
+/// (`Core::SumNew` node) and the number of bytes consumed, or `None` if the front is not a well-formed
+/// node (bad tag, truncated, or a nested element fails). The recursive inverse of `encode_ast_value`.
+fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructId, usize)> {
+    let (&tag, rest) = raw.split_first()?;
+    match tag {
+        AST_TAG_INT => {
+            let field = rest.get(..8)?;
+            let n = i64::from_le_bytes(field.try_into().ok()?);
+            let payload = db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i64(n),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.core.fill(payload, Core::ConstInt(IntValue::from_i64(n)));
+            db.types.fill(payload, crate::ty::Ty::int64());
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.int,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 8))
+        }
+        AST_TAG_NAME => {
+            let len_field = rest.get(..4)?;
+            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
+            let sbytes = rest.get(4..4 + len)?;
+            let s = std::str::from_utf8(sbytes).ok()?.to_string();
+            let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.name,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 4 + len))
+        }
+        AST_TAG_LIST => {
+            let count_field = rest.get(..4)?;
+            let count = u32::from_le_bytes(count_field.try_into().ok()?) as usize;
+            let mut consumed = 1 + 4;
+            let mut elems = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (elem, used) = decode_ast_value(db, raw.get(consumed..)?, disc)?;
+                elems.push(elem);
+                consumed += used;
+            }
+            let payload = synth_core(
+                db,
+                Core::ListNew { elems },
+                crate::ty::Ty::List(Box::new(disc.ty.clone())),
+            );
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.list,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, consumed))
+        }
+        _ => None,
+    }
 }
 
 fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
@@ -8963,6 +9224,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListUpdate
         | Prim::ListAt
         | Prim::AstSpliceLift
+        | Prim::AstEncode
+        | Prim::AstDecode
         | Prim::ListCtor
         | Prim::BytesOf
         | Prim::BytesLen
@@ -10713,6 +10976,25 @@ fn option_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
         }
     }
     Some((some_disc?, none_disc?))
+}
+
+/// The `(Ok, Err)` discriminants of the built-in `Result` sum that `id`'s type resolves to (the analogue
+/// of [`option_discs`] for a `(Result a e)`-typed node). `None` if `id` is not a Result sum.
+fn result_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
+    let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, id) else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(decl)?;
+    let mut ok_disc = None;
+    let mut err_disc = None;
+    for (i, v) in decl_ref.variants.iter().enumerate() {
+        match v.name.as_str() {
+            "Ok" => ok_disc = Some(i as u32),
+            "Err" => err_disc = Some(i as u32),
+            _ => {}
+        }
+    }
+    Some((ok_disc?, err_disc?))
 }
 
 /// Lower `(List.at list index)` — the fallible indexed read. FOLD when the `list` operand is a
@@ -13089,6 +13371,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
         Prim::AstSpliceLift => "ast-splice-lift",
+        Prim::AstEncode => "ast-encode",
+        Prim::AstDecode => "ast-decode",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",

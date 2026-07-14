@@ -19553,6 +19553,70 @@ mod match_engine {
     }
 
     #[test]
+    fn ast_encode_decode_round_trip_over_constant_values() {
+        // 12-metaprogramming / ast-encoding.md §The Encoding Is A Bijection: `Ast.encode : Ast → Bytes`
+        // serializes an AST value to its canonical bytes, `Ast.decode : Bytes → (Result Ast e)` is the
+        // TOTAL inverse. Both constant-fold this increment (a compile-time-visible AST / Bytes value).
+        //
+        // (1) The BYTE FORMAT is locked by an equality against a hand-written `Bytes.of`: `(Ast.Int 7)`
+        //     encodes as tag 0x00 then 7 as 8 bytes little-endian. This pins the declared-default layout
+        //     (the contract pins the bijection, not the bytes — this test is what would need updating if
+        //     the format were ever versioned).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (Ast.encode (Ast.Int 7)) (Bytes.of (list 0 7 0 0 0 0 0 0 0)))) (export main))"
+            )
+            .is_none(),
+            "Ast.encode of (Ast.Int 7) is the canonical bytes 0x00 + 7i64-le"
+        );
+        // (2) A quote-built and a constructor-built AST of the SAME tree encode to IDENTICAL bytes (the
+        //     one-canonical-byte-form requirement) — they are the ONE value form.
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (Ast.encode (quote 42)) (Ast.encode (Ast.Int 42)))) (export main))"
+            )
+            .is_none(),
+            "equal trees encode identically, however constructed"
+        );
+        // (3) decode(encode t) = t over a leaf AND a compound (the round-trip), matched through the total
+        //     `(Ok a)` arm.
+        for tree in [
+            "(Ast.Int 7)",
+            "(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))",
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (Ast.decode (Ast.encode {tree})) \
+                   ((Ok a) (= a {tree})) ((Err _) false))) (export main))"
+            );
+            assert!(
+                reject_code(&src).is_none(),
+                "encode∘decode round-trips to an equal value: {tree}"
+            );
+        }
+        // (4) decode is TOTAL over EXTERNAL bytes: a non-canonical sequence (bad tag) → `Err`, NOT a trap;
+        //     and valid canonical bytes FOLLOWED BY a trailing byte → `Err` (decode consumes the WHOLE
+        //     input or reports an error — a valid prefix is not silently accepted).
+        assert!(
+            reject_code(
+                "(module m (def (main) (match (Ast.decode (Bytes.of (list 255 255 255))) \
+                   ((Ok _) 1) ((Err _) 0))) (export main))"
+            )
+            .is_none(),
+            "decoding non-canonical bytes yields Err, not a trap"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of (list 99)))) \
+                     ((Ok _) 1) ((Err _) 0))) (export main))"
+            )
+            .is_none(),
+            "canonical bytes plus a trailing byte decode to Err (whole-input bijection)"
+        );
+    }
+
+    #[test]
     fn a_list_sub_pattern_destructures_a_sum_variant_payload() {
         // The decision-tree matcher destructures a `(list …)` sub-pattern inside a sum-variant PAYLOAD —
         // the general capability quote patterns rest on (`` `(+ ,a ,b) `` desugars to `(Ast.List (list
