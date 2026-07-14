@@ -3937,6 +3937,12 @@ impl Guest for Component {
         let (l, r) = op_vec_split(Handle::from_u32(v), index);
         (l.to_u32(), r.to_u32())
     }
+    fn vec_drop(v: u32, index: u32) -> u32 {
+        // The tail `[index, len)` — split and keep only the RIGHT half, reclaiming the LEFT prefix.
+        let (l, r) = op_vec_split(Handle::from_u32(v), index);
+        op_drop(l); // reclaim the dropped prefix
+        r.to_u32()
+    }
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
     }

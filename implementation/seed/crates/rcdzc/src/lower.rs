@@ -2124,31 +2124,48 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             "a list match must cover every length (a rest pattern leaves shorter lengths uncovered)",
         ));
     }
-    // FOLD only a constant scrutinee this increment: the length selects the arm; the body's element
-    // binders read the constant elements via their `SumPayload` `Elem` folds, so lowering the SELECTED
-    // body is all that is needed (no β-substitution).
-    let n = match core_of(db, scrutinee) {
-        Core::ListNew { elems } => elems.len(),
-        Core::Poison(r) => return Core::Poison(r),
-        _ => {
-            return Core::Poison(Reject::decline(
-                "matching a runtime list by element patterns needs the runtime list matcher (constant lists only)",
-            ));
+    // A CONSTANT scrutinee FOLDS: the length selects the arm; the body's element binders read the
+    // constant elements via their `SumPayload` `Elem`/`RestFrom` folds, so lowering the SELECTED body is
+    // all that is needed (no β-substitution).
+    match core_of(db, scrutinee) {
+        Core::ListNew { elems } => {
+            let n = elems.len();
+            for arm in &classified {
+                let (matches, body) = match arm {
+                    Arm::Fixed(k, body) => (*k == n, *body),
+                    Arm::Rest(lead, body) => (n >= *lead, *body), // rest: length ≥ leading count
+                    Arm::Wild(body) => (true, *body),
+                };
+                if matches {
+                    return core_of(db, body);
+                }
+            }
+            Core::Poison(Reject::decline(
+                "list match: no arm matched the constant list (unreachable — a catch-all was required)",
+            ))
         }
-    };
-    for arm in &classified {
-        let (matches, body) = match arm {
-            Arm::Fixed(k, body) => (*k == n, *body),
-            Arm::Rest(lead, body) => (n >= *lead, *body), // rest: length ≥ leading count
-            Arm::Wild(body) => (true, *body),
-        };
-        if matches {
-            return core_of(db, body);
+        Core::Poison(r) => Core::Poison(r),
+        // A RUNTIME list scrutinee — emit `Core::MatchList`, which dispatches on `vec-len` at run time.
+        // Each arm's length condition drives the dispatch; the leading element binders + rest binder read
+        // the runtime list on their own (`SumPayload` `Elem`/`RestFrom` → `vec-get`/`vec-split`).
+        _ => {
+            let match_arms: Vec<crate::core::ListArm> = classified
+                .iter()
+                .map(|arm| {
+                    let (cond, body) = match arm {
+                        Arm::Fixed(k, body) => (crate::core::ListArmCond::LenEq(*k), *body),
+                        Arm::Rest(lead, body) => (crate::core::ListArmCond::LenGe(*lead), *body),
+                        Arm::Wild(body) => (crate::core::ListArmCond::Any, *body),
+                    };
+                    crate::core::ListArm { cond, body }
+                })
+                .collect();
+            Core::MatchList {
+                scrutinee,
+                arms: match_arms,
+            }
         }
     }
-    Core::Poison(Reject::decline(
-        "list match: no arm matched the constant list (unreachable — a catch-all was required)",
-    ))
 }
 
 /// Lower a match over a MAP scrutinee by KEY-DIRECTED patterns (ask-61, core-semantics.md §A Map Is
@@ -2273,6 +2290,12 @@ fn erase_nominal_steps(
                     _ => crate::ty::Ty::Any,
                 };
             }
+            PathStep::RestFrom(_) => {
+                // The rest sublist has the SAME type as the list scrutinee (`(List elem)`) — a tail of a
+                // list is still a list of its element type.
+                out.push(*step);
+                // `cur` stays the list type (unchanged); a non-list here is a fault reported elsewhere.
+            }
         }
     }
     out
@@ -2302,6 +2325,12 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
+            // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
+            (PathStep::RestFrom(k), Core::ListNew { elems }) => {
+                let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
+                return Some(Core::ListNew { elems: tail });
+            }
             _ => return None,
         };
     }
@@ -3751,6 +3780,12 @@ fn type_at_path(
         cur = match step {
             crate::core::PathStep::Elem(i) => match &cur {
                 crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                crate::ty::Ty::List(elem) => (**elem).clone(),
+                _ => return None,
+            },
+            // A rest sublist is the same `List` type as its scrutinee.
+            crate::core::PathStep::RestFrom(_) => match &cur {
+                crate::ty::Ty::List(_) => cur.clone(),
                 _ => return None,
             },
             crate::core::PathStep::Payload => match &cur {
@@ -3821,16 +3856,21 @@ fn shallowest_path(rows: &[MatchRow]) -> Vec<crate::core::PathStep> {
         .unwrap_or_default()
 }
 
-/// A total order on paths for a deterministic switch choice (Payload < Elem, Elem by index).
+/// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
+/// `RestFrom` never appears in a SUM decision-tree switch path (only a list-rest binder's own path, which
+/// does not go through `MatchRow`), but the ordering is total so the comparator stays well-defined.
 fn path_cmp(a: &[crate::core::PathStep], b: &[crate::core::PathStep]) -> std::cmp::Ordering {
-    use crate::core::PathStep::{Elem, Payload};
+    use crate::core::PathStep;
+    // A rank + inner index gives a total order across all three step kinds in one comparison.
+    fn key(s: &PathStep) -> (u8, usize) {
+        match s {
+            PathStep::Payload => (0, 0),
+            PathStep::Elem(i) => (1, *i),
+            PathStep::RestFrom(k) => (2, *k),
+        }
+    }
     for (x, y) in a.iter().zip(b.iter()) {
-        let o = match (x, y) {
-            (Payload, Payload) => std::cmp::Ordering::Equal,
-            (Payload, Elem(_)) => std::cmp::Ordering::Less,
-            (Elem(_), Payload) => std::cmp::Ordering::Greater,
-            (Elem(i), Elem(j)) => i.cmp(j),
-        };
+        let o = key(x).cmp(&key(y));
         if o != std::cmp::Ordering::Equal {
             return o;
         }
@@ -3888,6 +3928,12 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
+            // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
+            (PathStep::RestFrom(k), Core::ListNew { elems }) => {
+                let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
+                return Some(Core::ListNew { elems: tail });
+            }
             _ => return None,
         };
     }

@@ -184,6 +184,10 @@ const OP_VEC_UPDATE: &str = "vec-update";
 /// `vec-get(v, index) -> handle` — the element at `index`, BORROWED (rc unchanged; the list still owns
 /// it). An out-of-bounds index TRAPS, so `List.at` bounds-checks BEFORE calling it.
 const OP_VEC_GET: &str = "vec-get";
+/// `vec-drop(v, index) -> handle` — the TAIL `[index, len)` of the RRB vector, dropping the prefix
+/// `[0, index)`, CONSUMING `v`. A single-u32 result (unlike `vec-split`'s tuple retarea). A list REST
+/// binder `(list p… .. rest)` binds `rest` = `vec-drop(list, leading-count)`.
+const OP_VEC_DROP: &str = "vec-drop";
 /// `vec-of-arr(arr) -> handle` — build a persistent vector from an already-built flat `arr` in ONE call
 /// (CONSUMES the arr). The bulk-construct lowering target for a `(list …)` literal: `arr-alloc N` + N×
 /// `arr-set` then one `vec-of-arr`, instead of `vec-empty` + N× consuming `vec-push`. `arr-len 0` yields
@@ -467,6 +471,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // body, a guarded arm, or a switch's arms — recursed via `cont_binding_escapes`).
         Core::MatchSum { scrutinee, root } => {
             binding_escapes(db, scrutinee, binder, false) || cont_binding_escapes(db, &root, binder)
+        }
+        // A list match: escapes if the binding escapes the scrutinee (CONSUMING — a rest arm's `vec-split`
+        // consumes the list handle) or any arm body.
+        Core::MatchList { scrutinee, arms } => {
+            binding_escapes(db, scrutinee, binder, false)
+                || arms
+                    .iter()
+                    .any(|a| binding_escapes(db, a.body, binder, false))
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
@@ -1205,13 +1217,28 @@ pub fn collect_used_ops(
             collect_used_ops(db, scrutinee, out);
             collect_cont_ops(db, scrutinee, &root, out);
         }
+        // A list match reads `vec-len` to dispatch by length; arm bodies' element/rest binders bring in
+        // `vec-get`/`vec-split` via their own `SumPayload` occurrences.
+        Core::MatchList { scrutinee, arms } => {
+            out.insert(OP_VEC_LEN);
+            collect_used_ops(db, scrutinee, out);
+            for arm in &arms {
+                collect_used_ops(db, arm.body, out);
+            }
+        }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
         // by THIS node's solved type (`get-*`).
         Core::SumPayload { scrutinee, path } => {
             for step in &path {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
-                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                    // An `Elem` may read a tuple `arr` OR a list `vec`; insert both (emit picks by type).
+                    crate::core::PathStep::Elem(_) => {
+                        out.insert(OP_ARR_GET);
+                        out.insert(OP_VEC_GET)
+                    }
+                    // A list REST binder slices the tail with `vec-drop` (single-result tail).
+                    crate::core::PathStep::RestFrom(_) => out.insert(OP_VEC_DROP),
                 };
             }
             if let Ok(Some(op)) = get_op(db, id) {
@@ -1314,6 +1341,7 @@ fn collect_cont_ops(
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
                     crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                    crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
                 };
             }
             match probe {
@@ -1347,6 +1375,7 @@ fn collect_cont_ops(
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
                     crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                    crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
                 };
             }
             if sub_is_enum {
@@ -2439,6 +2468,11 @@ fn ty_at_path(db: &mut Db, root: &crate::ty::Ty, path: &[crate::core::PathStep])
                     Some(e) => e.clone(),
                     None => return crate::ty::Ty::Any,
                 },
+                crate::ty::Ty::List(elem) => (**elem).clone(),
+                _ => return crate::ty::Ty::Any,
+            },
+            crate::core::PathStep::RestFrom(_) => match ty.strip_nominal() {
+                crate::ty::Ty::List(_) => ty.clone(),
                 _ => return crate::ty::Ty::Any,
             },
         };
@@ -2496,6 +2530,7 @@ fn push_discriminant(
                 out.push(Lir::ConstI32(*i as i32));
                 out.push(Lir::CallImport(OP_ARR_GET));
             }
+            crate::core::PathStep::RestFrom(_) => {} // never on a sum-disc path
         }
     }
     if sub_is_enum {
@@ -3731,15 +3766,37 @@ fn emit(
         // node's solved type. A single `[Payload]` path is the flat `(Some x)` case; `[Payload, Payload]`
         // is the nested `(Some (Some y))` binder.
         Core::SumPayload { scrutinee, path } => {
+            // A step's array read depends on the CURRENT sub-value's kind: a tuple/record/sum-payload is a
+            // flat `arr` (`arr-get`), but a `List` is an RRB `vec` (`vec-get`), and a list REST binder
+            // slices the tail with `vec-split`. Track the sub-value type as the walk descends.
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            let mut cur = type_of(db, scrutinee);
             for step in &path {
                 match step {
                     crate::core::PathStep::Payload => {
                         out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
+                        cur = Ty::Any;
                     }
                     crate::core::PathStep::Elem(i) => {
-                        out.push(Lir::ConstI32(*i as i32));
-                        out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
+                        if matches!(cur, Ty::List(_)) {
+                            out.push(Lir::ConstI32(*i as i32));
+                            out.push(Lir::CallImport(OP_VEC_GET)); // list element → vec-get
+                            cur = match cur {
+                                Ty::List(e) => *e,
+                                _ => Ty::Any,
+                            };
+                        } else {
+                            out.push(Lir::ConstI32(*i as i32));
+                            out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
+                            cur = Ty::Any;
+                        }
+                    }
+                    crate::core::PathStep::RestFrom(k) => {
+                        // Tail sublist from `k`: `vec-drop(list, k)` returns the `[k, len)` tail as ONE
+                        // handle (dropping the `[0, k)` prefix internally), CONSUMING the list handle. A
+                        // single-result op — no retarea, no scratch. `cur` stays the same list type.
+                        out.push(Lir::ConstI32(*k as i32));
+                        out.push(Lir::CallImport(OP_VEC_DROP)); // → [tail-handle]
                     }
                 }
             }
@@ -4047,6 +4104,97 @@ fn emit(
                 scratch_ty,
                 layout,
                 out,
+            )
+        }
+        // A runtime LIST match → dispatch by LENGTH. Read `vec-len(scrutinee)` once, then a chain of
+        // `if (len <cond>) then <arm-body> else …`. Each arm's element/rest binders read the list on their
+        // own (`SumPayload` `Elem`/`RestFrom` → `vec-get`/`vec-split`). The scrutinee is materialized ONCE
+        // into a fresh i32 slot so every arm-body binder re-reads the SAME handle. Exhaustiveness (checked
+        // in `lower`) guarantees the last arm is a catch-all, so the innermost `else` runs unconditionally.
+        Core::MatchList { scrutinee, arms } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "list match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let handle_slot = *high;
+            *high = handle_slot + 1;
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                handle_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(handle_slot));
+            let len_slot = *high;
+            *high = len_slot + 1;
+            scratch_ty.insert(len_slot, ValType::I32);
+            out.push(Lir::LocalGet(handle_slot));
+            out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
+            out.push(Lir::LocalSet(len_slot));
+            let mut arm_slots = slots.clone();
+            arm_slots.insert(scrutinee, handle_slot);
+            let arm_base = *high;
+            fn emit_list_arms(
+                db: &mut Db,
+                arms: &[crate::core::ListArm],
+                len_slot: u32,
+                block_ty: BlockType,
+                arm_slots: &HashMap<StructId, u32>,
+                arm_base: u32,
+                high: &mut u32,
+                scratch_ty: &mut HashMap<u32, ValType>,
+                layout: &Layout,
+                out: &mut Emit,
+            ) -> Result<(), Reject> {
+                let Some((first, rest)) = arms.split_first() else {
+                    out.push(Lir::Unreachable);
+                    return Ok(());
+                };
+                let is_tail =
+                    rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any);
+                if is_tail {
+                    return emit(
+                        db, first.body, arm_slots, arm_base, high, scratch_ty, layout, out,
+                    );
+                }
+                out.push(Lir::LocalGet(len_slot));
+                match first.cond {
+                    crate::core::ListArmCond::LenEq(n) => {
+                        out.push(Lir::ConstI32(n as i32));
+                        out.push(Lir::I32Eq);
+                    }
+                    crate::core::ListArmCond::LenGe(k) => {
+                        out.push(Lir::ConstI32(k as i32));
+                        out.push(Lir::I32GeU);
+                    }
+                    crate::core::ListArmCond::Any => unreachable!("Any is the tail"),
+                }
+                out.push(Lir::If(block_ty));
+                emit(
+                    db, first.body, arm_slots, arm_base, high, scratch_ty, layout, out,
+                )?;
+                out.push(Lir::Else);
+                emit_list_arms(
+                    db, rest, len_slot, block_ty, arm_slots, arm_base, high, scratch_ty, layout,
+                    out,
+                )?;
+                out.push(Lir::End);
+                Ok(())
+            }
+            emit_list_arms(
+                db, &arms, len_slot, block_ty, &arm_slots, arm_base, high, scratch_ty, layout, out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -5745,6 +5893,7 @@ fn emit_sum_cont(
                         out.push(Lir::ConstI32(*i as i32));
                         out.push(Lir::CallImport(OP_ARR_GET));
                     }
+                    crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
                 }
             }
             // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`

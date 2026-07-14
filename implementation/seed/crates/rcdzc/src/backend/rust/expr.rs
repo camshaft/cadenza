@@ -794,6 +794,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
         | Core::ListAt { .. }
+        | Core::MatchList { .. }
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloatNan
@@ -1513,6 +1514,12 @@ fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::Path
                     Some(t) => t.clone(),
                     None => return Ty::Any,
                 },
+                Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+            // A rest sublist keeps the list type (the Rust backend declines a runtime list match; total here).
+            crate::core::PathStep::RestFrom(_) => match ty.strip_nominal() {
+                Ty::List(_) => ty.clone(),
                 _ => return Ty::Any,
             },
         };
@@ -1611,6 +1618,11 @@ fn emit_sum_payload(
                     crate::core::PathStep::Payload => {
                         return Err(Reject::decline(
                             "a nested sum payload is not yet rendered by the Rust backend",
+                        ));
+                    }
+                    crate::core::PathStep::RestFrom(_) => {
+                        return Err(Reject::decline(
+                            "a list rest binder is not yet rendered by the Rust backend",
                         ));
                     }
                 }

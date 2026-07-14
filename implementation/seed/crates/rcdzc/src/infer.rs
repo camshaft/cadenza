@@ -285,6 +285,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                         Ty::List(elem) => (**elem).clone(),
                         _ => return Ty::Any,
                     },
+                    // A list-pattern REST binder — the tail sublist is still a `List T` (same type as the
+                    // list scrutinee), independent of where the tail starts.
+                    crate::core::PathStep::RestFrom(_) => match &cur {
+                        Ty::List(_) => cur.clone(),
+                        _ => return Ty::Any,
+                    },
                 };
             }
             cur
@@ -1730,6 +1736,11 @@ fn walk_payload_ty(
                     None => return Ty::Any,
                 },
                 Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+            // A rest sublist is the same list type as its scrutinee.
+            crate::core::PathStep::RestFrom(_) => match &cur {
+                Ty::List(_) => cur.clone(),
                 _ => return Ty::Any,
             },
         };

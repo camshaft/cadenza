@@ -15004,6 +15004,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_is_matched_by_element_and_rest_patterns() {
+        // L4: a match over a RUNTIME `List` scrutinee dispatches by LENGTH (`Core::MatchList` → `vec-len`),
+        // binds leading elements via `vec-get` (`SumPayload{Elem(i)}`), and the REST binder via `vec-drop`
+        // (`SumPayload{RestFrom(k)}`). `sum` recurses `(list x .. rest)` → x + sum(rest) — the head-plus-
+        // tail fold, the shape a list-consuming reader takes. `(list 10 20 30)` → 60. Before, a runtime
+        // list match declined "constant lists only" and the `rest` binder was `unbound name`.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+               (def (main) (sum (list 10 20 30))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-rest match run");
+            return;
+        };
+        assert_eq!(v, "60", "runtime list head-plus-rest fold");
+
+        // A FIXED-ARITY arm on a runtime list dispatches by exact length: `(list a b)` matches length 2.
+        // `(build 0 2 (list))` pushes [0 1]; the two-element arm sums them → 1; a longer/shorter list hits
+        // the catch-all → -1. Exercises `LenEq` dispatch + two leading `vec-get` binders.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (pair xs) (match xs ((list a b) (+ a b)) (_ -1))) \
+                   (def (main) (pair (build 0 2 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "runtime fixed-arity list match binds two elements"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder

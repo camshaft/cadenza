@@ -666,6 +666,16 @@ pub mod exports {
                     let result0 = T::bigint_cmp(arg0 as u32, arg1 as u32);
                     _rt::as_i64(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_vec_drop_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::vec_drop(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1016,6 +1026,14 @@ pub mod exports {
                     fn bigint_div(a: u32, b: u32) -> u32;
                     /// 70 — a / b truncating (traps on zero divisor)
                     fn bigint_cmp(a: u32, b: u32) -> i64;
+                    /// 71 — three-way compare: -1 / 0 / 1
+                    /// ── Vector drop-prefix (index 72) — `vec-drop(v, index)` returns the TAIL `[index, len)` as one
+                    ///    vector, dropping the prefix `[0, index)`. It is `vec-split` keeping only the right half (the left
+                    ///    is reclaimed), so a SINGLE-u32 result (no tuple retarea) — the shape a list REST pattern binder
+                    ///    `(list p… .. rest)` needs (`rest` = the tail after the leading count). CONSUMES `v`. `index == 0`
+                    ///    → `v` unchanged; `index >= len` → the empty vector. APPENDED after the bigint ops (frozen-contract
+                    ///    APPEND-only rule — a new op goes at the end so no existing op's index shifts).
+                    fn vec_drop(v: u32, index: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1274,7 +1292,11 @@ pub mod exports {
                         } } #[unsafe (export_name = "cadenza:runtime/heap#bigint-cmp")]
                         unsafe extern "C" fn export_bigint_cmp(arg0 : i32, arg1 : i32,)
                         -> i64 { unsafe { $($path_to_types)*::
-                        _export_bigint_cmp_cabi::<$ty > (arg0, arg1) } } };
+                        _export_bigint_cmp_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#vec-drop")] unsafe extern
+                        "C" fn export_vec_drop(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_vec_drop_cabi::<$ty > (arg0, arg1) }
+                        } };
                     };
                 }
                 #[doc(hidden)]
@@ -1483,9 +1505,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1835] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xad\x0d\x01A\x02\x01\
-A\x02\x01Bt\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1848] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xba\x0d\x01A\x02\x01\
+A\x02\x01Bu\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
 \x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
 andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
 \x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
@@ -1523,9 +1545,9 @@ encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01@\x01\x06handley\0v\x
 \0\x0bget-float32\x01*\x04\0\x0dbigint-of-i64\x01\0\x04\0\x15bigint-to-i64-check\
 ed\x01\x01\x04\0\x0abigint-add\x01\x1d\x04\0\x0abigint-sub\x01\x1d\x04\0\x0abigi\
 nt-mul\x01\x1d\x04\0\x0abigint-div\x01\x1d\x01@\x02\x01ay\x01by\0x\x04\0\x0abigi\
-nt-cmp\x01+\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\
-\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
-wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+nt-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17\
+cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\
+\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

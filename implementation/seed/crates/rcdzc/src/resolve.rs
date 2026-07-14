@@ -936,6 +936,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: vec![].into(),
         });
     }
+    // Case 6r: `form` is a MATCH ARM `((list p… .. rest) body)` (ascended from `body`) whose REST pattern
+    // binds `name` as the rest binder (the name after `..`). Unlike a leading element (one value), the
+    // rest binds the TAIL SUBLIST from index `lead` onward — a `SumPayload` with a bare `[RestFrom(lead)]`
+    // path (no head). Its type is `(List elem)` (same as the scrutinee); a constant scrutinee folds the
+    // tail (`fold_sum_path`'s `RestFrom`/`ListNew` arm), a runtime list reads `vec-split(list, lead).right`.
+    if let Some((scrutinee, lead)) = list_pattern_rest_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: vec![crate::core::PathStep::RestFrom(lead)].into(),
+            heads: vec![].into(),
+        });
+    }
     // Case 6g: `form` is a GUARD `(guard <variant-pattern> <cond>)`, ascended from `<cond>` → a payload
     // binder of the variant pattern is in scope in the guard cond (`(guard (Some x) (> x 0))` — the guard
     // `(> x 0)` reads the payload binder `x`). Like Case 5g but the binder nests in a VARIANT pattern, so
@@ -1392,6 +1404,43 @@ fn list_pattern_element_binds(
         .iter()
         .position(|&e| db.ast.as_name(e) == Some(name) && name != "_")
         .map(|i| (scrutinee, i))
+}
+
+/// The REST binder of a `(list p0 … p_{lead-1} .. rest)` match pattern binding `name`: returns
+/// `(scrutinee, lead)` — the enclosing match's scrutinee and the number of LEADING binders before `..`
+/// (so the rest sublist starts at index `lead`). `None` unless `name` is exactly the binder immediately
+/// after a `..` marker in the arm's list PATTERN. The rest sublist companion of `list_pattern_element_binds`.
+fn list_pattern_rest_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, usize)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[1] != from {
+        return None; // must be `(pattern body)` ascended from the body
+    }
+    let elems = db
+        .ast
+        .as_ctor_form(pb[0], "list")
+        .or_else(|| db.ast.as_form(pb[0], "list"))?;
+    // Find the `..` marker; the rest binder is the SINGLE element immediately after it.
+    let dd = elems
+        .iter()
+        .position(|&e| db.ast.as_name(e) == Some(".."))?;
+    let rest_occ = *elems.get(dd + 1)?;
+    if db.ast.as_name(rest_occ) != Some(name) || name == "_" {
+        return None;
+    }
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    Some((scrutinee, dd)) // `dd` = number of leading binders = the rest sublist's start index
 }
 
 /// Whether `id` is a NAME occurrence that is a `(list …)` match-pattern binder in the PATTERN position — a
