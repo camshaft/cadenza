@@ -17556,6 +17556,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload() {
+        // A `(list …)` pattern against a value that is NOT a list — a record, a tuple, a scalar — is a shape
+        // error (CDZ0201). The message NAMES the value's type + says a list pattern needs a list (the list
+        // twin of the tuple/constructor shape messages); it no longer leaks the internal "payload type" term
+        // ("a list pattern does not match the payload type T"), which misleads for a top-level `match`/`let`
+        // on a plain value that is not a variant payload.
+        let rec = reject_full(
+            "(module m (def (g (: r (Record (x Int64)))) (match r ((list a) a))) (export g))",
+        )
+        .expect("a list pattern on a record rejects");
+        assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
+        assert!(
+            rec.message.contains(
+                "this list pattern cannot destructure a value of type (Record (x Int64))"
+            ) && !rec.message.contains("payload"),
+            "names the type, no internal 'payload' term: {}",
+            rec.message
+        );
+        // A tuple value too — same clear wording.
+        let tup = reject_full(
+            "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((list a b) a))) (export g))",
+        )
+        .expect("a list pattern on a tuple rejects");
+        assert!(
+            tup.message
+                .contains("a `(list …)` pattern matches only a list value"),
+            "a tuple value gets the list-needs-a-list message: {}",
+            tup.message
+        );
+        // NO regression: a valid list pattern on a list value raises no shape fault.
+        assert!(
+            reject_full(
+                "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) (_ 0))) (export f))"
+            )
+            .is_none_or(|d| !d.message.contains("cannot destructure")),
+            "a valid list pattern raises no shape fault"
+        );
+    }
+
+    #[test]
     fn two_rest_markers_in_one_arm_are_linear() {
         // REGRESSION: the `..` rest MARKER is a syntactic token, NOT a binder (the rest binder is the name
         // AFTER `..`). `collect_pattern_binders` walked `..` as a bare-name atom and inserted it into the
