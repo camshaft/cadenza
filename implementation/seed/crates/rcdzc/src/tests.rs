@@ -13454,6 +13454,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_insert_type_clash_names_the_map_and_operand_types() {
+        // The Map.insert twin of the map-literal heterogeneity message (M75): inserting a key/value whose
+        // type differs from the map's names BOTH the map's type and the operand's type (was a generic "the
+        // inserted key's type differs from the map's"), and offers the int-literal→float retype where it
+        // bridges the clash.
+        let key = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
+        )
+        .expect("a Map.insert key-type clash must reject");
+        assert_eq!(key.code.as_deref(), Some("CDZ0201"), "got: {}", key.message);
+        assert!(
+            key.message.contains("Int64") && key.message.contains("String"),
+            "names the map's key type AND the inserted key type: {}",
+            key.message
+        );
+        let val = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
+        )
+        .expect("a Map.insert value-type clash must reject");
+        assert!(
+            val.message.contains("Int64") && val.message.contains("String"),
+            "names the map's value type AND the inserted value type: {}",
+            val.message
+        );
+        // Inserting an int VALUE into a map whose values are Float → the `n.0` retype fix (int-lit→float).
+        let f = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            f.fix.as_ref().map(|x| x.replacement.as_str()),
+            Some("3.0"),
+            "an int value inserted into a Float-valued map offers the retype: {}",
+            f.message
+        );
+    }
+
+    #[test]
     fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
         // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
         // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a

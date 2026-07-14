@@ -3890,17 +3890,38 @@ fn check_application(
         let val_ty = type_of(db, args[2]);
         if !kt.agrees_with(&key_ty) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert key type disagrees with the map's key type (CDZ0201)");
-            out.push(Reject::coded(
+            // Name the map's KEY type and the inserted key's type (like the map-literal heterogeneity
+            // message), and offer the int-literal→float retype when that bridges the clash — the
+            // Map.insert twin of the map-literal check (M75).
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a map associates keys of one type (the inserted key's type differs from the map's)",
-            ));
+                format!(
+                    "a map associates keys of one type, but this key's type differs: the map's keys are \
+                     {}, this key is {}",
+                    kt.render_name(),
+                    key_ty.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, args[1], &key_ty, &kt) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
         }
         if !vt.agrees_with(&val_ty) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert value type disagrees with the map's value type (CDZ0201)");
-            out.push(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a map associates values of one type (the inserted value's type differs from the map's)",
-            ));
+                format!(
+                    "a map associates values of one type, but this value's type differs: the map's \
+                     values are {}, this value is {}",
+                    vt.render_name(),
+                    val_ty.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, args[2], &val_ty, &vt) {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
         }
         if !kt.agrees_with(&key_ty) || !vt.agrees_with(&val_ty) {
             // Descend into the operands for their own faults, then stop (do NOT run the generic
