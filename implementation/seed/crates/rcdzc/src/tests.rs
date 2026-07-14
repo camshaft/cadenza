@@ -14210,7 +14210,8 @@ mod match_engine {
             assert!(
                 d.message
                     .contains(&format!("`{name}` is a type that takes no type parameters"))
-                    && d.message.contains(&format!("write `{name}`, not `({name} …)`")),
+                    && d.message
+                        .contains(&format!("write `{name}`, not `({name} …)`")),
                 "names the no-type-parameters fix for {name}: {}",
                 d.message
             );
