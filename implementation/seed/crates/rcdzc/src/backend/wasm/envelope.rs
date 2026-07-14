@@ -1043,7 +1043,10 @@ pub fn assemble_extern(
             for (j, e) in exports.iter().enumerate() {
                 items.extend_from_slice(&comp_export_item(&e.name, (p + j) as u32));
             }
-            (Vec::new(), section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)))
+            (
+                Vec::new(),
+                section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)),
+            )
         }
     };
 
@@ -1295,7 +1298,10 @@ pub fn assemble_extern_runtime(
             for (j, e) in exports.iter().enumerate() {
                 items.extend_from_slice(&comp_export_item(&e.name, (p + k + j) as u32));
             }
-            (Vec::new(), section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)))
+            (
+                Vec::new(),
+                section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)),
+            )
         }
     };
 
