@@ -206,3 +206,62 @@ fn a_file_with_no_imports_checks_as_a_standalone_file() {
         "a standalone type error is located in the file itself: {stdout}"
     );
 }
+
+#[test]
+fn an_ml_file_that_does_not_parse_fails_the_check_even_with_no_semantic_fault() {
+    // A CLEAN TRUNCATION — an unclosed `(` — that the ML reader RECOVERS from by dropping the broken
+    // subtree, leaving a well-formed but incomplete arena that carries NO downstream semantic fault. The
+    // parse error is printed to stderr, but `check` used to exit 0 (its exit keyed only on the SEMANTIC
+    // fault set), reporting a file that does not parse as clean — an editor/CI then treats a broken file
+    // as passing. A parse error IS an error-severity fault; the check must FAIL.
+    let dir = pkg_dir("ml-unclosed");
+    let bad = write(&dir, "bad.cdz", "def main() = (1 + 2\n");
+    let (ok, _stdout, stderr) = run(&["check", &bad]);
+    assert!(!ok, "an unparseable ML file must fail the check");
+    assert!(
+        stderr.contains("expected `)`"),
+        "the parse error is still surfaced: {stderr}"
+    );
+}
+
+#[test]
+fn a_recovered_error_placeholder_does_not_cascade_into_an_unbound_name() {
+    // `if … then …` with no `else` leaves an `<error>` PLACEHOLDER node where the else-branch belongs.
+    // In expression position that placeholder reduces to a bare name `<error>`, which the checker reported
+    // as `unbound name `<error>`` (CDZ0101) — a spurious fault naming a token the user never wrote, piled
+    // on top of the real "expected `else`" parse error. `<error>` is UNLEXABLE on the ML surface, so a
+    // diagnostic naming it is ALWAYS the placeholder; it is suppressed (the parse error already says the
+    // fix). The check still FAILS (the parse error), and the noise line is gone.
+    let dir = pkg_dir("ml-if-no-else");
+    let bad = write(&dir, "bad.cdz", "def main() = if true then 1\n");
+    let (ok, stdout, stderr) = run(&["check", &bad]);
+    assert!(!ok, "a missing `else` must fail the check");
+    assert!(
+        stderr.contains("expected `else`"),
+        "the real parse error is surfaced: {stderr}"
+    );
+    assert!(
+        !stdout.contains("`<error>`") && !stderr.contains("`<error>`"),
+        "the `<error>`-placeholder cascade must be suppressed: {stdout}{stderr}"
+    );
+}
+
+#[test]
+fn a_legit_error_symbol_in_sexpr_is_not_suppressed_as_a_placeholder() {
+    // The `<error>`-cascade suppression is GATED on the file having actually had a parse error. In s-expr
+    // `<error>` is a LEGAL symbol (the reader hard-errors on a malformed program, so a well-formed one
+    // that names `<error>` had zero parse errors) — so a real `unbound name `<error>`` there is NOT a
+    // recovery placeholder and must still be reported.
+    let dir = pkg_dir("sexpr-error-name");
+    let solo = write(
+        &dir,
+        "solo.sexp",
+        "(module m (def (main) <error>) (export main))",
+    );
+    let (ok, stdout, _) = run(&["check", &solo]);
+    assert!(!ok, "a genuinely unbound `<error>` name still fails");
+    assert!(
+        stdout.contains("unbound name `<error>`"),
+        "a real `<error>` name in a parse-clean file is reported, not suppressed: {stdout}"
+    );
+}

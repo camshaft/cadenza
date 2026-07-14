@@ -1714,6 +1714,20 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // A file that did NOT fully parse — an unclosed `(`, an arm-less `match`, a `then` with no `else`.
+    // The ML reader RECOVERS (prints each syntax error to stderr, then hands back a truncated arena of
+    // `<error>` placeholder nodes), so the check proceeds; but the recovered program is NOT what the
+    // author wrote. Two consequences to fix:
+    //  1. EXIT: a clean truncation (`(1 + 2` → the `(…` is just dropped) can leave the recovered arena
+    //     with NO semantic fault, so `check` reported SUCCESS on a file that does not parse — silently
+    //     breaking its "exits non-zero if any error-severity fault is present" contract (an editor/CI
+    //     then treats a broken file as clean). A parse error IS an error-severity fault; force FAILURE.
+    //  2. CASCADE: an `<error>` placeholder in expression position reduces to a bare NAME `<error>`,
+    //     which the checker reports as `unbound name `<error>`` (CDZ0101) — a spurious fault referencing
+    //     a token the user never wrote, layered on top of the real parse error. `<error>` is UNLEXABLE on
+    //     the ML surface (`<` starts no identifier), so an `<error>`-named diagnostic there is ALWAYS the
+    //     placeholder, never a real name — drop it (the parse error already said what to fix).
+    let any_parse_error = files.iter().any(|f| f.parse_errors > 0);
     // Route through the package/link path whenever the ENTRY declares an `(import …)` — even if it is the
     // only file loaded (an import naming no sibling). Then `link()` reports the precise "unknown package
     // file" diagnostic (CDZ0201) instead of the generic "imports are not modeled here" a bare single-file
@@ -1875,6 +1889,13 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             }
             _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
         };
+        // Suppress the parse-recovery `<error>`-placeholder cascade — an unbound-name fault whose subject
+        // is the synthetic `<error>` node the ML reader left where a production failed. It is UNLEXABLE on
+        // the ML surface, so a diagnostic naming it is never a real name; the printed parse error already
+        // says what to fix. Only when this file actually had a parse error (else a stray match is real).
+        if any_parse_error && code == "CDZ0101" && message.contains("`<error>`") {
+            continue;
+        }
         any_error |= severity == "error";
         // A fix the compiler rendered in s-expr form may not be byte-splice-able into THIS file's
         // surface. `replace`/`delete`/`wrap` render on any surface (a bare name, a deletion, or the
@@ -1991,7 +2012,11 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             println!("{}: help{marker}: {action}", loc_label(fix_node));
         }
     }
-    if any_error {
+    // A parse error is an error-severity fault in its own right (its recovered arena is not the author's
+    // program), even when the truncated arena carries no downstream semantic fault. `check`'s contract is
+    // "exits non-zero if any error-severity fault is present", and the parse error was already printed to
+    // stderr from the load boundary — so fail here too, closing the "prints an error but exits 0" gap.
+    if any_error || any_parse_error {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -2539,6 +2564,11 @@ struct LoadedFile {
     source: String,
     arenas: cadenza_syntax::Arenas,
     spans: cadenza_syntax::spans::SpanTable,
+    /// Count of RECOVERED parse errors (the ML reader never aborts — it prints each syntax error, then
+    /// returns a truncated arena of `<error>` placeholders). Nonzero means this file did not fully parse,
+    /// so `cdz check` must report FAILURE even when the recovered arena carries no semantic fault, and
+    /// suppress the `<error>`-placeholder cascade. Always `0` for an s-expr file (its reader hard-errors).
+    parse_errors: usize,
 }
 
 /// The IMPORT PATHS a top-level program declares — the `"path"` string of each `(import "path" …)`
@@ -2843,7 +2873,7 @@ fn resolve_import_file(dir: &std::path::Path, name: &str) -> Option<String> {
 /// normal diagnostic, so `cdz check` still surfaces a helpful error rather than aborting. Dedups by
 /// package name (the import target key), so a diamond or a cycle terminates.
 fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
-    let (source, arenas, spans) = load_program_spanned(entry)?;
+    let (source, arenas, spans, parse_errors) = load_program_spanned_counted(entry)?;
     let dir = std::path::Path::new(entry)
         .parent()
         .map(|p| p.to_path_buf())
@@ -2864,6 +2894,7 @@ fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
         source,
         arenas,
         spans,
+        parse_errors,
     });
 
     while let Some(name) = queue.pop_front() {
@@ -2873,7 +2904,7 @@ fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
         let Some(path) = resolve_import_file(&dir, &name) else {
             continue; // unresolved import — the compiler reports it as a diagnostic
         };
-        let (source, arenas, spans) = match load_program_spanned(&path) {
+        let (source, arenas, spans, parse_errors) = match load_program_spanned_counted(&path) {
             Ok(t) => t,
             // An imported file that itself fails to parse: skip it (its importer will fault on the
             // missing name). Don't abort the whole check on a library's parse error.
@@ -2888,6 +2919,7 @@ fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
             source,
             arenas,
             spans,
+            parse_errors,
         });
     }
     Ok(files)
@@ -2903,6 +2935,29 @@ fn load_program_spanned(
         String,
         cadenza_syntax::Arenas,
         cadenza_syntax::spans::SpanTable,
+    ),
+    String,
+> {
+    load_program_spanned_counted(file).map(|(s, a, sp, _)| (s, a, sp))
+}
+
+/// [`load_program_spanned`] plus the COUNT of recovered parse errors. The ML reader RECOVERS from a
+/// syntax error (it prints each, then returns a truncated-but-well-formed arena of `<error>` placeholder
+/// nodes rather than aborting), so a caller that loads the file and proceeds — `cdz check` — would
+/// otherwise never learn the parse failed: it exits by whether the SEMANTIC fault set is empty, and a
+/// clean truncation (unclosed `(`, an arm-less `match`) leaves NO downstream semantic fault, so the check
+/// reported SUCCESS on a file that does not parse. Return the count so `run_check` can force a nonzero
+/// exit (a parse error IS an error-severity fault: its `<error>` placeholders are not the program the
+/// author wrote) and suppress the placeholder cascade. `0` on the s-expr surface (its reader hard-`Err`s
+/// on a malformed program, handled below — reaching `Ok` there means it parsed).
+fn load_program_spanned_counted(
+    file: &str,
+) -> Result<
+    (
+        String,
+        cadenza_syntax::Arenas,
+        cadenza_syntax::spans::SpanTable,
+        usize,
     ),
     String,
 > {
@@ -2946,7 +3001,7 @@ fn load_program_spanned(
         // builds canonically, so its path is unchanged.)
         let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
         let spans = parsed.spans.remap(&id_map, arenas.structure.len());
-        Ok((source, arenas, spans))
+        Ok((source, arenas, spans, parsed.errors.len()))
     } else {
         // (Empty/whitespace-only source is handled uniformly before the surface split above.)
         // Mirror the driver's root convention (`query::driver::load`): a SINGLE top-level form stays
@@ -2981,7 +3036,9 @@ fn load_program_spanned(
         // a no-op, so the previously-correct lone-form case is unchanged).
         let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
         let spans = raw_spans.remap(&id_map, arenas.structure.len());
-        Ok((source, arenas, spans))
+        // The s-expr reader has no partial-recovery mode — it reaches here only on a fully-parsed program
+        // (a malformed one took the `Err` above), so there are no recovered parse errors to count.
+        Ok((source, arenas, spans, 0))
     }
 }
 

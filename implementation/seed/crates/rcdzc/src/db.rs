@@ -119,6 +119,17 @@ thread_local! {
     pub(crate) static COLLECT_BINDING_USES_VISITS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
 
+    /// Test-only: the MAX field entries a SINGLE `eval::project_meta` reverse-scan touched since the last
+    /// reset (a running max, not a total). `project_meta` reads a `meta`-namespace field off a record; field
+    /// keys sort `(namespace, name)` with a USER field (`None`) BELOW `Some("meta")`, so the meta fields are
+    /// a contiguous block at the TOP and a REVERSE scan reaches them without touching the O(width) user
+    /// fields (it breaks on descending below the meta block). A FORWARD scan (or any walk that doesn't stop)
+    /// would be O(record-width) per call, which — called per node on a WIDE record — is the O(N²)
+    /// `203f8588` fixed. This counter locks the PER-CALL scan depth to O(meta-fields), NOT O(width): the max
+    /// stays bounded (~3) regardless of how wide the record is. See
+    /// `project_meta_reads_a_meta_field_without_scanning_the_wide_user_block`.
+    pub(crate) static PROJECT_META_FIELDS_VISITED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter

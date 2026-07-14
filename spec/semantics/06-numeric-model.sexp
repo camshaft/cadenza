@@ -1697,6 +1697,61 @@
   (input  ((. UInt8 wrap) -1))
   (output (: 255 UInt8)))
 
+; --- The bitwise operators satisfy their defining Boolean-algebra laws --------------------------
+; Before composing `&`/`|`/`^` into LEB128 below, pin the identities each satisfies bit-for-bit over an
+; Int64's 64 bits (numeric-model.md #Overflow Is Defined names the exact bit operations). AND with all-
+; zeros is 0 and with all-ones (`-1`, every bit set in two's complement) is the operand; OR is the dual
+; (identity at 0, annihilator at -1); XOR is identity at 0 and self-INVERSE (`x ^ x` clears every bit to
+; 0). These are the bit-level analogue of the set-algebra laws (a set is a bit per element), and they
+; witness that `-1` is the all-ones mask a byte-masking encoder relies on. The composition cases below
+; use these ops in the encoder's arithmetic; these pin what each operator MEANS in isolation first.
+
+(case "bitwise AND with zero is zero (annihilator)"
+  (doc    "`(& 42 0)` = 0: AND with all-zero bits clears every bit, so 0 is the annihilator of `&`. Pins
+           the zero law of bitwise AND — every bit ANDed with 0 is 0, whatever the other operand.")
+  (input  (& 42 0))
+  (output (: 0 Int64)))
+
+(case "bitwise AND with negative one is the operand (identity)"
+  (doc    "`(& 42 -1)` = 42: `-1` is all-ones in two's complement, so ANDing with it keeps every bit — the
+           identity of `&`. Pins that `-1` is the all-ones mask (the complement of the `& _ 0` annihilator),
+           the masking identity a byte extractor relies on.")
+  (input  (& 42 -1))
+  (output (: 42 Int64)))
+
+(case "bitwise OR with zero is the operand (identity)"
+  (doc    "`(| 42 0)` = 42: OR with all-zero bits sets no additional bit, so 0 is the identity of `|` — the
+           dual of AND's zero-annihilator. Pins the zero law of bitwise OR.")
+  (input  (| 42 0))
+  (output (: 42 Int64)))
+
+(case "bitwise OR with negative one is all ones (annihilator)"
+  (doc    "`(| 42 -1)` = -1: ORing with all-ones sets every bit, so `-1` is the annihilator of `|` — the
+           dual of AND's all-ones identity. Pins that OR saturates to -1 against the all-ones mask.")
+  (input  (| 42 -1))
+  (output (: -1 Int64)))
+
+(case "bitwise XOR with zero is the operand (identity)"
+  (doc    "`(^ 42 0)` = 42: XOR with all-zero bits flips nothing, so 0 is the identity of `^`. Pins the
+           zero law of bitwise XOR (the third operator's identity, beside AND's -1 and OR's 0).")
+  (input  (^ 42 0))
+  (output (: 42 Int64)))
+
+(case "bitwise XOR of a value with itself is zero (self-inverse)"
+  (doc    "`(^ 42 42)` = 0: XOR of equal bits is 0 at every position, so `x ^ x` clears the whole word —
+           XOR is its own inverse. Pins the self-inverse law (distinct from AND/OR which are idempotent,
+           `x & x = x` / `x | x = x`); the property a XOR-swap or a running-XOR checksum relies on.")
+  (input  (^ 42 42))
+  (output (: 0 Int64)))
+
+(case "bitwise XOR with negative one is the bitwise complement"
+  (doc    "`(^ 5 -1)` = -6: XOR with all-ones flips every bit, which IS the bitwise complement — `~x` is
+           `x ^ -1`. For 5 (…0101) the complement is …1010 = -6 in two's complement. Pins the complement
+           idiom (the language spells `~x` as `(^ x -1)` rather than a dedicated operator), so a program
+           needing a bit-flip has the operation.")
+  (input  (^ 5 -1))
+  (output (: -6 Int64)))
+
 ; --- The bitwise/shift/truncation primitives COMPOSE into the LEB128 encoding step ----------
 ; The cases above exercise `&`, `|`, `>>`, and `UInt8.wrap` INDIVIDUALLY on constant operands. The
 ; compiler's actual use is to COMPOSE them: one LEB128 byte is `(| (& n 127) 128)` when a continuation
