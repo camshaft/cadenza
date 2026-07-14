@@ -1425,7 +1425,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // gap). Reject each stray `resume` with a coded CDZ0201 (Malformed — it is structurally well-formed but
     // in an invalid position), anchored at the `resume` occurrence.
     for id in (0..db.ast.structure.len() as u32).map(StructId) {
-        if db.ast.head_name(id) == Some("resume") && crate::resolve::is_stray_resume(db, id) {
+        // Only a USER (source-written) `resume` can be a stray one — a SYNTHESIZED reduction copy (a
+        // `beta_reduce`/handle-fold node) is not source the author can move. A MALFORMED resume
+        // (`(resume v)` / `(resume v s extra)`) reports its own CDZ0201 at its source node (the resolve
+        // poison), and the handle fold then produces a spanless COPY of the arm body that lands outside a
+        // recognizable handle-arm structure — which `is_stray_resume` would wrongly flag "stray", a
+        // MISLEADING second error (the resume IS in an arm, just malformed). Gating on `is_user_node`
+        // drops that synthesized copy so a malformed resume reports ONE primary fault (its shape), while a
+        // genuine top-level `(resume …)` — a user node with no enclosing arm — is still flagged.
+        if db.ast.head_name(id) == Some("resume")
+            && db.is_user_node(id)
+            && crate::resolve::is_stray_resume(db, id)
+        {
             faults.push(
                 Reject::coded(
                     Code::Malformed,
