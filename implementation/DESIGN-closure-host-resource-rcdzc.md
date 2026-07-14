@@ -1180,9 +1180,20 @@ the component type. The new work:
   `option<T>` sends Some=1/None=0 (canonical `variant{none,some}`), but Cadenza's `(Some a) None` decl has
   Some=0 — the guest BRANCHES on the boundary disc (`boundary_payload_disc=1`) but BUILDS with the decl disc.
   Conflating them returned 0 for Some (the first bug). Corpus: Option Int64 Some+None, Bool, Float64, Int32
-  (narrow-int), + capturing (Some+None). **REMAINING within SUM-arg:** a `Result`/2-payload-variant or a
-  user sum (needs `variant<…>`, not `option<…>`); a compound/nested payload; the multi/mixed/distinct-sig +
-  list-result shapes (each a slot/core-fn widening, like the tuple-arg matrix).
+  (narrow-int), + capturing (Some+None).
+- **✅ SUM (Result scalar scalar) direct-call arg — single-export scalar-result COMPLETE (`spec@47a31a6a`).**
+  Extends the vertical to a TWO-payload sum: a `(Result Int64 Int64)`/`(Result Bool Bool)` arg crosses via a
+  native component `result<ok,err>` (the `0x6a` former) flattened to `(disc, payload)` (Ok=0, Err=1). 🔑🪤 KEY
+  FINDING (oracle `a_result_scalar_closure_arg_crosses_by_native_flattening`): a general component `variant<…>`
+  must be a NAMED type (wasmparser `type_named_type_id` — Variant/Record/Flags/Enum are never anonymous), but
+  `result`/`option` ARE anonymous-allowed — so `Result` maps to `result<…>`, NOT `variant`. Generalized
+  `SumArgRebuild` to a two-arm form (`SumArgArm` per variant, each optionally boxing a payload — subsumes
+  Option's one-payload+nullary AND Result's two payloads); `ArgSlot::Result(ok,err)` + `result_defined_type`;
+  the classifier dispatches by payload counts (`[0,1]`→Option, `[1,1]`→Result same-width); `cdz-run`
+  `Type::Result` coercion. Corpus: Result Int64 (Ok+Err), Result Bool, + capturing (Ok+Err).
+  **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED `variant<…>` — an
+  export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened join); a
+  compound/nested payload; the multi/mixed/distinct-sig + list-result shapes (each a slot/core-fn widening).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
