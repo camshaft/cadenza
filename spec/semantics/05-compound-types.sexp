@@ -1496,6 +1496,28 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a recursive NEWTYPE-wrapped linked list folds to a scalar"
+  (doc    "The single-variant NEWTYPE spelling of the recursive linked list above: `(type Lst (Mk (Option
+           (Tuple Int64 Lst))))` wraps `Option (head, tail)` in a one-variant nominal `Lst`, so a node is
+           `(Mk (Some (tuple h tail)))` and the end is `(Mk (None))`. `sm` traverses it — unwrap the `Mk`,
+           match the Option, add the head to the recursively-summed tail. `sm` of [10,20,30] = 60. The
+           WASM backend runs this (a nominal newtype ERASES at runtime, its μ back-edge is just a heap
+           handle). The RUST backend erases a newtype to its underlying Rust type, which works only when
+           the unfold TERMINATES — a recursive newtype's inner type mentions its own name (`Lst`), which
+           has no finite erased Rust form, so a Rust definition would be needed (Box-indirected, deferred
+           like a recursive sum); the rust backend DECLINES the function rather than emitting a signature
+           naming an undefined type (which was an uncompilable crate, `cannot find type Lst`). Pins that a
+           recursive newtype is the newtype analogue of the recursive-sum linked list and runs on wasm.")
+  (input  (do
+            (type Lst (Mk (Option (Tuple Int64 Lst))))
+            (def (sm (: l Lst)) (match l
+                                  ((Mk o) (match o
+                                            ((Some p) (+ (. p 0) (sm (. p 1))))
+                                            ((None) 0)))))
+            (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None)))))))))))))
+            (export main)))
+  (output (: 60 Int64)))
+
 (case "a recursive NEWTYPE traversal recurses on its projected recursive field"
   (doc    "The single-variant NEWTYPE form of the linked-list traversal: `(type Lst (Mk (Option (Tuple
            Int64 Lst))))` wraps the recursive spine in a nominal `Mk`. `sm` matches out the `Mk`, then the

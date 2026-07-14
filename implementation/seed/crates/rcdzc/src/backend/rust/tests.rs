@@ -816,6 +816,28 @@ fn a_recursive_sum_emits_a_boxed_enum() {
 }
 
 #[test]
+fn a_recursive_newtype_declines_the_whole_function() {
+    // A RECURSIVE NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` erases to its inner type on the rust
+    // backend — but the inner type mentions `Lst` (the μ back-edge), which erasure would render as a bare
+    // `Lst` that is never emitted → `cannot find type Lst` (an uncompilable crate). Erasure only works when
+    // the unfold terminates; a recursive newtype needs a Box-indirected nominal emission (deferred, like a
+    // recursive sum). So a function taking/returning it DECLINES, exactly as a recursive SUM does, rather
+    // than emitting a signature naming an undeclared type. (The wasm backend runs it — types erase at
+    // runtime with no Rust-level name needed.)
+    let err = try_compile_rust(
+        "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+           (def (sm (: l Lst)) (match l ((Mk o) (match o ((Some p) (+ (. p 0) (sm (. p 1)))) ((None) 0))))) \
+           (export sm))",
+    )
+    .expect_err("a recursive newtype must decline, not emit an uncompilable crate");
+    assert!(
+        err.iter()
+            .any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
+        "decline reason should cite the recursive/unrepresentable type: {err:?}"
+    );
+}
+
+#[test]
 fn a_recursive_sum_constructed_as_a_discarded_intermediate_folds_away() {
     // A helper `mk` returns `(tuple (NLit 5) 9)` — a pair whose element 0 is a recursive-sum value and
     // whose element 1 is the Int64 9. `main` reads `.1` and DISCARDS element 0. The projection folds

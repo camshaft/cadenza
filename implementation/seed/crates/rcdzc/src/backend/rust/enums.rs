@@ -306,6 +306,21 @@ pub(super) fn sum_representable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
             let vals: Vec<Ty> = fields.values().cloned().collect();
             vals.iter().all(|t| sum_representable(db, t))
         }
+        // A NOMINAL newtype ERASES to its underlying type on the rust backend (`rust_type`'s `Ty::Nominal`
+        // arm renders `inner`, no Rust definition emitted). Erasure works only when the unfold TERMINATES —
+        // a RECURSIVE newtype `(type Lst (Mk (Option (Tuple Int64 Lst))))` unfolds forever: its `inner`
+        // mentions its OWN decl (the μ back-edge), which `rust_type` would render as the bare name `Lst`
+        // that is never defined → `cannot find type Lst` (an uncompilable crate). Rust needs a `Box`-
+        // indirected NOMINAL emission for that (not yet done, like a recursive sum), so a recursive newtype
+        // is NOT representable — decline, exactly as a recursive sum declines. A non-recursive newtype stays
+        // representable iff its (finitely-unfolding) `inner` and any type args are.
+        Ty::Nominal {
+            decl, inner, args, ..
+        } => {
+            !mentions_decl(inner, *decl)
+                && sum_representable(db, inner)
+                && args.iter().all(|a| sum_representable(db, a))
+        }
         _ => true,
     }
 }
@@ -362,6 +377,19 @@ fn mentions_decl(ty: &crate::ty::Ty, decl: crate::ast::StructId) -> bool {
     use crate::ty::Ty;
     match ty {
         Ty::Sum { decl: d, args, .. } => *d == decl || args.iter().any(|a| mentions_decl(a, decl)),
+        // A NOMINAL newtype's back-edge is a `Ty::Nominal` carrying the SAME decl (the recursion point of
+        // `(type Lst (Mk (Option (Tuple Int64 Lst))))` — the inner `Lst` is `Ty::Nominal{decl=Lst}`). Match
+        // it directly, and descend into `inner`/`args` so a mention nested under a non-recursive wrapper is
+        // still found. Without this arm a nominal self-reference slipped through (only `Ty::Sum` was
+        // checked), leaving a dangling type name.
+        Ty::Nominal {
+            decl: d,
+            inner,
+            args,
+            ..
+        } => {
+            *d == decl || mentions_decl(inner, decl) || args.iter().any(|a| mentions_decl(a, decl))
+        }
         Ty::Tuple(elems) => elems.iter().any(|e| mentions_decl(e, decl)),
         Ty::Record(fields) => fields.values().any(|t| mentions_decl(t, decl)),
         _ => false,
