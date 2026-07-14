@@ -23,6 +23,7 @@ pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a Bool argument to a parameter used in integer addition is rejected
