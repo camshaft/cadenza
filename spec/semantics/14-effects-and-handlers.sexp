@@ -528,6 +528,37 @@
                 (apply1 (fn (z) (* z 2)) 10))) (export main)))
   (output (: 25 Int64)))
 
+(case "an applied lambda whose body enters a mutually-recursive performing group folds"
+  (doc    "Composes the applied-lambda pre-reduction with mutual-recursion specialization: the handle body
+           is `((fn (m) (ev m)) 4)`, a lambda applied to a pure literal whose body ENTERS the
+           mutually-recursive performing group `ev`/`od`. Pre-reduction inlines the pure-arg redex to
+           `(ev 4)`, then the mutual pair specializes under the state handler exactly as a direct `(ev 4)`
+           would — the two folds compose. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)` =
+           `7 + 6 + 0` = 13. Pins that an applied lambda is a transparent wrapper over a recursive-effectful
+           call, folding to the same result as the unwrapped call.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (Ctr.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (ev (- n 1)))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1))))
+                ((fn (m) (ev m)) 4))) (export main)))
+  (output (: 13 Int64)))
+
+(case "an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation"
+  (doc    "Composes the applied-lambda pre-reduction with an ABORTIVE (non-resuming) handler. The body
+           `(+ 100 ((fn (x) (Bail.bail x)) 42))` wraps the abortive perform in a lambda application in a
+           STRICT operand position. Pre-reduction inlines the pure-arg redex to `(+ 100 (Bail.bail 42))`,
+           where the abort abandons the surrounding `(+ 100 …)` — the abortive arm's value 42 becomes the
+           whole handle's value (NOT 142). Pins that an abort reached through an applied-lambda wrapper still
+           unwinds the enclosing strict context, the abortive analogue of the resumptive compositions above.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n))
+                (+ 100 ((fn (x) (Bail.bail x)) 42)))) (export main)))
+  (output (: 42 Int64)))
+
 (case "a performing argument to a multiply-using performing callee is not duplicated"
   (doc    "The SOUNDNESS ANCHOR for the applied-lambda pre-reduction: a call is β-reduced early (before the
            pure-one-hole classifier) ONLY when its arguments are strongly PURE. Here the argument itself

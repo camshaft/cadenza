@@ -1154,6 +1154,8 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
+pass	an applied lambda whose body enters a mutually-recursive performing group folds
+pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
 pass	an arbitrary-precision integer multiplication does not overflow
 pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
