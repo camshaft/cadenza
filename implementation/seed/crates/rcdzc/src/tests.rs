@@ -12439,6 +12439,77 @@ mod match_engine {
     }
 
     #[test]
+    fn a_collection_element_mismatch_names_the_differing_axis() {
+        // The collection analogue of the record/tuple per-member hint: a `List`/`Map`/`Set` whose
+        // element / key / value TYPE differs from the expected type names the differing AXIS and its
+        // expected-vs-actual type ("its elements should be Int64, but these are Bool") instead of leaving
+        // the reader to diff `(Map String Int64)` against `(Map Int64 Int64)` to see it is the KEY axis.
+        // A `List` element mismatch.
+        let list = reject_full(
+            "(module m (def (h (: xs (List Int64))) xs) (def (g) (h (list true))) (export g))",
+        )
+        .expect("a (List Bool) where (List Int64) is wanted rejects");
+        assert_eq!(
+            list.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            list.message
+        );
+        assert!(
+            list.message
+                .contains("its elements should be Int64, but these are Bool"),
+            "names the list element axis: {}",
+            list.message
+        );
+        // A `Map` KEY mismatch — the KEY axis is named (not the value).
+        let key = reject_full(
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 2)))) (export g))",
+        )
+        .expect("a (Map Int64 Int64) where (Map String Int64) is wanted rejects");
+        assert!(
+            key.message
+                .contains("its keys should be String, but these are Int64"),
+            "names the map KEY axis: {}",
+            key.message
+        );
+        // A `Map` VALUE mismatch — the VALUE axis is named (the key agrees).
+        let val = reject_full(
+            "(module m (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+        )
+        .expect("a (Map Int64 Bool) where (Map Int64 Int64) is wanted rejects");
+        assert!(
+            val.message
+                .contains("its values should be Int64, but these are Bool"),
+            "names the map VALUE axis: {}",
+            val.message
+        );
+        // BOTH map axes differ → report the KEY (leftmost) axis, deterministically.
+        let both = reject_full(
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+        )
+        .expect("a map with both axes wrong rejects");
+        assert!(
+            both.message.contains("its keys should be String")
+                && !both.message.contains("its values should be"),
+            "both-axes-differ reports the leftmost (key) axis: {}",
+            both.message
+        );
+        // NO false axis hint across DIFFERENT collection kinds (a Set where a List is annotated) — the
+        // element types agree but the kinds differ, so there is no single "axis" to name.
+        let kinds = reject_full(
+            "(module m (def (h (: s (Set Int64))) s) (def (g) (h (list 1))) (export g))",
+        )
+        .expect("a List where a Set is wanted rejects");
+        assert!(
+            !kinds.message.contains("its elements should be"),
+            "no axis hint across different collection kinds: {}",
+            kinds.message
+        );
+        // No mechanical fix — the repair is retyping the elements, which the author must supply.
+        assert!(list.fix.is_none(), "no mechanical fix: {:?}", list.fix);
+    }
+
+    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64

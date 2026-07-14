@@ -3205,6 +3205,37 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
         })
 }
 
+/// An actionable message TAIL when `expected` and `actual` are the SAME collection KIND (both `List`, both
+/// `Map`, or both `Set`) but an ELEMENT / KEY / VALUE type differs — the collection analogue of the
+/// record/tuple per-member hint. Naming both full types (`(Map String Int64)` vs `(Map Int64 Int64)`)
+/// makes the reader diff two renders to see it is the KEY axis that differs; this names the axis and its
+/// expected-vs-actual type ("its keys should be String, but these are Int64"). For a `Map` the KEY is
+/// checked before the VALUE (report the leftmost differing axis, deterministic). `agrees_with` (the
+/// relation `unify` uses) gates each axis, so a deferred `Var`/`Any` element is skipped. `None` unless
+/// both are the same collection kind AND some axis genuinely differs. Tail only — the repair is retyping
+/// the offending element(s), which the author must supply, so no mechanical fix (like the record/tuple
+/// per-member hints).
+fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    let axis = |role: &str, want: &Ty, got: &Ty, plural: &str| {
+        (!want.agrees_with(got)).then(|| {
+            format!(
+                " — its {role} should be {}, but {plural} {}",
+                want.render_name(),
+                got.render_name()
+            )
+        })
+    };
+    match (expected, actual) {
+        (Ty::List(want), Ty::List(got)) => axis("elements", want, got, "these are"),
+        (Ty::Set(want), Ty::Set(got)) => axis("elements", want, got, "these are"),
+        (Ty::Map(wk, wv), Ty::Map(gk, gv)) => {
+            // KEY axis first, then VALUE — report the leftmost differing axis.
+            axis("keys", wk, gk, "these are").or_else(|| axis("values", wv, gv, "these are"))
+        }
+        _ => None,
+    }
+}
+
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
 /// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
 /// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
@@ -7065,12 +7096,27 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 } else {
                                     None
                                 };
+                            // Same collection KIND (both List/Map/Set) but an element/key/value TYPE
+                            // differs — `(Map String Int64)` where `(Map Int64 Int64)` is annotated. Name
+                            // the differing AXIS instead of leaving the reader to diff two full renders, the
+                            // collection twin of the record/tuple per-member hint. Tail only (no fix — the
+                            // repair is retyping the elements). Last in the chain, after the others found none.
+                            let collection_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                            {
+                                collection_element_mismatch_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
                                 .or(record_tail)
                                 .or(fn_tail)
+                                .or(collection_tail)
                                 .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
