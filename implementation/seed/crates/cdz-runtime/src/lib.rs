@@ -1103,7 +1103,11 @@ struct TypeNode {
 fn decode_type_node(d: &[u8], pos: &mut usize) -> Option<TypeNode> {
     let head = desc_name(d, pos)?;
     let n = desc_leb(d, pos)?;
-    let mut children = Vec::with_capacity(n as usize);
+    // `reserve_cap`: clamp an untrusted child count to remaining bytes so a malformed TypeNode can't
+    // `with_capacity`-abort (each child is ≥1 byte). NOTE this is recursive — a malformed deeply-nested
+    // TypeNode is bounded only by `desc_name`/`desc_leb` running out of bytes (`?`), which they do since
+    // every level consumes ≥2 bytes (a name-len + a child-count); the total descriptor length caps depth.
+    let mut children = Vec::with_capacity(reserve_cap(n, d, *pos));
     for _ in 0..n {
         children.push(decode_type_node(d, pos)?);
     }
@@ -1141,6 +1145,17 @@ fn desc_name(d: &[u8], pos: &mut usize) -> Option<String> {
     core::str::from_utf8(bytes).ok().map(String::from)
 }
 
+/// A pre-reservation capacity for a count `n` decoded from UNTRUSTED descriptor bytes, CLAMPED to the
+/// bytes remaining after `pos`. Every element decoded from a count consumes ≥1 byte, so a legitimate `n`
+/// never exceeds `d.len() - pos`; clamping turns a bogus huge LEB (e.g. from a random/malformed
+/// descriptor) into a small reservation the `?`-guarded loop then fails out of, instead of
+/// `Vec::with_capacity(n)` trying to reserve gigabytes and ABORTING the guest (the value-encode escape's
+/// "never a trap" totality contract). Costs nothing on well-formed input (the clamp never binds there).
+#[inline]
+fn reserve_cap(n: u64, d: &[u8], pos: usize) -> usize {
+    (n as usize).min(d.len().saturating_sub(pos))
+}
+
 fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
     let tag = *d.get(*pos)?;
     *pos += 1;
@@ -1153,7 +1168,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         5 => Shape::Unit,
         6 => {
             let n = desc_leb(d, pos)?;
-            let mut elems = Vec::with_capacity(n as usize);
+            let mut elems = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
@@ -1162,7 +1177,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         7 => Shape::List(desc_leb(d, pos)? as u32),
         8 => {
             let n = desc_leb(d, pos)?;
-            let mut fields = Vec::with_capacity(n as usize);
+            let mut fields = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 let name = desc_name(d, pos)?;
                 fields.push((name, desc_leb(d, pos)? as u32));
@@ -1171,7 +1186,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         }
         9 => {
             let n = desc_leb(d, pos)?;
-            let mut variants = Vec::with_capacity(n as usize);
+            let mut variants = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 let head = desc_name(d, pos)?;
                 variants.push((head, desc_leb(d, pos)? as u32));
@@ -1199,7 +1214,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
             // knows to splice the elements FLAT under the variant head rather than wrap them in `tuple`.
             let n = desc_leb(d, pos)?;
-            let mut elems = Vec::with_capacity(n as usize);
+            let mut elems = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
@@ -1212,7 +1227,9 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
 fn decode_descriptor(d: &[u8]) -> Option<Descriptor> {
     let mut pos = 0usize;
     let n = desc_leb(d, &mut pos)?;
-    let mut table = Vec::with_capacity(n as usize);
+    // `reserve_cap`: a bogus huge table count from a malformed descriptor must not `with_capacity`-abort;
+    // each shape is ≥1 byte so a real `n` ≤ remaining bytes, and the `?`-loop fails out of an overlong one.
+    let mut table = Vec::with_capacity(reserve_cap(n, d, pos));
     for _ in 0..n {
         table.push(decode_shape(d, &mut pos)?);
     }
@@ -1712,6 +1729,13 @@ fn encode_value(
                             let l = b.name_leaf("unit");
                             out.push(b.atom(l));
                         } else {
+                            // TOTALITY: the descriptor declares `elems.len()` fields; verify the actual node
+                            // has at least that arity BEFORE any `op_arr_get` (which TRAPS on OOB / an
+                            // immediate). A well-formed descriptor always matches, but a malformed one must
+                            // DECLINE (`None`) per this op's contract, not trap the guest.
+                            if (op_arr_len(h) as usize) < elems.len() {
+                                return None;
+                            }
                             let head = b.name_leaf("tuple");
                             let head_s = b.atom(head);
                             work.push(EncodeWork::List {
@@ -1751,6 +1775,11 @@ fn encode_value(
                         }
                     }
                     Shape::Record(fields) => {
+                        // TOTALITY (as `Tuple`): a record is an arr of field values; verify the node's
+                        // arity covers the descriptor's field count before any trapping `op_arr_get`.
+                        if (op_arr_len(h) as usize) < fields.len() {
+                            return None;
+                        }
                         let head = b.name_leaf("record");
                         let head_s = b.atom(head);
                         work.push(EncodeWork::List {
@@ -1779,6 +1808,11 @@ fn encode_value(
                         // like the `Tuple` walk) rather than visiting the single tuple shape.
                         if let Some(Shape::Spread(elems)) = desc.table.get(payload_shape as usize) {
                             let elems = elems.clone();
+                            // TOTALITY (as `Tuple`): the payload arr must have ≥ the Spread's element count
+                            // before any trapping `op_arr_get` — a malformed descriptor DECLINES, not traps.
+                            if (op_arr_len(payload_h) as usize) < elems.len() {
+                                return None;
+                            }
                             work.push(EncodeWork::List {
                                 head_s,
                                 nkids: elems.len(),
@@ -14857,6 +14891,63 @@ mod tests {
         bolero::check!()
             .with_type::<Vec<BytesOp>>()
             .for_each(|ops| run_bytes_op_sequence(ops));
+    }
+
+    // ── value-encode TOTALITY under an ARBITRARY (possibly malformed) descriptor ────────────────
+    // `op_value_encode_form` is the value-heap ESCAPE — the runtime's most complex descriptor-driven
+    // walk, run at the host boundary. Its contract (docstring): "A malformed descriptor / unrenderable
+    // shape yields the empty Bytes … never a trap." The compiler only bakes well-formed descriptors
+    // today, but a future descriptor-gen bug must DECLINE, not crash/hang the guest with no diagnostic.
+    // Fuzz RANDOM descriptor bytes against representative values and assert the op always RETURNS (Some
+    // or None — never a panic/trap/hang) and leaks nothing. This caught the arity-mismatch trap the
+    // Tuple/Record/Spread arms now guard (a descriptor claiming N fields for a node with fewer used to
+    // `op_arr_get`-trap instead of declining) — the same class as `decode_descriptor`'s `with_capacity`
+    // on an untrusted length, which this also exercises.
+    fn assert_encode_is_total(desc: &[u8]) {
+        let before = live_nodes();
+        // A menagerie of representative values: a scalar leaf, a 2-tuple, a nested sum, a small vec, a
+        // string, a bytes leaf, a 1-entry map. A mismatched descriptor against ANY must decline, not trap.
+        let values: Vec<Handle> = alloc::vec![
+            op_box_int(42),
+            {
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, op_box_int(1));
+                op_arr_set(t, 1, op_box_int(2));
+                t
+            },
+            op_sum_new(0, op_box_int(7)),
+            {
+                let mut v = op_vec_empty();
+                for i in 0..3 {
+                    v = op_vec_push(v, op_box_int(i));
+                }
+                v
+            },
+            op_str_new(String::from("hi")),
+            bytes_leaf(&[1, 2, 3]),
+            op_map_insert(op_map_empty(), op_box_int(1), op_box_int(10)),
+        ];
+        for &h in &values {
+            // The property: NO panic. The result (Some doc / None decline) is not checked for content —
+            // only that the op RETURNS. `black_box` so the walk isn't optimized away.
+            let out = op_value_encode_form(h, desc);
+            core::hint::black_box(&out);
+        }
+        for h in values {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "value-encode leaks nothing regardless of the descriptor (declines cleanly, borrows the value)"
+        );
+    }
+
+    #[test]
+    fn prop_value_encode_is_total_under_arbitrary_descriptor() {
+        bolero::check!()
+            .with_type::<Vec<u8>>()
+            .for_each(|desc| assert_encode_is_total(desc));
     }
 
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
