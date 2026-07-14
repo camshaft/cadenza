@@ -1710,6 +1710,7 @@ pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
+pass	eval of a quasiquote splicing a compile-time-known value
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
