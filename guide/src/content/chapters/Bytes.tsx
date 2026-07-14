@@ -118,20 +118,23 @@ export default function Bytes() {
         id="bytes:2"
         prompt={
           <>
-            A byte literal and a built sequence are equal when their bytes match. Fill in the two byte
-            values so <C>b"Hi"</C> equals your <C>Bytes.of</C> — the codes are <C>H</C>=72 and{" "}
-            <C>i</C>=105, and a match gives <C>1</C>.
+            Slice the three bytes <C>B C D</C> out of <C>b"ABCDE"</C>, starting at index <C>1</C>.
+            Remember <C>Bytes.slice</C>'s second argument is a <em>length</em>, not an end index — fill it
+            in so <C>Bytes.len</C> of the result is <C>3</C>.
           </>
         }
         starter={`(def (main)
-  (if (= b"Hi" (Bytes.of (list 72 ?))) 1 0))`}
+  (Bytes.len
+    (Option.expect (Bytes.slice b"ABCDE" 1 ?) "in range")))`}
         solution={`(def (main)
-  (if (= b"Hi" (Bytes.of (list 72 105))) 1 0))`}
-        expected="1"
+  (Bytes.len
+    (Option.expect (Bytes.slice b"ABCDE" 1 3) "in range")))`}
+        expected="3"
         hint={
           <>
-            <C>H</C> is 72 (already filled) and <C>i</C> is <C>105</C> — the two bytes of <C>b"Hi"</C>. With
-            both right, the comparison is true → <C>1</C>.
+            You want three bytes, and the argument <em>is</em> the count — so it's <C>3</C>, not an end
+            index. (Write <C>4</C>, as if it were <C>String.slice</C>'s end, and you'd get four bytes —{" "}
+            <C>B C D E</C> — instead.)
           </>
         }
       />
