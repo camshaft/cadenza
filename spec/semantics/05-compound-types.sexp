@@ -3160,6 +3160,38 @@
               ((None) 0)))
   (error    CDZ0210))
 
+(case "a RUNTIME guarded sum-match arm dispatches through its guard"
+  (doc    "A guarded arm over a RUNTIME sum scrutinee (chosen by `if`, so the match cannot fold): `((guard
+           (V.A n) (> n 5)) 1)` fires only when the `A` payload exceeds 5, else FALLS THROUGH to the
+           unguarded `(V.A n)` binding arm. `(f 10)` → `A(10)`, guard `10 > 5` true → 1. Pins the
+           two-compiler agreement on a runtime sum guard: the wasm backend emits the guard as an `if` whose
+           false branch threads to the fall-through continuation, and the Rust backend emits the same
+           `V::A(p) => if p > 5 { 1 } else { p }` — the guarded-arm continuation both must reproduce (was a
+           Rust-backend decline).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type V (A Int64) (B))
+            (def (f (: v V)) (match v ((guard (V.A n) (> n 5)) 1) ((V.A n) n) ((V.B) 0)))
+            (def (main (: k Int64)) (f (if (> k 0) (V.A k) (V.B))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 1 Int64)))
+
+(case "a RUNTIME payload-literal refinement dispatches through its literal test"
+  (doc    "A payload-literal refinement over a RUNTIME Option (chosen by `if`): `((Some 0) 100)` matches a
+           `Some` carrying EXACTLY 0, else FALLS THROUGH to `((Some n) n)`. `(f 7)` → `Some(7)`, `7 ≠ 0` →
+           the binding arm yields 7. Pins the two-compiler agreement on a runtime payload-literal test: the
+           wasm backend reads the payload leaf and compares it to the literal (an `if`), the Rust backend
+           emits `Option::Some(p) => if p == 0 { 100 } else { p }` — the literal-payload continuation both
+           must reproduce (was a Rust-backend decline).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (def (f (: x (Option Int64))) (match x ((Some 0) 100) ((Some n) n) ((None) 0)))
+            (def (main (: k Int64)) (f (if (> k 0) (Some k) (None))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
 (case "a match pattern naming a non-existent variant is a coded rejection"
   (doc    "A match arm whose constructor pattern names a variant the scrutinee's sum does NOT declare —
            `(V.Q)` on `(type V (A Int64) (B))`, where `V` has no variant `Q` — is a rejection that NAMES
