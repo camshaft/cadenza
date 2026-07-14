@@ -1502,6 +1502,14 @@ impl Db {
         self.file_scope.is_some()
     }
 
+    /// The index of the FILE whose demux range contains node `id`, or `None` for a single-file program or
+    /// a node in no file (prelude / β-copied / synthesized). Used to scope a per-MODULE well-formedness
+    /// check (a duplicate declaration is per-file: two modules may each declare a type named `L`) — the
+    /// same file identity the resolver uses for per-file name visibility.
+    pub(crate) fn file_of(&self, id: StructId) -> Option<usize> {
+        self.file_scope.as_ref()?.file_of(id)
+    }
+
     /// How many top-level defs across the WHOLE package share the value name `name` — the ambiguity
     /// count the β-copy fallback consults: 0 = unbound, 1 = unambiguous (resolve flat), >1 = ambiguous
     /// under a synthesized node whose file is unknown, so a copied reference to it DECLINES. Only

@@ -539,6 +539,7 @@ pass	a perform in a taken match-arm threads its state to the continuation after 
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a pipeline chain applies its stages left to right
+pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
@@ -555,6 +556,9 @@ pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quoted compound form equals the same AST built by the Ast.List constructor
+pass	a quoted integer equals the same node built by the Ast.Int constructor
+pass	a quoted name equals the same node built by the Ast.Name constructor
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
@@ -794,6 +798,7 @@ pass	a trailing bytes segment accepts the leftover the fixed segments leave
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
+pass	a transformation over the built-in Ast composes across a function call
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
@@ -848,6 +853,7 @@ pass	a variant carrying a record payload escapes to the host
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
+pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wildcard in a nested pattern position ignores that element
@@ -1099,8 +1105,13 @@ pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
 pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+pass	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
+pass	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
+pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
+pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
+pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
@@ -1254,6 +1265,7 @@ pass	overflow of the default integer traps deterministically
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
+pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
@@ -1272,6 +1284,8 @@ pass	projecting the result of a function that threads a tuple parameter must not
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
+pass	quote produces an AST value without evaluating
+pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
@@ -1348,9 +1362,11 @@ pass	subtraction of an integer and a float does not silently promote
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal
+pass	the AST is a sum type deconstructible by pattern matching
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the built-in Ast is transformed as an ordinary value
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the difference contains the elements not in the second set
 pass	the else-branch of an if threads a performed state to the continuation
@@ -1512,7 +1528,6 @@ todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
-todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a quote pattern binds an unquoted operand of a compound form
@@ -1521,9 +1536,6 @@ todo	a quote pattern matches a fixed arity
 todo	a quote pattern used to recognize a compiler form reads as that form
 todo	a quote-built and constructor-built AST of the same tree encode to identical bytes
 todo	a quote-pattern match with no catch-all is non-exhaustive
-todo	a quoted compound form equals the same AST built by the Ast.List constructor
-todo	a quoted integer equals the same node built by the Ast.Int constructor
-todo	a quoted name equals the same node built by the Ast.Name constructor
 todo	a rational is normalized to lowest terms on construction
 todo	a rational operation does not silently promote an integer operand
 todo	a rational with numerator and denominator both negative normalizes to positive
@@ -1531,7 +1543,6 @@ todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
-todo	a transformation over the built-in Ast composes across a function call
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
@@ -1565,18 +1576,13 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
-todo	pattern matching over AST distinguishes forms
 todo	quasiquote constructs AST with selective evaluation
 todo	quasiquote makes AST construction readable
 todo	quasiquote nests with inner unquote evaluated
 todo	quasiquotes unquoting a runtime variable and a literal build equal ASTs
-todo	quote produces an AST value without evaluating
-todo	quote-vs-constructor AST equality holds regardless of operand order
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
-todo	the AST is a sum type deconstructible by pattern matching
-todo	the built-in Ast is transformed as an ordinary value
 todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
 todo	two rationals denoting the same number are equal regardless of how they were written

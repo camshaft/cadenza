@@ -706,12 +706,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // snapshot), so `is_user_node` is false for them. This is exactly what lets a user `(type Option …)`
     // legitimately SHADOW the prelude sum (first-wins in `type_decl_by_name`) WITHOUT reading as a
     // duplicate: the prelude `Option` is filtered out, leaving the single user declaration.
-    let mut seen_types: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // The duplicate check is PER-MODULE (per-file), not global: a type-name set is fixed within ONE
+    // module, but two SEPARATE modules of a linked package may each legitimately declare a type of the
+    // same name (`(type L …)` in a lib AND in the importing entry — each module has its own type
+    // namespace, and structural identity makes the two `L`s the same type). So key the seen-set on
+    // `(file, name)`, using the same per-file identity the resolver scopes name visibility by (`file_of`;
+    // `None` for a single-file program collapses to one bucket — the flat case is unchanged). Without the
+    // file key, a global scan flagged a cross-module same-named type as a spurious duplicate (regressing
+    // the cross-module recursive-sum case — modules-and-namespaces.md #Imports Are Explicit: a sibling
+    // file's type is invisible unless imported, so re-declaring its name is not a redeclaration).
+    let mut seen_types: std::collections::HashSet<(Option<usize>, &str)> =
+        std::collections::HashSet::new();
     let dup_types: Vec<(String, StructId)> = db
         .type_decls
         .iter()
         .filter(|t| db.is_user_node(t.occ))
-        .filter(|t| !t.name.is_empty() && !seen_types.insert(t.name.as_str()))
+        .filter(|t| {
+            !t.name.is_empty() && !seen_types.insert((db.file_of(t.occ), t.name.as_str()))
+        })
         .map(|t| (t.name.clone(), t.occ))
         .collect();
     for (name, occ) in dup_types {

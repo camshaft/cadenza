@@ -3394,6 +3394,23 @@
   (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Nn)) (export main)))
   (output (: (Nn unit) Opt)))
 
+(case "a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit"
+  (doc    "The contrast with the nullary variant above: a NULLARY variant `(Nn)` has the UNIT payload and
+           renders `(Nn unit)`, but a variant with an EXPLICIT empty-tuple payload `(A (Tuple))` carries a
+           `(tuple)` VALUE (type `(Tuple)`, distinct from `Unit`) and renders `(: (A (tuple)) V)` — the
+           empty tuple, NOT `unit`. `unit` and `(tuple)` are distinct types (comparing them is CDZ0203), so
+           their value forms differ: a nullary variant's reconstructed payload is `unit`, an
+           empty-tuple-payload variant's is `(tuple)`. Pins that the escape renders the payload's OWN value
+           form (a zero-element tuple) rather than collapsing an empty tuple to unit.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type V (A (Tuple)) (B))
+            (def (mk (: b Int64)) (if (> b 0) (V.A (tuple)) (V.B)))
+            (def (main) (mk 5))
+            (export main)))
+  (call   main)
+  (output (: (A (tuple)) V)))
+
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
            SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the
