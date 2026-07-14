@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 317 tests total across 34 modules):
+top. Current `src/` modules (each with same-file `@test`s — 327 tests total across 35 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -241,6 +241,15 @@ top. Current `src/` modules (each with same-file `@test`s — 317 tests total ac
   correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
   re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
   WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
+- `src/strlex.cdz` — a STRING LEXER: tokenize a real `String` of source text into a `List Token`
+  (multi-digit ints, `+ - * /`, parens; whitespace skipped; else `Token.Bad`). The TEXT version of
+  `lex.cdz` (which lexes char-CODES to sidestep the once-broken runtime-`String.at` loop), now possible
+  because the runtime-`String.at`-content-equality bug is FIXED — scanning `String.at(s,i) == "<c>"` in a
+  self-recursive loop works. It exercises exactly the once-broken shape (String.at in a loop, its one-char
+  result compared to literals, the string operand threaded through the recursion), so lexing correctly is
+  the end-to-end proof of the fix. 10 `@test`s. ⚠ INLINES `String.at`'s match in each loop arm rather than
+  a `char-at` helper — a String-returning helper whose result is `==`-compared IN A LOOP declines (finding
+  below).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -501,8 +510,9 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   withheld for this (its shallow cases pass).
 
 - **✅ FIXED (seed `rcdzc`, 2026-07-14 — was a MISCOMPILE, silent wrong value): runtime `String.at`
-  content equality, INCLUDING the loop-context residual.** `repros/miscompile-runtime-string-at-content-
-  equality.sexp`. A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
+  content equality, INCLUDING the loop-context residual.** `repros/fixed-runtime-string-at-content-
+  equality.sexp` (iter 44: verified `count-a "banana"` → 3 and the 2-iter loop `cnt "aa"` → 2; retired).
+  A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
   to the same char obtained any other way (a literal, a different-index `String.at`); it equalled only
   ITSELF at the identical index. A sibling had earlier fixed the STRAIGHT-LINE cases (compacting an OWNED
   String operand at the `=` site); the surviving failure was LOOP-CONTEXT — `String.at(s,i) == c` in a
@@ -681,6 +691,13 @@ are the sharp edges.
   and runs correctly when exported singly, but its full `@test` suite DECLINES under the `EmitTests`
   layout — 1 test compiles, the whole suite doesn't (aggregate/total-locals sensitivity, like the
   slot-alias bug). So the borrow gap also scales with the test-emit boundary size.
+  A FOURTH face (iter 44): `repros/decline-returned-string-at-compared-in-a-loop.cdz` — a `String`-
+  returning HELPER (body `match String.at(s,i) { Some(c)=>c | None=>"" }`) whose result is `==`-compared
+  INSIDE a self-recursive loop declines identically. SHARP: inlining the `String.at` match in the loop arm
+  computes correctly (the direct-producer form the recent String.at fix supports); two SINGLE (non-loop)
+  helper calls compare fine; only the RETURNED-then-compared-in-a-loop shape declines. So the residual is
+  a call-RETURNED owned String at a `value-eq` on the loop back-edge. WORKAROUND: inline `String.at`'s
+  match rather than factoring a `char-at` helper (`src/strlex.cdz` does this).
 
 - **OPEN (seed `rcdzc` — a `///` doc comment on an `import` HIDES it; extends the line-comment finding).**
   A `///` doc comment on a `def`/`type`/`module` is stripped by the top-level scan (works), but a `///`
