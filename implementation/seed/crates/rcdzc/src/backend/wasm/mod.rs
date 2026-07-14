@@ -611,6 +611,14 @@ pub fn emit(
             // Report a type error naming the annotation fix (CDZ0203, the type-determination fault code),
             // NOT the parameterized/multi-export message. `e.params.is_empty()` distinguishes it from a
             // parameterized export (whose free var, if any, would still be a shape issue at this stage).
+            //
+            // This is the escape-with-an-unconstrained-type-variable rejection: a value that escapes to the
+            // host whose type has a variable no use constrains (a bare `None`, an empty list) is rejected
+            // here rather than crossing with an invented type, so a serialized value's type header is always
+            // fully determined — the fix is an annotation that determines the variable, not an export-shape
+            // change. A CONSUMED such value would have constrained the variable and never reach this guard.
+            //= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+            //# A value that escapes to the host whose type contains a type variable no use constrains MUST be rejected at compile time with the type-determination fault code, rather than crossing the boundary with an invented type, so that a serialized value's type header is always fully determined. A bare `None` returned as the program result (type `Option ?`, the payload free), an `Ok` whose `Err` parameter is never constructed, or an empty list indexed to `None` (element free) is rejected for its unresolved type — the fix is an annotation that determines the variable — not for its export shape. A CONSUMED such value (matched, or passed to a typed parameter) constrains the variable and type-checks without annotation; the ambiguity bites only at an unannotated escape.
             if e.result.has_free_var() && e.params.is_empty() && !multi_export {
                 return Err(Reject::coded(
                     crate::diag::Code::TypeMismatch,
