@@ -239,8 +239,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         } => decode_bin_field(db, scrutinee, &segs, seg_index),
         // A MAP PATTERN binder reference — read FROM THE SCRUTINEE by key. Over a constant `Core::MapNew`
         // scrutinee (the corpus shape): a VALUE binder (`key = Some k`) folds to the entry's value at `k`;
-        // the REST binder (`key = None`) folds to a `Core::MapNew` with the named keys removed. A runtime
-        // scrutinee declines (the runtime key-directed matcher is a later increment). See `lower_map_field`.
+        // the REST binder (`key = None`) folds to a `Core::MapNew` with the named keys removed. A RUNTIME
+        // scrutinee reads at run time (`lower_map_field_runtime`: a value binder emits `Map.lookup`, a rest
+        // binder a `Map.remove` chain), reached under the presence-test dispatch. See `lower_map_field`.
         Resolved::MapField {
             scrutinee,
             key,
@@ -2660,9 +2661,10 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
     // A MAP scrutinee whose arms use `(map …)` key-directed patterns → the map matcher (ask-61). A map
     // pattern `(map (k p) … .. rest)` matches when the map HAS key `k` (bound to a value matching `p`),
-    // binding `rest` to the remaining map — a QUERY, not a structural shape. This increment folds a
-    // CONSTANT `Core::MapNew` scrutinee (the corpus shape). A scalar-only match over a map (only bare-
-    // binder/`_` arms — no `(map …)` pattern) falls through to the scalar path (a whole-value binder).
+    // binding `rest` to the remaining map — a QUERY, not a structural shape. `lower_match_map` handles BOTH
+    // a CONSTANT `Core::MapNew` scrutinee (compile-time arm selection) AND a RUNTIME map (desugared to a
+    // `Map.lookup` presence-test `if`-chain). A scalar-only match over a map (only bare-binder/`_` arms — no
+    // `(map …)` pattern) falls through to the scalar path (a whole-value binder).
     if matches!(
         crate::infer::type_of(db, scrutinee),
         crate::ty::Ty::Map(_, _)
@@ -4032,6 +4034,29 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 /// binders then fold). A RUNTIME map is handled by `desugar_runtime_map_match` (a nested `Map.lookup`
 /// chain) — the pre-pass below. A map's key set is UNBOUNDED, so a `(map …)` arm covers no shape — the
 /// match needs a catch-all (else CDZ0210). A key-sub-pattern that is not a bare binder declines.
+///
+/// The runtime-map matcher (`90cd317e`) realizes most of this section: a `(map (k v) …)` pattern names
+/// keys with value binders and MAY end in a `.. rest`; it matches iff every named key is PRESENT (the
+/// presence-test chain), and a lacking key falls through to a later arm; each named key is an ordinary
+/// value expression compared by the map's own value equality (`Map.lookup`/`const_compound_eq`); the rest
+/// binder binds the map minus the named keys (`Map.remove` chain); the catch-all is MANDATORY (a map's
+/// key set is unbounded — else CDZ0210); and the pattern observes the map ONLY through key presence and
+/// associated values (`Map.lookup`/`Map.remove`), never its CHAMP node ordering or placement.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# A map MUST be matchable by a key-directed pattern that names some number of keys, each with a value binder position, and MAY end in a rest binder for the remaining entries.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# A key-directed pattern naming keys `k₁ … kₙ` MUST match a map that CONTAINS every named key, binding each key's value binder to the value the map associates with that key; a map lacking any named key MUST NOT match that pattern, so that matching falls through to a later arm.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# Each named key MUST be an ordinary value expression, compared to the map's keys by the same value equality the map itself uses, so that a key computed at run time selects an entry exactly as a constant key does.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# A pattern MAY end in a rest binder that binds a map of the same type containing every entry of the matched map EXCEPT the named keys, so that the named entries are consumed and the remainder is available for further matching.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# Because a map's key set is unbounded, no finite set of key-directed patterns can cover every map, so a match on a map MUST end in a name or wildcard pattern that binds the whole map; a set of key-directed arms with no such catch-all MUST be a compile-time error under *Matching Is Exhaustive Or Rejected*.
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
+// (§4 "each value binder position … a value MAY be bound by ANY pattern matched recursively" stays
+// DECLINED: a value sub-pattern that is not a bare binder is not yet supported — a nested value pattern
+// declines here and in `desugar_runtime_map_match`.)
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // PRE-PASS: a RUNTIME map scrutinee desugars to a nested `Map.lookup` chain (the const path below only
     // handles a compile-time-constant `MapNew`). Fires only for a non-constant map. The desugar rebuilds
@@ -14126,12 +14151,13 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     }
 }
 
-/// Lower a MAP PATTERN binder reference — read from the (constant) scrutinee by key. `key = Some(k)` is
-/// a VALUE binder at key `k` → the entry's value core; `key = None` is the REST binder → a `Core::MapNew`
-/// with the `named` keys removed. Only a CONSTANT `Core::MapNew` scrutinee folds (the corpus shape: an
-/// inline `Map.insert` chain); a runtime scrutinee declines (the runtime key-directed matcher is a later
-/// increment). The arm was already SELECTED by `lower_match_map` (which ran the same key-presence probe),
-/// so a value binder's key IS present here; a defensive miss declines rather than miscompiling.
+/// Lower a MAP PATTERN binder reference — read from the scrutinee by key. `key = Some(k)` is a VALUE
+/// binder at key `k` → the entry's value core; `key = None` is the REST binder → the map with the `named`
+/// keys removed. A CONSTANT `Core::MapNew` scrutinee folds (the corpus shape: an inline `Map.insert`
+/// chain); a RUNTIME scrutinee reads at run time via `lower_map_field_runtime` (a value binder emits
+/// `Map.lookup`, a rest binder a `Map.remove` chain). The arm was already SELECTED by `lower_match_map`
+/// (which ran the same key-presence probe), so a value binder's key IS present here; a defensive miss
+/// declines rather than miscompiling.
 fn lower_map_field(
     db: &mut Db,
     id: StructId,
