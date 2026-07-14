@@ -20008,6 +20008,28 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0302")
         );
+        // The reject NAMES the truncation `UInt8.wrap` AND now offers it as a structural fix — wrap the
+        // offending element in `(UInt8.wrap …)` (which truncates to the low 8 bits). Anchored at the
+        // element, not the whole `Bytes.of` / list, and it VERIFIES: applying it recompiles clean.
+        let d = reject_full(
+            "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))",
+        )
+        .expect("must reject");
+        let fix = d.fix.as_ref().expect("a UInt8.wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap, "a wrap fix: {:?}", fix);
+        assert!(
+            fix.replacement.contains("UInt8") && fix.replacement.contains("wrap"),
+            "the fix wraps in UInt8.wrap: {}",
+            fix.replacement
+        );
+        // Applying the truncation makes the program compile (the byte is now in range by construction).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) ((. Bytes len) ((. Bytes of) (list ((. UInt8 wrap) 256))))) (export main))"
+            )))
+            .is_ok(),
+            "the UInt8.wrap'd element compiles"
+        );
     }
 
     #[test]

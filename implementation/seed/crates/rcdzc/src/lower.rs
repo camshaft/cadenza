@@ -15767,10 +15767,24 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
                 Some(n) if (0..=255).contains(&n) => {}
                 _ => {
                     trace!(target: "rcdzc::fold", node = id.0, "Bytes.of element is not a UInt8 → CDZ0302");
-                    return Core::Poison(Reject::coded(
-                        Code::IntOutOfRange,
-                        "a byte must be a UInt8 (0..=255); truncate a wider value with UInt8.wrap",
-                    ));
+                    // Anchor at the offending ELEMENT (not the whole `Bytes.of` / list), and offer the
+                    // truncation the message names as a structural fix: wrap the wide value in
+                    // `(UInt8.wrap …)`, which the reader accepts as the dotted member call and which
+                    // truncates to the low 8 bits (heuristic — truncation is one valid repair; the author
+                    // might instead have meant a different value, so `--verify-fixes` confirms it).
+                    return Core::Poison(
+                        Reject::coded(
+                            Code::IntOutOfRange,
+                            "a byte must be a UInt8 (0..=255); truncate a wider value with UInt8.wrap",
+                        )
+                        .at(e)
+                        .with_fix(crate::diag::Fix::wrap_heuristic(
+                            e,
+                            "(UInt8.wrap ",
+                            ")",
+                            "truncate to a byte with `UInt8.wrap`",
+                        )),
+                    );
                 }
             },
             // A runtime UInt8 element — in range by its type; `select` emits its value into `bytes-set`.
