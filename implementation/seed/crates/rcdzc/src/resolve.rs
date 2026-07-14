@@ -52,6 +52,10 @@ use tracing::trace;
 /// ignore the binding is gone). See `core-semantics.md` §A Compound Value Has A Symbol Constructor And
 /// A Shadowable Alias. ("The strings are the symbols" — the reserved primitive names are string
 /// literals, needing no invented sigils and no reader change.)
+//= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+//# A compound value — a tuple, a record — MUST have a **primitive constructor named by a string literal** in head position: a tuple is constructed by `("tuple" …)` and a record by `("record" …)`.
+//= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+//# A string literal is not something a name binding can introduce (a binding introduces an identifier, never a string), so the primitive constructor MUST NOT be shadowable, and the language recognizes the string-headed form structurally.
 const GRAMMAR: &[&str] = &[
     "let",
     "if",
@@ -231,11 +235,11 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
-            // A SYMBOL literal (`#"metre"`) — the reader-sugar equivalent of `(Symbol.of "metre")`
+            // A SYMBOL literal (`#"meter"`) — the reader-sugar equivalent of `(Symbol.of "meter")`
             // (17-symbols). Resolves to a `SymbolConst` typed `Ty::Symbol` (DISTINCT from `Ty::String`, so
             // `(= #"x" "x")` is the nominal-boundary type error CDZ0202 and `(= #"x" (Symbol.of "x"))` is
             // true). Its identity is its text, so it shares the `Core::ConstStr` rep + constant-string
-            // equality. `Unit.base #"metre"` still reads its text (a base-dimension name — `unit_of`
+            // equality. `Unit.base #"meter"` still reads its text (a base-dimension name — `unit_of`
             // accepts this form). (Was a `Str` in the Layer-1 units simplification, before `Ty::Symbol`.)
             Leaf::Sym(s) => Resolved::SymbolConst(s.clone()),
             // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`
@@ -362,7 +366,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         }
                         None => {
                             trace!(target: "rcdzc::resolve", node = id.0, ?name, "unknown intrinsic (decline)");
-                            Resolved::Poison(Reject::decline("unknown intrinsic"))
+                            Resolved::Poison(Reject::decline(
+                                crate::diag::UNKNOWN_INTRINSIC_DECLINE,
+                            ))
                         }
                     }
                 }
@@ -1796,6 +1802,8 @@ fn find_binder_in_pattern(
                 arg_name == name && arg_name != "_"
             } else if is_tuple_pattern(db, arg) {
                 find_binder_in_tuple(db, arg, name, path, heads)
+            } else if is_list_pattern(db, arg) {
+                find_binder_in_list(db, arg, name, path, heads)
             } else {
                 find_binder_in_pattern(db, arg, name, path, heads)
             };
@@ -1827,7 +1835,66 @@ fn find_binder_in_pattern(
     if is_tuple_pattern(db, arg) {
         return find_binder_in_tuple(db, arg, name, path, heads);
     }
+    if is_list_pattern(db, arg) {
+        return find_binder_in_list(db, arg, name, path, heads);
+    }
     find_binder_in_pattern(db, arg, name, path, heads)
+}
+
+/// Descend a LIST pattern `(list p0 p1…)` (a variant's list payload) looking for the element binder
+/// `name`, appending its access-path steps. The list analogue of [`find_binder_in_tuple`] — each element
+/// binds at `Elem(i)` from the list handle (the SAME step `const_at_path`'s `ListNew` arm reads), so a
+/// `(Ast.List (list (Ast.Name "+") a b))` quote pattern binds `a`/`b` at `Payload, Elem(1)`/`Elem(2)`.
+/// A rest binder `.. rest` is NOT handled here (a runtime sublist — declines in `pattern_constraints`).
+fn find_binder_in_list(
+    db: &Db,
+    pattern: StructId,
+    name: &str,
+    path: &mut Vec<crate::core::PathStep>,
+    heads: &mut Vec<StructId>,
+) -> bool {
+    let raw: Vec<StructId> = db
+        .ast
+        .as_form(pattern, "list")
+        .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+        .unwrap_or(&[])
+        .to_vec();
+    // Split off a trailing `.. rest`: the rest binder (the single element after the `..` marker) binds the
+    // TAIL SUBLIST from index `lead` onward, via a `RestFrom(lead)` step (`const_at_path`'s `RestFrom`/
+    // `ListNew` fold; the payload analogue of the top-level `list_rest_binder` path). `lead` = the leading
+    // fixed element patterns.
+    let (leads, rest): (&[StructId], Option<StructId>) =
+        match raw.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+            Some(k) if k + 2 == raw.len() => (&raw[..k], Some(raw[k + 1])),
+            _ => (&raw[..], None),
+        };
+    if let Some(rest) = rest
+        && db.ast.as_name(rest) == Some(name)
+        && name != "_"
+    {
+        path.push(crate::core::PathStep::RestFrom(leads.len()));
+        return true;
+    }
+    for (i, &elem) in leads.iter().enumerate() {
+        let path_len = path.len();
+        let heads_len = heads.len();
+        path.push(crate::core::PathStep::Elem(i));
+        let found = if let Some(elem_name) = db.ast.as_name(elem) {
+            elem_name == name && elem_name != "_"
+        } else if is_tuple_pattern(db, elem) {
+            find_binder_in_tuple(db, elem, name, path, heads)
+        } else if is_list_pattern(db, elem) {
+            find_binder_in_list(db, elem, name, path, heads)
+        } else {
+            find_binder_in_pattern(db, elem, name, path, heads)
+        };
+        if found {
+            return true;
+        }
+        path.truncate(path_len);
+        heads.truncate(heads_len);
+    }
+    false
 }
 
 /// Whether `id` is a tuple PATTERN `(tuple p0 p1…)` — a `tuple` NAME head (the shadowable alias the
@@ -1835,6 +1902,13 @@ fn find_binder_in_pattern(
 /// tuple payload into element-by-element descent.
 fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
+}
+
+/// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias) or the
+/// `"list"` string-literal primitive. Routes a variant's list payload into element-by-element binder
+/// descent ([`find_binder_in_list`]), the list analogue of [`is_tuple_pattern`].
+fn is_list_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
 }
 
 /// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
@@ -1864,6 +1938,8 @@ fn find_binder_in_tuple(
             elem_name == name && elem_name != "_"
         } else if is_tuple_pattern(db, elem) {
             find_binder_in_tuple(db, elem, name, path, heads)
+        } else if is_list_pattern(db, elem) {
+            find_binder_in_list(db, elem, name, path, heads)
         } else {
             find_binder_in_pattern(db, elem, name, path, heads)
         };
@@ -2478,9 +2554,26 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
             });
             continue;
         }
+        // A UTF-8 string segment `(utf8 s n)` — read `n` bytes and decode them as strict UTF-8, binding
+        // `s : String` on success, a non-match on ill-formed input. The size is REQUIRED (always
+        // dependent): a String segment with no length has no boundary, so there is no unsized form.
+        if kind_name == "utf8" {
+            if parts.len() != 3 {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a utf8 bin segment is (utf8 s n)",
+                ));
+            }
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::Utf8 { size: parts[2] },
+                slot: parts[1],
+                little_endian: false,
+            });
+            continue;
+        }
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
-            "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes)",
+            "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)",
         ));
     }
     Resolved::Bin { segs }

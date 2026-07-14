@@ -177,7 +177,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
-        // A symbol literal (`#"metre"`) shares the constant-string REP — its identity is its text — so it
+        // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it
         // lowers to `Core::ConstStr` exactly like a `Symbol.of` on a constant string. Only the static type
         // (`Ty::Symbol`) differs, so `=` folds via the shared constant-string equality.
         Resolved::SymbolConst(s) => Core::ConstStr(s),
@@ -1066,6 +1066,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
                     lower_float_arith(db, id, fprim, &args)
                 }
+                // A `+`/`-`/`*`/`/` over BIGINT operands — the unbounded arithmetic. A constant pair folds
+                // exactly via `num-bigint` (the value never overflows — the point of the type); a runtime
+                // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
+                // generic int-arith path (which would range-check/trap against a fixed width — wrong for an
+                // unbounded BigInt). Dispatch on the OPERAND type being `Ty::BigInt`, like the float arm.
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if args.len() == 2 && bigint_operand(db, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: BigInt arithmetic");
+                    lower_bigint_arith(db, prim, args[0], args[1])
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
@@ -1097,7 +1108,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // `Qty.of x u` — attach a compile-time unit. The unit is CHECKED THEN ERASED
                 // (units-of-measure.md §Dimensions Are Checked Then Erased), so lowering is the value
-                // argument's lowering UNCHANGED — `(Qty.of 5.0 metre)` and the bare `5.0` produce the
+                // argument's lowering UNCHANGED — `(Qty.of 5.0 meter)` and the bare `5.0` produce the
                 // identical core (byte-identical emitted value). The unit lives only in the solved type.
                 Some(Prim::QtyOf) if args.len() == 2 => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.of erases to its value argument");
@@ -1387,14 +1398,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `BigInt.of x` — the EXACT widening from a fixed-width integer to `BigInt`. A CONSTANT
                 // source folds to the SAME `Core::ConstInt` node retyped `Ty::BigInt` (its `IntValue` is
                 // already `num-bigint`-backed and unbounded — the value is unchanged, only the static type
-                // widens), exactly as `Symbol.of` keeps its `Core::ConstStr`. A runtime source declines
-                // until the runtime limb ops (B3) — never a wrong answer.
+                // widens), exactly as `Symbol.of` keeps its `Core::ConstStr`. A RUNTIME source emits
+                // `bigint-of-i64` (B3b) — the value's i64 slot widened into a BigInt heap leaf.
                 Some(Prim::BigIntOf) if args.len() == 1 => match core_of(db, args[0]) {
                     c @ Core::ConstInt(_) => c,
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline(
-                        "BigInt.of on a runtime integer is not yet emitted (constant integers only)",
-                    )),
+                    _ => Core::BigIntOfI64 { value: args[0] },
                 },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
@@ -1920,6 +1929,9 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
             crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
+            // A `ListLen` probe never arises in the SCALAR match path (it comes from a list PAYLOAD
+            // sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type check applies.
+            crate::core::Probe::ListLen { .. } => None,
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -2369,17 +2381,23 @@ fn erase_nominal_steps(
 fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -> Option<Core> {
     use crate::core::PathStep;
     let mut cur = root;
+    // A TYPE cursor tracked ALONGSIDE `cur`, peeled one nominal layer per erased `Payload` step. Tracking
+    // the peeled type — rather than re-reading `type_of(cur)` each step — is essential when a newtype WRAPS
+    // A SUM (`(type W (V (Result …)))`): the newtype is erased, so `cur` stays the SAME node and its raw
+    // type reads `Ty::Nominal` for EVERY step; re-reading it consumed the inner sum's `Payload` as a SECOND
+    // nominal no-op and folded a payload binder to the WHOLE wrapper (a miscompile — `n` in `(W.V (Ok n))`
+    // became the whole `Result`). The peeled cursor fires the nominal skip exactly once per layer, so the
+    // inner sum's `Payload` then descends the sum (constant) or correctly declines the fold (runtime).
+    let mut ty = crate::infer::type_of(db, root);
     for step in steps {
         // A `Payload` step over a NOMINAL NEWTYPE sub-value is a no-op: the box is erased, so the newtype
-        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). The
-        // underlying value IS `cur` — leave it unchanged and continue (a following `Elem` reads a
-        // multi-payload newtype's tuple). Detected by the sub-value's TYPE being `Ty::Nominal`.
+        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). PEEL one
+        // nominal layer off the type cursor and leave `cur` unchanged (a following `Payload` reads a wrapped
+        // sum, a following `Elem` reads a multi-payload newtype's tuple).
         if matches!(step, PathStep::Payload)
-            && matches!(
-                crate::infer::type_of(db, cur),
-                crate::ty::Ty::Nominal { .. }
-            )
+            && let crate::ty::Ty::Nominal { inner, .. } = &ty
         {
+            ty = (**inner).clone();
             continue;
         }
         cur = match (step, core_of(db, cur)) {
@@ -2398,6 +2416,9 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             }
             _ => return None,
         };
+        // Re-sync the type cursor to the descended node (its own type — a nested newtype's inner peels on
+        // the next `Payload`, a tuple element's type drives a following step).
+        ty = crate::infer::type_of(db, cur);
     }
     Some(core_of(db, cur))
 }
@@ -2730,6 +2751,8 @@ pub(crate) fn check_binding_pattern(
     // CDZ0203, `(: x Bool) = 5`), then recurse on `<pat>` so the inner pattern's own well-formedness
     // (irrefutable / linear / right shape) is still checked. A generic/deferred value type (`Any`, an
     // unsolved var) agrees with any annotation — the annotation grounds it, no contradiction.
+    //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+    //# A binding pattern MAY carry a type annotation `(: <pattern> <Type>)`, which constrains the bound value's type while the inner pattern binds its names, in accordance with *Annotations Constrain, Never Contradict* (`type-system.md`): the annotation participates in inference as an added constraint, and a value whose type cannot satisfy it MUST be a compile-time error (`CDZ0203`), exactly as a value annotation `(: <expression> <Type>)` is.
     if let Some(ann) = db.ast.as_form(pat, ":")
         && ann.len() == 2
     {
@@ -3007,6 +3030,8 @@ fn collect_pattern_binders(
 //# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
 //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
 //# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
 /// Enrich the propagated "record has no field `Q`" poison of a MATCH-PATTERN head `(. Sum Q)` — where `Q`
 /// is not a variant of the scrutinee sum — with a "did you mean?" over the sum's VARIANT NAMES, plus a
 /// replace fix on the mistyped key. The pattern-position twin of `infer::no_field_reject`'s value-position
@@ -3094,6 +3119,14 @@ fn pattern_constraints(
         crate::resolved::Resolved::Bool(b) => {
             Some((crate::core::Probe::Bool(b), crate::ty::Ty::Bool))
         }
+        // A STRING-literal payload sub-pattern — `(Ast.Name "+")` matches an `Ast.Name` carrying exactly
+        // "+". Like the Int/Bool literal, it imposes no discriminant, adds a `Probe::Str` lit-test gated
+        // at the leaf, and folds against a constant `Core::ConstStr` (a runtime String payload declines
+        // at `build_lit_test`, like the scalar string match). Enables the quote-pattern literal head
+        // (`` `(+ …) `` → `(Ast.Name "+")`), matched by string equality.
+        crate::resolved::Resolved::Str(s) => {
+            Some((crate::core::Probe::Str(s), crate::ty::Ty::String))
+        }
         _ => None,
     };
     if let Some((probe, lit_ty)) = probe {
@@ -3179,6 +3212,68 @@ fn pattern_constraints(
                 deeper,
                 lit_tests,
             )?);
+        }
+        return Ok(out);
+    }
+    // A LIST pattern `(list p0 p1…)` at `path` — a variant's LIST payload, destructured element-by-element
+    // (`metaprogramming.md` quote patterns desugar `` `(+ ,a ,b) `` to `(Ast.List (list (Ast.Name "+") a
+    // b))`, whose `(list …)` payload sub-pattern this handles; also a user `(W.Wrap (list a b))`). A list
+    // has a RUNTIME length, so the pattern imposes a `ListLen` test (like a literal test — gated once the
+    // discriminant constraints hold, folded against a constant list); each LEADING element sub-pattern
+    // descends at `path + [Elem(i)]`, of the list's element type. A trailing `.. rest` makes the length
+    // test AT-LEAST-`lead` and binds the tail — the rest binder resolves independently via `RestFrom(lead)`
+    // (`resolve::find_binder_in_list`), so it needs no constraint here. SCOPE: the CONSTANT-scrutinee fold
+    // only — a runtime list payload's `ListLen`/element reads decline (`build_lit_test`).
+    if is_list_pattern(db, pat) {
+        let raw: Vec<StructId> = db
+            .ast
+            .as_form(pat, "list")
+            .or_else(|| db.ast.as_ctor_form(pat, "list"))
+            .unwrap_or(&[])
+            .to_vec();
+        // Split off a trailing `.. rest`: a `..` MARKER followed by exactly one binder as the final two
+        // elements. `lead` = the fixed leading element patterns; `has_rest` = a tail-binding rest pattern.
+        let dotdot = raw.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+        let (leads, has_rest): (&[StructId], bool) = match dotdot {
+            Some(k) if k + 2 == raw.len() => (&raw[..k], true), // `(list p… .. rest)` — well-formed
+            Some(_) => {
+                // A `..` that is not the second-to-last element is malformed (a rest binds the whole tail,
+                // so it must be final). CDZ0201 — the same shape rule a top-level list pattern enforces.
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "a list rest pattern `.. rest` must be the final element",
+                ));
+            }
+            None => (&raw[..], false),
+        };
+        let elem_ty = match ty {
+            crate::ty::Ty::List(e) => (**e).clone(),
+            crate::ty::Ty::Any => crate::ty::Ty::Any,
+            _ => {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a list pattern does not match the payload type {}",
+                        ty.render_name()
+                    ),
+                ));
+            }
+        };
+        // The LENGTH test — exactly `leads.len()` for a fixed pattern, AT LEAST `leads.len()` when a
+        // `.. rest` binds the tail. Gated like a literal test (folded against a constant `Core::ListNew`);
+        // a mismatch falls through.
+        lit_tests.push((
+            path.clone(),
+            crate::core::Probe::ListLen {
+                len: leads.len(),
+                at_least: has_rest,
+            },
+        ));
+        let mut out = Vec::new();
+        for (i, &elem) in leads.iter().enumerate() {
+            let mut deeper = path.clone();
+            deeper.push(crate::core::PathStep::Elem(i));
+            out.extend(pattern_constraints(db, elem, &elem_ty, deeper, lit_tests)?);
         }
         return Ok(out);
     }
@@ -3418,6 +3513,13 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias the reader
+/// keeps) or the `"list"` string-literal primitive. Routes a variant's list payload into element-by-
+/// element descent (`pattern_constraints`'s list arm), the list analogue of [`is_tuple_pattern`].
+fn is_list_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
+}
+
 /// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
 /// `Resolved::Tuple { elems }` or the `tuple` NAME-alias application (`Prim::TupleNew`). `None` for a
 /// non-tuple. Used by `type_at_path` to type a tuple-scrutinee's element from the constructor directly,
@@ -3625,6 +3727,20 @@ fn build_tree(
                 let hit = match (&probe, &c) {
                     (crate::core::Probe::Int(v), Core::ConstInt(cv)) => v.eq_value(cv),
                     (crate::core::Probe::Bool(b), Core::ConstBool(cb)) => b == cb,
+                    // A string-literal payload test folds against a constant `Core::ConstStr` by value
+                    // equality (both NFC-normalized by the reader) — `(Ast.Name "+")` matches an
+                    // `Ast.Name` carrying "+". A runtime string payload has no `ConstStr` → declines below.
+                    (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s == cs,
+                    // A LIST length test folds against a CONSTANT list: an exact test needs `== len`, a
+                    // rest (`at_least`) test needs `>= len` (the tail binds the surplus). (A runtime list
+                    // has no `ListNew` here → the runtime-test arm below, which declines.)
+                    (crate::core::Probe::ListLen { len, at_least }, Core::ListNew { elems }) => {
+                        if *at_least {
+                            elems.len() >= *len
+                        } else {
+                            elems.len() == *len
+                        }
+                    }
                     // A non-constant / type-mismatched sub-value can't fold — emit the runtime test.
                     _ => {
                         return build_lit_test(
@@ -3708,7 +3824,13 @@ fn build_tree(
     let switch_path = shallowest_path(rows);
     let sub_ty = match path_types.get(&switch_path) {
         Some(t) => t.clone(),
-        None => match type_at_path(db, scrutinee, &switch_path) {
+        // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
+        // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
+        // PREFIX in `path_types` — a list-element switch `[Payload, Elem(1)]` resolves from the seeded
+        // `[Payload]` = `(List Ast)` even though the raw `Payload` walk over the boxed sum returns None.
+        None => match type_at_path(db, scrutinee, &switch_path)
+            .or_else(|| type_from_seeded_prefix(path_types, &switch_path))
+        {
             Some(t) => t,
             None => {
                 return Err(Reject::decline(
@@ -3856,6 +3978,18 @@ fn build_lit_test(
     else_rows: &[MatchRow],
     path_types: &PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
+    // A `ListLen` or `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant
+    // `Core::ListNew`/`Core::ConstStr`) needs a runtime length/string test the backends don't emit — the
+    // runtime list/string matcher, not this increment. Decline so the match is a Todo (never emitted to
+    // the backend). The CONSTANT case folded in `build_tree` and never reaches here.
+    if matches!(
+        probe,
+        crate::core::Probe::ListLen { .. } | crate::core::Probe::Str(_)
+    ) {
+        return Err(Reject::decline(
+            "a list/string pattern over a runtime payload is not yet supported (only a constant folds)",
+        ));
+    }
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
     let els = build_tree(db, scrutinee, else_rows, path_types)?;
     Ok(crate::core::SumCont::LitTest {
@@ -3899,6 +4033,8 @@ fn type_at_path(
         cur = match step {
             crate::core::PathStep::Elem(i) => match &cur {
                 crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                // A LIST element (a `(list …)` payload sub-pattern) — every element has the list's one
+                // element type (homogeneous), so `Elem(i)` over a `Ty::List(e)` is `e` for any `i`.
                 crate::ty::Ty::List(elem) => (**elem).clone(),
                 _ => return None,
             },
@@ -3921,6 +4057,43 @@ fn type_at_path(
         };
     }
     Some(cur)
+}
+
+/// Resolve `path`'s type by walking its SUFFIX from the longest PREFIX present in `path_types`. Used
+/// when a raw scrutinee type-walk can't cross a boxed-sum `Payload` step but `path_types` seeded a
+/// prefix (e.g. `[Payload]` = a variant's payload type): the remaining `Elem` steps then walk the seeded
+/// type structurally. Only `Elem` suffix steps are walked (over a `Tuple`/`List`); a further `Payload`
+/// in the suffix is a nested boxed sum a plain type-walk can't cross → `None` (declines, as before).
+fn type_from_seeded_prefix(
+    path_types: &PathTypes,
+    path: &[crate::core::PathStep],
+) -> Option<crate::ty::Ty> {
+    // Longest seeded prefix (try the full path down to the empty prefix).
+    for cut in (0..path.len()).rev() {
+        if let Some(base) = path_types.get(&path[..cut].to_vec()) {
+            let mut cur = base.clone();
+            for step in &path[cut..] {
+                cur = match step {
+                    crate::core::PathStep::Elem(i) => match &cur {
+                        crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                        crate::ty::Ty::List(elem) => (**elem).clone(),
+                        _ => return None,
+                    },
+                    // A rest sublist `.. rest` has the SAME `List` type as its scrutinee (the tail is a
+                    // list of the same element type).
+                    crate::core::PathStep::RestFrom(_) => match &cur {
+                        crate::ty::Ty::List(_) => cur.clone(),
+                        _ => return None,
+                    },
+                    // A `Payload` in the suffix crosses a nested boxed sum — a plain type-walk can't
+                    // supply its instantiation, so decline (the same limit `type_at_path` has).
+                    crate::core::PathStep::Payload => return None,
+                };
+            }
+            return Some(cur);
+        }
+    }
+    None
 }
 
 /// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
@@ -4089,7 +4262,9 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
     match probe {
         crate::core::Probe::Int(p) => p.eq_value(v),
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Bool(_) | crate::core::Probe::Str(_) => false,
+        crate::core::Probe::Bool(_)
+        | crate::core::Probe::Str(_)
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 
@@ -4098,7 +4273,9 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
     match probe {
         crate::core::Probe::Bool(p) => *p == b,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) | crate::core::Probe::Str(_) => false,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Str(_)
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 
@@ -4109,7 +4286,9 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
     match probe {
         crate::core::Probe::Str(p) => p == s,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) => false,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Bool(_)
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 
@@ -4699,6 +4878,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Bin { segs } => segs.iter().any(|s| {
             ref_escapes_whole(db, s.slot, init)
                 || matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(n) } if ref_escapes_whole(db, *n, init))
+                || matches!(&s.kind, crate::resolved::SegKind::Utf8 { size } if ref_escapes_whole(db, *size, init))
         }),
         Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
         Resolved::Apply { head, args } => {
@@ -5078,6 +5258,21 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
         // recurses over nested collections, so the walker renders them; only the type node needed lifting.
         crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
+            let type_node = type_node_of(ty)?;
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
+            Some(builder.encode(framed))
+        }
+        // A TUPLE/RECORD result whose value shape is renderable but which contains a VARIABLE-length element
+        // (a list/map/set, or a sum) — `runtime_value_form_template` returns `None` for it (no fixed-size
+        // static template), so it escapes via the same runtime `value-encode` walker as a collection. Wrap in
+        // a PARAMETRIC `Framed(<type-node>, …)` frame so the value form renders `(: (tuple …) (Tuple …))` /
+        // `(: (record …) (Record …))` with the element/field types observable. `shape_of` already recurses
+        // over the nested elements (a list element loops, a nested sum switches on its disc). A fixed-shape
+        // tuple/record (all scalar/byte/fixed-compound elements) still takes the cheaper static-template path
+        // (`runtime_value_form_template`), which the caller tries FIRST — this descriptor path is the fallback
+        // for the variable-shape case only.
+        crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
             let type_node = type_node_of(ty)?;
             let inner = builder.shape_of(db, ty)?;
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
@@ -6051,7 +6246,7 @@ fn const_value_ast_at(
 /// a single base to the first power renders `((. Unit base) #"name")`; a base to a power `(Unit.^ …
 /// k)`; a product of positive factors a left-nested `(Unit.* …)`; and — crucially — a unit with
 /// NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)`, the surface the corpus
-/// records for a derived unit (`(Unit./ metre second)` for a velocity, NOT `(Unit.* metre (Unit.^ second
+/// records for a derived unit (`(Unit./ meter second)` for a velocity, NOT `(Unit.* meter (Unit.^ second
 /// -1))`). The numerator is the positive-exponent factors (`Unit.one` if none); the denominator the
 /// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
 /// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
@@ -6210,7 +6405,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // built recursively; the unit is built as REAL structure by `unit_value_ast` (`Unit.one`,
         // `(Unit.base #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), so the rendered
         // type re-reads to the same unit (a name atom carrying parens would not round-trip). The corpus
-        // surface `(Qty Float64 (Unit.base #"metre"))`.
+        // surface `(Qty Float64 (Unit.base #"meter"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
             let ity = type_ast(b, inner)?;
@@ -6312,8 +6507,12 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             let mut n = 0;
             for s in segs.iter() {
                 n += uses_in(db, s.slot, init);
-                if let crate::resolved::SegKind::Bytes { size: Some(sz) } = &s.kind {
-                    n += uses_in(db, *sz, init);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(sz) } => {
+                        n += uses_in(db, *sz, init)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => n += uses_in(db, *size, init),
+                    _ => {}
                 }
             }
             n
@@ -6835,6 +7034,42 @@ fn binop_arity_reject(op: Prim, args: &[StructId]) -> Reject {
         ));
     }
     reject
+}
+
+/// True iff either operand of a binary op has solved type `Ty::BigInt` — the signal to route `+`/`-`/
+/// `*`/`/` to the runtime BigInt arithmetic instead of the fixed-width int fold. (A `BigInt`/fixed mix
+/// never reaches lowering — `check_application` rejected it CDZ0301 — so if ONE operand is a BigInt the
+/// other is too.)
+fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
+    args.iter()
+        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+}
+
+/// Lower a BigInt `+`/`-`/`*`/`/` to a runtime `Core::BigIntBinOp` (the runtime `bigint-*` op). Unlike
+/// fixed-width arithmetic, this does NOT constant-fold: exact BigInt arithmetic needs compiler-side
+/// bignum (rcdzc deliberately has no bignum crate — `IntValue` carries the value but not arithmetic), so
+/// the unbounded arithmetic runs at RUN TIME via the runtime `Big` limb library (B3a). A poison operand
+/// propagates. `div` traps on a zero divisor at run time (numeric-model — an unbounded range gives `n/0`
+/// no value); the never-trapping add/sub/mul grow the magnitude as needed.
+fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let big_op = match op {
+        Prim::Add => crate::core::BigIntOp::Add,
+        Prim::Sub => crate::core::BigIntOp::Sub,
+        Prim::Mul => crate::core::BigIntOp::Mul,
+        Prim::Div => crate::core::BigIntOp::Div,
+        _ => return Core::Poison(Reject::decline("not a BigInt arithmetic op")),
+    };
+    Core::BigIntBinOp {
+        op: big_op,
+        lhs,
+        rhs,
+    }
 }
 
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
@@ -7715,78 +7950,36 @@ fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool 
     complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
 }
 
-/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS with the SAME
-/// operator — one implies the other, so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP
-/// (`lhs` or `rhs`), or `None` when the shape does not match. `is_and` selects which survives: `and` keeps
-/// the STRONGER (tighter) bound, `or` the WEAKER (looser). Restricted to IDENTICAL operators so no
-/// off-by-one bound arithmetic is needed — `< c` is stronger than `< d` iff `c <= d` (smaller upper bound);
-/// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
-/// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
-/// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
+/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS that form
+/// SAME-DIRECTION half-lines (both upper bounds `v ≤ B`, or both lower `v ≥ B`) — one implies the other,
+/// so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP (`lhs` or `rhs`), or `None` when
+/// the pair is not two same-direction half-lines on the same `v`. `is_and` selects which survives: `and`
+/// keeps the STRONGER (tighter) bound, `or` the WEAKER (looser).
+///
+/// Uses `comparison_halfline` to normalize each side to an INCLUSIVE bound (`v ≤ B` / `v ≥ B`), so MIXED
+/// operators are handled uniformly — `(< v 5)` and `(<= v 4)` both normalize to `v ≤ 4` (and keeps either),
+/// `(or (<= v 10) (< v 5))` → `v ≤ 10` (the looser). For two UPPER bounds the tighter is the SMALLER `B`;
+/// for two LOWER bounds the tighter is the LARGER `B`. `comparison_halfline` already handles either operand
+/// side (a mirrored `(< c v)` normalizes to a lower bound on `v`) and only the four ordering ops (`Eq`/
+/// `Compare` are not half-lines, so a `(= x 5)`/`(= x 6)` pair returns `None` here — never mis-subsumed).
+/// The kept comparison still evaluates `v`, so no trap drops. OPPOSITE-direction pairs are `None` here (the
+/// disjoint/covering + coincident-point folds handle those).
 fn subsuming_comparison(
     db: &mut Db,
     lhs: StructId,
     rhs: StructId,
     is_and: bool,
 ) -> Option<StructId> {
-    let Core::Compare {
-        op: lop,
-        lhs: la,
-        rhs: lb,
-    } = core_of(db, lhs)
-    else {
-        return None;
-    };
-    let Core::Compare {
-        op: rop,
-        lhs: ra,
-        rhs: rb,
-    } = core_of(db, rhs)
-    else {
-        return None;
-    };
-    if lop != rop {
-        return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
-    }
-    // ONLY the four ORDERING operators subsume — one half-line implies another. `Eq` (and `Compare`) do
-    // NOT: `(= x 5)` and `(= x 6)` are the SAME operator but NEITHER implies the other — their `and` is a
-    // CONTRADICTION (always false), not a subsumption. Treating two `Eq`s as a subsumable pair would keep
-    // one and MISCOMPILE `(and (= x 5) (= x 6))` to `(= x 6)`. (The equality-vs-range and same-constant
-    // cases are handled elsewhere; two DIFFERENT-constant equalities under `and` are always-false, under
-    // `or` a 2-point set that stays runtime — neither is this fold.)
-    if !matches!(lop, Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge) {
+    let (lv, l_upper, lb) = comparison_halfline(db, lhs)?;
+    let (rv, r_upper, rb) = comparison_halfline(db, rhs)?;
+    // Same operand, same direction (both upper or both lower) — an opposite-direction pair is a range, not
+    // a subsumption (handled by `disjoint_or_covering`/`coincident_point_eq`).
+    if l_upper != r_upper || !core_equiv(db, lv, rv) {
         return None;
     }
-    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
-        Core::ConstInt(v) => v.to_i64(),
-        _ => None,
-    };
-    // Identify `(v, c)` for each side with the runtime operand `v` on the SAME side (both left, both right).
-    // `v_left` = the compare is `(cmp v c)`; else `(cmp c v)` — a mixed arrangement flips the effective
-    // direction, so require the same arrangement on both.
-    let (lv, lc, l_v_left) = match (as_int(db, lb), as_int(db, la)) {
-        (Some(c), _) => (la, c, true),  // `(cmp v c)`
-        (_, Some(c)) => (lb, c, false), // `(cmp c v)`
-        _ => return None,
-    };
-    let (rv, rc, r_v_left) = match (as_int(db, rb), as_int(db, ra)) {
-        (Some(c), _) => (ra, c, true),
-        (_, Some(c)) => (rb, c, false),
-        _ => return None,
-    };
-    if l_v_left != r_v_left || !core_equiv(db, lv, rv) {
-        return None; // same operand on the same side
-    }
-    // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
-    // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
-    // the LHS comparison is the stronger (tighter) one.
-    let upper_bound_on_v = matches!(
-        (lop, l_v_left),
-        (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false)
-    );
-    // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
-    let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
-    // `and` keeps the stronger; `or` keeps the weaker.
+    // For UPPER bounds `v ≤ B`, the tighter (stronger) is the SMALLER B; for LOWER bounds `v ≥ B`, the
+    // LARGER B. `and` keeps the stronger, `or` the weaker.
+    let lhs_stronger = if l_upper { lb <= rb } else { lb >= rb };
     let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
     Some(if keep_lhs { lhs } else { rhs })
 }
@@ -8494,7 +8687,24 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
                 lhs: ly,
                 rhs: ry,
             },
-        ) => ox == oy && core_equiv(db, lx, ly) && core_equiv(db, rx, ry),
+        ) => {
+            // Base structural match: same operator, operands equal position-wise.
+            let positional = ox == oy && core_equiv(db, lx, ly) && core_equiv(db, rx, ry);
+            // COMMUTATIVITY of EQUALITY: `(= a b)` and `(= b a)` denote the identical boolean (equality is
+            // symmetric), so accept the SWAPPED operand match too. Only `Eq` — `<`/`>`/`<=`/`>=` flip
+            // direction when swapped, and this arm is shared with `Core::Arith` whose ops are never `Eq`, so
+            // `ox == Eq` fires ONLY for a comparison. Guarded on both operands trap-free so the swap changes
+            // no observable evaluation ORDER (a trapping operand's position could decide which trap fires
+            // first; a pure operand's cannot). Lets `(and (= a b) (= b a))` fold to one `(= a b)` via the
+            // idempotence path, which keys on `core_equiv`.
+            positional
+                || (ox == oy
+                    && matches!(ox, Prim::Eq)
+                    && is_trap_free(db, lx)
+                    && is_trap_free(db, rx)
+                    && core_equiv(db, lx, ry)
+                    && core_equiv(db, rx, ly))
+        }
         (
             Core::Convert {
                 op: ox,
@@ -9816,6 +10026,55 @@ pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool 
     // real operand interval, and the fit-check against the i64-representable type bounds catches any
     // out-of-type result.
     let (rlo, rhi) = ((vlo as i128) << k, (vhi as i128) << k);
+    rlo >= tmin as i128 && rhi <= tmax as i128
+}
+
+/// The RUNTIME-COUNT companion of [`shl_provably_in_range`]: whether `(<< val count)` provably stays in
+/// `val`'s type for a count whose range is only known at compile time (not a fixed constant) — the
+/// masked-count idiom `(<< (& x 15) (& k 3))`, where `val ∈ [0,15]` and `count ∈ [0,7]` gives a max
+/// `15 << 7 = 1920` that fits. Requires BOTH the value's `closed_range` `[vlo, vhi]` AND the count's
+/// `value_range` `[clo, chi]` to be known, with a valid count range `0 <= clo <= chi < width` (an
+/// out-of-range count is a genuine trap the guard must keep). `<<` is monotonic in the value for a fixed
+/// nonneg count, so the result's bounding box is spanned by the four corners `{vlo,vhi} << {clo,chi}`
+/// (a negative `vlo` shifts MORE negative as the count grows; a positive `vhi` shifts MORE positive);
+/// the box fits iff its min ≥ tmin and max ≤ tmax. All in i128 (a real interval × count < width never
+/// overflows i128). Returns false on any unknown bound (keep the overflow round-trip).
+pub(crate) fn shl_provably_in_range_dynamic(db: &mut Db, val: StructId, count: StructId) -> bool {
+    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
+        return false;
+    };
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+        Some(b) => b,
+        None => return false,
+    }) else {
+        return false;
+    };
+    let crate::ty::Width::Fixed(width) = it.width else {
+        return false;
+    };
+    // The count must have a known, VALID range `[clo, chi]` with `0 <= clo` and `chi < width` — an
+    // out-of-range count still traps (its guard is handled separately), so we only reason about the
+    // in-range shift amounts here.
+    let Some((clo, chi)) = value_range(db, count) else {
+        return false;
+    };
+    let Some(chi) = chi else { return false };
+    if clo < 0 || chi < 0 || chi >= width as i64 {
+        return false;
+    }
+    let Some((vlo, vhi)) = closed_range(db, val) else {
+        return false;
+    };
+    // `<<` by a fixed nonneg count is monotonic in the value AND (in magnitude) in the count, so the
+    // result's bounding box corners are `{vlo, vhi} << {clo, chi}`.
+    let corners = [
+        (vlo as i128) << clo,
+        (vlo as i128) << chi,
+        (vhi as i128) << clo,
+        (vhi as i128) << chi,
+    ];
+    let rlo = corners.iter().copied().min().unwrap();
+    let rhi = corners.iter().copied().max().unwrap();
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
@@ -11691,6 +11950,9 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
         SegKind::Bytes { .. } => bin_const_scrutinee(db, s.slot).is_none(),
         // A runtime bit-field value (a param, not a `ConstInt`) — the run packs at run time.
         SegKind::Bits { .. } => !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_)),
+        // A `utf8` segment is a PATTERN-only construct here — building a `(utf8 s n)` (splice a String's
+        // bytes) is not yet lowered; route it to the const-build loop, which declines cleanly.
+        SegKind::Utf8 { .. } => false,
     });
     if any_runtime {
         // Build the `bin` as a sequence of PIECES concatenated at run time (`Core::BytesConcat`): each
@@ -11800,6 +12062,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     flush_ints(db, &mut int_run, &mut pieces);
                     flush_bits(db, &mut bits_run, &mut pieces);
                     pieces.push(seg.slot);
+                }
+                // Constructing a `(utf8 s n)` segment (splice a String's bytes) is not yet lowered — the
+                // `utf8` segment is currently pattern-only (`bin_match_decode`). Decline cleanly.
+                SegKind::Utf8 { .. } => {
+                    return Core::Poison(Reject::decline(
+                        "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                    ));
                 }
             }
         }
@@ -11937,6 +12206,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                 }
                 raw.extend(bytes);
             }
+            // Constructing a `(utf8 s n)` segment (splice a String's UTF-8 bytes) is not yet lowered —
+            // `utf8` is currently pattern-only (`bin_match_decode`). Decline cleanly.
+            SegKind::Utf8 { .. } => {
+                return Core::Poison(Reject::decline(
+                    "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                ));
+            }
         }
     }
     // A well-formed `bin` is byte-aligned, so no open bits remain here (CDZ0220 caught a mis-aligned one
@@ -11986,6 +12262,10 @@ fn bin_const_scrutinee(db: &mut Db, scrutinee: StructId) -> Option<Vec<u8>> {
 enum BinDecoded {
     Int(i64),
     ByteRange(usize, usize),
+    /// A `utf8` segment's decoded string — the byte range validated as strict UTF-8 (its match already
+    /// required well-formedness, so this is a real `String`). Kept alongside the range so a binder can
+    /// bind the decoded `String` directly.
+    Str(String),
 }
 
 /// Run a `bin` PATTERN's segment automaton over the concrete bytes `raw`, left-to-right. Returns each
@@ -12095,6 +12375,34 @@ fn bin_match_decode(
                 out.push(BinDecoded::ByteRange(off, off + n));
                 off += n;
             }
+            // A UTF-8 string segment `(utf8 s n)`: read exactly `n` bytes (like a dependent `bytes`) then
+            // DECODE them as strict UTF-8. Ill-formed bytes are a NON-MATCH (return `None`), never a trap —
+            // exhaustiveness (a required catch-all) forces the caller to handle the bad case. `n` names an
+            // earlier integer segment binder, resolved to its already-decoded value.
+            SegKind::Utf8 { size } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a utf8 segment"
+                );
+                let size_name = db.ast.as_name(*size)?;
+                let bound = segs
+                    .iter()
+                    .take(i)
+                    .position(|s| db.ast.as_name(s.slot) == Some(size_name))
+                    .and_then(|idx| match out.get(idx) {
+                        Some(BinDecoded::Int(v)) => Some(*v),
+                        _ => None,
+                    });
+                let n = bound.filter(|v| *v >= 0)? as usize;
+                if off + n > raw.len() {
+                    return None; // the named size overruns the remaining bytes → non-match
+                }
+                // Strict UTF-8 validation (matches `str::from_utf8` — rejects invalid leads, overlong
+                // forms, surrogates, and code points > U+10FFFF). Ill-formed → non-match.
+                let s = core::str::from_utf8(&raw[off..off + n]).ok()?;
+                out.push(BinDecoded::Str(s.to_string()));
+                off += n;
+            }
         }
     }
     // Whole-scrutinee accounting: after the last segment, any open bits or leftover bytes are a non-match
@@ -12132,6 +12440,9 @@ fn decode_bin_field(
     };
     match decoded.get(seg_index) {
         Some(BinDecoded::Int(n)) => Core::ConstInt(IntValue::from_i64(*n)),
+        // A `utf8` segment binds the decoded, already-validated string as a `Core::ConstStr` (typed
+        // `Ty::String`) — the same rep a string literal lowers to, so it rides the constant path.
+        Some(BinDecoded::Str(s)) => Core::ConstStr(s.clone()),
         Some(BinDecoded::ByteRange(s, e)) => {
             // A synthesized constant `Core::BytesOf` of the bound sub-range (same shape the Bytes.slice
             // fold produces): fresh UInt8 element leaves, core/ty pre-filled so it rides the constant path.
@@ -12165,9 +12476,9 @@ fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Opt
     for seg in segs.iter().take(seg_index) {
         match &seg.kind {
             SegKind::Int { width, .. } => off += *width as u32,
-            // A bit-field / bytes segment before the target makes the runtime read's offset non-trivial
-            // (sub-byte cursor, or dynamic length) — not built yet.
-            SegKind::Bits { .. } | SegKind::Bytes { .. } => return None,
+            // A bit-field / bytes / utf8 segment before the target makes the runtime read's offset
+            // non-trivial (sub-byte cursor, or dynamic length) — not built yet.
+            SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
         }
     }
     Some(off)
@@ -12233,9 +12544,11 @@ fn decode_bin_field_runtime(
                 )),
             }
         }
-        SegKind::Bits { .. } | SegKind::Bytes { .. } => Core::Poison(Reject::decline(
-            "a runtime bin bit-field / sized-bytes binder is not yet decoded",
-        )),
+        SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => {
+            Core::Poison(Reject::decline(
+                "a runtime bin bit-field / sized-bytes / utf8 binder is not yet decoded",
+            ))
+        }
     }
 }
 
@@ -12423,6 +12736,16 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
         // A runtime operand: emit the mask-and-reinterpret at selection (the target is read off this
         // node's solved type there, the same `type_of(id)` used here).
         _ => {
+            // `Int64.of b` / `(UInt N).of b` on a RUNTIME `BigInt` `b` — the checked narrowing back to a
+            // fixed width, emitted as the runtime `bigint-to-i64-checked` (traps out of range at run time,
+            // B3b). The runtime op checks the i64 range; a narrower target's over-range value is a runtime
+            // concern the op will refine later (a constant over-range narrowing is already CDZ0302 at
+            // compile time, B1). Checked before the generic runtime-of decline below.
+            if matches!(op, Prim::CheckedOf)
+                && matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::BigInt)
+            {
+                return Core::BigIntToI64 { operand: args[0] };
+            }
             // `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not yet built,
             // so decline rather than emit a truncating `Convert` (that would be `wrap`'s semantics — a
             // MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). No corpus case

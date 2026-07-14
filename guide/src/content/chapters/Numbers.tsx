@@ -74,27 +74,32 @@ export default function Numbers() {
       <H2>Your turn</H2>
       <Exercise
         id="numbers:1"
-        prompt={<>Integer division truncates toward zero. What is <C>17 / 5</C>? Fill in the divisor so the answer is <C>3</C>.</>}
-        starter={`(/ 17 ?)`}
-        solution={`(/ 17 5)`}
-        expected="3"
-        hint={<>17 ÷ 5 is 3 remainder 2; integer division keeps the whole part, <C>3</C>. The divisor is <C>5</C>.</>}
+        prompt={
+          <>
+            Integer division truncates toward zero. Divide <C>23</C> by <C>4</C> — fill in the divisor so
+            the answer is <C>5</C> (23 ÷ 4 is 5 with 3 left over).
+          </>
+        }
+        starter={`(/ 23 ?)`}
+        solution={`(/ 23 4)`}
+        expected="5"
+        hint={<>23 ÷ 4 is 5 remainder 3; integer division keeps the whole part, <C>5</C>. The divisor is <C>4</C>.</>}
       />
 
       <Exercise
         id="numbers:2"
         prompt={
           <>
-            Use the remainder operator <C>%</C> to find what's left when <C>17</C> is divided by <C>5</C>.
-            Division gave <C>3</C>; the remainder is <C>2</C>.
+            Now the other half: use the remainder operator <C>%</C> to find what <C>23 / 4</C> left over.
+            Division gave <C>5</C>; the remainder is <C>3</C>.
           </>
         }
-        starter={`(? 17 5)`}
-        solution={`(% 17 5)`}
-        expected="2"
+        starter={`(? 23 4)`}
+        solution={`(% 23 4)`}
+        expected="3"
         hint={
           <>
-            The remainder operator is <C>%</C>. Since <C>17 = 5 × 3 + 2</C>, <C>(% 17 5)</C> is <C>2</C>.
+            The remainder operator is <C>%</C>. Since <C>23 = 4 × 5 + 3</C>, <C>(% 23 4)</C> is <C>3</C>.
           </>
         }
       />

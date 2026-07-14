@@ -59,6 +59,12 @@ export default function Bytes() {
         <C>(Bytes.slice bs 1 3)</C> takes 3 bytes starting at index 1 — so its length is <C>3</C>. Ask
         for more bytes than remain and you get the <C>None</C> arm instead.
       </P>
+      <Note>
+        A small difference worth noting: <C>Bytes.slice</C> takes a start and a <em>length</em>, while{" "}
+        <C>String.slice</C> from the previous chapter takes a start and an <em>end</em> index. So{" "}
+        <C>(Bytes.slice bs 1 3)</C> is three bytes, but <C>(String.slice s 1 3)</C> is two characters
+        (indices 1 and 2). Read the argument names and you won't be caught out.
+      </Note>
 
       <H2>From text to bytes</H2>
       <P>

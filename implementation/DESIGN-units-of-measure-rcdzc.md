@@ -15,7 +15,7 @@ are exactly the `Rational`-magnitude cases** — the one vertical the operator e
   numeric), `+`/`-`/`*`/`/`, comparison, dimensional-mismatch `CDZ0501`, canonical-exponent-map
   equality, annotation-conflict `CDZ0501`, a velocity derived through a function.
 - **Layer 2 — families, prefixes, conversion — over Int/Float.** `Unit.of #"inch"` (named family unit),
-  `Unit.prefix kilo metre` (scaled unit), `Unit.in u q` (explicit conversion), SI decimal + IEC binary
+  `Unit.prefix kilo meter` (scaled unit), `Unit.in u q` (explicit conversion), SI decimal + IEC binary
   prefixes, automatic mixing conversion to the dimension's reference (const-folded when constant),
   derived-dimension families (byte-per-second/mbps, hertz), and unit-registration uniqueness `CDZ0502`
   (BOTH halves pinned: a CONFLICTING redeclaration is rejected, and an AGREEING one — including an
@@ -32,7 +32,7 @@ underlying numeric type is itself inexact"). EXACT magnitudes need `Rational`, w
 Increments landed:
 - **L1-0** `Ty::Qty { inner, unit }` + `ty::Unit` (free-abelian-group exponent map) through the closed
   type universe (byte-neutral).
-- **L1-1a** the `#"metre"` symbol literal (`Leaf::Sym`) through both syntax surfaces + both codecs.
+- **L1-1a** the `#"meter"` symbol literal (`Leaf::Sym`) through both syntax surfaces + both codecs.
 - **L1-1b** `Qty`/`Unit` prelude + construct/observe/erase + the quantity value form.
 - **L1-2 (+ L1-3)** operator dimensional rules + `CDZ0501` + `Qty` type constructor + float-inner
   arithmetic + quotient unit rendering.
@@ -69,7 +69,7 @@ a design-from-scratch:
      zero runtime cost** — Layer 1 never emits a scale multiply because it only handles one-unit-per-
      dimension (no conversion). New diagnostic **CDZ0501**. NO dependency on Symbols or Rationals.
    - **Layer 2 — FAMILIES, prefixes, auto-conversion** (~14 remaining cases). Needs TWO prerequisites
-     that do not exist yet in the compiler: `Symbol` (`#"metre"`) and `Rational`. Deferred to their
+     that do not exist yet in the compiler: `Symbol` (`#"meter"`) and `Rational`. Deferred to their
      own verticals first (see §7). This is the `feet`/`meters` mixing + SI/IEC-prefix story.
 
 3. **Dimensional equality is a canonical exponent-map compare — NO solver.** A unit is a `BTreeMap`
@@ -110,7 +110,7 @@ a design-from-scratch:
   atomic base. The value-level companion of `Type.of` (which gives the whole type for annotations); a
   non-quantity argument declines.
 - The base-dimension NAME in Layer 1: since Symbols don't exist yet, Layer 1 names a base dimension by
-  a **string** carried in the `(Unit.base #"metre")` position. ⚠ The corpus WRITES `#"metre"` (a symbol
+  a **string** carried in the `(Unit.base #"meter")` position. ⚠ The corpus WRITES `#"meter"` (a symbol
   literal). See §6 for how Layer 1 handles this without a full Symbol type.
 
 ## §1 — Current state (spec HEAD)
@@ -151,12 +151,12 @@ impl Unit {
     pub fn mul(&self, other: &Unit) -> Unit { /* pointwise add, drop zeros */ }
     pub fn div(&self, other: &Unit) -> Unit { /* pointwise subtract, drop zeros */ }
     pub fn pow(&self, n: i64) -> Unit { /* scale each exponent by n, drop zeros (n=0 → one) */ }
-    pub fn render(&self) -> String { /* metre·second⁻¹ style, for (: … (Qty …)) rendering */ }
+    pub fn render(&self) -> String { /* meter·second⁻¹ style, for (: … (Qty …)) rendering */ }
 }
 ```
 
 The drop-zeros invariant is what makes `(Unit.* u (Unit.^ u -1))` == `Unit.one` structurally, and
-`metre·metre` (`{metre:2}`) == `(Unit.^ metre 2)` (`{metre:2}`) the SAME dimension by `==` — the corpus
+`meter·meter` (`{meter:2}`) == `(Unit.^ meter 2)` (`{meter:2}`) the SAME dimension by `==` — the corpus
 case "dimensional equality is decided by canonical exponent map, not written form".
 
 ## §3 — Layer 1 increments
@@ -228,9 +228,9 @@ that when an operand is a `Ty::Qty`:
   Result = `Bool` / `Ordering` (unchanged).
 - `Mul`: result unit = `a.unit.mul(&b.unit)`; inner `T` unifies. Result = `(Qty T (u_a · u_b))`.
   Multiplying by a dimensionless `(Qty T Unit.one)` keeps the dimension (empty-map add).
-- `Div`: result unit = `a.unit.div(&b.unit)`. `(/ (Qty 6 metre) (Qty 2 metre))` → `Unit.one`
+- `Div`: result unit = `a.unit.div(&b.unit)`. `(/ (Qty 6 meter) (Qty 2 meter))` → `Unit.one`
   (dimensionless) by map cancellation.
-- A mix of `Qty` and bare numeric (`(+ (Qty 1 metre) 1)`): CDZ0501 (or CDZ0203) — no implicit
+- A mix of `Qty` and bare numeric (`(+ (Qty 1 meter) 1)`): CDZ0501 (or CDZ0203) — no implicit
   dimensionless coercion, matching the no-silent-promotion stance.
 
 ⚠ Because `Mul`/`Div` PRODUCE a new unit rather than constrain one, this cannot be a pure `unify` — it
@@ -250,7 +250,7 @@ the one place units step outside HM; it dispatches on `Prim`, reads solved `Ty::
   **CDZ0501** (the corpus "annotating a quantity at a dimension the expression does not derive"). The
   annotation reduces `(Qty T u)` to a `Ty::Qty` via `typeval_of` and unifies; a unit mismatch is
   CDZ0501, a `T` mismatch stays CDZ0203.
-- The corpus records terminal outputs as `(: (Qty.of 5.0 metre) (Qty Float64 metre))` — so the RESULT
+- The corpus records terminal outputs as `(: (Qty.of 5.0 meter) (Qty Float64 meter))` — so the RESULT
   RENDERER must render a `Ty::Qty` (`render_name`) and a quantity terminal value renders as its
   construction form. Check `08-value-rendering` conventions; a quantity's VALUE is its inner value with
   the unit type in the `(: … T)` position (the value is byte-identical to the bare inner).
@@ -287,8 +287,8 @@ unified in the ordinary way; it is a comptime value the `QtyOf` arm READS to con
 `Ty::Qty`. So `apply_type`/`type_errors` get a dedicated `Prim::QtyOf` arm: solve arg0's `Ty` = the
 inner `T`, evaluate arg1 to a `Unit` (via `eval`), build `Ty::Qty { inner: T, unit }`.
 
-The corpus writes the unit inline (`(Qty.of 5.0 (Unit.base #"metre"))`) so the unit is always a
-compile-time-constructible expression — `eval` reduces `(Unit.base #"metre")` / `(Unit.* a b)` /
+The corpus writes the unit inline (`(Qty.of 5.0 (Unit.base #"meter"))`) so the unit is always a
+compile-time-constructible expression — `eval` reduces `(Unit.base #"meter")` / `(Unit.* a b)` /
 `(Unit.^ u n)` to a canonical `Unit` with no runtime residue.
 
 ## §5 — CDZ0501
@@ -301,9 +301,9 @@ CDZ05xx verification-layer band. Emitted by the units post-check for:
 There is NO runtime trap (units erase before runtime), so CDZ0501 is always a compile-time rejection —
 it sits in the verification band, not the numeric-trap band.
 
-## §6 — The `#"metre"` symbol-literal problem in Layer 1
+## §6 — The `#"meter"` symbol-literal problem in Layer 1
 
-The corpus writes base dimensions as SYMBOL LITERALS: `(Unit.base #"metre")`. The `#"…"` literal does
+The corpus writes base dimensions as SYMBOL LITERALS: `(Unit.base #"meter")`. The `#"…"` literal does
 NOT exist in the lexer/reader yet (no `Leaf::Sym`, no lexer rule). Layer 1 has two honest options:
 
 - **(a) Add a minimal `#"…"` reader literal that lexes to a `Leaf::Str` (or a new `Leaf::Sym(String)`)**
@@ -328,7 +328,7 @@ Layer 2 is IMPLEMENTED over `Int`/`Float` (see STATUS). The unit machinery below
 ONE remaining gap is the exact-`Rational` magnitude, which is its own operator-gated vertical:
 
 - **Symbols were NOT ultimately required.** Layer 1 named a base dimension by a string carried in the
-  `#"metre"` symbol-literal leaf; Layer 2 kept that representation (the `Unit` map key stays a `String`
+  `#"meter"` symbol-literal leaf; Layer 2 kept that representation (the `Unit` map key stays a `String`
   interned from the `Leaf::Sym`), so no separate `Ty::Symbol` vertical blocked families. A first-class
   `Symbol` type is still worthwhile on its own merits, but units did not need it.
 - **Rationals** — a real `Ty::Rational` (a normalized pair of big-integers; NOT parametric — see the
@@ -342,7 +342,7 @@ Layer 2 (already landed over Int/Float) provides:
 - A FAMILY = a dimension + a reference unit + sibling units each with an exact `Rational` scale to the
   reference. The prelude supplies SI families + common imperial/information units as ORDINARY data (a
   dimension symbol + a `unit-name ↦ Rational-scale` map); a program MAY declare its own.
-- `Unit.of #"inch"` (a named family unit), `Unit.prefix kilo metre` (a scaled unit), `Unit.in u q`
+- `Unit.of #"inch"` (a named family unit), `Unit.prefix kilo meter` (a scaled unit), `Unit.in u q`
   (explicit conversion).
 - SI decimal prefixes (`kilo` 10³ … `pico` 10⁻¹²) + IEC binary prefixes (`kibi` 2¹⁰ … `tebi` 2⁴⁰), each
   an exact `Rational` scale value. `kB` (1000) and `KiB` (1024) are DISTINCT units, never equated.
@@ -362,7 +362,7 @@ the arena, the s-expr corpus, and every downstream stage are unchanged. A numeri
 followed by a bare unit name reads as a quantity construction:
 
     5 feet          ==  (Qty.of 5   (Unit.of #"feet"))
-    5.0 metre       ==  (Qty.of 5.0 (Unit.of #"metre"))
+    5.0 meter       ==  (Qty.of 5.0 (Unit.of #"meter"))
     5 feet / 1 second  ==  (/ (Qty.of 5 (Unit.of #"feet")) (Qty.of 1 (Unit.of #"second")))   ; a RATE
 
 - **Parse** (`parser::maybe_quantity_literal`, called from `prefix` right after a numeric atom). A
@@ -372,7 +372,7 @@ followed by a bare unit name reads as a quantity construction:
   so `5 in`/`5 and mask` keep their meaning. This repurposes a previously-MEANINGLESS adjacency:
   juxtaposing a number and a name has no other reading on the ML surface (application is `f(x)`, not
   juxtaposition), so nothing real is displaced. Patterns are unaffected (`pattern_atom` is a separate
-  parser). A compound or scaled unit still uses the call form (`Qty.of(x, metre / second)`).
+  parser). A compound or scaled unit still uses the call form (`Qty.of(x, meter / second)`).
 - **Print** (`printer::quantity_literal`, checked before the name-head dispatch since the head is the
   member-access LIST `(. Qty of)`). Renders `(Qty.of <numlit> (Unit.of #"name"))` back to `<num> name`
   ONLY when: the numeric operand is a NON-NEGATIVE `Int`/`Float` literal (a negative or a variable would
@@ -381,7 +381,7 @@ followed by a bare unit name reads as a quantity construction:
   `Qty.of`, `Qty.of` of a non-literal) falls back to the round-tripping call form. IDEMPOTENT round-trip.
 - **Corpus coverage is automatic**: existing `.sexp` inputs of the form `(Qty.of <lit> (Unit.of #"…"))`
   now render + re-parse through this surface, exercised by the `corpus_roundtrip` gate (e.g. the inch +
-  millimetre case renders `Qty.value(1.0 inch + 1.0 millimetre)`).
+  millimeter case renders `Qty.value(1.0 inch + 1.0 millimeter)`).
 
 ## §8 — Test / gate strategy
 

@@ -584,21 +584,21 @@
 
 (case "Type.of carries a quantity's unit into a same-type annotation"
   (doc    "Witnesses type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary
-           over a unit-indexed type: `(Type.of y)` where `y : (Qty Float64 metre)` reflects the whole
-           quantity type — inner numeric AND unit — so `(: (Qty.of 9.0 metre) (Type.of y))` agrees and
+           over a unit-indexed type: `(Type.of y)` where `y : (Qty Float64 meter)` reflects the whole
+           quantity type — inner numeric AND unit — so `(: (Qty.of 9.0 meter) (Type.of y))` agrees and
            the quantity erases to 9.0. Pins that reflection captures the full type, dimension included,
            for reuse as `make another quantity of the same type as this one`.")
-  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
-            (Qty.value (: (Qty.of 9.0 (Unit.base #"metre")) (Type.of y)))))
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"meter"))))
+            (Qty.value (: (Qty.of 9.0 (Unit.base #"meter")) (Type.of y)))))
   (output (: 9.0 Float64)))
 
 (case "a reflected quantity type rejects a value of a different dimension"
-  (doc    "The dimensional companion of the reflection annotation: `(Type.of y)` is `(Qty Float64 metre)`
+  (doc    "The dimensional companion of the reflection annotation: `(Type.of y)` is `(Qty Float64 meter)`
            (y is a length), so annotating a TIME quantity `(: (Qty.of 9.0 second) (Type.of y))` is a
            dimensional mismatch, CDZ0501 — reflection carries the unit into the check exactly as a
-           written `(Qty Float64 metre)` annotation would. A reflected type is a real type, checked in
+           written `(Qty Float64 meter)` annotation would. A reflected type is a real type, checked in
            full.")
-  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"meter"))))
             (Qty.value (: (Qty.of 9.0 (Unit.base #"second")) (Type.of y)))))
   (error  CDZ0501))
 
@@ -619,9 +619,9 @@
 ; case here; giving the erasure fence a diagnostic code is a separate increment.)
 
 ; COMPILE-TIME TYPE EQUALITY — `(Type.eq a b)` folds to the constant `Bool` of two type-values' EXACT
-; structural equality (`Int64` ≠ `Int32`; a quantity's unit is part of its type, so `metre` ≠ `second`).
+; structural equality (`Int64` ≠ `Int32`; a quantity's unit is part of its type, so `meter` ≠ `second`).
 ; The arguments are type-values: a `(Type.of e)` result OR a written type (`Int64`, `(Qty Float64
-; metre)`). Because the result is a compile-time CONSTANT, `(if (Type.eq …) then else)` selects a branch
+; meter)`). Because the result is a compile-time CONSTANT, `(if (Type.eq …) then else)` selects a branch
 ; at compile time — a program branches on types. (The two branches must still share a type: the checker
 ; unifies both arms before the constant condition prunes the dead one; branching to DIFFERENT result
 ; types is a later, larger step. The result `Bool` is an ordinary runtime value — only the comparison is
@@ -650,12 +650,12 @@
   (output (: true Bool)))
 
 (case "Type.eq distinguishes quantities by their unit"
-  (doc    "A quantity's UNIT is part of its type, so `(Type.eq (Type.of (Qty.of 1.0 metre)) (Type.of
-           (Qty.of 1.0 second)))` is `false` — metre and second are different dimensions hence different
+  (doc    "A quantity's UNIT is part of its type, so `(Type.eq (Type.of (Qty.of 1.0 meter)) (Type.of
+           (Qty.of 1.0 second)))` is `false` — meter and second are different dimensions hence different
            types — while the same unit compares `true` regardless of magnitude. Pins that type equality
            carries the full unit-indexed type (units-of-measure.md #Dimensional Mismatch Is An Error, at
            the type-value level).")
-  (input  (Type.eq (Type.of (Qty.of 1.0 (Unit.base #"metre")))
+  (input  (Type.eq (Type.of (Qty.of 1.0 (Unit.base #"meter")))
                    (Type.of (Qty.of 1.0 (Unit.base #"second")))))
   (output (: false Bool)))
 

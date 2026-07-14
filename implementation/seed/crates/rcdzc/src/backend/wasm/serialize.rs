@@ -1309,9 +1309,39 @@ pub fn closure_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    multi_closure_resource_core_module(
+    closure_resource_core_module_borrow(
         funcs,
         imports,
+        export_abs,
+        arg_vts,
+        ret_vt,
+        make_param_vts,
+        lifted_type_idx,
+        layout,
+        false,
+    )
+}
+
+/// [`closure_resource_core_module`] with a `call_borrow` switch — the single-export front to
+/// [`multi_closure_resource_core_module_with_host_borrow`]. `call_borrow = true` gives the REPEATABLE
+/// `borrow<t>` `call` (host keeps the handle across calls; `t-dtor` reclaims); `false` the shipped
+/// own/self-drop single-use `call`.
+#[allow(clippy::too_many_arguments)]
+pub fn closure_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    make_param_vts: &[ValType],
+    lifted_type_idx: u32,
+    layout: &Layout,
+    call_borrow: bool,
+) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module_with_host_borrow(
+        funcs,
+        imports,
+        &[],
         &[ClosureMake {
             export_name: "make".to_string(),
             export_abs,
@@ -1322,6 +1352,7 @@ pub fn closure_resource_core_module(
         ret_vt,
         lifted_type_idx,
         layout,
+        call_borrow,
     )
 }
 
@@ -1342,7 +1373,6 @@ pub fn closure_resource_core_module(
 /// Memory/Realloc) runs under wasmtime; this emits the PRODUCTION core. `arg_vts` are the closure's arg
 /// core valtypes; the closure body's `Bytes` result is an i32 handle, so `call`'s core result is i32.
 /// The imports must include `bytes-len`, `bytes-get`, `drop`, `arr-get`, `get-int` (the caller's used-set).
-#[allow(clippy::too_many_arguments)]
 pub fn closure_bytes_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
@@ -1351,6 +1381,34 @@ pub fn closure_bytes_resource_core_module(
     make_param_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    closure_bytes_resource_core_module_borrow(
+        funcs,
+        imports,
+        export_abs,
+        arg_vts,
+        make_param_vts,
+        lifted_type_idx,
+        layout,
+        false,
+    )
+}
+
+/// [`closure_bytes_resource_core_module`] with a `call_borrow` switch (C-HOST-6, byte-rope result). When
+/// TRUE the `call` uses the borrow-lift's directly-passed rep as the cell (no `resource.rep`) and does NOT
+/// drop the cell (the host keeps the handle → repeatable; the `t-dtor` reclaims on drop). The transient
+/// `Bytes` handle the closure returns is STILL dropped after the copy (the guest owns that scratch value
+/// either way — it is separate from the cell). `false` reproduces the own/self-drop body byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+pub fn closure_bytes_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    make_param_vts: &[ValType],
+    lifted_type_idx: u32,
+    layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1535,10 +1593,12 @@ pub fn closure_bytes_resource_core_module(
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(v, out);
         };
-        // cell = resource.rep(self)
+        // cell = self (borrow: the rep passed directly) or resource.rep(self) (own).
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         // dispatch: push env(cell) + args, read the code slot (arr-get(cell,0)→get-int→wrap), call_indirect.
         get(cell, &mut inner);
@@ -1556,10 +1616,14 @@ pub fn closure_bytes_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner); // table 0
         set(bh, &mut inner); // the closure's Bytes-handle result
-        // DROP the closure cell (own<t> release — balances make's alloc; the Bytes handle is separate).
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the closure cell now (release — balances make's alloc). BORROW: the host keeps the cell
+        // (repeatable), the `t-dtor` reclaims on drop — do NOT drop here. The transient Bytes handle `bh` is
+        // separate and is dropped after the copy either way.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         // n = bytes-len(bh)
         get(bh, &mut inner);
         inner.push(op::CALL);
@@ -1661,6 +1725,35 @@ pub fn closure_value_resource_core_module(
     lifted_type_idx: u32,
     template: &crate::lower::ValueFormTemplate,
     layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    closure_value_resource_core_module_borrow(
+        funcs,
+        imports,
+        export_abs,
+        arg_vts,
+        make_param_vts,
+        lifted_type_idx,
+        template,
+        layout,
+        false,
+    )
+}
+
+/// [`closure_value_resource_core_module`] with a `call_borrow` switch (C-HOST-6, compound value-form
+/// result). When TRUE the `call` uses the borrow-lift's rep directly (no `resource.rep`) and does NOT drop
+/// the cell (repeatable; the `t-dtor` reclaims). The transient COMPOUND handle the closure returns is still
+/// dropped after the walk (guest-owned scratch, separate from the cell). `false` = own/self-drop, byte-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn closure_value_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    make_param_vts: &[ValType],
+    lifted_type_idx: u32,
+    template: &crate::lower::ValueFormTemplate,
+    layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1858,10 +1951,12 @@ pub fn closure_value_resource_core_module(
             out.push(op::LOCAL_SET);
             uleb128(l as u64, out);
         };
-        // cell = resource.rep(self)
+        // cell = self (borrow: rep passed directly) or resource.rep(self) (own).
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         // dispatch: push env(cell) + args, read the code slot, call_indirect → the compound handle.
         get(cell, &mut inner);
@@ -1880,10 +1975,13 @@ pub fn closure_value_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner); // table 0
         set(rep, &mut inner); // the closure's compound-handle result
-        // DROP the closure cell (own<t> release — balances make's alloc).
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the closure cell now (release). BORROW: host keeps the cell (repeatable), dtor reclaims —
+        // do NOT drop here. The transient compound handle `rep` is separate and dropped after the walk.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         // Fill each template hole by walking the compound handle (`rep`). `emit_hole_fill` reads
         // `arr-get`/`get-int` from `rep` and stores each leaf's bytes into the template at `byte_off`.
         for hole in &template.leaves {
@@ -1948,6 +2046,36 @@ pub fn closure_value_encode_resource_core_module(
     lifted_type_idx: u32,
     descriptor: &[u8],
     layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    closure_value_encode_resource_core_module_borrow(
+        funcs,
+        imports,
+        export_abs,
+        arg_vts,
+        make_param_vts,
+        lifted_type_idx,
+        descriptor,
+        layout,
+        false,
+    )
+}
+
+/// [`closure_value_encode_resource_core_module`] with a `call_borrow` switch (C-HOST-6, collection
+/// value-encode result). When TRUE the `call` uses the borrow-lift's rep directly (no `resource.rep`) and
+/// does NOT drop the cell (repeatable; the `t-dtor` reclaims). The transient collection handle `rep` (and
+/// `desc`/`doc`) are still released after the value-encode — guest-owned scratch, separate from the cell.
+/// `false` = own/self-drop, byte-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn closure_value_encode_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    make_param_vts: &[ValType],
+    lifted_type_idx: u32,
+    descriptor: &[u8],
+    layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2130,10 +2258,13 @@ pub fn closure_value_encode_resource_core_module(
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(v, out);
         };
-        // cell = resource.rep(self); dispatch → the collection handle into `rep`.
+        // cell = self (borrow: rep passed directly) or resource.rep(self) (own); dispatch → the collection
+        // handle into `rep`.
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         get(cell, &mut inner);
         for a in 0..arity {
@@ -2150,10 +2281,13 @@ pub fn closure_value_encode_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
-        // DROP the closure cell (own<t> release).
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the closure cell now. BORROW: host keeps the cell (repeatable), dtor reclaims — do NOT
+        // drop here. The transient collection handle `rep` is separate and released after value-encode.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         // desc = bytes-alloc(len); bytes-set each constant descriptor byte.
         ci32(descriptor.len() as i64, &mut inner);
         inner.push(op::CALL);
@@ -3237,7 +3371,36 @@ pub fn multi_closure_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    multi_closure_resource_core_module_with_host(
+    multi_closure_resource_core_module_borrow(
+        funcs,
+        imports,
+        makes,
+        plain,
+        arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        layout,
+        false,
+    )
+}
+
+/// [`multi_closure_resource_core_module`] with a `call_borrow` switch — the multi-export scalar shared-`call`
+/// front to [`multi_closure_resource_core_module_with_host_borrow`]. `call_borrow = true` makes the ONE
+/// shared `call` a repeatable `borrow<t>` method (each make's handle survives across calls; the `t-dtor`
+/// reclaims on drop); `false` the shipped own/self-drop shared `call`.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+    call_borrow: bool,
+) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module_with_host_borrow(
         funcs,
         imports,
         &[],
@@ -3247,6 +3410,7 @@ pub fn multi_closure_resource_core_module(
         ret_vt,
         lifted_type_idx,
         layout,
+        call_borrow,
     )
 }
 
@@ -3267,6 +3431,43 @@ pub fn multi_closure_resource_core_module_with_host(
     ret_vt: ValType,
     lifted_type_idx: u32,
     layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module_with_host_borrow(
+        funcs,
+        imports,
+        host_fns,
+        makes,
+        plain,
+        arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        layout,
+        false,
+    )
+}
+
+/// [`multi_closure_resource_core_module_with_host`] with a `call_borrow` switch. When `call_borrow` is
+/// TRUE the shared scalar `call` takes `borrow<t>` instead of `own<t>`: the component-model `lift_borrow`
+/// hands the guest the resource REP DIRECTLY as `call`'s `self` param (NOT a table index), so the body uses
+/// param 0 as the cell rep WITHOUT `resource.rep` (which TRAPS on a borrow in wasmtime 37) and does NOT drop
+/// the cell (the host keeps ownership; the `t-dtor` reclaims when the host finally drops the handle). This
+/// makes the closure handle REPEATABLE — the host can `call` it any number of times before dropping it (the
+/// natural callback shape), versus `own<t>`'s consume-per-call. The value-heap `encode` borrow method proved
+/// this shape runs under wasmtime 37. `false` reproduces the own/self-drop body byte-for-byte (the shipped
+/// leak-free single-use posture). Only the SCALAR-result `call` body differs; the type/functype/export
+/// layout is identical (the own-vs-borrow distinction is a COMPONENT-type detail the envelope carries).
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_resource_core_module_with_host_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let h = host_fns.len();
@@ -3453,11 +3654,16 @@ pub fn multi_closure_resource_core_module_with_host(
             g.push(wasm_abi::CORE_I32);
             g
         }));
-        // rep = resource.rep(self)
+        // rep = self. With `own<t>`, wasmtime hands `self` (param 0) as a resource-TABLE index, so the cell
+        // rep is `resource.rep(self)`. With `borrow<t>`, `lift_borrow` hands the REP DIRECTLY as param 0 (no
+        // table index), so the rep IS `self` — and `resource.rep` on a borrow TRAPS in wasmtime 37, so it
+        // must NOT be called. Either way `cell_local` ends up holding the heap cell rep.
         inner.push(op::LOCAL_GET);
         uleb128(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         inner.push(op::LOCAL_SET);
         uleb128(cell_local as u64, &mut inner);
         // push env (the cell) then each arg, in order — the lifted fn is `(env, args…) -> R`.
@@ -3486,22 +3692,24 @@ pub fn multi_closure_resource_core_module_with_host(
         inner.push(op::CALL_INDIRECT);
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner); // table 0
-        // C-HOST-5: `call` took `own<t>` (the canonical ABI transferred ownership INTO it), so it owns the
-        // cell's last reference — RELEASE it now (`heap.drop(rep)`), after `call_indirect` has returned (the
-        // lifted body finished BORROWING the env for its captures). Balances `make`'s `arr-alloc`, so a
-        // closure make+call leaves NO live heap cell. `resource.rep` on a BORROWED self traps in wasmtime 37,
-        // so `call` keeps `own` and drops the rep itself rather than a `borrow<t>` + host-drop dtor
-        // ([[rcdzc-r1-resource-encode-linking-findings]]). The result R is already on the stack; `drop` takes
-        // the rep (a separate push) and returns nothing, leaving R on top.
-        inner.push(op::LOCAL_GET);
-        uleb128(cell_local as u64, &mut inner);
-        inner.push(op::CALL);
-        uleb128(
-            *import_index
-                .get("drop")
-                .expect("drop imported for the closure-cell release") as u64,
-            &mut inner,
-        );
+        // Ownership release. With `own<t>` the canonical ABI transferred ownership INTO `call`, so it owns
+        // the cell's last reference — RELEASE it now (`heap.drop(rep)`), after `call_indirect` returned (the
+        // lifted body finished BORROWING the env for its captures). Balances `make`'s `arr-alloc`, so an
+        // own make+call leaves NO live heap cell. With `borrow<t>` the host KEEPS ownership across calls
+        // (the handle is repeatable), so `call` must NOT drop — the `t-dtor` reclaims the cell when the host
+        // finally drops the handle (`resource_dtor_module_with_drop`). The result R is already on the stack;
+        // a `drop` takes the rep (a separate push) and returns nothing, leaving R on top.
+        if !call_borrow {
+            inner.push(op::LOCAL_GET);
+            uleb128(cell_local as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the closure-cell release") as u64,
+                &mut inner,
+            );
+        }
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);

@@ -27,7 +27,7 @@ use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use crate::token::{Keyword, Kind, infix_prec, is_right_assoc, keyword, word_op};
+use crate::token::{Keyword, Kind, PREC_AS, infix_prec, is_right_assoc, keyword, word_op};
 
 /// A parse error: a message anchored to a source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -515,7 +515,32 @@ impl<'a> Parser<'a> {
         self.depth += 1;
         let mut left = self.prefix();
         left = self.postfix(left, start);
-        while let Some(op_name) = self.infix_op() {
+        loop {
+            // `expr as UNIT` — the unit-conversion operator, handled here rather than via `infix_op`
+            // because its right operand is a UNIT denotation (a bare name reads as `(Unit.of #"name")`,
+            // and `*`/`/`/`^` compose units), not an ordinary expression. It binds at `PREC_AS` (above
+            // the pipeline, below arithmetic), so `a / b as u` converts the quotient `(a / b)` and
+            // `q as u |> f` threads the conversion into the pipeline. Left-associative — the loop
+            // re-checks, so `q as m as m` chains left. Checked inside the shared loop so it interleaves
+            // with the arithmetic operators (`/` binds tighter, so it is consumed first).
+            // The `as` conversion must not cross a STATEMENT/NEWLINE boundary: a leading `as` on a new line
+            // would reach BACK across the newline and absorb the previous statement's (or a def RHS's)
+            // trailing expression — `def a() = 5.0 <newline> as meter` silently becoming `def a() = (5.0 as
+            // meter)`, changing a's type from a number to Qty(meter) on a mere line break. Statement
+            // sequencing (`539f7712`: forms juxtapose across lines) takes precedence, so an `as` separated
+            // from its left operand by a newline is a SEPARATE statement, not a continuation. Same
+            // boundary the quantity sugar draws (`f57c4a53`); the `as` operator landed alongside it without
+            // the guard. A genuine same-line `q as u` has no intervening newline and still converts.
+            if self.at_keyword(Keyword::As)
+                && PREC_AS >= min_prec
+                && !self.src[self.prev_span().end..self.cur_span().start].contains('\n')
+            {
+                left = self.as_conversion(left, start);
+                continue;
+            }
+            let Some(op_name) = self.infix_op() else {
+                break;
+            };
             let prec = infix_prec(op_name).expect("infix_op returns only infix names");
             if prec < min_prec {
                 break;
@@ -739,6 +764,17 @@ impl<'a> Parser<'a> {
             return num;
         }
         let unit_span = self.cur_span();
+        // The unit name must be on the SAME LINE as the number. The quantity sugar repurposes number+name
+        // ADJACENCY, but statement sequencing juxtaposes forms across lines with no separator (`539f7712`),
+        // so a number ending one statement (`def a() = 10`) sits right before the next statement's leading
+        // identifier (`a() + 5`). Without this guard the sugar greedily eats that identifier as a unit —
+        // `10 a` — swallowing the following statement and MISCOMPILING the program to a bogus quantity. A
+        // NEWLINE between the number and the candidate unit means they belong to different statements: the
+        // adjacency is sequencing, not a quantity, so decline the sugar and leave the bare number. (A
+        // genuine `5 feet` / `10 a` on ONE line has no intervening newline and still reads as a quantity.)
+        if self.src[num_span.end..unit_span.start].contains('\n') {
+            return num;
+        }
         let name = text.to_string();
         self.bump(); // the unit name
         // (Unit.of #"name")
@@ -758,6 +794,48 @@ impl<'a> Parser<'a> {
         let obj = self.name(obj, span);
         let key = self.name(key, span);
         self.list(vec![dot, obj, key], span)
+    }
+
+    /// Parse the tail of a unit conversion `value as UNIT` (the cursor is at the `as` keyword), returning
+    /// `(Unit.in UNIT value)` — the same arena `(Unit.in target q)` an explicit `Unit.in(target, q)` call
+    /// builds, so the conversion carries no new semantics. The target UNIT is a denotation, read by
+    /// [`Self::unit_denotation`]: a bare name `meter` becomes `(Unit.of #"meter")`, and a parenthesized
+    /// compound (`(meter / hour)`) composes via the ordinary `*`/`/`/`^` the units layer reads as unit
+    /// composition. The printer renders the bare-name case back to `value as name`.
+    fn as_conversion(&mut self, value: StructId, start: Span) -> StructId {
+        let as_span = self.cur_span();
+        self.bump(); // `as`
+        let target = self.unit_denotation(as_span);
+        let span = start.merge(self.prev_span());
+        let in_head = self.member_head("Unit", "in", as_span);
+        self.list(vec![in_head, target, value], span)
+    }
+
+    /// The UNIT denotation on the right of an `as`. A bare identifier `meter` reads as the family unit
+    /// `(Unit.of #"meter")` — the same shape the `<num> unit` quantity literal builds. Any other unit
+    /// expression (a compound `(meter / hour)`, a `Unit.prefix …`, a `Unit.of(…)` call) is written
+    /// parenthesized and parsed as an ordinary expression, which the units layer already interprets as a
+    /// unit (`eval::unit_of` reads `Unit.of`/`Unit.*`/`Unit./`/`Unit.^` and the bare `*`/`/`/`^`).
+    fn unit_denotation(&mut self, at: Span) -> StructId {
+        if self.at(Kind::Ident)
+            && keyword(self.cur_text()).is_none()
+            && word_op(self.cur_text()).is_none()
+        {
+            let span = self.cur_span();
+            let name = self.cur_text().to_string();
+            self.bump(); // the unit name
+            // (Unit.of #"name")
+            let unit_head = self.member_head("Unit", "of", span);
+            let sym = self.atom(Leaf::Sym(name), span);
+            return self.list(vec![unit_head, sym], span);
+        }
+        // A parenthesized / computed unit expression — parsed as an ordinary expression the units layer
+        // reduces to a unit. A bare non-name here (an operator, EOF) is a conversion target error.
+        if self.at(Kind::LParen) {
+            return self.bracketed_bars(Self::paren);
+        }
+        self.error("expected a unit name after `as`");
+        self.error_node(at)
     }
 
     /// Postfix chain: `.member` and `(args…)` application, tightest, left-nested.
@@ -2255,10 +2333,10 @@ mod tests {
         let a = parse_ok("5 feet");
         assert_eq!(sexpr::print(&a), r#"((. Qty of) 5 ((. Unit of) #"feet"))"#);
         // A float value works the same way.
-        let f = parse_ok("5.0 metre");
+        let f = parse_ok("5.0 meter");
         assert_eq!(
             sexpr::print(&f),
-            r#"((. Qty of) 5.0 ((. Unit of) #"metre"))"#
+            r#"((. Qty of) 5.0 ((. Unit of) #"meter"))"#
         );
         // The literal binds TIGHTER than every operator, so `5 feet / 1 second` is a rate — the
         // division of two quantity literals — the reading the surface is designed to give.
@@ -2281,6 +2359,69 @@ mod tests {
         // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
         let a = parse_ok("5 and mask");
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
+    }
+
+    #[test]
+    fn quantity_sugar_does_not_cross_a_newline() {
+        use crate::sexpr;
+        // The quantity sugar (`5 feet` → Qty) repurposes number+name ADJACENCY, but statement sequencing
+        // juxtaposes forms across lines with no separator — so a number ending one statement sits right
+        // before the next statement's leading identifier. The sugar must NOT eat that identifier as a unit
+        // (a miscompile that swallows the following statement). A NEWLINE between the number and the
+        // candidate unit means they are different statements: leave the bare number, let the next form be
+        // its own statement.
+        //
+        // `def a() = 10 <newline> a() + 5`: the `10` must stay a bare number (main's `a` def), and `a()+5`
+        // is the next top-level form — NOT `(Qty.of 10 (Unit.of "a"))` eating the next line.
+        let a = parse_ok("def a() = 10\na() + 5");
+        assert_eq!(
+            sexpr::print(&a),
+            "(do (def (a) 10) (+ (a) 5))",
+            "the quantity sugar must not span the newline into the next statement"
+        );
+        // A genuine SAME-LINE quantity is unchanged — `10 a` (no intervening newline) is still a quantity.
+        assert_eq!(
+            sexpr::print(&parse_ok("10 a")),
+            r#"((. Qty of) 10 ((. Unit of) #"a"))"#
+        );
+        // Same-line even when a statement follows on the NEXT line: `5 feet` is the quantity, `x` is next.
+        assert_eq!(
+            sexpr::print(&parse_ok("5 feet\nx")),
+            r#"(do ((. Qty of) 5 ((. Unit of) #"feet")) x)"#
+        );
+    }
+
+    #[test]
+    fn as_conversion_does_not_cross_a_newline() {
+        use crate::sexpr;
+        // The `as` unit-conversion postfix (`value as meter` → `(Unit.in (Unit.of "meter") value)`) must
+        // apply only WITHIN one statement. Statement sequencing juxtaposes forms across lines, so an `as`
+        // beginning a new line must NOT reach back across the newline and absorb the previous statement's
+        // trailing expression — `x as meter` split over two lines is a value `x` then a separate (erroring)
+        // `as meter`, NOT `(x as meter)`. Same boundary the quantity sugar draws; the `as` operator landed
+        // without it, so `def a() = 5.0 <newline> as meter` silently became `def a() = (5.0 as meter)`.
+        //
+        // `x <newline> as meter`: `x` is a complete statement; the leading `as` on the next line does not
+        // continue it. (`read_ml` tolerates the stray `as`-with-no-left-operand error and still yields a
+        // tree; the stray `as`/`meter` land as their own error-recovered forms — the point is `x` is NOT
+        // folded into a `(Unit.in … x)` conversion.)
+        let parsed = read_ml("x\nas meter");
+        let printed = sexpr::print(&parsed.arenas);
+        assert!(
+            !printed.contains("Unit in"),
+            "a leading `as` on a new line must not absorb the previous statement into a conversion: {printed}"
+        );
+        // A genuine SAME-LINE conversion is unchanged — `x as meter` (no intervening newline) still converts.
+        assert_eq!(
+            sexpr::print(&parse_ok("x as meter")),
+            r#"((. Unit in) ((. Unit of) #"meter") x)"#
+        );
+        // Same-line `as` even when a statement follows on the NEXT line: the conversion is `5.0 as meter`,
+        // `x` is the next statement — the newline after the conversion ends it, it does not chain into `x`.
+        assert_eq!(
+            sexpr::print(&parse_ok("5.0 as meter\nx")),
+            r#"(do ((. Unit in) ((. Unit of) #"meter") 5.0) x)"#
+        );
     }
 
     #[test]

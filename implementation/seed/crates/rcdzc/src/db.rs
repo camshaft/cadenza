@@ -335,6 +335,10 @@ pub struct BuildKey {
     pub args: Vec<i64>,
 }
 
+/// The call-site index (`Db::call_sites_by_callee`): `callee def index → the (caller-body, argument-
+/// occurrences) of every application calling that callee`. Named to keep the field type legible.
+pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, Vec<StructId>)>>;
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -416,6 +420,15 @@ pub struct Db {
     ///
     /// [`defs`]: Db::defs
     def_by_body: crate::fxhash::FxHashMap<StructId, usize>,
+
+    /// `def signature occurrence → its index in [`defs`]` — the O(1) reverse of a def's `sig_occ`, backing
+    /// `infer::def_of_param`'s "which def owns this parameter?". That was a linear
+    /// `defs.iter().position(|d| d.sig_occ == sig)`; the transitive-inference feature (`989e8c7c`) calls
+    /// `def_of_param` per parameter reference (`arg_is_other_def_param`), so a wide module made it O(N²)
+    /// (8000 defs: `def_of_param` 42% self). LAZILY built + cached (paired with the `defs.len()` it was
+    /// built at, so a later synthesized-def push — effect specialization — is picked up by a rebuild;
+    /// pushes are rare, so the rebuild is amortized). `None` until first built.
+    def_by_sig: Option<(usize, crate::fxhash::FxHashMap<StructId, usize>)>,
 
     /// For each def NAME, the index in [`defs`] of the FIRST def with that name. Built once at load.
     /// `resolve_name` consults it for EVERY non-local, non-parameter name reference (before the prelude
@@ -544,7 +557,7 @@ pub struct Db {
     /// The FAMILY-OF-MEASURE registry — maps each named family unit to its `(dimension, scale
     /// numerator, scale denominator)`, where the DIMENSION is a list of `(base-name, exponent)` pairs (an
     /// exponent map). An ATOMIC-dimension unit has a one-entry dimension: `"foot"` →
-    /// `([("metre", 1)], 381, 1250)`, `"minute"` → `([("second", 1)], 60, 1)`. A DERIVED-dimension unit
+    /// `([("meter", 1)], 381, 1250)`, `"minute"` → `([("second", 1)], 60, 1)`. A DERIVED-dimension unit
     /// has a multi-entry one: `"mbps"` (megabit/second) → `([("byte", 1), ("second", -1)], 1_000_000, 8)`
     /// — a unit of the `information/time` dimension whose scale to the reference `byte/second` is a
     /// megabit over 8 bits-per-byte (`units-of-measure.md` §A Dimension Groups Interconvertible Units).
@@ -740,6 +753,16 @@ pub struct Db {
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
+    pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
+
+    /// CALL-SITE index for `infer::call_site_arg_types`: `callee def index → the argument-occurrence lists
+    /// of every application (in ANY def body) whose head resolves to that callee`. Call-site inference
+    /// (seed an open param from a caller's argument) needs "every call of `def`"; computing it by scanning
+    /// EVERY def body per query was O(defs × program) → O(N²) for N mutually-recursive defs each needing
+    /// the seed (a decoder pipeline: N pairs = 15.9s @1600). Built ONCE by one whole-program walk
+    /// (`infer::build_call_site_index`), then each query is an O(1) map lookup. `None` until first
+    /// materialized; a pure function of the resolved program (a def's body is fixed after load).
+    pub(crate) call_sites_by_callee: Option<CallSiteIndex>,
 
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
@@ -843,6 +866,14 @@ pub struct Db {
     /// (see [`Db::is_user_node`]); reporting a prelude/synthesized id would map to garbage (or nothing)
     /// in the consumer's span table.
     user_node_count: u32,
+
+    /// Quote-PATTERN nodes with a NON-FINAL `,@` splice — `` `(f ,@init ,last) `` — collected by
+    /// [`crate::quote::reify_quotes`] (which detects them while desugaring a pattern-position quasiquote,
+    /// then leaves the node un-reified). A `,@` binds the tail, so it is meaningful only as the FINAL
+    /// element (`metaprogramming.md`); a non-final one is ill-formed. [`crate::compile::collect_faults`]
+    /// reports each as CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220). Empty for a
+    /// program with no such defect.
+    pub(crate) nonfinal_splice_patterns: Vec<StructId>,
 
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
@@ -949,7 +980,9 @@ impl Db {
         // BEFORE the parent index so the emitted `(. Ast …)`/`(list …)` nodes resolve like source. A
         // quote whose body mentions a leaf the `Ast` sum can't carry yet, or a wrong-arity `(quote …)`,
         // is left untouched for `resolve::resolve_quote` (a Todo decline / a CDZ0201, never a rewrite).
-        crate::quote::reify_quotes(&mut ast);
+        // Returns the quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed — a rest binds the
+        // tail, meaningful only last), which `collect_faults` reports CDZ0221.
+        let nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
@@ -1097,6 +1130,7 @@ impl Db {
             child_ix,
             scope_skip,
             def_by_body,
+            def_by_sig: None,
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
@@ -1109,6 +1143,7 @@ impl Db {
             unit_defines,
             file_scope,
             user_node_count,
+            nonfinal_splice_patterns,
             reduce_depth: 0,
             reduce_nodes: 0,
             descent_depth: 0,
@@ -1137,6 +1172,8 @@ impl Db {
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
+            seed_transitive: crate::fxhash::FxHashSet::default(),
+            call_sites_by_callee: None,
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
@@ -1636,6 +1673,103 @@ impl Db {
     /// [`defs`]: Db::defs
     pub fn def_index_by_body(&self, body: StructId) -> Option<usize> {
         self.def_by_body.get(&body).copied()
+    }
+
+    /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
+    /// `infer::def_of_param` (was a linear `defs.iter().position(|d| d.sig_occ == sig)` → O(N²) when
+    /// called per parameter reference). Lazily builds + caches a `sig_occ → index` map, keyed alongside
+    /// the `defs.len()` it was built at so a later synthesized-def push (effect specialization) triggers a
+    /// rebuild (pushes are rare, so it is amortized). A def with a duplicated `sig_occ` cannot occur (each
+    /// def has its own signature node), so no collision; FIRST-wins on the defensive off-chance.
+    pub(crate) fn def_index_by_sig(&mut self, sig: StructId) -> Option<usize> {
+        let stale = match &self.def_by_sig {
+            Some((built_len, _)) => *built_len != self.defs.len(),
+            None => true,
+        };
+        if stale {
+            let mut map = crate::fxhash::FxHashMap::default();
+            for (i, d) in self.defs.iter().enumerate() {
+                map.entry(d.sig_occ).or_insert(i);
+            }
+            self.def_by_sig = Some((self.defs.len(), map));
+        }
+        self.def_by_sig.as_ref().unwrap().1.get(&sig).copied()
+    }
+
+    /// Register a recursive DO-LOCAL function found in a β-REDUCED (copied) body as an INTERNAL callable
+    /// def, so its recursive call lowers to a `Core::Call` — the copy-time counterpart of the load-time
+    /// `modules::register_do_local_callables`. When a HELPER whose body carries a do-local `(def (fac n)
+    /// …)` is inlined at its call site, `beta_reduce` COPIES the def (fresh `StructId`s), so the copied
+    /// recursive self-call resolves (via `do_local_binds`, forward-inclusive for functions) to the COPY's
+    /// lambda — whose body is NOT in `def_by_body`, so `callee_def_index` misses it and the call declines
+    /// "needs runtime specialization". Walking the reduced `root` for do-block FUNCTION defs and
+    /// registering each (keyed by its fresh body) closes the gap: the load-time registration is by the
+    /// ORIGINAL body, this one by the COPY, and a reference resolves to whichever body is in scope.
+    ///
+    /// Idempotent + bounded: `apply_lambda` memoizes each call site's reduction, so a given copy's defs
+    /// register once; a def whose body is already in `def_by_body` (a re-walk, or a top-level def) is
+    /// skipped. INTERNAL discipline (like the load-time path): kept OUT of `def_name_index` (the name
+    /// resolves by lexical scope) and not an export / unused-warning target.
+    pub fn register_reduced_callables(&mut self, root: StructId) {
+        // A `(do …)` block's DIRECT `(def (f p…) BODY)` children with ≥1 param are the recursive-lowering
+        // candidates. Walk the subtree at `root` (a shallow β-copy) collecting them first (an immutable
+        // read), then register — so the mutation does not disturb the walk.
+        let mut pending: Vec<(StructId, Vec<StructId>, StructId)> = Vec::new();
+        self.collect_reduced_callables(root, &mut pending);
+        for (sig, params, body) in pending {
+            if self.def_by_body.contains_key(&body) {
+                continue; // already registered (a re-walk, or a shared/uncopied body)
+            }
+            let name = match self.ast.get(sig) {
+                Struct::List(kids) => kids
+                    .first()
+                    .and_then(|&c| self.ast.as_name(c))
+                    .unwrap_or("")
+                    .to_string(),
+                _ => continue,
+            };
+            let idx = self.defs.len();
+            self.def_by_body.insert(body, idx);
+            self.defs.push(Def {
+                name,
+                sig_occ: sig,
+                params,
+                body: Some(body),
+                internal: true,
+            });
+        }
+    }
+
+    /// Gather the do-block FUNCTION defs `(def (f p…) BODY)` (≥1 param) reachable under `node` as
+    /// `(sig-occ, param-occs, body-occ)` — the recursive-descent helper of [`register_reduced_callables`].
+    /// A def is a candidate only when its PARENT is a `(do …)` block (a genuine do-local declaration, the
+    /// same shape the load-time scan registers), so a `(def …)` in any other position is not mistaken for
+    /// one. Descends every child to reach a do-block nested at any depth in the copied body.
+    fn collect_reduced_callables(
+        &self,
+        node: StructId,
+        out: &mut Vec<(StructId, Vec<StructId>, StructId)>,
+    ) {
+        // Is `node` a do-block? If so, register each direct `(def (f p…) BODY)` child with params.
+        if let Some(forms) = self.ast.as_form(node, "do") {
+            for &form in forms {
+                if let Some(tail) = self.ast.as_form(form, "def")
+                    && let (Some(&sig), Some(&body)) = (tail.first(), tail.get(1))
+                    && let Struct::List(children) = self.ast.get(sig)
+                    && children.len() >= 2
+                {
+                    let params: Vec<StructId> = children[1..].to_vec();
+                    out.push((sig, params, body));
+                }
+            }
+        }
+        // Descend every child (a do-block may be nested inside an if-branch, a let body, a def body copied
+        // into this reduced term, etc.).
+        if let Struct::List(children) = self.ast.get(node) {
+            for c in children.clone() {
+                self.collect_reduced_callables(c, out);
+            }
+        }
     }
 
     /// Normalize a decoded sum `(decl, name, args)` into its `Ty` — the ONE place the `Sum`↔`Nominal`

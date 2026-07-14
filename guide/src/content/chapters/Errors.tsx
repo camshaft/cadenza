@@ -10,11 +10,13 @@ export default function Errors() {
       <Lede>What happens when there's no answer — and how Cadenza makes you deal with it.</Lede>
 
       <P>
-        Not every operation has an answer. Divide by zero, look past the end of a list, add two numbers
-        that overflow — a language has to do <em>something</em>. Cadenza's answer is consistent: instead
-        of crashing or returning a bogus value, these operations hand you an <C>Option</C> — either{" "}
-        <C>(Some x)</C> with a value, or <C>(None unit)</C> with nothing — and the type system makes you
-        acknowledge both cases.
+        Not every operation has an answer. Look past the end of a list, look up a missing key, ask for a
+        result that doesn't fit — a language has to do <em>something</em>. Cadenza's building block for
+        "there might be no value" is the <C>Option</C> type: either <C>(Some x)</C> with a value, or{" "}
+        <C>(None unit)</C> with nothing, and the type system makes a caller acknowledge both cases instead
+        of returning a bogus default. (An operation that's genuinely <em>undefined</em>, like dividing by
+        zero, is a different story — it halts rather than inventing a value; you saw that in{" "}
+        <strong>The numeric model</strong>. Here we're about absence you can <em>handle</em>.)
       </P>
 
       <H2>Returning an Option</H2>

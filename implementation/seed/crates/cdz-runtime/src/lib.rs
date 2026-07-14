@@ -1667,8 +1667,12 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
         cur = op_set_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort into canonical value order. Elements are distinct set members, so the compare is total here.
-    elems.sort_by(|&x, &y| canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal));
+    // Sort into canonical value order. Set members are DISTINCT, so stability is irrelevant → the
+    // in-place `sort_unstable_by` (no merge scratch-buffer allocation, better constants) gives the same
+    // canonical order as a stable sort with one fewer heap allocation on this escape path.
+    elems.sort_unstable_by(|&x, &y| {
+        canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal)
+    });
     Some(elems)
 }
 
@@ -1696,8 +1700,10 @@ fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<
         cur = op_map_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort by canonical KEY order. Keys are distinct (a map has each key once) → total order here.
-    entries.sort_by(|&(ka, _), &(kb, _)| {
+    // Sort by canonical KEY order. Map keys are DISTINCT → stability is irrelevant, so `sort_unstable_by`
+    // (in-place, no merge scratch-buffer allocation) gives the same canonical order with one fewer heap
+    // allocation than the stable `sort_by`.
+    entries.sort_unstable_by(|&(ka, _), &(kb, _)| {
         canonical_scalar_order(key_shape, ka, kb).unwrap_or(core::cmp::Ordering::Equal)
     });
     Some(entries)
@@ -7660,6 +7666,81 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// value-encode of a NESTED-COLLECTION value: a `Map Int (List Int)` — the map VALUE is itself a
+    /// collection walked recursively (`Shape::Map`'s `val` shape can be any encodable shape, not just a
+    /// scalar; the arm's comment says so but every other map/set test uses a scalar value). This is the
+    /// shape the compiler's "sum + nested-collection compound results" work now escapes via value-encode,
+    /// so the recursive value-walk (map → each entry's value → List → vec elements) must be exercised. Assert
+    /// byte-identity to the recursive oracle (which mirrors the nested walk) + entries in canonical KEY
+    /// order with each value list intact.
+    #[test]
+    fn value_encode_map_of_lists_walks_the_nested_value() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: [0]=Int (key), [1]=Int (list elem), [2]=List(elem→1), [3]=Map(key→0, val→2); root=3.
+        // Tags: 0=Int, 7=List, 13=Map.
+        let desc: &[u8] = &[
+            0x04, // table_len = 4
+            0x00, // [0] Int
+            0x00, // [1] Int
+            0x07, 0x01, // [2] List(elem → 1)
+            0x0d, 0x00, 0x02, // [3] Map(key → 0, val → 2)
+            0x03, // root = 3
+        ];
+        // Build { 2: [20,21], 1: [10], 3: [] } — inserted OUT of key order (so the canonical sort reorders),
+        // an EMPTY value list (the zero-element assembler under a map value), and multi-element lists.
+        let mk_list = |elems: &[i64]| -> Handle {
+            let mut v = op_vec_empty();
+            for &e in elems {
+                v = op_vec_push(v, op_box_int(e));
+            }
+            v
+        };
+        let mut m = op_map_empty();
+        m = op_map_insert(m, op_box_int(2), mk_list(&[20, 21]));
+        m = op_map_insert(m, op_box_int(1), mk_list(&[10]));
+        m = op_map_insert(m, op_box_int(3), mk_list(&[]));
+        let doc = op_value_encode_form(m, desc).expect("encode a Map of Lists");
+
+        // Differential: the recursive oracle (its S::Map recurses the value shape) must agree byte-for-byte.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
+        assert_eq!(doc, b.finish(root), "iterative and recursive Map-of-Lists encode must agree");
+
+        // The int leaves, in emission order, are the keys+values interleaved in canonical KEY order:
+        // (1 [10]) (2 [20 21]) (3 []) → 1, 10, 2, 20, 21, 3. (Empty list contributes no int leaf.)
+        let mut ints: Vec<i64> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            if kind == 0 {
+                let len = doc[i] as usize;
+                i += 1;
+                let mut v = 0i64;
+                for &byte in &doc[i..i + len] {
+                    v = (v << 8) | byte as i64;
+                }
+                ints.push(v);
+                i += len;
+            } else if kind == 10 {
+                let len = doc[i] as usize;
+                i += 1 + len;
+            } else {
+                panic!("unexpected leaf kind {kind} in a Map-of-Lists document");
+            }
+        }
+        assert_eq!(
+            ints,
+            vec![1, 10, 2, 20, 21, 3],
+            "keys in numeric order, each followed by its value list's elements (empty list adds none)"
+        );
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     /// value-encode of EMPTY collections — the zero-element assembler edge (`SetOf`/`MapOf`/`List` with
     /// 0 children, `list_head_tail` with an empty tail, the `checked_sub(0)` in the assemblers). An empty
     /// collection returned to the host is common; a zero-element bug (underflow, dropped head, wrong form)
@@ -9133,6 +9214,27 @@ mod tests {
 
     // ── Inline tagged-immediate helpers (producers: op_box_int fixnum / op_box_bool / op_arr_alloc(0)) ─────
 
+    /// LAYOUT GUARD: `Node` is paid by EVERY heap value, so its size is load-bearing for allocation +
+    /// cache behavior. There is otherwise no signal if a change bloats it (a new field, a widened
+    /// `Handles`/`Raw` variant). Pin the NATIVE-host sizes so a structural regression is caught in the
+    /// std test suite. ⚠ These are the 64-bit NATIVE sizes (`Handle` = `*mut Node` = 8, `Vec` = 24); the
+    /// SHIPPED wasm32 layout is smaller (`Handle` = 4, `Vec` = 12) — this test can't run on wasm, but the
+    /// native size moves TOGETHER with wasm for STRUCTURAL changes (an added field / a wider enum variant
+    /// bloats both), which is the regression worth catching. Node=64 is already minimal for its fields:
+    /// `rc:u32`(4) + `Handles`(32) + `Raw`(24) = 60, padded to 64 for the 8-alignment `Handles`/`Raw`
+    /// require — the 4-byte pad after `rc` is unavoidable. If you INTEND to change the layout, update
+    /// these + re-measure the wasm hash impact.
+    #[test]
+    fn node_layout_sizes_are_pinned_native() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
+        assert_eq!(size_of::<Handles>(), 32, "Handles size changed (inline [Handle;2] arm + tag, or Vec)");
+        assert_eq!(size_of::<Raw>(), 24, "Raw size changed (inline [u8;12]+len arm, or Vec)");
+        assert_eq!(size_of::<Handle>(), 8, "Handle is a single native pointer");
+        // The inline-raw cap is the CHAMP header size — the largest hot raw that must stay inline.
+        assert_eq!(INLINE_RAW_CAP, 12, "INLINE_RAW_CAP must fit a CHAMP header inline");
+    }
+
     /// `read_u32_at` has two paths — a fast in-bounds 4-byte window read and a zero-padded fallback for
     /// a short/absent raw. This locks their EQUIVALENCE at the boundary: both must yield the same
     /// little-endian value where 4 bytes exist, and zero-pad missing high bytes. It is the hottest
@@ -9541,6 +9643,56 @@ mod tests {
         assert_eq!(live_object_count(), 0, "no BigInt leak");
     }
 
+    /// `bigint-div` TRUNCATES toward zero across the FULL sign matrix, and `bigint-cmp` orders negatives
+    /// correctly — the ops the compiler now emits for a runtime `/` and comparison (B3b `@acb1768f`). The
+    /// op-level glue test only checked `7/2` and `-7/2`; the other two sign combos + the truncation
+    /// DIRECTION (toward zero, NOT floor: `-7/2` is `-3` not `-4`) + negative cmp ordering were unpinned
+    /// at the op level (the library `divmod` is differential-tested, but a box/unbox sign-flag bug would
+    /// slip past that). A wrong truncation direction is a silent wrong answer for runtime negative BigInt
+    /// division.
+    #[test]
+    fn bigint_div_truncates_toward_zero_all_signs_and_cmp_orders_negatives() {
+        reset();
+        let before = live_object_count();
+        let div = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hr = op_bigint_div(ha, hb);
+            let r = op_bigint_to_i64_checked(hr);
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+            r
+        };
+        // Truncation toward zero (Rust `/` on i64 is the reference): all four sign combos.
+        for &(a, b) in &[(7, 2), (-7, 2), (7, -2), (-7, -2), (1, 3), (-1, 3), (1, -3), (-1, -3), (100, 7), (-100, 7)] {
+            assert_eq!(
+                div(a, b),
+                a / b,
+                "bigint-div {a}/{b} truncates toward zero (matches i64 /)"
+            );
+        }
+        // Exact division has no rounding either way; a dividend smaller than the divisor → 0 (toward zero).
+        assert_eq!(div(6, 3), 2);
+        assert_eq!(div(-6, 3), -2);
+        assert_eq!(div(2, 5), 0, "|dividend| < |divisor| → 0");
+        assert_eq!(div(-2, 5), 0, "…and stays 0, not -1 (toward zero, not floor)");
+        // bigint-cmp orders negatives correctly: -5 < -3 < 0 < 3 < 5.
+        let cmp = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let c = op_bigint_cmp(ha, hb);
+            op_drop(ha);
+            op_drop(hb);
+            c
+        };
+        assert_eq!(cmp(-5, -3), -1, "-5 < -3");
+        assert_eq!(cmp(-3, -5), 1, "-3 > -5");
+        assert_eq!(cmp(-3, 3), -1, "-3 < 3");
+        assert_eq!(cmp(-3, -3), 0, "-3 == -3");
+        assert_eq!(cmp(0, -1), 1, "0 > -1");
+        assert_eq!(cmp(-1, 0), -1, "-1 < 0");
+        assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
     /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them
     /// (`champ_hash`) — exactly like Bytes/String. So two BigInts that are EQUAL BY VALUE but reached by
     /// DIFFERENT arithmetic MUST produce byte-IDENTICAL leaves, else they'd be distinct map/set keys and
@@ -9712,6 +9864,58 @@ mod tests {
         op_drop(hp2);
         op_drop(hp3);
         assert_eq!(live_object_count(), before, "no leak across the large-value ops");
+    }
+
+    /// DESIGN VALIDATION for the pending BigInt ESCAPE (B3c): a runtime BigInt crossing the host boundary
+    /// can REUSE the existing codec `KIND_INT` leaf (`DocLeaf::Int`, sign + big-endian magnitude) — it is
+    /// ALREADY arbitrary-precision (the magnitude is just bytes, NOT i64-bounded), matching the compiler's
+    /// `IntValue { negative, magnitude: Vec<u8> }`. So the escape needs NO new wire tag and NO
+    /// two's-complement form (the spec's "awaits the two's-complement encoding" note is over-conservative
+    /// for the value-encode path) — only a `Shape::BigInt` walk arm that reads the `Big`'s sign + BE
+    /// magnitude into a `DocLeaf::Int`. This test proves the reuse: build a >i64 `Big`, emit it as a
+    /// KIND_INT leaf the way that arm would, and confirm the serialized doc's leaf bytes are the exact
+    /// sign + big-endian magnitude (round-tripping to the same value). Guards the finding so B3c is a
+    /// runtime one-liner, not a wire-format change.
+    #[test]
+    fn bigint_escape_reuses_kind_int_leaf_arbitrary_width() {
+        reset();
+        // A large multi-limb BigInt: i64::MAX² ≈ 2^126 (well beyond any fixed-width int).
+        let max = bigint::Big::from_i64(i64::MAX);
+        let big = max.mul(&max);
+        // Extract (sign, BIG-ENDIAN magnitude) the way a `Shape::BigInt` encode arm would — from the
+        // canonical sign-magnitude bytes `[sign][LE mag…]`: drop the sign, reverse to BE, strip leading 0s.
+        let sm = big.to_sign_magnitude_bytes();
+        let neg = sm[0] != 0;
+        let mut be_mag: Vec<u8> = sm[1..].iter().rev().copied().collect();
+        while be_mag.first() == Some(&0) {
+            be_mag.remove(0);
+        }
+        // Build a single-int doc via the existing DocLeaf::Int (exactly what int_leaf produces, but with a
+        // >i64 magnitude — proving the leaf is not i64-bounded).
+        let mut b = DocBuilder::default();
+        let leaf = {
+            b.leaves.push(DocLeaf::Int(neg, be_mag.clone()));
+            (b.leaves.len() - 1) as u32
+        };
+        let root = b.atom(leaf);
+        let doc = b.finish(root);
+        // Decode the leaf back: header(8) · leaf_count(1) · [KIND · LEB(len) · mag]. KIND 0 = pos, 3 = neg.
+        assert_eq!(doc[8], 1, "one leaf");
+        let kind = doc[9];
+        assert_eq!(kind, if neg { 3 } else { 0 }, "KIND_INT sign matches (0 pos / 3 neg)");
+        let len = doc[10] as usize;
+        let decoded_mag = &doc[11..11 + len];
+        assert_eq!(decoded_mag, &be_mag[..], "the >i64 magnitude round-trips through KIND_INT verbatim");
+        // Reconstruct the value from the decoded (sign, BE magnitude) and confirm it equals `big`.
+        let mut recon = bigint::Big::zero();
+        let base = bigint::Big::from_i64(256);
+        for &byte in decoded_mag {
+            recon = recon.mul(&base).add(&bigint::Big::from_i64(byte as i64));
+        }
+        if neg {
+            recon = bigint::Big::zero().sub(&recon);
+        }
+        assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "KIND_INT leaf reconstructs the exact BigInt");
     }
 
     #[test]
@@ -12882,6 +13086,48 @@ mod tests {
         assert_eq!(live_nodes(), before, "eq test reclaimed all nodes");
     }
 
+    /// TAGLESS invariant (the spec's determinism "no-type-tag" principle, duvet-annotated `@b470dd82`):
+    /// the runtime stores only STRUCTURE + DATA, never a value's TYPE, so `champ_eq`/`champ_hash`/
+    /// `champ_key_cmp` compare RAW BYTES + arity — they physically CANNOT distinguish two values of
+    /// DIFFERENT types that happen to share the same raw bytes and (zero) arity. A boxed Int and a Bytes
+    /// leaf holding the Int's little-endian bytes are therefore champ_eq + hash-equal + cmp-Equal. This is
+    /// not a bug — it is WHY keeping a map/set's keys HOMOGENEOUS is the COMPILER's obligation (the runtime
+    /// can't enforce it), and WHY the byte-hash is storage-transparent. Pinning it guards against anyone
+    /// accidentally adding a type discriminator to the comparison path (which would break byte-hash
+    /// transparency + the map/set key contract for a compiler that relies on this).
+    #[test]
+    fn champ_eq_is_tagless_same_raw_different_kind_is_equal() {
+        reset();
+        let before = live_nodes();
+        // A boxed Int (outside the fixnum window → a real heap leaf with 8 LE raw bytes, zero handles).
+        let n: i64 = 0x0102_0304_0506_0708;
+        let int_leaf = op_box_int(n);
+        assert!(!is_immediate(int_leaf), "the value is boxed (heap leaf), not an inline fixnum");
+        // A Bytes leaf holding those exact 8 little-endian bytes — same raw, same (zero) arity, DIFFERENT
+        // type. The runtime has no tag, so it is indistinguishable from the Int leaf.
+        let bytes_leaf = op_bytes_alloc(8);
+        for k in 0..8u32 {
+            op_bytes_set(bytes_leaf, k, ((n >> (8 * k)) & 0xff) as u32);
+        }
+        assert!(
+            champ_eq(int_leaf, bytes_leaf),
+            "tagless: an Int and a same-raw Bytes leaf are champ_eq (no type tag to tell them apart)"
+        );
+        assert_eq!(
+            champ_hash(int_leaf),
+            champ_hash(bytes_leaf),
+            "…and hash identically (byte-hash is storage/type-transparent)"
+        );
+        assert_eq!(
+            champ_key_cmp(int_leaf, bytes_leaf),
+            core::cmp::Ordering::Equal,
+            "…and compare Equal — hence homogeneous keys are the COMPILER's responsibility"
+        );
+        op_drop(int_leaf);
+        op_drop(bytes_leaf);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn champ_eq_and_cmp_descend_nested_compounds_via_lazy_worklist() {
         reset();
@@ -15690,6 +15936,118 @@ mod tests {
         bolero::check!()
             .with_type::<Vec<u8>>()
             .for_each(|desc| assert_encode_is_total(desc));
+    }
+
+    // ── The eq ⟹ hash ⟹ cmp contract over ARBITRARY heterogeneous compound trees ────────────────
+    // EVERY map/set key rests on: structurally-equal values (distinct nodes) are `champ_eq`, hash
+    // IDENTICALLY (`champ_hash`), and compare Equal (`champ_key_cmp`) — a violation silently corrupts keys
+    // (a lookup misses its own entry, or two distinct keys collapse). The fixed-shape tests
+    // (`champ_hash_matches_naive_reference`, `champ_key_cmp_is_consistent_with_eq`) cover hand-built
+    // shapes; the map/set fuzzes cover int/string/tuple keys. NONE fuzzes the contract over RANDOM nested
+    // MIXED structures (tuple-of-sum-of-bytes-of-float …). Build a tree from random bytes TWICE (distinct
+    // nodes) and assert the three agree; also that a byte-DIFFERENT tree is not-eq with consistent cmp.
+
+    /// Build a compound value tree from `bytes` (a cursor into them), bounded by `budget` nodes and
+    /// `depth`. Deterministic: the same byte prefix builds the same structure, so two calls give
+    /// structurally-identical, distinct-node twins. Returns (handle, bytes_consumed_advances via the
+    /// shared cursor). Leaves when out of budget/bytes/depth.
+    fn build_rand_value(bytes: &[u8], cur: &mut usize, budget: &mut u32, depth: u32) -> Handle {
+        let tag = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        // A small scalar payload byte (deterministic from the stream).
+        let p = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        // Out of budget/depth → force a scalar leaf so the tree is finite.
+        let allow_compound = *budget > 2 && depth < 5;
+        *budget = budget.saturating_sub(1);
+        match tag % if allow_compound { 9 } else { 6 } {
+            0 => op_box_int(p as i64 - 128),        // small signed int (incl. negatives)
+            1 => op_box_bool(p & 1 == 0),
+            2 => op_arr_alloc(0),                   // unit (inline)
+            3 => op_str_new(alloc::format!("s{}", p % 7)), // one of a few strings (dedup/collision)
+            4 => {
+                // a small bytes leaf
+                let b = op_bytes_alloc((p % 4) as u32);
+                for i in 0..(p % 4) as u32 {
+                    op_bytes_set(b, i, (p.wrapping_add(i as u8)) as u32);
+                }
+                b
+            }
+            5 => op_box_float(((p % 5) as f64) - 2.0), // a few finite floats incl. negative
+            6 => {
+                // a 2-tuple of sub-values
+                let a = build_rand_value(bytes, cur, budget, depth + 1);
+                let b = build_rand_value(bytes, cur, budget, depth + 1);
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, b);
+                t
+            }
+            7 => {
+                // a sum with a single sub-value payload, disc in 0..3
+                let payload = build_rand_value(bytes, cur, budget, depth + 1);
+                op_sum_new((p % 3) as u32, payload)
+            }
+            _ => {
+                // a 3-tuple (records/wider products)
+                let a = build_rand_value(bytes, cur, budget, depth + 1);
+                let b = build_rand_value(bytes, cur, budget, depth + 1);
+                let c = build_rand_value(bytes, cur, budget, depth + 1);
+                let t = op_arr_alloc(3);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, b);
+                op_arr_set(t, 2, c);
+                t
+            }
+        }
+    }
+
+    #[test]
+    fn prop_eq_hash_cmp_contract_over_random_compound_trees() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            // Twin A and B: same bytes → structurally identical, DISTINCT nodes.
+            let (mut ca, mut cb) = (0usize, 0usize);
+            let (mut ba, mut bb) = (64u32, 64u32);
+            let a = build_rand_value(bytes, &mut ca, &mut ba, 0);
+            let b = build_rand_value(bytes, &mut cb, &mut bb, 0);
+            // (1) structurally-equal distinct-node twins: eq, hash-equal, cmp Equal.
+            assert!(champ_eq(a, b), "structurally-identical twins are champ_eq");
+            assert_eq!(champ_hash(a), champ_hash(b), "…and hash identically (the map-key contract)");
+            assert_eq!(champ_key_cmp(a, b), core::cmp::Ordering::Equal, "…and champ_key_cmp Equal");
+            // self-consistency: a value equals itself, hashes stably, cmp Equal to itself.
+            assert!(champ_eq(a, a));
+            assert_eq!(champ_hash(a), champ_hash(a));
+            assert_eq!(champ_key_cmp(a, a), core::cmp::Ordering::Equal);
+            // (2) a tree from DIFFERENT bytes: whenever champ_key_cmp says Equal, champ_eq must agree, and
+            // when not-Equal, champ_eq must be false — cmp and eq never disagree (order/eq consistency).
+            let mut flipped = bytes.clone();
+            if let Some(first) = flipped.first_mut() {
+                *first = first.wrapping_add(1); // perturb the shape/scalar
+            } else {
+                flipped.push(1);
+            }
+            let (mut cc, mut bc) = (0usize, 64u32);
+            let c = build_rand_value(&flipped, &mut cc, &mut bc, 0);
+            let cmp_ac = champ_key_cmp(a, c);
+            let eq_ac = champ_eq(a, c);
+            assert_eq!(
+                cmp_ac == core::cmp::Ordering::Equal,
+                eq_ac,
+                "champ_key_cmp Equal IFF champ_eq — order and equality must never disagree"
+            );
+            if eq_ac {
+                // if they did come out equal, the hash contract still holds.
+                assert_eq!(champ_hash(a), champ_hash(c), "eq ⟹ hash-equal (perturbed tree)");
+            }
+            // antisymmetry: cmp(a,c) is the reverse of cmp(c,a).
+            assert_eq!(cmp_ac.reverse(), champ_key_cmp(c, a), "champ_key_cmp is antisymmetric");
+            op_drop(a);
+            op_drop(b);
+            op_drop(c);
+            assert_eq!(live_nodes(), before, "no leak building/comparing random trees");
+        });
     }
 
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
