@@ -2485,3 +2485,80 @@
               (export mk)))
   (call   mk (: 0 Int64))
   (output (: 10 Int64)))
+
+; A SUM (Option/Result/user sum) result, and a fixed-shape COMPOUND result CONTAINING a variable-length
+; element (a tuple/record with a List/Map/Set inside), cross as `list<u8>` via the runtime `value-encode`
+; op against a compiler-baked shape DESCRIPTOR — the same walker a variable-length collection uses,
+; generalized. Previously only a scalar, a byte-rope, a FIXED-shape compound (static template), or a bare
+; List/Map/Set result crossed; a sum or a nested-collection compound declined "no scalar host-boundary
+; representation". This holds on BOTH the direct-call `call` result and the round-trip consumer result.
+
+(case "a closure whose CALL returns an Option crosses as the value form"
+  (doc    "`mk : () -> (-> Int64 (Option Int64))` returns `(Some (+ n 1))`; `call(handle, 5)` → `(: (Some 6)
+           (Option Int64))`. A SUM closure `call` result renders via the runtime `value-encode` descriptor
+           (the disc-switching walker), not a static template.")
+  (input  (do (def (mk) (fn ((: n Int64)) (Some (+ n 1))))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "a closure whose CALL returns a user sum crosses as the value form"
+  (doc    "A monomorphic user sum: `(type Dir (N) (S))`; `mk`'s closure returns `(N)` when `n>0` else `(S)`.
+           `call(handle, 5)` → `(: (N unit) Dir)` (a nullary variant carries a unit payload in the canonical
+           form). The value-encode walker switches on the runtime discriminant.")
+  (input  (do (type Dir (N) (S))
+              (def (mk) (fn ((: n Int64)) (if (> n 0) (N) (S))))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (N unit) Dir)))
+
+(case "a closure whose CALL returns a tuple CONTAINING a list"
+  (doc    "A fixed-shape compound whose element is VARIABLE-length has no static template, so it escapes via
+           the value-encode descriptor too: `mk`'s closure returns `(tuple (list n n+1) n)`. `call(handle, 5)`
+           → `(: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))`. The descriptor's Tuple node recurses into
+           the List element.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple (list n (+ n 1)) n)))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
+
+(case "round-trip: a consumer returns an Option built from the closure result"
+  (doc    "`mk` adds 1; `app : (own<t>, Int64) -> (Option Int64)` returns `(Some (g x))`. `app(handle, 5)` →
+           `g(5)` = 6, so `(: (Some 6) (Option Int64))`. A SUM consumer result on the round-trip path — the
+           value-encode descriptor, not a static template.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "round-trip: a consumer returns a Result (Err type pinned) from the closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Result Int64 Int64)` returns `(: (Ok (g x)) (Result Int64
+           Int64))` — the `Err` type is fixed by the annotation (an unconstrained `Err` type is genuinely
+           ambiguous and correctly declines). `app(handle, 7)` → `(: (Ok 14) (Result Int64 Int64))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (: (Ok (g x)) (Result Int64 Int64)))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: (Ok 14) (Result Int64 Int64))))
+
+(case "round-trip: a consumer returns a Result reaching BOTH variants"
+  (doc    "Both `Ok` and `Err` are reachable, so the `Result` type is fully determined WITHOUT an annotation:
+           `app` returns `(Ok (g x))` when `x>0` else `(Err 99)`. `app(handle, 7)` → `(: (Ok 7) (Result Int64
+           Int64))`. Confirms a genuinely two-variant sum consumer result renders.")
+  (input  (do (def (mk) (fn ((: n Int64)) n))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (> x 0) (Ok (g x)) (Err 99)))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: (Ok 7) (Result Int64 Int64))))
+
+(case "round-trip: a consumer returns a tuple CONTAINING a list built from the closure result"
+  (doc    "A nested-collection compound consumer result: `app` returns `(tuple (list x (g x)) x)`.
+           `app(handle, 5)` → `g(5)` = 6, so `(: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))`. The tuple's
+           List element crosses via the same value-encode descriptor (no static template for a variable
+           element).")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple (list x (g x)) x))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))

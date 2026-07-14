@@ -5083,6 +5083,21 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
         }
+        // A TUPLE/RECORD result whose value shape is renderable but which contains a VARIABLE-length element
+        // (a list/map/set, or a sum) — `runtime_value_form_template` returns `None` for it (no fixed-size
+        // static template), so it escapes via the same runtime `value-encode` walker as a collection. Wrap in
+        // a PARAMETRIC `Framed(<type-node>, …)` frame so the value form renders `(: (tuple …) (Tuple …))` /
+        // `(: (record …) (Record …))` with the element/field types observable. `shape_of` already recurses
+        // over the nested elements (a list element loops, a nested sum switches on its disc). A fixed-shape
+        // tuple/record (all scalar/byte/fixed-compound elements) still takes the cheaper static-template path
+        // (`runtime_value_form_template`), which the caller tries FIRST — this descriptor path is the fallback
+        // for the variable-shape case only.
+        crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
+            let type_node = type_node_of(ty)?;
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
+            Some(builder.encode(framed))
+        }
         _ => None,
     }
 }

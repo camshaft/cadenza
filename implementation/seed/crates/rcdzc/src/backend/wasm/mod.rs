@@ -1471,13 +1471,14 @@ fn emit_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -1961,13 +1962,14 @@ fn emit_multi_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -2294,13 +2296,14 @@ fn emit_mixed_closure_resource(
     let ret_descriptor =
         if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
             None
-        } else if matches!(
-            ret_ty.strip_nominal(),
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-        ) {
-            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         } else {
-            None
+            // Any OTHER machine-representable result the runtime `value-encode` walker can render — a
+            // variable-length collection (`List`/`Map`/`Set`), a SUM (`Option`/`Result`/a user sum), or a
+            // compound (tuple/record) CONTAINING a variable-length element — escapes as `list<u8>` via a
+            // compiler-baked shape DESCRIPTOR. `sum_shape_descriptor` returns `None` for a scalar (handled
+            // above) or an unrenderable shape, so this is a safe general fallback beyond the fixed
+            // List/Map/Set set. (A fixed-shape compound already took the cheaper static `ret_template` path.)
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
@@ -2657,13 +2660,11 @@ fn emit_distinct_sig_resource(
         let ret_descriptor =
             if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&ret_ty).is_some() {
                 None
-            } else if matches!(
-                ret_ty.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             } else {
-                None
+                // Any other value-encodable result (collection, sum, or compound-containing-collection) →
+                // the runtime `value-encode` descriptor path; `sum_shape_descriptor` returns `None` for a
+                // scalar or unrenderable shape. (A fixed-shape compound took the static `ret_template` path.)
+                crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             };
         let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
             0
@@ -3202,13 +3203,12 @@ fn emit_roundtrip_resource(
             if ret_is_bytes || ret_template.is_some() || closure_boundary_byte(&c.result).is_some()
             {
                 None
-            } else if matches!(
-                c.result.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
             } else {
-                None
+                // Any other value-encodable consumer result (a collection, a SUM — `Option`/`Result`/a user
+                // sum — or a compound containing a variable-length element) crosses as `list<u8>` via the
+                // runtime `value-encode` descriptor path. `sum_shape_descriptor` returns `None` for a scalar
+                // (handled above) or an unrenderable shape. (A fixed-shape compound took `ret_template`.)
+                crate::lower::sum_shape_descriptor(db, c.result.strip_nominal())
             };
         let consumer_result_byte =
             if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
@@ -3625,13 +3625,11 @@ fn emit_distinct_sig_roundtrip_resource(
                 || closure_boundary_byte(&e.result).is_some()
             {
                 None
-            } else if matches!(
-                e.result.strip_nominal(),
-                crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
-            ) {
-                crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
             } else {
-                None
+                // Any other value-encodable consumer result (a collection, a SUM, or a compound containing a
+                // variable-length element) → the runtime `value-encode` descriptor path. `sum_shape_descriptor`
+                // returns `None` for a scalar or unrenderable shape. (A fixed-shape compound took `ret_template`.)
+                crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
             };
             let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some()
             {
