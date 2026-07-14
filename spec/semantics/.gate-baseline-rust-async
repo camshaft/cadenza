@@ -1138,7 +1138,7 @@ todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct names bound to the same string key the same map entry
 todo	dividing quantities divides their dimensions
 todo	dropping an absent field from a record is rejected
-todo	dropping fields from a record leaves the remaining fields
+pass	dropping fields from a record leaves the remaining fields
 todo	each definition in a module registers a reachable export field
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
@@ -1150,7 +1150,7 @@ todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	extending a record adds a new field
+pass	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
 todo	host calls are observed in the order they were made
 todo	importing a name a module does not export is rejected
@@ -1170,7 +1170,7 @@ todo	membership of a present element is true
 todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
-todo	merging two records with disjoint fields unions their fields
+pass	merging two records with disjoint fields unions their fields
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negating a runtime Int64 overflows at Int64.min
@@ -1179,11 +1179,11 @@ todo	nested patterns with literals
 todo	ordering a string against an integer is a type error regardless of operand order
 todo	ordering an integer against a string is a type error
 todo	pattern matching over AST distinguishes forms
-todo	popping a field yields its value and the remaining record
+pass	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
 todo	projecting a record onto an absent field is rejected
-todo	projecting a record restricts it to the named fields
+pass	projecting a record restricts it to the named fields
 pass	projecting a record with a duplicate label is rejected
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
@@ -1271,7 +1271,7 @@ todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned comparison orders by magnitude, not by signed interpretation
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	updating a list index replaces that element, leaving others
-todo	updating a record field changes its type to the new value's
-todo	updating a record field replaces its value
+pass	updating a record field changes its type to the new value's
+pass	updating a record field replaces its value
 todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type
