@@ -53041,6 +53041,72 @@ mod cross_component_oracle {
         }
     }
 
+    // ------------------------------------------------------------------------------------------------
+    // U16 — a compound ARGUMENT crosses TO a peer (the inbound direction). U5/U6/U11 cross compound
+    // RESULTS out of a peer; here the CONSUMER builds a runtime tuple and passes it INTO the peer's op as
+    // the arg — it crosses as its u32 handle over the shared runtime, and the PROVIDER reads both fields.
+    // The collect-time wiring (`extern_abi_val_type` on a peer-bound op's PARAMS, host.rs) has existed
+    // since U5 but was never exercised end-to-end for an argument. Closes the "value crosses BOTH
+    // directions" gap for Transport B (no `value-decode` needed — a handle, not marshaled bytes).
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn u16_a_compound_argument_crosses_to_a_peer() {
+        use crate::testkit::parse;
+        // A (provider): `sum t = (. t 0) + (. t 1)` — TAKES a `(Tuple Int64 Int64)` and returns its sum,
+        // published as cadenza:adder/api. The provider READS a compound arg handed in as a handle.
+        let a = compile_provider(
+            "(do (def (sum (: t (Tuple Int64 Int64))) (+ (. t 0) (. t 1))) (export sum))",
+            "cadenza:adder/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&a).expect("the compound-arg provider validates");
+        }
+        // CONSUMER: builds the tuple `(x, x+1)` and passes it INTO the peer's `sum` op. main(9) =
+        // S.sum((9,10)) = 9 + 10 = 19 — the tuple crossed as a handle, read by the provider.
+        let src = "(do \
+            (effect S (op sum (-> (Tuple Int64 Int64) Int64))) \
+            (bind S \"cadenza:adder/api\") \
+            (def (main (: x Int64)) (host (S) (S.sum (tuple x (+ x 1))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("compound-arg consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("compound-arg consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U16] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: a,
+            interface: "cadenza:adder/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a compound argument crosses to a peer")
+        {
+            // The consumer built (9,10) and passed its handle to the peer; the peer read both fields and
+            // summed → 19. A COMPOUND ARGUMENT crossed the boundary (the inbound direction).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "19",
+                "a compound argument crosses to a peer as a shared handle and is read there"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("compound-argument run trapped: {t}"),
+        }
+    }
+
     /// Substring search over bytes (dependency-free) — used to assert a component embeds an import name.
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)

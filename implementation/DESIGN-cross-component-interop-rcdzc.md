@@ -198,6 +198,15 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   a LIVE tuple (no premature drop between them), and the dead binding is reclaimed once at scope end →
   `main(9)=18` under wasmtime. Locks the corner as a regression test. 17 cross-component tests, gate 2169/0/0.
 
+- **U16 — a compound ARGUMENT crosses TO a peer (the inbound direction). ✅ DONE (`spec`, test-only).**
+  U5/U6/U11 cross compound RESULTS out of a peer; U16 closes the other direction — the CONSUMER builds a
+  runtime tuple and passes it INTO the peer's op, crossing as its `u32` handle over the shared runtime (NOT
+  marshaled bytes, so no `value-decode` needed), and the PROVIDER reads both fields. The collect-time wiring
+  (`extern_abi_val_type` on a peer-bound op's PARAMS, `host.rs`) has existed since U5 but was never exercised
+  end-to-end for an argument. Test `u16_*`: provider `sum t = (. t 0)+(. t 1)` over `cadenza:adder/api`,
+  consumer `(host (S) (S.sum (tuple x (+ x 1))))` → `main(9)=sum((9,10))=19` under wasmtime. Completes the
+  "value crosses BOTH directions" story for Transport B. 18 cross-component tests, gate 2173/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
