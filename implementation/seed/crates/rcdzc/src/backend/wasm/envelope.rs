@@ -205,7 +205,7 @@ fn assemble_bare(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
 
 /// The PROVIDER shape (X4b, `DESIGN-cross-component-interop-rcdzc.md`): a component that publishes its
 /// scalar boundary exports as members of a NAMED INTERFACE INSTANCE `iface` (`cadenza:pkg/iface`), so a
-/// peer consumer's `(extern "iface" (op …) …)` binds to it. Identical to [`assemble_bare`] through the
+/// peer consumer's `(effect …)` `(bind "iface")` binds to it (the effects-unified surface, U2). Identical to [`assemble_bare`] through the
 /// canon-lift (embed core, instantiate, one functype + alias + lift per export), but instead of exporting
 /// each lifted func at TOP LEVEL, it bundles them into a COMPONENT INSTANCE (a component-instance
 /// export-items section) and exports THAT one instance under the interface name. SCOPE: scalar/unit
@@ -3134,6 +3134,7 @@ pub fn assemble_mixed_closure_resource_borrow(
         &[],
         &[],
         None,
+        None,
     )
 }
 
@@ -3164,6 +3165,10 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
     // A NESTED fixed-shape compound tuple arg's recursive field shape (mints inner `tuple<…>` types by index).
     // `None` = an all-scalar tuple (the flat `tuple_arg_bytes` path). Only the multi-export path threads this.
     tuple_shape: Option<&[TupleFieldShape]>,
+    // The N-COMPOUND-ARGS override (see [`assemble_closure_resource_borrow_tuple`]): `Some(slots)` mints one
+    // `tuple<…>` group per tuple slot (in arg order) before the shared `call` functype, subsuming the
+    // single-tuple inputs. `None` reproduces the single-tuple/scalar path byte-for-byte.
+    call_arg_slots: Option<&[ArgSlot]>,
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -3304,7 +3309,18 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
             own_item(1)
         });
         let call_own_ty = (2 + 2 * nmk) as u32;
-        if let Some(shape) = tuple_shape {
+        if let Some(slots) = call_arg_slots {
+            // N-COMPOUND-ARGS: mint each tuple slot's type(s) starting at 3+2*nmk (after the handle), in arg
+            // order; the slot-model `call` functype references each by index.
+            let mut next_type = 3 + 2 * nmk as u32;
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
+            items.extend_from_slice(&closure_call_functype_slots(
+                call_own_ty,
+                slots,
+                &tup_idxs,
+                result_byte,
+            ));
+        } else if let Some(shape) = tuple_shape {
             let mut next_type = 3 + 2 * nmk as u32;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
             items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
@@ -3332,8 +3348,10 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
             items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
         }
         // scalar call = own + functype (2); flat tuple = own + tuple + functype (3); nested = own +
-        // nested-count tuple types + functype.
-        let n_call_types = if let Some(shape) = tuple_shape {
+        // nested-count tuple types + functype; N-compound = own + all tuple-slot types + functype.
+        let n_call_types = if let Some(slots) = call_arg_slots {
+            1 + call_arg_tuple_type_count(slots) as usize + 1
+        } else if let Some(shape) = tuple_shape {
             1 + nested_tuple_type_count(shape) as usize + 1
         } else if tuple_arg_bytes.is_some() {
             3
@@ -3357,7 +3375,9 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
         }
         // A TUPLE arg mints extra defined type(s) before the call functype, so the call functype (and every
         // plain functype after it) shifts: a FLAT tuple by +1, a NESTED tuple by `nested_tuple_type_count`.
-        let tuple_shift: usize = if let Some(shape) = tuple_shape {
+        let tuple_shift: usize = if let Some(slots) = call_arg_slots {
+            call_arg_tuple_type_count(slots) as usize
+        } else if let Some(shape) = tuple_shape {
             nested_tuple_type_count(shape) as usize
         } else if tuple_arg_bytes.is_some() {
             1
@@ -3386,6 +3406,7 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
             tuple_prefix_bytes,
             tuple_suffix_bytes,
             tuple_shape,
+            call_arg_slots,
         ),
     ));
     out.extend_from_slice(&section(
@@ -3468,6 +3489,7 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
         &[],
         &[],
         None,
+        None,
     )
 }
 
@@ -3492,6 +3514,9 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
     // A NESTED fixed-shape compound tuple arg's recursive field shape (mints inner `tuple<…>` types by index).
     // `None` = an all-scalar tuple (the flat `tuple_arg_bytes` path). Only the multi-export path threads this.
     tuple_shape: Option<&[TupleFieldShape]>,
+    // The N-COMPOUND-ARGS override: `Some(slots)` mints one `tuple<…>` group per tuple slot (in arg order)
+    // before the shared `list<u8>` result on each side. `None` reproduces the single-tuple/scalar path.
+    call_arg_slots: Option<&[ArgSlot]>,
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -3621,14 +3646,29 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
         // For a TUPLE arg, mint `tuple<…>` (3+2N) before `list<u8>` + the call functype. A NESTED tuple mints
         // its inner types first (bottom-up), so the block adds `nested_tuple_type_count` tuple types + list +
         // functype; a flat tuple adds 1 + list + functype (3); a scalar arg list + functype (2).
-        let n_call_types = if let Some(shape) = tuple_shape {
+        let n_call_types = if let Some(slots) = call_arg_slots {
+            call_arg_tuple_type_count(slots) as usize + 2
+        } else if let Some(shape) = tuple_shape {
             nested_tuple_type_count(shape) as usize + 2
         } else if tuple_arg_bytes.is_some() {
             3
         } else {
             2
         };
-        if let Some(shape) = tuple_shape {
+        if let Some(slots) = call_arg_slots {
+            // N-COMPOUND-ARGS: mint each tuple slot's type(s) starting at 3+2*nmk (in arg order), then
+            // `list<u8>`, then the slot-model list-result functype.
+            let mut next_type = 3 + 2 * nmk as u32;
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
+            let list_ty = next_type;
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_functype_slots(
+                call_own_ty,
+                slots,
+                &tup_idxs,
+                list_ty,
+            ));
+        } else if let Some(shape) = tuple_shape {
             let mut next_type = 3 + 2 * nmk as u32;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
             let list_ty = next_type; // the `list<u8>` result type sits right after the tuple type(s)
@@ -3677,7 +3717,9 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
         }
         // A TUPLE arg minted extra defined type(s) before the call functype, so the call functype (and every
         // plain functype after it) shifts: a FLAT tuple by +1, a NESTED tuple by its `nested_tuple_type_count`.
-        let tuple_shift: usize = if let Some(shape) = tuple_shape {
+        let tuple_shift: usize = if let Some(slots) = call_arg_slots {
+            call_arg_tuple_type_count(slots) as usize
+        } else if let Some(shape) = tuple_shape {
             nested_tuple_type_count(shape) as usize
         } else if tuple_arg_bytes.is_some() {
             1
@@ -3711,6 +3753,7 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
             tuple_prefix_bytes,
             tuple_suffix_bytes,
             tuple_shape,
+            call_arg_slots,
         ),
     ));
     out.extend_from_slice(&section(
@@ -3760,6 +3803,7 @@ fn resource_inner_component_multi_closure_bytes_borrow(
         &[],
         &[],
         None,
+        None,
     )
 }
 
@@ -3769,6 +3813,9 @@ fn resource_inner_component_multi_closure_bytes_borrow(
 /// tuple + list + functype (4 types, vs the scalar-arg handle + list + functype = 3). A running type counter
 /// keeps both shapes consistent (the exported-resource index R absorbs the extra import-side type). `None` =
 /// the scalar-arg path (byte-identical).
+///
+/// `call_arg_slots` is the N-COMPOUND-ARGS override: `Some(slots)` mints one `tuple<…>` group per tuple slot
+/// (in arg order) before the shared `list<u8>` result on each side.
 #[allow(clippy::too_many_arguments)]
 fn resource_inner_component_multi_closure_bytes_borrow_tuple(
     makes: &[ClosureMakeAbi],
@@ -3778,6 +3825,7 @@ fn resource_inner_component_multi_closure_bytes_borrow_tuple(
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
     tuple_shape: Option<&[TupleFieldShape]>,
+    call_arg_slots: Option<&[ArgSlot]>,
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -3788,12 +3836,23 @@ fn resource_inner_component_multi_closure_bytes_borrow_tuple(
     };
     // Emit the shared `call` type block (self handle wrapping `resource_ty`, [tuple type(s)], list<u8>,
     // functype) at `block_base`. Returns the emitted items + the CALL FUNCTYPE index + how many types the block
-    // added (3 scalar / 4 flat-tuple / 3 + nested-count for a NESTED tuple). Prefix/suffix scalar bytes
-    // surround the tuple when it sits AMONG scalar args.
+    // added (3 scalar / 4 flat-tuple / 3 + nested-count for a NESTED tuple; N-compound = handle + all tuple
+    // types + list + functype). Prefix/suffix scalar bytes surround the tuple when it sits AMONG scalar args.
     let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
         let handle_ty = block_base;
         let mut items = call_handle(resource_ty);
-        if let Some(shape) = tuple_shape {
+        if let Some(slots) = call_arg_slots {
+            let mut next_type = block_base + 1;
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
+            let list_ty = next_type;
+            items.extend_from_slice(&list_u8_defined_type());
+            next_type += 1;
+            items.extend_from_slice(&closure_call_list_functype_slots(
+                handle_ty, slots, &tup_idxs, list_ty,
+            ));
+            let added = 1 + call_arg_tuple_type_count(slots) + 2;
+            (items, next_type, added)
+        } else if let Some(shape) = tuple_shape {
             let mut next_type = block_base + 1;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
             let list_ty = next_type;
@@ -5527,6 +5586,7 @@ fn resource_inner_component_multi_closure_borrow(
         &[],
         &[],
         None,
+        None,
     )
 }
 
@@ -5536,6 +5596,9 @@ fn resource_inner_component_multi_closure_borrow(
 /// references it by index), so each side's `call` type block adds one extra type — which shifts the exported
 /// resource type index `R` up by 1 (an import-side tuple type sits between). `None` reproduces the scalar
 /// path byte-for-byte. Matches the outer lift in [`assemble_mixed_closure_resource_borrow_tuple`].
+///
+/// `call_arg_slots` is the N-COMPOUND-ARGS override: `Some(slots)` mints one `tuple<…>` group per tuple slot
+/// (in arg order) before the shared `call` functype on each side, subsuming the single-tuple inputs.
 #[allow(clippy::too_many_arguments)]
 fn resource_inner_component_multi_closure_borrow_tuple(
     makes: &[ClosureMakeAbi],
@@ -5546,6 +5609,7 @@ fn resource_inner_component_multi_closure_borrow_tuple(
     tuple_prefix_bytes: &[u8],
     tuple_suffix_bytes: &[u8],
     tuple_shape: Option<&[TupleFieldShape]>,
+    call_arg_slots: Option<&[ArgSlot]>,
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -5563,7 +5627,20 @@ fn resource_inner_component_multi_closure_borrow_tuple(
     let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
         let handle_ty = block_base; // the self-handle defined type's own index
         let mut items = call_handle(resource_ty);
-        if let Some(shape) = tuple_shape {
+        if let Some(slots) = call_arg_slots {
+            // N-COMPOUND-ARGS: mint each tuple slot's type(s) after the handle (in arg order), then the
+            // slot-model scalar-result functype. Added = handle + all tuple types + functype.
+            let mut next_type = block_base + 1;
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
+            items.extend_from_slice(&closure_call_functype_slots(
+                handle_ty,
+                slots,
+                &tup_idxs,
+                result_byte,
+            ));
+            let added = 1 + call_arg_tuple_type_count(slots) + 1;
+            (items, next_type, added)
+        } else if let Some(shape) = tuple_shape {
             let mut next_type = block_base + 1;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
             items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(

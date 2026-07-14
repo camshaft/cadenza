@@ -2483,6 +2483,63 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A RUNTIME STRING ROPE used as a MAP KEY is canonicalized (`bytes-compact`) at the insert/lookup CHAMP
+/// sites, so a rope key is found by its flat twin — the map/set KEY remainder of the value-eq rope fix.
+/// `Map.insert`/`Map.lookup` hash+compare the key with `champ_hash`/`champ_eq` (PHYSICAL bytes); a
+/// `String.concat` rope key has different bytes than its flat twin, so without the compact the lookup
+/// MISSES (returns None → -1). Two dimensions:
+///   (a) VALUE — insert under the rope key `(rep "hi" 3)` = "hixxx", look up with the flat literal
+///       "hixxx" → the stored 42 (was -1/None: a champ physical-byte miss). THIS is the miscompile fix.
+///   (b) LEAK-NEUTRAL — the key compaction must add NO leak: the rope-key program must leave the SAME
+///       live-object count as the byte-identical FLAT-key program (both build one map + one value box
+///       that this map path does not yet reclaim when `main` returns a scalar — a pre-existing map-
+///       temporary matter, orthogonal to this fix). Comparing rope-vs-flat cancels that shared baseline,
+///       so it fails iff the compact leaks (an un-dropped or double-freed compacted key leaf).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_string_rope_map_key_is_found_and_adds_no_leak() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[rope-key] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // Insert under an OWNED rope key `(rep "hi" 3)` = "hixxx"; look up with the flat literal "hixxx".
+    let rope_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) (rep \"hi\" 3) 42) \"hixxx\") \
+                       ((Some v) v) ((None) (- 0 1)))) (export main))";
+    let rope = compile_component(&crate::codec::encode(&parse(rope_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(42),
+        "a runtime rope map key must be found by its flat twin (was -1/None — a champ_hash/champ_eq \
+         physical-byte miss before the compiler compacts the key at the insert/lookup sites)"
+    );
+    let rope_live = rt.live_objects();
+
+    // The byte-identical FLAT-key baseline (no rope, no compaction): both keys are the literal "hixxx".
+    let flat_src = "(module m (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) \"hixxx\" 42) \"hixxx\") \
+                       ((Some v) v) ((None) (- 0 1)))) (export main))";
+    let flat = compile_component(&crate::codec::encode(&parse(flat_src))).expect("compile");
+    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
+    assert_eq!(rt_flat.call("main", &[]), Val::S64(42));
+    let flat_live = rt_flat.live_objects();
+
+    assert_eq!(
+        rope_live, flat_live,
+        "rope-key leak: the rope-key program leaves {rope_live} live cells vs the flat-key baseline's \
+         {flat_live} — the key compaction must be leak-NEUTRAL (an owned rope in, an owned flat leaf out, \
+         consumed by insert / dropped after the borrow-lookup), so any difference is a compact leak"
+    );
+}
+
 /// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
 /// ops. The runtime `bigint-add`/…/`to-i64-checked` BORROW their operands (`unbox_bigint` reads without
 /// consuming) and return a FRESH box (or a scalar), the `value-eq` shape — NOT the consuming
@@ -13401,6 +13458,71 @@ mod match_engine {
     }
 
     #[test]
+    fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
+        // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
+        // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
+        // `if` branches, `match` arms, `list` elements — carried only the structural-delta hints, leaving
+        // these two shapes as bare "X vs Y" renders. `peer_type_delta_hint` now tries both hints in BOTH
+        // orderings (a peer clash is symmetric — either side may be the Option / the unfinished call).
+        let option_note = "the value is optional; match it to handle the absent (`None`) case";
+        // `if`: an Option branch against its payload — in EITHER order.
+        let if_opt_first =
+            reject_full("(module m (def (f (: b Bool)) (if b (Some 5) 5)) (export f))")
+                .expect("if (Option Int64) vs Int64 rejects");
+        assert!(
+            if_opt_first.message.contains(option_note),
+            "if-branch Option-first carries the match-it hint: {}",
+            if_opt_first.message
+        );
+        let if_opt_second =
+            reject_full("(module m (def (f (: b Bool)) (if b 5 (Some 5))) (export f))")
+                .expect("if Int64 vs (Option Int64) rejects");
+        assert!(
+            if_opt_second.message.contains(option_note),
+            "if-branch Option-SECOND still carries the hint (symmetric): {}",
+            if_opt_second.message
+        );
+        // `match`: an Option arm body against a payload arm body.
+        let m =
+            reject_full("(module m (def (f (: n Int64)) (match n (0 (Some 5)) (_ 5))) (export f))")
+                .expect("match (Option Int64) vs Int64 rejects");
+        assert!(
+            m.message.contains(option_note),
+            "match-arm Option clash carries the hint: {}",
+            m.message
+        );
+        // `list`: an Option element against a payload element.
+        let list = reject_full("(module m (def (g) (list (Some 5) 5)) (export g))")
+            .expect("list (Option Int64) and Int64 rejects");
+        assert!(
+            list.message.contains(option_note),
+            "list-element Option clash carries the hint: {}",
+            list.message
+        );
+        // An UNAPPLIED FUNCTION branch against a scalar — names the missing application.
+        let fn_clash = reject_full(
+            "(module m (def (h x y) (+ x y)) (def (f (: b Bool)) (if b (h 1) 5)) (export f))",
+        )
+        .expect("if (-> _ Int64) vs Int64 rejects");
+        assert!(
+            fn_clash
+                .message
+                .contains("a function that hasn't been fully applied"),
+            "if-branch unapplied-fn clash names the missing application: {}",
+            fn_clash.message
+        );
+        // NO false hint on a plain cross-kind scalar clash (Int vs String) — the peer hint only fires for
+        // the Option/fn shapes, exactly as at the annotation site.
+        let plain = reject_full("(module m (def (f (: b Bool)) (if b 1 \"x\")) (export f))")
+            .expect("(if b 1 \"x\") rejects");
+        assert!(
+            !plain.message.contains(option_note) && !plain.message.contains("fully applied"),
+            "a plain scalar clash gets no Option/fn hint: {}",
+            plain.message
+        );
+    }
+
+    #[test]
     fn a_nested_compound_mismatch_drills_to_the_exact_leaf_path() {
         // When a differing record field / tuple position is ITSELF a same-shape nested compound, the hint
         // drills through the shared structure to the deepest SCALAR leaf and names the access PATH — "field
@@ -17302,6 +17424,21 @@ mod match_engine {
                 "(module m (def (g) (: 5 (List Int64 Int64))) (export g))",
                 "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
             ),
+            // The WIDTH-indexed integer/float constructors `Int`/`UInt`/`Float` take one WIDTH — `(Int)`
+            // (zero args) and `(Int 32 64)` (too many) are wrong arities that formerly read as the generic
+            // "found a non-type" (misleading — `Int` IS a type constructor, just missing its width).
+            (
+                "(module m (def (main) (: 5 (Int))) (export main))",
+                "`Int` is a WIDTH-indexed type constructor taking one width, but 0 arguments were supplied — write `(Int <width>)`, e.g. `Int64`",
+            ),
+            (
+                "(module m (def (main) (: 5 (UInt))) (export main))",
+                "`UInt` is a WIDTH-indexed type constructor taking one width, but 0 arguments were supplied — write `(UInt <width>)`, e.g. `UInt64`",
+            ),
+            (
+                "(module m (def (main) (: 5 (Int 32 64))) (export main))",
+                "`Int` is a WIDTH-indexed type constructor taking one width, but 2 arguments were supplied — write `(Int <width>)`, e.g. `Int64`",
+            ),
         ] {
             let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
             assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
@@ -17323,6 +17460,15 @@ mod match_engine {
                 |d| !d.message.contains("takes") && !d.message.contains("requires a type")
             ),
             "the correct arity `(List Int64)` raises no arity/type fault: {ok:?}"
+        );
+        // The correct `(Int 64)` width application raises no arity fault either (it is `Int64`).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (: 5 (Int 64))) (export main))"
+            )))
+            .iter()
+            .all(|d| !d.message.contains("WIDTH-indexed")),
+            "the correct arity `(Int 64)` raises no width-ctor arity fault"
         );
         let lit = reject_full("(module m (def (g (: n 5)) n) (export g))")
             .expect("a literal annotation rejects");
@@ -25145,6 +25291,50 @@ mod match_engine {
                 "a valid parametric/recursive/known variant payload must compile: {ok}"
             );
         }
+    }
+
+    /// A `(Record (field Type)…)` PARAMETER ANNOTATION whose field TYPE is unknown — `(: r (Record (x
+    /// Nonesuch)))` — reports ONLY the bad type `Nonesuch`, not the field LABEL `x`. `param_annotation_faults`
+    /// used to `collect` the whole record type expression as a VALUE, mis-resolving the label `x` as an
+    /// unbound NAME (a misleading "unbound name `x`") alongside the real "unbound name `Nonesuch`". Now it
+    /// uses the record-aware type-position split (the same `push_payload_type_positions` /
+    /// `validate_type_position` the variant-payload check uses), which skips field labels and validates only
+    /// the field TYPES.
+    #[test]
+    fn an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (def (g (: r (Record (x Nonesuch)))) r) (export g))",
+            // nested: the deep field type is the only fault, no labels flagged.
+            "(module m (def (g (: r (Record (a (Record (b Nonesuch)))))) r) (export g))",
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0101")
+                        && d.message.contains("`Nonesuch`")),
+                "the unknown field type is named: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            // The field LABELS (`x` / `a` / `b`) must NOT be reported unbound — they are labels, not values.
+            assert!(
+                !diags.iter().any(|d| d.message.contains("unbound name `x`")
+                    || d.message.contains("unbound name `a`")
+                    || d.message.contains("unbound name `b`")),
+                "a record-type field LABEL must not be reported unbound: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        // NO false positive: a well-formed record annotation compiles clean.
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: r (Record (x Int64) (y Bool)))) r) (export g))"
+            )))
+            .iter()
+            .any(|d| d.severity == crate::abi::Severity::Error),
+            "a well-formed record parameter annotation is clean"
+        );
     }
 
     #[test]
@@ -51043,6 +51233,101 @@ mod cross_component_oracle {
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("compound-over-effects run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U6 — BOTH SIDES FROM SOURCE over the effects surface. The full payoff of the unification: no
+    // hand-built peer at all. A source PROVIDER `(def (pair (: x Int64)) (tuple x x)) (export pair)`
+    // compiled with component-name `cadenza:pairs/api` publishes a compound-returning interface (routes to
+    // `assemble_provider_runtime`); a source CONSUMER performs `(host (P) (. (P.pair x) 0))` on a peer-bound
+    // effect (routes to `assemble_extern_runtime`). Composed via run_with_peers over ONE shared runtime →
+    // the tuple crosses as a handle, both sides Cadenza source. The provider path never used `extern` (just
+    // `--component-name` + normal exports), so it survived U4; U6 wires it to the effects-surface consumer.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a Cadenza SOURCE `src` (s-expr) as a PROVIDER publishing its exports under `iface` — the
+    /// `component-name` request artifact (X4b), the same path `cdz compile --component-name` drives.
+    fn compile_provider(src: &str, iface: &str) -> Vec<u8> {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        use crate::testkit::parse;
+        let ast = crate::codec::encode(&parse(src));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "provider", ast),
+                    crate::cli::component_name_artifact(iface),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        out.artifact(Target::Wasm.artifact_kind())
+            .unwrap_or_else(|| {
+                panic!("provider compiles: {:?}", out.diagnostics);
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn u6_both_sides_from_source_a_compound_crosses_the_effects_surface() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): builds the runtime tuple `(x, x)` and publishes it as `cadenza:pairs/api`.
+        let provider = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("source provider validates");
+        }
+        // CONSUMER (source): the U5 consumer — a peer-bound effect P returning a Tuple, performed + projected.
+        let src = "(do \
+            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:pairs/api\") \
+            (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U6] runtime wasm not found; skipping");
+            return;
+        };
+        // The provider imports the SAME runtime the consumer does — `run_with_peers` binds one instance into
+        // both (X5a), so the handle the provider mints is meaningful in the consumer. A component's import
+        // names are embedded as UTF-8, so the runtime import name appears verbatim in the bytes.
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the source provider imports the value-heap runtime (it builds a compound)"
+        );
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("both-sides-from-source compound crossing")
+        {
+            // The SOURCE provider's `pair(9)` built (9,9) on the shared heap; the SOURCE consumer read
+            // element 0 → 9. Two Cadenza source files exchange a COMPOUND over the effects surface.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "9",
+                "both sides from source exchange a compound over the effects surface"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("both-sides-from-source run trapped: {t}"),
         }
     }
 }

@@ -288,6 +288,26 @@
               (handle Bail 0 ((bail (n) s n)) (a 5))) (export main)))
   (output (: 99 Int64)))
 
+(case "an abortive perform under THREE nested handlers abandons the two resumptive frames above it"
+  (doc    "The abortive class composed with DEEP nesting: an abort fires inside a body that also performs two
+           OTHER effects (`A`, `B`) discharged by enclosing resumptive handlers. `(+ (A.a) (+ (B.b)
+           (Bail.bail 99)))` under `handle A … (handle B … (handle Bail …))`: `A.a` resumes (=1), `B.b`
+           resumes (=2), then `Bail.bail 99` — a NON-resuming arm — ABANDONS the pending `(+ (A.a) (+ (B.b)
+           …)))` frames and yields the arm value 99 as the whole handle's value (NOT 1+2+99). Pins that a
+           non-local exit unwinds past the resumptive frames of OTHER, differently-effect handlers stacked
+           above it — the abort is the value of the outermost handle, and the intervening resumptive
+           computations (already run for their effect) do not observe it.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 1 ((a (u) s (resume s s)))
+                (handle B 2 ((b (u) s (resume s s)))
+                  (handle Bail 0 ((bail (n) s n))
+                    (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
+  (output (: 99 Int64)))
+
 (case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
   (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
            abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
@@ -907,6 +927,20 @@
                 (match (Look.find 41) ((Some v) v) (None 0)))) (export main)))
   (output (: 42 Int64)))
 
+(case "a TUPLE-returning operation resumes a pair built from the handler state, then projected"
+  (doc    "An operation whose declared RESULT is a `(Tuple Int64 Int64)`, resumed with a pair BUILT from the
+           handler state. `P.pair : Unit -> (Tuple Int64 Int64)`; the arm resumes `(tuple s (+ s 1))` — a
+           pair of the current state and its successor. Seeded 5, `(P.pair)` yields `(5, 6)`, and `(. (P.pair)
+           1)` projects the second element, 6. Pins that a compound (tuple) resume value built from the
+           handler state crosses the pure one-hole fold and is projectable — the tuple companion of the
+           sum-result case above, the shape of a stateful op returning several derived values at once.")
+  (input  (do
+            (effect P (op pair (-> Unit (Tuple Int64 Int64))))
+            (def (main)
+              (handle P 5 ((pair (u) s (resume (tuple s (+ s 1)) s)))
+                (. (P.pair) 1))) (export main)))
+  (output (: 6 Int64)))
+
 (case "a handler whose STATE is a sum destructures it in the arm"
   (doc    "The handler's threaded STATE is a SUM (`Option Int64`), and the arm DESTRUCTURES it with a `match`
            to decide the resume value — the state-as-sum analogue of the scalar-countdown handlers. Seeded
@@ -921,6 +955,21 @@
               (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s)))))
                 (+ 1 (St.get)))) (export main)))
   (output (: 6 Int64)))
+
+(case "an arm chooses its resume value by an if on the handler state"
+  (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
+           different value per branch — a CONDITIONAL resume. `(get (u) s (if (> s 5) (resume 100 s) (resume
+           200 s)))`: the arm inspects its state `s` and resumes 100 when `s > 5`, else 200. Seeded 7,
+           `7 > 5` holds, so `(Ask.get)` resumes 100 and the body `(+ 1 (Ask.get))` = `(+ 1 100)` = 101.
+           Pins that the fold serves an arm that branches on its state to pick the resume value (each branch
+           a tail resume) — the scalar-`if` companion of the sum-state `match` arm above, the shape of a
+           handler that answers differently depending on the accumulated context.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 7 ((get (u) s (if (> s 5) (resume 100 s) (resume 200 s))))
+                (+ 1 (Ask.get)))) (export main)))
+  (output (: 101 Int64)))
 
 (case "a performed operation composes under a projection and a negation"
   (doc    "Witnesses that an effect operation composes under the STRICT one-operand forms — a tuple
@@ -1569,6 +1618,48 @@
             (def (main)
               (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
+
+(case "a recursive walk threads THREE nested handlers' states at once"
+  (doc    "Generalizes the two-nested-handler case to THREE: one recursive `walk` performs `A.a`, `B.b`, and
+           `C.c` at each step, under three nested stateful handlers, and each handler's state threads
+           INDEPENDENTLY — the merged effect context carries THREE distinct slots (a shared per-effect slot
+           would clobber on re-entry). Each handler hands back `s` and threads `s + 1`: seeded A=100, B=200,
+           C=300, over `(walk 2)`, the `A.a` reads are 100, 101 (sum 201), the `B.b` reads 200, 201 (401),
+           the `C.c` reads 300, 301 (601), so the total is `201 + 401 + 601` = 1203. Pins that effect-context
+           monomorphization scales past two effects — N handlers over one recursive walk thread N distinct
+           states — the shape of a self-hosting pass folding several pieces of context (a name counter, a
+           diagnostics list, a symbol table) at once. Identical on both backends.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect C (op c (-> Unit Int64)))
+            (def (walk (: n Int64))
+              (if (= n 0)
+                  0
+                  (+ (A.a) (+ (B.b) (+ (C.c) (walk (- n 1)))))))
+            (def (main)
+              (handle A 100 ((a (u) s (resume s (+ s 1))))
+                (handle B 200 ((b (u) s (resume s (+ s 1))))
+                  (handle C 300 ((c (u) s (resume s (+ s 1))))
+                    (walk 2))))) (export main)))
+  (output (: 1203 Int64)))
+
+(case "an inner handler's INIT state is computed by performing an enclosing effect"
+  (doc    "The seed of an inner handler is itself a PERFORM of an OUTER effect — the two handlers compose
+           through the init position, not just the body. `(handle Seed 0 ((s (u) t (resume 50 t))) (handle
+           Ask (Seed.s) …))`: the inner `Ask` handler's INIT is `(Seed.s)`, discharged by the enclosing
+           `Seed` handler to 50. So `Ask` is seeded 50, and `(Ask.get)` (its arm resumes the state) reads 50.
+           Pins that a handler init is an ordinary strict expression the outer handler's fold threads — the
+           inner handler's starting state can be COMPUTED by an effect, the shape of a pass whose scratch
+           state is initialized from a queried piece of outer context.")
+  (input  (do
+            (effect Seed (op s (-> Unit Int64)))
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Seed 0 ((s (u) t (resume 50 t)))
+                (handle Ask (Seed.s) ((get (u) st (resume st st)))
+                  (Ask.get)))) (export main)))
+  (output (: 50 Int64)))
 
 (case "a mutually-recursive group threads two nested handlers' states at once"
   (doc    "The two-nested-handler state-threading of the case above, but over a MUTUALLY-RECURSIVE group

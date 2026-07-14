@@ -17581,6 +17581,117 @@ mod tests {
             .for_each(|ops| run_set_op_sequence(ops));
     }
 
+    // STRING-ELEMENT variant — a `Set String` (a deduplicated string collection: keyword sets, a
+    // visited-name set, a compiler's interned-symbol set). `run_set_op_sequence` uses only INT elements
+    // (immediate), so the arity-0 HEAP-BYTE-LEAF champ path — arity-0 raw-byte FNV `champ_hash` + a
+    // slot-hit raw-byte `champ_eq` — is unexercised for a SET. This is a DISTINCT path from both the
+    // int-set fuzzer (immediate elements) AND the string-MAP-key fuzzer (heap-byte leaf but STRIDE 2, a
+    // key paired with a value): a set is STRIDE 1, so its data-node layout, collision handling, and
+    // canonical dedup differ. Reuses `strkey_name`'s 8 flat names; keys built FLAT (`op_str_new`) — a
+    // rope element is the compiler's to `bytes-compact` before insert (champ_eq is physical-bytes by
+    // contract), out of scope. Same four properties the int-set fuzz checks.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum StrSetOp {
+        Insert { elem: u8 },
+        Remove { elem: u8 },
+        Fork,
+        DropForked,
+    }
+
+    fn run_strset_op_sequence(ops: &[StrSetOp]) {
+        let before = live_nodes();
+        let mut s = op_set_empty();
+        let mut reference: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeSet<String>)> = Vec::new();
+        for op in ops {
+            match *op {
+                StrSetOp::Insert { elem } => {
+                    let name = strkey_name(elem);
+                    s = op_set_insert(s, op_str_new(name.clone())); // consumes the element
+                    reference.insert(name);
+                }
+                StrSetOp::Remove { elem } => {
+                    let name = strkey_name(elem);
+                    let probe = op_str_new(name.clone());
+                    s = op_set_remove(s, probe); // BORROWS the element
+                    op_drop(probe); // we own the probe
+                    reference.remove(&name);
+                }
+                StrSetOp::Fork => {
+                    op_dup(s); // rc>1: the next mutation path-copies, leaving this snapshot intact
+                    forks.push((s, reference.clone()));
+                }
+                StrSetOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) size + membership over the whole small keyspace (present + absent).
+        assert_eq!(
+            op_set_size(s) as usize,
+            reference.len(),
+            "string-set size matches reference"
+        );
+        for k in 0..8u8 {
+            let name = strkey_name(k);
+            let probe = op_str_new(name.clone());
+            let got = op_set_contains(s, probe); // borrows
+            op_drop(probe);
+            assert_eq!(
+                got,
+                reference.contains(&name),
+                "string-set membership of {name:?} matches reference"
+            );
+        }
+        // (2) canonical shape: same contents ⇒ byte-identical to a fresh twin (what set dedup rests on).
+        let twin = {
+            let mut t = op_set_empty();
+            for name in &reference {
+                t = op_set_insert(t, op_str_new(name.clone()));
+            }
+            t
+        };
+        assert!(
+            champ_eq(s, twin),
+            "string-set equals a fresh twin of the same contents (canonical)"
+        );
+        assert_eq!(champ_hash(s), champ_hash(twin), "…and hashes identically");
+        op_drop(twin);
+        // (3) forked snapshots undisturbed by later mutation of `s` (aliasing safety on the string path).
+        for (h, snap) in &forks {
+            assert_eq!(
+                op_set_size(*h) as usize,
+                snap.len(),
+                "forked string-set snapshot size intact"
+            );
+            for name in snap {
+                let probe = op_str_new(name.clone());
+                let got = op_set_contains(*h, probe);
+                op_drop(probe);
+                assert!(got, "forked string-set snapshot elem {name:?} intact");
+            }
+        }
+        // (4) no leak / no double-free across the whole sequence.
+        op_drop(s);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole string-set sequence"
+        );
+    }
+
+    #[test]
+    fn prop_strset_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<StrSetOp>>()
+            .for_each(|ops| run_strset_op_sequence(ops));
+    }
+
     // COMPOUND-KEY variant — 2-tuple keys are the ≤2-handle nodes the inline-`handles` change (#22)
     // targets, so this is the MOST load-bearing shape for de-risking it: every insert/lookup builds a
     // tuple node (node + 2-elem handles), hashes it via the shallow-compound path, and champ_eq-compares
@@ -18377,6 +18488,147 @@ mod tests {
             op_drop(b);
             op_drop(c);
             assert_eq!(live_nodes(), before, "no leak building/comparing random trees");
+        });
+    }
+
+    // ── value-encode ITERATIVE vs RECURSIVE equivalence over RANDOM MIXED shapes ────────────────
+    // The escape's load-bearing correctness property is: the iterative production walk (`encode_value`,
+    // an explicit worklist — the walk the guest actually runs) produces byte-IDENTICAL output to the
+    // simple recursive reference (`encode_value_recursive`). Today that equivalence is differential-tested
+    // ONLY on int LISTS (`value_encode_iterative_matches_recursive_reference`, varied depth); every other
+    // shape (nested tuple/sum/record, mixed leaves) is guarded only by FIXED hand-built encode tests, not
+    // by the iterative-vs-recursive equivalence over VARIED shapes — exactly the nested AST shapes a
+    // self-hosting compiler's value-encode will hit. A worklist-management bug in the iterative walk
+    // (wrong child order, a mishandled Sum/Tuple frame, a pool-reuse aliasing error) that the recursive
+    // mirror would NOT have would slip through. This fuzzes that equivalence: build a random mixed value
+    // AND its matching descriptor together, then assert both walks agree byte-for-byte.
+
+    /// Build a random value AND its matching shape descriptor from one byte stream. Appends each node's
+    /// `Shape` to `table` and returns its index, so the value's node structure and the descriptor stay
+    /// aligned by construction. Shapes mirror `build_rand_value`'s producers (int/bool/unit/str/bytes/
+    /// float leaves + 2-tuple/sum/3-tuple compounds) — the ones with a settled canonical value form. Depth
+    /// is capped low (the recursive oracle overflows on deep values — that is the ITERATIVE walk's reason
+    /// to exist, tested separately by `value_encode_deep_recursive_value_does_not_overflow_the_stack`);
+    /// this targets shape VARIETY, not depth.
+    fn build_rand_value_and_shape(
+        bytes: &[u8],
+        cur: &mut usize,
+        budget: &mut u32,
+        depth: u32,
+        table: &mut Vec<super::Shape>,
+    ) -> (Handle, u32) {
+        use super::Shape as S;
+        let tag = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        let p = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        let allow_compound = *budget > 3 && depth < 4;
+        *budget = budget.saturating_sub(1);
+        // Push a shape and return its table index.
+        fn emit(t: &mut Vec<super::Shape>, s: super::Shape) -> u32 {
+            t.push(s);
+            (t.len() - 1) as u32
+        }
+        match tag % if allow_compound { 9 } else { 6 } {
+            0 => {
+                let h = op_box_int(p as i64 - 128);
+                (h, emit(table, S::Int))
+            }
+            1 => {
+                let h = op_box_bool(p & 1 == 0);
+                (h, emit(table, S::Bool))
+            }
+            2 => {
+                let h = op_arr_alloc(0); // unit
+                (h, emit(table, S::Unit))
+            }
+            3 => {
+                let h = op_str_new(alloc::format!("s{}", p % 7));
+                (h, emit(table, S::Str))
+            }
+            4 => {
+                let n = (p % 4) as u32;
+                let b = op_bytes_alloc(n);
+                for i in 0..n {
+                    op_bytes_set(b, i, (p.wrapping_add(i as u8)) as u32);
+                }
+                (b, emit(table, S::Bytes))
+            }
+            5 => {
+                let h = op_box_float(((p % 5) as f64) - 2.0);
+                (h, emit(table, S::Float))
+            }
+            6 => {
+                // 2-tuple. Reserve this node's table slot BEFORE recursing so children get later indices.
+                let ix = emit(table, S::Tuple(vec![0, 0]));
+                let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                table[ix as usize] = S::Tuple(vec![sa, sb]);
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, bch);
+                (t, ix)
+            }
+            7 => {
+                // Sum with a single payload, disc in 0..3. The descriptor's variant table must have an
+                // entry for the CHOSEN disc (the walk indexes `variants[disc]`); give it disc+1 variants,
+                // all pointing at the same payload shape (only the chosen one is read).
+                let disc = (p % 3) as usize;
+                let ix = emit(table, S::Sum(vec![]));
+                let (payload, sp) =
+                    build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let variants: Vec<(String, u32)> =
+                    (0..=disc).map(|d| (alloc::format!("V{d}"), sp)).collect();
+                table[ix as usize] = S::Sum(variants);
+                (op_sum_new(disc as u32, payload), ix)
+            }
+            _ => {
+                // 3-tuple.
+                let ix = emit(table, S::Tuple(vec![0, 0, 0]));
+                let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (cch, sc) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                table[ix as usize] = S::Tuple(vec![sa, sb, sc]);
+                let t = op_arr_alloc(3);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, bch);
+                op_arr_set(t, 2, cch);
+                (t, ix)
+            }
+        }
+    }
+
+    #[test]
+    fn prop_value_encode_iterative_matches_recursive_over_random_shapes() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            let mut table: Vec<super::Shape> = Vec::new();
+            let (mut cur, mut budget) = (0usize, 40u32);
+            let (v, root) = build_rand_value_and_shape(bytes, &mut cur, &mut budget, 0, &mut table);
+            let descriptor = super::Descriptor { table, root };
+            // Iterative production walk (what the guest runs).
+            let iter_doc = {
+                let mut b = DocBuilder::default();
+                encode_value(&descriptor, &mut b, &mut Vec::new(), v, descriptor.root)
+                    .map(|r| b.finish(r))
+            };
+            // Recursive reference over the SAME borrowed value + descriptor.
+            let rec_doc = {
+                let mut b = DocBuilder::default();
+                encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+                    .map(|r| b.finish(r))
+            };
+            assert_eq!(
+                iter_doc, rec_doc,
+                "iterative and recursive value-encode disagree on a random mixed value"
+            );
+            op_drop(v);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "value-encode borrows — no leak building/encoding a random value"
+            );
         });
     }
 

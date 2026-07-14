@@ -539,9 +539,10 @@ pub struct Db {
     pub effect_decls: Vec<EffectDecl>,
     /// The interface name this component publishes its exports under, when compiled AS A PROVIDER (X4b) —
     /// from the `component-name` compile-request artifact. `Some("cadenza:pkg/iface")` → `emit` wraps the
-    /// boundary exports as that named interface instance so a peer's `(extern …)` binds. `None` (the
-    /// common case) → exports cross as top-level component funcs (byte-identical to before). Set AFTER
-    /// `Db::load`/`load_linked` by the caller (`compile`), which reads the request artifact.
+    /// boundary exports as that named interface instance so a peer's `(effect …)` `(bind "cadenza:pkg/iface")`
+    /// binds (the effects-unified surface, U2). `None` (the common case) → exports cross as top-level
+    /// component funcs (byte-identical to before). Set AFTER `Db::load`/`load_linked` by the caller
+    /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
     /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
     /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping

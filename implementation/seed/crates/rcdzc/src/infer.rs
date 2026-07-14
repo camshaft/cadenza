@@ -864,12 +864,34 @@ fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
 /// the per-node core of [`type_ctor_arity_message`]. `None` if this node is not a `(Ctor arg…)` list, or
 /// the ctor is applied at its correct arity, or it is not a type constructor at all.
 fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String> {
+    // `cs.len() >= 1` (not `>= 2`): a ZERO-arg constructor application `(Int)` / `(List)` — the head with
+    // no arguments — is also a wrong arity, and the messages below name the missing argument. A bare atom
+    // (no list) is not an application, so it is excluded.
     let children = match db.ast.get(ty_expr) {
-        crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
+        crate::ast::Struct::List(cs) if !cs.is_empty() => cs.to_vec(),
         _ => return None,
     };
     let head = children[0];
     let supplied = children.len() - 1;
+    // A WIDTH-INDEXED integer/float type constructor — `(Int 64)` / `(UInt 8)` / `(Float 32)`. It takes
+    // exactly ONE argument, a compile-time WIDTH; `(Int)` / `(Int 32 64)` is a wrong arity. `reduce_ctor`
+    // rejects it → the generic `non_type_annotation_message` calls it "a non-type", misleading since `Int`
+    // IS a type constructor (just missing/over its width). Name the width requirement + the fix (spell the
+    // aliased `Int64` when the width is a plain natural, else `(Int <width>)`).
+    if let Some((name, placeholder)) = match crate::eval::meta_apply_of(db, head) {
+        Some(crate::resolved::Prim::IntCtor) => Some(("Int", "width")),
+        Some(crate::resolved::Prim::UIntCtor) => Some(("UInt", "width")),
+        Some(crate::resolved::Prim::FloatCtor) => Some(("Float", "width")),
+        _ => None,
+    } {
+        if supplied == 1 {
+            return None; // correct arity — a genuine width fault (non-natural width) surfaces elsewhere
+        }
+        return Some(format!(
+            "`{name}` is a WIDTH-indexed type constructor taking one width, but {supplied} arguments \
+             were supplied — write `({name} <{placeholder}>)`, e.g. `{name}64`"
+        ));
+    }
     // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
     // names read naturally (`List Elem`, `Map Key Value`).
     if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {
@@ -1021,10 +1043,31 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         out.push(Reject::coded(Code::TypeMismatch, msg).at(ty_expr));
         return;
     }
-    // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
-    // collect the operand's OWN faults (an unbound name → CDZ0101), and if none surfaced (a well-formed
-    // non-type: a literal, a compound, `(Int64 Int64)`), add an "expected a type" TypeMismatch (CDZ0203).
+    // The operand denotes a type → fine. Otherwise reject. A `(Record (name Type)…)` (or a container
+    // bearing one) needs the RECORD-AWARE type-position split: a field's NAME is a LABEL, not a value
+    // reference, so `collect`-ing the whole `(Record (x Nonesuch))` as a value mis-resolves the label `x`
+    // as an unbound NAME (a misleading "unbound name `x`") on top of the real "unbound name `Nonesuch`".
+    // `push_payload_type_positions` splits out each field's TYPE (skipping labels); `validate_type_position`
+    // checks each, keeping only a genuinely-unknown type name. This is the same machinery the variant-
+    // payload / effect-op type checks use — so a record-type annotation validates its field TYPES exactly
+    // as a variant payload's do, without a spurious label fault.
     if crate::eval::typeval_of(db, ty_expr).is_none() {
+        if crate::compile::is_record_bearing(db, ty_expr)
+            || db.ast.head_name(ty_expr) == Some("Record")
+        {
+            let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
+            crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
+            for (pos, params) in &positions {
+                crate::compile::validate_type_position(
+                    db,
+                    *pos,
+                    params,
+                    "a parameter's annotation",
+                    out,
+                );
+            }
+            return;
+        }
         let before = out.len();
         collect(db, ty_expr, out);
         if out.len() == before {
@@ -3922,6 +3965,26 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| sum_payload_mismatch_hint(first, other))
 }
 
+/// The message TAIL for a PEER-JOIN type clash — two `if` branches, two `match` arm bodies, two `list`
+/// elements — that must share one type but do not. A peer clash is SYMMETRIC (neither side is the fixed
+/// "expected" type, unlike an annotation/argument mismatch), so this first tries the structural-delta
+/// hints (record field-set / tuple arity / collection axis / sum payload — themselves order-tolerant),
+/// then the two DIRECTIONAL hints the annotation site carried but the join sites did not:
+/// `option_payload_mismatch_hint` (one side is `(Option T)`, the other its payload `T` — "match it to
+/// handle `None`") and `fn_not_applied_hint` (one side is an unapplied `(-> … T)` whose full application
+/// yields the other side — "apply it to N more arguments") — each tried in BOTH orderings, so whichever
+/// branch/arm/element is the Option wrapper or the unfinished call gets named. This brings the join sites
+/// to fix-parity with the annotation site's hint chain. Tail only, no mechanical `Fix`: a peer clash's
+/// repair (match the Option, finish the call, or retype a branch) is the author's choice, and the join
+/// sites keep their own one-shot INT-LITERAL→FLOAT retype fix for the numeric case.
+fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+    structural_delta_hint(first, other)
+        .or_else(|| option_payload_mismatch_hint(first, other))
+        .or_else(|| option_payload_mismatch_hint(other, first))
+        .or_else(|| fn_not_applied_hint(first, other))
+        .or_else(|| fn_not_applied_hint(other, first))
+}
+
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
 /// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
 /// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
@@ -5637,7 +5700,7 @@ fn check_application(
                     // one field's type, tuples of one position, a nested collection axis), name the specific
                     // differing sub-part instead of rendering two whole compounds — the join-site reuse of
                     // the annotation-mismatch per-member hints.
-                    let delta = structural_delta_hint(&first_ty, &et).unwrap_or_default();
+                    let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
                     let mut reject = Reject::coded(
                         code,
                         format!(
@@ -6896,7 +6959,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
-                let delta = structural_delta_hint(&then_ty, &else_ty).unwrap_or_default();
+                let delta = peer_type_delta_hint(&then_ty, &else_ty).unwrap_or_default();
                 let mut reject = Reject::coded(
                     code,
                     format!(
@@ -7417,7 +7480,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
-                        let delta = structural_delta_hint(&first_ty, &bt).unwrap_or_default();
+                        let delta = peer_type_delta_hint(&first_ty, &bt).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
