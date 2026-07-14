@@ -544,6 +544,7 @@ pass	a function-typed parameter with a matching Bool-returning argument is accep
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
+pass	a generic sum type constructor applied to a value is rejected
 pass	a generic sum whose payload NESTS the parameter escapes with the instantiated inner type
 pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
@@ -682,6 +683,7 @@ pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
+pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-arm constructor element over a runtime-built list
@@ -1255,6 +1257,7 @@ pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
 pass	a set threaded as a recursive accumulator dedups during accumulation
+pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a short-circuit connective threads a branch perform to the continuation
