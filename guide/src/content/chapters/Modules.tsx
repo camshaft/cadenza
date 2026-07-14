@@ -51,41 +51,28 @@ export default function Modules() {
         how it's computed.
       </P>
 
-      <H2>Composing across modules</H2>
-      <P>
-        Two modules, each with its own job, combine cleanly — a qualified name says exactly which piece
-        you mean, so there's never a question of whose <C>f</C> is whose:
-      </P>
-      <Runnable
-        source={`(def (main)
-  (do
-    (module Inc (def (f x) (+ x 1)))
-    (module Scale (def (g x) (* x 10)))
-    (Scale.g (Inc.f 4))))`}
-      />
-      <P>
-        <C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order — <C>(Inc.f (Scale.g 4))</C>{" "}
-        — and you'd get 41 instead; the names make the pipeline unambiguous either way.
-      </P>
-
-      <H2>Modules nest</H2>
+      <H2>Modules nest, and compose</H2>
       <P>
         A module can hold another module, so one file can carry a whole tree of scopes — much like a
-        module tree in Rust. You reach through the layers with the same dotted access, one name per
-        level. Here a <C>Geometry</C> module contains a <C>Square</C> module with an <C>area</C>:
+        module tree in Rust. That's also how you keep several related modules together: here a <C>Calc</C>{" "}
+        module groups an <C>Inc</C> and a <C>Scale</C>, each with its own job. You reach through the
+        layers with the same dotted access, one name per level, and a qualified name says exactly which
+        piece you mean — so there's never a question of whose <C>f</C> is whose:
       </P>
       <Runnable
         source={`(def (main)
   (do
-    (module Geometry
-      (module Square
-        (def (area s) (* s s))))
-    (Geometry.Square.area 5)))`}
+    (module Calc
+      (module Inc (def (f x) (+ x 1)))
+      (module Scale (def (g x) (* x 10))))
+    (Calc.Scale.g (Calc.Inc.f 4))))`}
       />
       <P>
-        <C>Geometry.Square.area 5</C> reads left to right — into <C>Geometry</C>, then <C>Square</C>,
-        then <C>area</C> — and gives <C>25</C>. It's the same field access as a record inside a record;
-        nesting modules is nothing new, because a module was a record all along.
+        <C>Calc.Inc.f 4</C> is 5, then <C>Calc.Scale.g 5</C> is <C>50</C> — each name read left to right,
+        into <C>Calc</C>, then the inner module, then the function. Swap the order —{" "}
+        <C>(Calc.Inc.f (Calc.Scale.g 4))</C> — and you'd get 41 instead; the qualified names make the
+        pipeline unambiguous either way. It's the same field access as a record inside a record: nesting
+        modules is nothing new, because a module was a record all along.
       </P>
 
       <Why tenet="A module is a record of its exports">

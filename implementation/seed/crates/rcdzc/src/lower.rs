@@ -2608,6 +2608,8 @@ fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
 /// NON-LINEAR pattern (a binder repeated, flat or nested) is CDZ0102 (via `check_pattern_linear`).
 ///
 //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A binding position — a `let` binder, a function or `fn` parameter — MUST accept an irrefutable pattern in place of a bare name, binding the names the pattern introduces to the corresponding sub-values of the bound value, exactly as the same pattern would in a single match arm over that value. A bare name and a wildcard are the trivial irrefutable patterns; a tuple pattern whose every element is itself irrefutable is irrefutable, matched recursively to any depth in the sense of *Patterns Compose*. A destructuring parameter MUST NOT change the function's arity — the parameter occupies one argument position and names its parts, so `(def (f (tuple a b)) …)` remains a single-argument function.
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
 //# A binding position has no alternative arm, so its pattern MUST be irrefutable — it MUST match every value of the bound value's type.
 //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
 //# A refutable pattern in a binding position — a constructor pattern of a multi-variant sum, a literal, or a length-constrained list pattern, none of which matches every value of its type — MUST be a compile-time error (`CDZ0210`), the same non-exhaustiveness the equivalent single-arm match would raise under *Matching Is Exhaustive Or Rejected*.
