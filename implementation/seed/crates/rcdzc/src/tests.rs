@@ -11536,6 +11536,81 @@ mod recursion {
             "go(10, 999, 0) = 10 * (999 & 255)"
         );
     }
+
+    #[test]
+    fn a_trapping_loop_invariant_in_the_condition_is_hoisted() {
+        // A loop-invariant CHECKED op — `(* n 2)`, a checked multiply (NOT trap-free) — sits in the loop
+        // CONDITION `(< i (* n 2))`, an ALWAYS-EVALUATED position (the exit check runs even for a 0-
+        // iteration loop). LICM hoists it out of the loop even though it can trap, because doing so is
+        // trap-EQUIVALENT: the condition evaluates `(* n 2)` on entry either way. The `(* n 2)`
+        // strength-reduces to `i64.shl` (cycle-21) + its overflow round-trip guard; the whole thing must
+        // appear BEFORE the loop, not inside. (A trapping invariant BURIED IN A BRANCH would stay put —
+        // the frontier restriction — but here it is in the always-run condition.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (go (: i Int64) (: n Int64) (: acc Int64)) \
+                       (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc)) \
+                     (def (f (: x Int64)) (go 0 x 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("go").expect("go");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("go compiles to a loop");
+        // The invariant `(* n 2)` → `i64.shl` is hoisted BEFORE the loop; none remains inside.
+        let shl_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64Shl))
+            .count();
+        let shl_inside = code[loop_ix..]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64Shl))
+            .count();
+        assert_eq!(
+            shl_before, 1,
+            "the invariant `(* n 2)` is hoisted (one `i64.shl` before the loop): {code:?}"
+        );
+        assert_eq!(
+            shl_inside, 0,
+            "no `(* n 2)` shift remains inside the loop body: {code:?}"
+        );
+
+        // VALUE + TRAP PARITY. go(0, 3, 0) sums i for i<6 = 0+1+2+3+4+5 = 15; n=0 runs 0 iterations → 0
+        // (no trap, `0*2` fits). The 0-iteration overflow case (n so large `n*2` overflows) is gate-
+        // verified in binding-and-control.sexp — the hoisted trapping multiply still traps on the entry
+        // condition check, exactly as it would in the loop.
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
+            15,
+            "go(0, 3, 0) sums i for i in [0,6)"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]),
+            0,
+            "n=0 runs zero iterations and does not trap"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
@@ -39090,6 +39165,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
+        // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
+        // `typeval_of` of its name fails — and using it as an annotation `(: c C)` used to CASCADE into a
+        // misleading "`C` is a value, not a type" (it IS a type, just broken, and the phrasing blames the
+        // annotation, not the real defect). The duplicate-variant CDZ0201 is the ONE primary; the
+        // consequent "is a value" is suppressed (the annotation name resolves to a declared type).
+        let src = "(module m (type C (Red) (Red)) (def (f (: c C)) 1) (export f))";
+        let errs: Vec<crate::abi::Diagnostic> =
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+        assert!(
+            errs.iter()
+                .any(|d| d.message.contains("more than once in sum `C`")),
+            "the duplicate-variant reject is present: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|d| d.message.contains("is a value, not a type")),
+            "no misleading 'C is a value, not a type' consequent: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVER-SUPPRESSION: a genuine VALUE misused as a type still says "is a value, not a type".
+        let val = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper 5) (def (f (: x helper)) x) (export helper))",
+        )));
+        assert!(
+            val.iter()
+                .any(|d| d.message.contains("`helper` is a value, not a type")),
+            "a value keeps its own message: {:?}",
+            val.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_sum_type_name_resolves_to_its_sum_type_in_type_position() {
         // The records-everywhere realization: `(type Option (Some Int64) None)` binds `Option` to a
         // synthesized RECORD whose `(meta t)` is the sum type-value. So `Option` used in a type
@@ -40001,6 +40114,85 @@ mod stage1 {
              `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if`/`match` chain needs \
              scope-skip coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls \
              {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
+    fn a_wide_list_pattern_resolves_element_binders_in_bounded_time() {
+        // REGRESSION (perf): `resolve::find_leading_binder_in_list_pattern` answered "does this `(list p…
+        // .. rest)` pattern bind `name`, and where?" by re-scanning the LEADING element positions from 0 on
+        // EVERY reference — positive to the binder's position, NEGATIVE (a prelude/outer name the pattern
+        // does not bind, e.g. `g`/`+`/`Int64`) over the WHOLE pattern. So a wide `(match xs ((list a0 … aN
+        // .. r) body) …)` destructure whose body references each binder was O(leading) per reference × O(N)
+        // references = O(N²) (measured: N=1600 ~140ms, ~4×/dbl, `find_leading_binder_in_list_pattern` ~37%
+        // self + its per-element path `Vec` alloc ~45% of malloc). FIX: `Db::simple_list_binders` indexes a
+        // SIMPLE pattern's binders (every leading element a bare name) ONCE by name, so each lookup is an
+        // O(1) map read — the total leading elements enumerated is O(N), not O(N²).
+        //
+        // The NOISE-FREE signal is `LIST_PATTERN_BINDER_ELEMS_SCANNED` — the leading elements the index
+        // build (+ any linear fallback) enumerates, a pure function of the program. A width-N pattern
+        // referenced N times should enumerate O(N) elements (one index build), not O(N²) (a re-scan per
+        // reference). Correctness (the binders read the right elements) is pinned by the run-value tests.
+        fn wide_list_pattern_src(n: usize) -> String {
+            let binders: String = (0..n)
+                .map(|i| format!("a{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // `g` consumes every binder (so each is referenced once from the arm body, driving one
+            // resolution against the wide list pattern), and every `g` param is used → no unused warnings.
+            let refs: String = (0..n)
+                .map(|i| format!("a{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let g_body = {
+                fn tree(items: &[String]) -> String {
+                    if items.len() == 1 {
+                        return items[0].clone();
+                    }
+                    let m = items.len() / 2;
+                    format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+                }
+                let ps: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+                tree(&ps)
+            };
+            let params: String = (0..n)
+                .map(|i| format!("p{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (g {params}) {g_body}) \
+                   (def (f (: xs (List Int64))) (match xs ((list {binders} .. r) (g {refs})) (_ 0))) \
+                   (def (main) (f (list))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid wide list destructure).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_list_pattern_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide list-pattern destructure compiles with no error diagnostics: {diags:?}"
+        );
+        fn elems_scanned(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× pattern; linear (index-build) growth ⇒ ~2×, the O(N²) re-scan was ~4×.
+        // Require < 3× (between the regimes, with margin for constant terms). `> 0` proves the counter
+        // ran (the index build enumerates the leading elements once); a revert to the per-reference scan
+        // pushes the ratio toward 4×, failing the test.
+        let n200 = elems_scanned(&wide_list_pattern_src(200));
+        let n400 = elems_scanned(&wide_list_pattern_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            n200 > 0 && ratio < 3.0,
+            "a wide list-pattern destructure must resolve its element binders in O(N) enumerated leading \
+             elements, not O(N²) (the per-reference `find_leading_binder_in_list_pattern` scan needs the \
+             per-pattern `Db::simple_list_binders` index): width 200→400 grew scanned elements {ratio:.1}× \
+             (n200={n200}, n400={n400}); linear is ~2×, the re-scan was ~4×"
         );
     }
 

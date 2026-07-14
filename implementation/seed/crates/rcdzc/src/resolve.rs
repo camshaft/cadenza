@@ -1934,6 +1934,22 @@ fn find_leading_binder_in_list_pattern(
     list_pat: StructId,
     name: &str,
 ) -> Option<(Vec<crate::core::PathStep>, Vec<StructId>)> {
+    // FAST PATH: a SIMPLE pattern (every leading element a bare name / `_`, no nested tuple/variant/list)
+    // has its binders indexed ONCE by name (`Db::simple_list_binders`), so this lookup is an O(1) map read
+    // rather than the O(leading) scan below — the O(N²) fix (a wide `(list a0 … aN .. r)` referenced N
+    // times). A simple leading binder's path is a lone `Elem(i)` with NO variant head, so `heads` is empty.
+    if let Some(binders) = simple_list_binders(db, list_pat) {
+        return binders
+            .by_name
+            .get(name)
+            // A rest binder is `[RestFrom(lead)]`, a leading binder `[Elem(i)]` — filter to the LEADING
+            // ones here (the rest binder is `find_rest_binder_in_list_pattern`'s concern), so this returns
+            // exactly what the linear descent did.
+            .filter(|steps| matches!(steps.first(), Some(crate::core::PathStep::Elem(_))))
+            .map(|steps| (steps.clone(), Vec::new()));
+    }
+    // SLOW PATH (a pattern with a nested element — never one of the two measured explosions, and a wide
+    // nested-element list arm declines at lowering anyway): the exact element-by-element descent.
     let elems = db
         .ast
         .as_ctor_form(list_pat, "list")
@@ -1944,6 +1960,8 @@ fn find_leading_binder_in_list_pattern(
         .position(|&e| db.ast.as_name(e) == Some(".."))
         .unwrap_or(elems.len());
     for (i, &elem) in elems[..lead].iter().enumerate() {
+        #[cfg(test)]
+        crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.set(c.get() + 1));
         let mut path = vec![crate::core::PathStep::Elem(i)];
         let mut heads = Vec::new();
         let found = if let Some(elem_name) = db.ast.as_name(elem) {
@@ -1968,12 +1986,103 @@ fn find_leading_binder_in_list_pattern(
     None
 }
 
+/// The SIMPLE list-pattern binder index for `list_pat` (`Db::simple_list_binders`), built once and read
+/// O(1) thereafter. `Some(binders)` iff `list_pat` is a `(list …)` pattern whose EVERY leading element
+/// (before an optional `.. rest`) is a bare-name binder or `_` — the shape both O(N²) explosions take (a
+/// wide user destructure `(list a0 … aN .. r)` and the synth `(list __le0 … __leN .. r)` of the refutable-
+/// literal-element desugar). `None` for a pattern with ANY nested (tuple/variant/list) leading element:
+/// its binders live at deeper paths that the linear descent (`find_binder_in_*`) enumerates exactly, so
+/// the caller falls back to that (whose verdict is byte-identical). Both outcomes cache, so a repeated
+/// resolution against the same pattern never re-scans it. Interior mutation via the `RefCell` is sound —
+/// the compiler is single-threaded (`!Send`), the arena is append-only (a pattern's shape never changes),
+/// and the map only grows (an entry, once built, is stable). Returns a cheap `Rc` clone of the entry.
+fn simple_list_binders(
+    db: &Db,
+    list_pat: StructId,
+) -> Option<std::rc::Rc<crate::db::SimpleListBinders>> {
+    if let Some(hit) = db.simple_list_binders.borrow().get(&list_pat) {
+        return hit.clone();
+    }
+    let built = build_simple_list_binders(db, list_pat);
+    db.simple_list_binders
+        .borrow_mut()
+        .insert(list_pat, built.clone());
+    built
+}
+
+/// Enumerate a SIMPLE `(list …)` pattern's binders in ONE pass — every leading bare-name binder at
+/// `[Elem(i)]` plus a trailing `.. rest` binder at `[RestFrom(lead)]`. Returns `None` (not simple) the
+/// moment a leading element is anything but a bare name / `_` / the `..` marker, so the caller keeps the
+/// linear descent for nested-element patterns. `_` is not a binder (skipped); a repeated name is last-
+/// wins (a later element overwrites — harmless, matches the linear scan's first-hit at the same position
+/// only when names are distinct, which they are for the desugar's unique `__le{pos}` and typical code).
+fn build_simple_list_binders(
+    db: &Db,
+    list_pat: StructId,
+) -> Option<std::rc::Rc<crate::db::SimpleListBinders>> {
+    let elems = db
+        .ast
+        .as_ctor_form(list_pat, "list")
+        .or_else(|| db.ast.as_form(list_pat, "list"))?;
+    let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+    let lead = dd.unwrap_or(elems.len());
+    let mut by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>> =
+        crate::fxhash::FxHashMap::default();
+    for (i, &elem) in elems[..lead].iter().enumerate() {
+        #[cfg(test)]
+        crate::db::LIST_PATTERN_BINDER_ELEMS_SCANNED.with(|c| c.set(c.get() + 1));
+        // Only a BARE name element keeps the pattern simple. A `_`, a nested tuple/variant/list, or any
+        // other form disqualifies it: `_` is not a binder (the pattern can still be simple, so continue),
+        // while a nested element means the index would have to enumerate deeper paths — bail to the linear
+        // descent instead (`None`), which handles those exactly.
+        match db.ast.as_name(elem) {
+            Some("_") => continue,
+            Some(n) => {
+                // FIRST-wins, matching the linear scan (which returns the FIRST matching leading position):
+                // a repeated name keeps its earliest `Elem`. (Pattern linearity normally rejects a repeat,
+                // but preserve the exact verdict regardless.)
+                by_name
+                    .entry(n.to_string())
+                    .or_insert_with(|| vec![crate::core::PathStep::Elem(i)]);
+            }
+            None => return None, // a nested (tuple/variant/list) element — not simple
+        }
+    }
+    // A trailing `.. rest` binds the tail sublist from `lead` onward (`_` after `..` binds nothing). A
+    // LEADING binder of the same name takes precedence (the callers try leading before rest), so only
+    // record the rest binder if no leading position already claimed the name (`or_insert`).
+    if let Some(dd) = dd
+        && let Some(&rest_occ) = elems.get(dd + 1)
+        && let Some(rest_name) = db.ast.as_name(rest_occ)
+        && rest_name != "_"
+    {
+        by_name
+            .entry(rest_name.to_string())
+            .or_insert_with(|| vec![crate::core::PathStep::RestFrom(lead)]);
+    }
+    Some(std::rc::Rc::new(crate::db::SimpleListBinders { by_name }))
+}
+
 /// The REST binder start-index of a LIST PATTERN `(list p0 … p_{lead-1} .. rest)` binding `name` — the
 /// form-independent core shared by the match-arm ([`list_pattern_rest_binds`]) and the `let`/param binding
 /// paths. `Some(lead)` (the rest sublist starts at index `lead` = the number of leading positions before
 /// `..`) iff `name` is exactly the single binder immediately after `..`; `None` otherwise (or for a
 /// fixed-arity pattern with no `..`). `_` is not a binder.
 fn find_rest_binder_in_list_pattern(db: &Db, list_pat: StructId, name: &str) -> Option<usize> {
+    // FAST PATH: a SIMPLE pattern's rest binder is indexed as a `[RestFrom(lead)]` step (`lead` = its
+    // start index), so this is an O(1) map read — the negative-lookup analogue of the leading-binder fast
+    // path (a body referencing many OUTER names against a wide `(list … .. rest)` arm would else pay an
+    // O(leading) `..`-scan per reference → O(N²)).
+    if let Some(binders) = simple_list_binders(db, list_pat) {
+        return binders
+            .by_name
+            .get(name)
+            .and_then(|steps| match steps.first() {
+                Some(&crate::core::PathStep::RestFrom(lead)) => Some(lead),
+                _ => None,
+            });
+    }
+    // SLOW PATH (a nested-element pattern): the exact `..`-position scan.
     let elems = db
         .ast
         .as_ctor_form(list_pat, "list")

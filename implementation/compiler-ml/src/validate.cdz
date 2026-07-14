@@ -1,0 +1,87 @@
+/// validate.cdz — a validation pass that PARTITIONS a node list into successes and diagnostics in one
+/// traversal, returning both as lists inside a `Report` sum. This is the shape a real front-end pass has:
+/// walk the declarations, collect the well-formed ones AND accumulate every error (not fail-fast), then
+/// report both. It stresses a sum variant carrying TWO `List` payloads (`Report.Mk(List Int64, List
+/// String)`) threaded — both grown in parallel — across the recursion, then each projected.
+type Node =
+  | Good(Int64)
+  | Bad(String)
+
+/// The partitioned result: the `Good` values (as Int64s) and the `Bad` messages (as Strings).
+type Report =
+  | Mk(List(Int64), List(String))
+
+/// Partition `xs`: each `Good v` prepends `v` to the values, each `Bad m` prepends `m` to the errors.
+def check-all(xs: List(Node)) = match xs with
+  | [] => Report.Mk([], [])
+  | [h, .. t] =>
+    let rest = check-all(t) in
+    (match rest with
+      | Report.Mk(oks, errs) => (match h with
+        | Node.Good(v) => Report.Mk(List.concat([v], oks), errs)
+        | Node.Bad(m) => Report.Mk(oks, List.concat([m], errs))))
+
+def goods(r: Report) = match r with
+  | Report.Mk(oks, _) => oks
+
+def errs(r: Report) = match r with
+  | Report.Mk(_, es) => es
+
+/// How many nodes were well-formed.
+def good-count(xs: List(Node)) = List.len(goods(check-all(xs)))
+
+/// How many diagnostics were collected.
+def error-count(xs: List(Node)) = List.len(errs(check-all(xs)))
+
+/// The sum of the well-formed values (proves the Good VALUES survive, not just their count).
+def good-total(xs: List(Node)) = sum-list(goods(check-all(xs)))
+
+def sum-list(ns: List(Int64)) = match ns with
+  | [] => 0
+  | [h, .. t] => h + sum-list(t)
+
+/// Did validation succeed (no errors collected)?
+def all-good(xs: List(Node)) = error-count(xs) == 0
+
+@test
+def validate-all-good() =
+  let xs = [Node.Good(1), Node.Good(2), Node.Good(3)] in
+  if all-good(xs) then (if good-count(xs) == 3 then unit else trap("3 goods")) else trap("no errors")
+
+@test
+def validate-all-bad() =
+  let xs = [Node.Bad("a"), Node.Bad("b")] in
+  if error-count(xs) == 2 then (if good-count(xs) == 0 then unit else trap("0 goods")) else trap("2 errors")
+
+@test
+def validate-mixed-counts() =
+  let xs = [Node.Good(1), Node.Bad("x"), Node.Good(2), Node.Bad("y"), Node.Bad("z")] in
+  if good-count(xs) == 2 then (if error-count(xs) == 3 then unit else trap("3 errors")) else trap("2 goods")
+
+@test
+def validate-good-values-survive() =
+  let xs = [Node.Good(10), Node.Bad("x"), Node.Good(32)] in
+  if good-total(xs) == 42 then unit else trap("10 + 32 = 42")
+
+@test
+def validate-empty() =
+  if all-good([]) then (if good-count([]) == 0 then unit else trap("0 goods")) else trap("empty is all-good")
+
+@test
+def validate-one-bad-fails-all-good() =
+  if all-good([Node.Good(1), Node.Bad("x"), Node.Good(2)]) then trap("one bad → not all-good") else unit
+
+@test
+def validate-partition-total() =
+  // good-count + error-count = the input length, for any list (partition invariant)
+  let xs = [Node.Good(1), Node.Bad("a"), Node.Good(2), Node.Good(3), Node.Bad("b")] in
+  if good-count(xs) + error-count(xs) == List.len(xs) then unit else trap("partition covers all")
+
+@test
+def validate-order-preserved() =
+  // the goods come out in input order: [Good 7, Bad, Good 8] → goods head is 7
+  match goods(check-all([Node.Good(7), Node.Bad("x"), Node.Good(8)])) with
+  | [h, .. _] => (if h == 7 then unit else trap("first good is 7"))
+  | [] => trap("expected goods")
+
+export { check-all, good-count, error-count, all-good }

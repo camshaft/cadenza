@@ -125,6 +125,61 @@
   (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3))) (Set.of (list 1))))
   (output (: true Bool)))
 
+; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
+; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
+; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a
+; --- degenerate operand (the empty set, the same set twice, disjoint sets) forces the boundary of
+; --- each operation. A set is a collection of unique elements (collections-and-text.md #A Set Is A
+; --- Collection Of Unique Elements), so these are the ordinary laws of finite-set algebra.
+
+(case "union with the empty set is the set itself"
+  (doc    "`(Set.union (Set.of (list 1 2 3)) (Set.of (list)))` is {1, 2, 3} — the empty set is the
+           identity of union, so unioning it in adds nothing. Pins the identity law the overlapping-union
+           case does not (it has elements on both sides); the empty set is a genuine operand, not a
+           trap. MUST be true.")
+  (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list 1 2 3))))
+  (output (: true Bool)))
+
+(case "intersection with the empty set is the empty set"
+  (doc    "`(Set.intersection (Set.of (list 1 2 3)) (Set.of (list)))` is {} — the empty set is the
+           annihilator of intersection, since no element is in both. Pins the annihilator law (the dual of
+           the union-identity case) and that intersecting down to nothing yields the genuine empty set.
+           MUST be true.")
+  (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list))))
+  (output (: true Bool)))
+
+(case "the intersection of disjoint sets is empty"
+  (doc    "`(Set.intersection (Set.of (list 1 2)) (Set.of (list 3 4)))` is {} — two sets sharing no
+           element intersect to nothing. Pins that intersection over disjoint operands (no shared element,
+           yet both non-empty) is the empty set, the complement of the overlapping-intersection case which
+           has a shared element. MUST be true.")
+  (input  (= (Set.intersection (Set.of (list 1 2)) (Set.of (list 3 4))) (Set.of (list))))
+  (output (: true Bool)))
+
+(case "the difference of a set with itself is empty"
+  (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list 1 2 3)))` is {} — removing a set's own
+           elements leaves nothing. Pins the self-difference law (A ∖ A = ∅), the degenerate boundary the
+           asymmetric-difference case above does not reach. MUST be true.")
+  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list))))
+  (output (: true Bool)))
+
+(case "union is commutative"
+  (doc    "`(Set.union A B)` equals `(Set.union B A)` for A = {1, 2}, B = {2, 3}: the union does not
+           depend on operand order (both are {1, 2, 3}). Pins commutativity of union directly as a value
+           equality between the two orderings — a law that follows from a set being an order-independent
+           collection (the written-order-independence case, lifted to the operation). MUST be true.")
+  (input  (= (Set.union (Set.of (list 1 2)) (Set.of (list 2 3)))
+             (Set.union (Set.of (list 2 3)) (Set.of (list 1 2)))))
+  (output (: true Bool)))
+
+(case "union of a set with itself is the set (idempotent)"
+  (doc    "`(Set.union (Set.of (list 1 2 3)) (Set.of (list 1 2 3)))` is {1, 2, 3} — unioning a set with
+           itself introduces no duplicates (a set holds each element once), so union is idempotent. Pins
+           A ∪ A = A, the duplicate-collapsing law of union at the whole-set level (the operation-level
+           companion of \"a set collapses a duplicate element\"). MUST be true.")
+  (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
+  (output (: true Bool)))
+
 (case "the empty set is equal to the empty set"
   (doc    "`(= (Set.of (list)) (Set.of (list)))` is true — two empty sets contain the same (no) elements
            (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that the empty set
