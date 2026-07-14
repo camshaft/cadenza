@@ -1223,9 +1223,6 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Prim(_)
         | Resolved::Param { .. }
         | Resolved::TypeVal(_)
-        // A cross-component extern op has no callee BODY in this arena (it is a peer's export bound
-        // across the boundary), so it adds no recursion edge of this body.
-        | Resolved::Extern { .. }
         | Resolved::Poison(_) => {}
     }
 }

@@ -968,6 +968,22 @@
                 (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
   (output (: 10 Int64)))
 
+(case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
+  (input  (do
+            (effect Log (op w (-> Int64 Unit)))
+            (def (main)
+              (handle Log 0 ((w (n) s (resume unit (+ s n))))
+                (do (Log.w 3) (Log.w 4) 99))) (export main)))
+  (doc    "The side-effect-only sequencing shape: a `do` of two UNIT-returning performs run purely for
+           effect, then a tail value. `Log.w : Int64 -> Unit` accumulates its argument into the handler
+           state (seeded 0, threads `s + n`); `(do (Log.w 3) (Log.w 4) 99)` performs `Log.w 3` (state 0 → 3)
+           then `Log.w 4` (state 3 → 7) — each yields unit, discarded — and the sequence's value is the tail
+           `99`. Pins that a chain of unit-op performs threads state in order while their unit results are
+           dropped, the essential shape of a compiler pass that EMITS several diagnostics (each advancing an
+           accumulator) then returns its result. The handler's threaded total is observed only through the
+           state; the handle's value is the body's tail.")
+  (output (: 99 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
@@ -1948,6 +1964,22 @@
   (input  (do
             (effect A (op a (-> Unit Int64)))
             (def (main) (host (A A) (A.a))) (export main)))
+  (error  CDZ0201))
+
+(case "binding the same effect to a peer twice is rejected"
+  (doc    "The `(bind …)` peer-routing analogue of the duplicate-host-delegation reject above (the U-pivot
+           unifies a peer dependency with an effect). A `(bind E \"iface\")` route is a SET — one peer per
+           effect — so `(bind E \"cadenza:a/x\") (bind E \"cadenza:b/y\")` binds `E` twice: the same
+           fixed-set-no-duplicates ill-formedness (`scan_effect_bindings` silently keeps only the FIRST, so
+           the second is a dead, ambiguous line — the author wrote two routes and only one takes). Rejected
+           at compile time (CDZ0201) rather than silently dropped. (A compile-request `--bind` REBIND is a
+           separate layer — merged after load — and is unaffected; this flags two SOURCE `(bind …)` for one
+           effect.)")
+  (input  (do
+            (effect E (op e (-> Int64 Int64)))
+            (bind E "cadenza:a/x")
+            (bind E "cadenza:b/y")
+            (def (main) (handle E 0 ((e (n) s (resume n s))) (E.e 1))) (export main)))
   (error  CDZ0201))
 
 (case "a handle whose head names a value rather than an effect is rejected"

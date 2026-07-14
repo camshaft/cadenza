@@ -647,15 +647,10 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → user sum variant ctor");
         return Resolved::Ref { value };
     }
-    // 3d. A CROSS-COMPONENT extern op — `(extern "iface" (f (-> …)) …)` binds `f` to a peer component's
-    // export, resolved to a `Resolved::Extern` carrying the interface, op name, and declared signature
-    // (X4b). Unlike a def it has no in-arena body to inline; an application of it lowers to a
-    // `Core::ExternCall`. After the sum/effect/variant decls (a local declaration shadows an extern name)
-    // and before the prelude (an extern op shadows a built-in of the same name).
-    if let Some((interface, op, ty)) = db.extern_op_by_name(name) {
-        trace!(target: "rcdzc::resolve", node = id.0, %name, %interface, "name → cross-component extern op");
-        return Resolved::Extern { interface, op, ty };
-    }
+    // (The old cross-component `(extern …)` op-resolution step was REMOVED in U4: cross-component interop
+    // is now unified with EFFECTS — a peer contract is an `(effect …)` bound to a peer via `(bind …)`, and
+    // an escaping op is an ordinary perform that lowers to a `Core::HostCall` routed to the peer envelope.
+    // There is no separate extern-op name to resolve.)
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {

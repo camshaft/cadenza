@@ -157,21 +157,6 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     result
 }
 
-/// Peel `n` curried argument domains off a function type, returning the RESULT type after applying `n`
-/// arguments (`Ty::Fn` is right-nested `A -> (B -> R)`). Used to read a cross-component extern op's
-/// result type from its declared signature after `n` args (X4b). A non-function or under-applied type
-/// yields the type as-is (a malformed extern application declines downstream).
-fn fn_result_after(ty: &crate::ty::Ty, n: usize) -> crate::ty::Ty {
-    let mut cur = ty.clone();
-    for _ in 0..n {
-        match cur {
-            crate::ty::Ty::Fn(_, r) => cur = *r,
-            other => return other,
-        }
-    }
-    cur
-}
-
 fn compute(db: &mut Db, id: StructId) -> Core {
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
     // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
@@ -783,13 +768,6 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
-        // A bare CROSS-COMPONENT extern op NOT in application position — passing the peer op as a
-        // first-class value. It has no in-arena closure to lift, so it declines (X4b handles the applied
-        // `(f args…)` case, which lowers to `Core::ExternCall` in the `Apply` arm); a first-class extern-op
-        // value is a later increment.
-        Resolved::Extern { .. } => Core::Poison(Reject::decline(
-            "a cross-component extern op used as a value (not applied) is not yet lowered",
-        )),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
@@ -826,23 +804,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
                 return Core::Poison(Reject::decline(crate::diag::NO_HOME_STANDALONE_DECLINE));
             }
-            // A CROSS-COMPONENT extern op applied `(f args…)` (X4b) — the head resolves to a
-            // `Resolved::Extern` (bound by an `(extern "iface" (f (-> …)) …)` form). It has no in-arena
-            // body to inline; it is a PEER component's export, so it lowers to a `Core::ExternCall` the
-            // backend imports across the live component boundary (component-abi.md §Cross-Component Value
-            // Exchange). The result type is the declared signature's RESULT (the peer returns exactly it).
-            if let Resolved::Extern { interface, op, ty } = resolved_of(db, head) {
-                let result = crate::eval::typeval_of(db, ty)
-                    .map(|t| fn_result_after(&t, args.len()))
-                    .unwrap_or(crate::ty::Ty::Any);
-                trace!(target: "rcdzc::lower", node = id.0, %interface, %op, "apply: cross-component extern → Core::ExternCall");
-                return Core::ExternCall {
-                    interface,
-                    op,
-                    args: args.to_vec(),
-                    result,
-                };
-            }
+            // (The old cross-component `Core::ExternCall` producer was REMOVED in U4 — a peer op is now an
+            // effect bound to a peer, so it flows through the perform → `Core::HostCall` path above and the
+            // backend routes a peer-bound effect's `HostCall` to the peer envelope.)
             // CASE-OF-CASE (commuting conversion): a head that reduces to a runtime `if` —
             // `((if c a b) args…)` — pushes the application into each branch: `(if c (a args…)
             // (b args…))`. A runtime-branch-SELECTED function (`(if b (fn …) (fn …))` applied) then
@@ -6508,7 +6472,6 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
         | Resolved::Param { .. }
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. }
-        | Resolved::Extern { .. }
         | Resolved::Poison(_) => {}
     }
 }
@@ -10626,10 +10589,7 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
 /// shielded in the connective's guarded rhs exactly as in the `if`'s branch).
 fn tail_positions_have_call(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::Call { .. }
-        | Core::CallClosure { .. }
-        | Core::HostCall { .. }
-        | Core::ExternCall { .. } => true,
+        Core::Call { .. } | Core::CallClosure { .. } | Core::HostCall { .. } => true,
         Core::If { then_, else_, .. } => {
             tail_positions_have_call(db, then_) || tail_positions_have_call(db, else_)
         }

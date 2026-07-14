@@ -51,6 +51,23 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   last-arm absorption, so a hand-written inner `match` easily mis-attaches its catch-all to the outer
   match (CDZ0210 non-exhaustive + CDZ0213 unreachable). The printer's own output round-trips correctly.
 
+- **OPEN (seed `rcdzc` — MISSING op): `List.map` does not exist.** A `List` value has only
+  `at`/`len`/`push`/`concat`/`update`/`slice` (`prelude.rs` `list_module`); `(List.map xs f)` →
+  CDZ0201 "record has no field `map`". The corpus MENTIONS `(List.map xs f)` but only in a `|>` doc
+  comment (09-functions ~2827) — it is never a realized case. A compiler port maps over lists
+  constantly (transform every AST child, every arg); the workaround is a hand-written recursive map
+  (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
+  O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
+
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent trap): a PARAMETERIZED compound-returning export traps.**
+  An export that takes a parameter AND returns a compound (tuple / record / sum) compiles clean (`cdz
+  check` passes; the component WIT even shows `make: func(p0: s64) -> t`) but TRAPS at run time —
+  `cdz-run … --arg 5` → "trap: expected 1 argument(s), got 0" (wasmtime's arity check). The export's
+  argument is not delivered to the resource-escape `make`. A NULLARY compound-return export works
+  perfectly. Repro `repros/miscompile-parameterized-compound-export-traps.sexp`. ⚠ the seed test
+  `a_parameterized_compound_return_export_compiles_via_the_resource_escape` only asserts it COMPILES —
+  it never RUNS the component with an arg, so this runtime gap is untested (a false-confidence test).
+
 - **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines):** `String.from-bytes` (and the
   `Ast.decode` self-decode) only compute on a *compile-time-constant* `Bytes`; a runtime byte slice
   DECLINES ("String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
@@ -92,3 +109,21 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   tuple slot emits INVALID wasm ("expected i64, found i32") — `repros/miscompile-two-sibling-ifs-
   invalid-wasm.sexp`. This is what blocks `decode` today: `read-leaf`/`read-struct` return
   `(tuple <sum> pos)` and the decode loops thread the projected sum through a self-tail recursion.
+  **SHARPER BOUND (2026-07-14):** the essential ingredient is an `if` INSIDE the function that builds the
+  `(tuple <boxed-sum> pos)`; the projected sum is then mis-typed by the loop-transform. Tail-recursion →
+  silent wrong value; NON-tail recursion → invalid wasm (even when the recursive branch never runs — the
+  base-case compose alone fails to validate, so it's the loop-transform ANALYSIS mis-slotting, not the
+  path executing). Repro `repros/miscompile-if-tuple-sum-nontail-recursion.sexp`. 🔑 **A BARE RECURSIVE
+  SUM (NOT wrapped in a tuple) works perfectly** — a runtime-built recursive `Tree`/`Ast` folds and
+  escapes correctly (verified: `mk`/`sumt` over a depth param, and a `(List Ast)` count). So the decode
+  design should thread POSITION separately (not `(tuple ast pos)`) — e.g. return the sum bare and track
+  the cursor another way — to sidestep this entirely until the loop-transform fix lands.
+
+**Confirmed WORKING (stress-swept 2026-07-14):** recursive sum types (build + fold, const + runtime),
+HOFs (fn args, closures capturing env, curried/partial application, recursive HOF), Map insert/lookup,
+Set of/contains, generic `id` at multiple types, nested generic newtypes, `Result`/`Option` match
+(incl. nested + Option-of-tuple), match guards (`(guard pat cond)`), let shadowing, `Record.with`/
+`extend`/`project`, assoc-list env lookup, BigInt arithmetic, deep tail recursion (5000), mutual
+recursion, bit ops, string equality/ordering, div/mod, big match dispatch, `String.to-bytes`, nullary
+compound-return escape (tuple/record/recursive-sum/list). The compiler is broadly solid; the gaps above
+are the sharp edges.

@@ -461,13 +461,11 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    // The CROSS-COMPONENT extern-import set (X4b) — the peer ops a `Core::ExternCall` names, collected
-    // over `layout.order` like the host set.
+    // The CROSS-COMPONENT extern-import set — a PEER-BOUND effect's escaping ops (U2). It is populated
+    // ENTIRELY by the effect-binding conversion just below (a peer op is an escaping effect bound to a
+    // peer contract, `db.effect_bindings`); there is no separate `(extern …)` surface any more (removed in
+    // U4 — cross-component interop is unified with effects).
     let mut extern_imports: Vec<host::ExternImport> = Vec::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        host::collect_extern_imports(db, body, &mut extern_imports);
-    }
     // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract (`(bind Math "cadenza:math/api")`
     // → `db.effect_bindings`) is a PEER call, not a host call. Move each such host import into the extern
     // set, retargeted to its bound interface — so `Math.add` reaching the boundary emits through the peer
@@ -675,14 +673,16 @@ pub fn emit(
         // is a `crosses_as_resource_escape` type but ERASES to a scalar boundary valtype, so it crosses
         // fine on this multi-export path — `export_result_valtype` returns `Ok(Some)` for it, and it must
         // NOT be diagnosed as an arity decline. Only a type with NO scalar valtype reaches the arity case.)
-        // A DIVERGING export — its body provably traps (`Core::Trap`: a bare `(trap …)`, a zero-arm match
-        // on a `Never` scrutinee, or a call to such a function) — has a `Never` result type (a fresh var /
-        // `Any`) with no boundary representation, but NO value ever crosses: the guest traps. Cross it as a
-        // UNIT (no-result) export — the core function is already emitted 0-result (`select_function` maps a
-        // diverging `ret` to `Ty::Unit`), and the host observes the trap. Checked BEFORE the escape/valtype
-        // declines so a diverging `Any`/`Var` result is not misdiagnosed as an undetermined-type fault.
-        if serialize::export_result_valtype(&e.result).is_err()
-            && matches!(crate::lower::core_of(db, e.body), crate::core::Core::Trap)
+        // A DIVERGING export — its body provably traps (`body_diverges`: a bare `(trap …)`, a zero-arm
+        // match on a `Never` scrutinee, a call to such a function, OR a trap reached THROUGH an
+        // effect-statement sequence / a `let` — the `(host (log) (do (log.emit "m") (trap …)))` shape a
+        // unit-test failure path takes) — has a `Never` result type (a fresh var / `Any`) with no boundary
+        // representation, but NO value ever crosses: the guest traps. Cross it as a UNIT (no-result)
+        // export — the core function is already emitted 0-result (`select_function` maps a diverging `ret`
+        // to `Ty::Unit` via the SAME `body_diverges`), and the host observes the trap. Checked BEFORE the
+        // escape/valtype declines so a diverging `Any`/`Var` result is not misdiagnosed as an
+        // undetermined-type fault.
+        if serialize::export_result_valtype(&e.result).is_err() && select::body_diverges(db, e.body)
         {
             boundary.push(BoundaryExport {
                 name: e.name.clone(),

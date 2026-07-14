@@ -402,37 +402,6 @@ pub struct EffectDecl {
     pub synth: Option<StructId>,
 }
 
-/// One operation a cross-component `(extern "iface" (op (-> …)) …)` form binds: the operation NAME (the
-/// func the peer interface exports and this component imports) and its declared MONOMORPHIC type
-/// occurrence. The declared type IS the contract — a peer whose export does not match declines at
-/// composition (cross-component-interop.md §The Exchanged Value Is Structurally The Same On Both Sides;
-/// component-abi.md §Cross-Component Value Exchange).
-#[derive(Clone, PartialEq, Debug)]
-pub struct ExternOp {
-    /// The operation name (`add` in `(extern "…" (add (-> …)))`) — the name it binds into scope AND the
-    /// component extern name it aliases out of the imported peer interface (kebab-normalized at emit).
-    pub name: String,
-    /// The name occurrence — the binder identity a reference resolves against.
-    pub name_occ: StructId,
-    /// The declared type occurrence (`(-> A B)`), or `None` for a malformed clause with no type.
-    pub ty: Option<StructId>,
-}
-
-/// A cross-component `(extern "cadenza:pkg/iface" (op (-> …)) …)` declaration — a CONSUMER binding a PEER
-/// Cadenza component's exported interface, distinct from an intra-package `(import "path" …)` (which
-/// splices a sibling source file). Each op resolves to a `Resolved::Extern` and, applied, lowers to a
-/// `Core::ExternCall` the backend imports across the live component boundary (X4b). Its identity is the
-/// declaration occurrence, like [`EffectDecl`].
-#[derive(Clone, PartialEq, Debug)]
-pub struct ExternDecl {
-    /// The peer interface name the ops are imported from (`cadenza:pkg/iface`).
-    pub interface: String,
-    /// The declaration occurrence — the anchor for a declaration-level diagnostic.
-    pub occ: StructId,
-    /// The bound operations in declaration order.
-    pub ops: Vec<ExternOp>,
-}
-
 /// A `(module NAME def…)` declaration reachable in a `do`-block — a namespace binding `NAME` to a record
 /// of its exported definitions (`core-semantics.md` §A Module Groups Definitions Under A Name). Its
 /// members are reached by member access `(. NAME field)`, exactly like a sum's variants or an effect's
@@ -568,11 +537,6 @@ pub struct Db {
     /// well-formedness time — a duplicate operation name is CDZ0201). The effect analogue of
     /// `type_decls`; identity is the declaration occurrence.
     pub effect_decls: Vec<EffectDecl>,
-    /// The top-level `(extern "iface" (op (-> …)) …)` cross-component declarations, from the scan (X4b).
-    /// Each binds a peer Cadenza component's operations; an op resolves to a `Resolved::Extern` and,
-    /// applied, lowers to a `Core::ExternCall`. Populated at load; empty for a program that binds no peer
-    /// (byte-neutral — the common case).
-    pub extern_decls: Vec<ExternDecl>,
     /// The interface name this component publishes its exports under, when compiled AS A PROVIDER (X4b) —
     /// from the `component-name` compile-request artifact. `Some("cadenza:pkg/iface")` → `emit` wraps the
     /// boundary exports as that named interface instance so a peer's `(extern …)` binds. `None` (the
@@ -1344,6 +1308,13 @@ pub struct Db {
     /// An `inline-always` on a RECURSIVE def is a conflict (it cannot inline) — a coded reject.
     pub(crate) inline_always: crate::fxhash::FxHashSet<StructId>,
 
+    /// The BODY occurrences of definitions marked `@test` — the UNIT-TEST hoist markers a `cdz test`
+    /// build reads (`strip_annotations`). A test build exports every `@test` NULLARY def as a boundary
+    /// entry (in place of the program's `(export …)` clauses); an ordinary build ignores this set (a
+    /// `@test` def is just an unexported def — dead, dropped by reachability — so the report effect it
+    /// performs never reaches the normal component's import set). Keyed by BODY occ like the inline sets.
+    pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1389,12 +1360,17 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
-        // Normalize away an `(@ inline-never (def …))` / `(@ inline-always (def …))` INLINE-POLICY
-        // annotation on a definition BEFORE `scan_top_level`: the policy is a declaration the emitter
-        // consumes, not part of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
-        // the `inline_never` / `inline_always` set (Addendum 4). Done here like `strip_def_docs`, so every
-        // downstream reader sees a plain `(def …)` and the policy lives only in the sets.
-        let (inline_never, inline_always) = strip_inline_policy(&mut ast);
+        // Normalize away every known `(@ NAME (def …))` ANNOTATION on a definition BEFORE `scan_top_level`
+        // — `inline-never`/`inline-always` (the emitter's inline policy, Addendum 4) and `test` (the
+        // `cdz test` hoist marker). An annotation is a declaration a build phase consumes, not part of the
+        // def shape every reader walks. Unwrap → `(def …)` in place and RECORD each def's BODY occ in the
+        // matching set. Done here like `strip_def_docs`, so every downstream reader sees a plain `(def …)`
+        // and the annotation lives only in the sets.
+        let StrippedAnnotations {
+            inline_never,
+            inline_always,
+            tests,
+        } = strip_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1411,8 +1387,7 @@ impl Db {
         // snapshot, not the polluted map, is what keeps the two cases distinct.
         let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
             prelude.keys().cloned().collect();
-        let (defs, exports, mut type_decls, effect_decls, mut modules, extern_decls) =
-            scan_top_level(&ast);
+        let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -1665,7 +1640,6 @@ impl Db {
             exports,
             type_decls,
             effect_decls,
-            extern_decls,
             component_name: None,
             effect_bindings,
             modules,
@@ -1745,6 +1719,7 @@ impl Db {
             const_params,
             inline_never,
             inline_always,
+            tests,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -2338,6 +2313,24 @@ impl Db {
         self.def_by_body.get(&body).copied()
     }
 
+    /// The definitions marked `@test` (`strip_annotations`), as `defs` indices in DECLARATION ORDER — the
+    /// set the `cdz test` build hoists into the test artifact as nullary boundary entries. Each `@test`
+    /// marker is recorded by the annotated def's BODY occurrence, so this maps each back to its def via
+    /// `def_index_by_body`. Declaration order (a `defs`-index sort) gives a deterministic, source-ordered
+    /// test list. Empty for a program with no `@test` (the ordinary build — nothing hoisted). A `@test`
+    /// whose def has PARAMETERS is still returned here; the emit path validates nullary-ness and rejects a
+    /// parameterized test with an actionable diagnostic (a test takes no arguments).
+    pub fn test_defs(&self) -> Vec<usize> {
+        let mut idxs: Vec<usize> = self
+            .tests
+            .iter()
+            .filter_map(|&body| self.def_index_by_body(body))
+            .collect();
+        idxs.sort_unstable();
+        idxs.dedup();
+        idxs
+    }
+
     /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
     /// `infer::def_of_param` (was a linear `defs.iter().position(|d| d.sig_occ == sig)` → O(N²) when
     /// called per parameter reference). Lazily builds + caches a `sig_occ → index` map, keyed alongside
@@ -2603,23 +2596,6 @@ impl Db {
     pub fn effect_decl_by_name(&self, name: &str) -> Option<StructId> {
         // O(1) via `effect_decl_index` (built at load) — was a linear `effect_decls.iter().find`.
         self.effect_decl_index.get(name).copied()
-    }
-
-    /// A CROSS-COMPONENT extern operation bound by name (X4b) — `(interface, op-name, declared-type-occ)`
-    /// for the first `(extern "iface" (name (-> …)) …)` clause binding `name`, or `None`. An op with no
-    /// declared type (a malformed clause) is skipped (it binds nothing resolvable). Linear over
-    /// `extern_decls` (a program binds few peer interfaces); first-wins on a duplicate name.
-    pub fn extern_op_by_name(&self, name: &str) -> Option<(String, String, StructId)> {
-        for d in &self.extern_decls {
-            for o in &d.ops {
-                if o.name == name
-                    && let Some(ty) = o.ty
-                {
-                    return Some((d.interface.clone(), o.name.clone(), ty));
-                }
-            }
-        }
-        None
     }
 
     /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
@@ -3134,7 +3110,6 @@ type TopScan = (
     Vec<TypeDecl>,
     Vec<EffectDecl>,
     Vec<ModuleDecl>,
-    Vec<ExternDecl>,
 );
 
 /// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE, and RETURN the doc text
@@ -3299,42 +3274,54 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// Unwrap every INLINE-POLICY annotation `(@ inline-never (def …))` / `(@ inline-always (def …))` in
-/// place, and return `(inline_never, inline_always)` — the sets of the annotated defs' BODY occurrences
+/// The three known annotation NAMES `strip_annotations` consumes off a `(@ NAME (def …))` wrapper —
+/// the inline-policy pair and the unit-test marker. A `@`-annotation whose name is NOT one of these is
+/// left in place (a later pass or a reject handles it), so this pool is the single source of truth for
+/// "which annotations the compiler models today".
+pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &["inline-never", "inline-always", "test"];
+/// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
+pub(crate) struct StrippedAnnotations {
+    pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
+    pub(crate) inline_always: crate::fxhash::FxHashSet<StructId>,
+    /// Definitions marked `@test` — a UNIT TEST the `cdz test` build hoists into the test artifact as a
+    /// nullary export (`property-based-testing.md` sibling: a plain assertion test). Recorded by BODY occ
+    /// like the inline sets; `Db::is_test`/`test_defs` read it. Empty for an ordinary (non-test) build.
+    pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
+}
+
+/// Unwrap every known `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always
+/// (def …))`, `(@ test (def …))` — in place, returning the sets of the annotated defs' BODY occurrences
 /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
-/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the two
-/// inline-policy names and leaves any other annotation for a later pass / reject. The policy is a
-/// declaration the emitter consumes (not part of the def shape every reader walks), so it is removed here
-/// BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers —
-/// leaving every downstream reader a plain `(def …)`.
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the names in
+/// [`KNOWN_ANNOTATIONS`] and leaves any other annotation for a later pass / reject. An annotation is a
+/// declaration a build phase consumes (the emitter's inline policy, the `cdz test` hoist) — not part of
+/// the def shape every reader walks — so it is removed here BEFORE `scan_top_level`, exactly as
+/// `strip_def_docs`/`strip_const_params` remove their wrappers, leaving every downstream reader a plain
+/// `(def …)`.
 ///
 /// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
 /// children), so its `StructId` now identifies the def and every parent that already pointed at the
 /// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
 /// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
 /// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
-/// one whose name is not an inline-policy name, is left untouched.
-fn strip_inline_policy(
-    ast: &mut Arenas,
-) -> (
-    crate::fxhash::FxHashSet<StructId>,
-    crate::fxhash::FxHashSet<StructId>,
-) {
+/// one whose name is not known, is left untouched. A SINGLE annotation per def is the modeled case (as
+/// with the original inline-policy pass); stacking two known annotations on one def is not relied on here.
+fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    let mut tests: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
-        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only the two
-        // inline-policy names are consumed here; every other `@` annotation is left in place.
+        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
+        // annotation name is consumed here; every other `@` annotation is left in place.
         let Some(tail) = ast.as_form(id, "@") else {
             continue;
         };
         let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
             continue;
         };
-        let never = match ast.as_name(name_occ) {
-            Some("inline-never") => true,
-            Some("inline-always") => false,
+        let name = match ast.as_name(name_occ) {
+            Some(n) if KNOWN_ANNOTATIONS.contains(&n) => n.to_string(),
             _ => continue,
         };
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
@@ -3350,13 +3337,24 @@ fn strip_inline_policy(
             continue;
         };
         ast.structure[i] = Struct::List(inner_children);
-        if never {
-            inline_never.insert(body);
-        } else {
-            inline_always.insert(body);
+        match name.as_str() {
+            "inline-never" => {
+                inline_never.insert(body);
+            }
+            "inline-always" => {
+                inline_always.insert(body);
+            }
+            "test" => {
+                tests.insert(body);
+            }
+            _ => unreachable!("filtered to KNOWN_ANNOTATIONS above"),
         }
     }
-    (inline_never, inline_always)
+    StrippedAnnotations {
+        inline_never,
+        inline_always,
+        tests,
+    }
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
@@ -3368,7 +3366,6 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
     let mut types: Vec<TypeDecl> = Vec::new();
     let mut effects: Vec<EffectDecl> = Vec::new();
     let mut modules: Vec<ModuleDecl> = Vec::new();
-    let mut externs: Vec<ExternDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -3424,10 +3421,6 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
             && let Some(decl) = scan_effect_decl(ast, item)
         {
             effects.push(decl);
-        } else if ast.as_form(item, "extern").is_some()
-            && let Some(decl) = scan_extern_decl(ast, item)
-        {
-            externs.push(decl);
         }
     }
 
@@ -3490,7 +3483,7 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
         e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
-    (defs, exports, types, effects, modules, externs)
+    (defs, exports, types, effects, modules)
 }
 
 /// Scan an `(effect NAME (op f (-> A B)) …)` declaration at `item` into an [`EffectDecl`] — the effect
@@ -3527,42 +3520,6 @@ pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDec
         occ: item,
         ops,
         synth: None,
-    })
-}
-
-/// Scan an `(extern "iface" (op (-> A B)) …)` cross-component declaration at `item` into an
-/// [`ExternDecl`] — the peer interface name (a string literal) and each bound operation (its name
-/// occurrence + declared monomorphic type). The X4b analogue of `scan_effect_decl`, but each clause is
-/// `(NAME TYPE)` directly (no `op` keyword — an extern binds NAMES to signatures, it declares no effect).
-/// Returns `None` if `item` is not an `(extern …)` form or its interface is not a string literal. A
-/// malformed clause (not `(NAME TYPE)`) is skipped.
-pub(crate) fn scan_extern_decl(ast: &Arenas, item: StructId) -> Option<ExternDecl> {
-    let tail = ast.as_form(item, "extern")?;
-    // The first tail element is the peer interface — a STRING literal (`cadenza:pkg/iface`), never a
-    // name (a dotted interface name is not a valid bare atom; it is inert data the linker reads).
-    let interface = ast.as_str(*tail.first()?)?.to_string();
-    let mut ops = Vec::new();
-    for &clause in tail.iter().skip(1) {
-        // Each op is `(NAME TYPE)` — a list whose first element is the op name, second its type.
-        let Struct::List(parts) = ast.get(clause) else {
-            continue;
-        };
-        let Some(&name_occ) = parts.first() else {
-            continue;
-        };
-        let Some(op_name) = ast.as_name(name_occ) else {
-            continue;
-        };
-        ops.push(ExternOp {
-            name: op_name.to_string(),
-            name_occ,
-            ty: parts.get(1).copied(),
-        });
-    }
-    Some(ExternDecl {
-        interface,
-        occ: item,
-        ops,
     })
 }
 
@@ -3988,7 +3945,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", "bind"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -3997,7 +3954,7 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", 
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
 pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "def", "export", "type", "effect", "extern", "bind", "module", "pragma",
+    "def", "export", "type", "effect", "bind", "module", "pragma",
 ];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`

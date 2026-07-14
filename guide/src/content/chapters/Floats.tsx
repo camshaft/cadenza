@@ -121,17 +121,18 @@ export default function Floats() {
         id="floats:2"
         prompt={
           <>
-            You want to add the integer <C>5</C> to the float <C>2.5</C>, but they can't mix directly.
-            Convert the <C>5</C> to a float so the sum works — the result should be <C>7.5</C>.
+            The two floats here must be the <em>same width</em> to add. One operand is already a{" "}
+            <C>Float32</C> — convert the <C>2</C> at the matching width so <C>+.</C> is happy and the sum is{" "}
+            <C>5.0</C>. Which of <C>Float32</C> / <C>Float64</C> goes in the blank?
           </>
         }
-        starter={`(+. (Float64.of-int ?) 2.5)`}
-        solution={`(+. (Float64.of-int 5) 2.5)`}
-        expected="7.5"
+        starter={`(+. (Float?.of-int 2) (Float32.of-int 3))`}
+        solution={`(+. (Float32.of-int 2) (Float32.of-int 3))`}
+        expected="5.0"
         hint={
           <>
-            <C>Float64.of-int</C> turns the integer into a float; feed it the <C>5</C>, and <C>+.</C> adds
-            the two floats to <C>7.5</C>.
+            The other operand is a <C>Float32</C>, and widths don't mix — so convert at <C>Float32</C> too.
+            Pick <C>Float64</C> instead and the compiler declines (<C>CDZ0301</C>, precisions differ).
           </>
         }
       />

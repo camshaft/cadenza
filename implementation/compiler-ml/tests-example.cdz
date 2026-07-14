@@ -1,0 +1,29 @@
+effect report =
+  | fail : String -> Unit
+
+@test def arithmetic_holds() =
+  if 1 + 1 == 2 then
+    unit
+  else
+    host report in (
+      report.fail("1 + 1 should be 2");
+      trap("assertion failed")
+    )
+
+@test def comparison_holds() =
+  if 3 > 2 then
+    unit
+  else
+    host report in (
+      report.fail("3 should be greater than 2");
+      trap("assertion failed")
+    )
+
+@test def a_failing_example() =
+  if 2 + 2 == 5 then
+    unit
+  else
+    host report in (
+      report.fail("expected 2 + 2 to be 5 (it is not — this test fails on purpose)");
+      trap("assertion failed")
+    )

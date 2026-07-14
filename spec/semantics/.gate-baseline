@@ -16,6 +16,8 @@ pass	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — drivi
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	Int64.min crosses the parameter boundary and back unchanged
+pass	Int64.min crossing the boundary is still negative
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
@@ -69,6 +71,8 @@ pass	Type.eq is true for two values of the same type
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
+pass	UInt64.max crosses the parameter boundary and back unchanged
+pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
@@ -428,6 +432,7 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
+pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
@@ -554,6 +559,8 @@ pass	a host-called closure with a different body dispatches the right code
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent
+pass	a large multiply-called definition is emitted once by the cost heuristic
+pass	a large whole float crosses the boundary preserving its full value
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
@@ -580,6 +587,7 @@ pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
+pass	a let-bound runtime-if map is looked up with valid wasm
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
@@ -624,6 +632,7 @@ pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
+pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
@@ -802,9 +811,12 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a record computed from its argument
 pass	a parameterized export returns a runtime BigInt computed from its argument
 pass	a parameterized export returns a runtime Rational computed from its argument
 pass	a parameterized export returns a sum value computed from its argument
@@ -1094,6 +1106,7 @@ pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
 pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
+pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
@@ -1131,6 +1144,7 @@ pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
+pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
@@ -1445,6 +1459,7 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	binary operator operands are evaluated left to right
+pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
@@ -1728,6 +1743,7 @@ pass	negating a runtime narrow integer just above its min is exact
 pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
+pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
