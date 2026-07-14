@@ -20866,6 +20866,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_misspelled_bin_segment_kind_offers_the_rename_fix() {
+        // A bin segment kind head that is a plausible typo of a known kind — `byte`→`bytes`, `utf`→`utf8`,
+        // `bit`→`bits` — now names it + carries a rename fix on the kind head (the bin twin of the
+        // member/variant did-you-mean). A far miss keeps the plain "unrecognized kind" message.
+        for (typo, want) in [("byte", "bytes"), ("utf", "utf8"), ("bit", "bits")] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: b Bytes)) (bin ({typo} b))) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("`{typo}` must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{typo}: {}", d.message);
+            assert!(
+                d.message.contains(&format!("did you mean `{want}`?")),
+                "`{typo}` suggests `{want}`: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some(want),
+                "`{typo}` carries the rename fix to `{want}`: {:?}",
+                d.fix
+            );
+        }
+        // A FAR miss keeps the plain message, no fix (no baseless guess).
+        let far =
+            reject_full("(module m (def (main) (bin (xyzzy 5))) (export main))").expect("reject");
+        assert!(
+            far.message.contains("unrecognized bin segment kind")
+                && !far.message.contains("did you mean")
+                && far.fix.is_none(),
+            "a far-miss kind keeps the plain message with no fix: {} fix={:?}",
+            far.message,
+            far.fix
+        );
+    }
+
+    #[test]
     fn a_constant_bin_pattern_decodes_and_binds_its_segments() {
         // A `(bin …)` PATTERN over a constant Bytes scrutinee: decode + bind each segment, dispatch on
         // literal segments, and match the WHOLE scrutinee (leftover / overrun → fall to the catch-all).

@@ -3626,10 +3626,33 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
                 ),
             ));
         }
-        return Resolved::Poison(Reject::coded(
+        // An unrecognized kind head. If it is a plausible typo of a known kind — `byte`→`bytes`,
+        // `utf`/`utf-8`→`utf8`, `bit`→`bits`, `u62`→`u64` handled above — name it and carry a rename fix on
+        // the kind-head node (the bin-segment twin of the member/variant did-you-mean). The candidate set is
+        // the CLOSED bin vocabulary. `parts[0]` is the head to rewrite.
+        let mut reject = Reject::coded(
             Code::Malformed,
             "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)",
-        ));
+        )
+        .at(seg);
+        const BIN_KINDS: &[&str] = &[
+            "bits", "bytes", "utf8", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+        ];
+        if let Some(suggestion) =
+            crate::diag::suggest::nearest(kind_name, BIN_KINDS.iter().copied())
+        {
+            let head = parts[0];
+            reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "an unrecognized bin segment kind `{kind_name}` — did you mean `{suggestion}`? \
+                     (expected uNN/iNN/bits/bytes/utf8)"
+                ),
+            )
+            .at(head)
+            .with_fix(crate::diag::Fix::replace_heuristic(head, suggestion));
+        }
+        return Resolved::Poison(reject);
     }
     Resolved::Bin { segs }
 }
