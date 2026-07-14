@@ -21298,6 +21298,36 @@ mod stage1 {
     }
 
     #[test]
+    fn many_references_to_one_missing_name_all_suggest_it() {
+        // The program-wide typo-suggestion winner is MEMOIZED per (name, position-class), so N references
+        // to the SAME missing name (a forgotten import / renamed helper called from N sites) share one
+        // edit-distance scan instead of re-running it each — the O(N²) fix. This locks in that the memo
+        // returns the CORRECT, IDENTICAL suggestion for every occurrence (not a stale/first-only answer):
+        // 20 defs each call `helpr`, and every one of the 20 unbound-name faults must suggest `helper`.
+        let n = 20;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} x) (helpr x))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(do (def (helper y) y) {defs} (def (main) (d0 1)) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        let sugg: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+            .filter_map(|d| d.fix.map(|f| f.replacement))
+            .collect();
+        assert_eq!(
+            sugg.len(),
+            n,
+            "one suggested fix per unbound `helpr` reference: {sugg:?}"
+        );
+        assert!(
+            sugg.iter().all(|s| s == "helper"),
+            "every occurrence suggests `helper` (the memo returns the same winner each time): {sugg:?}"
+        );
+    }
+
+    #[test]
     fn a_member_operand_typo_prefers_a_member_accessible_name_over_a_nearer_variant() {
         // CONTEXT-AWARE suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
         // Fix — the fix must be one an agent applies and it WORKS, the one-shot rule): a `handle`'s effect
