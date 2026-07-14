@@ -1,0 +1,72 @@
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+def eval(node: Ast) = match node with
+  | Ast.Int(n) => BigInt.of(n)
+  | Ast.List(es) => eval-form(es)
+  | _ => trap("cannot evaluate this node")
+
+def eval-form(es: List(Ast)) = match es with
+  | [h, a, b] => (match h with
+    | Ast.Name(op) => apply-op(op, eval(a), eval(b))
+    | _ => trap("form head is not an operator")
+  )
+  | _ => trap("arithmetic form must be (op a b)")
+
+def apply-op(op: String, x: BigInt, y: BigInt) =
+  if op == "+" then
+    x + y
+  else
+    if op == "-" then x - y else if op == "*" then x * y else trap("unknown operator")
+
+def evals-to(node: Ast, expected: BigInt) = eval(node) == expected
+
+@test
+def eval-leaf() = if evals-to(Ast.Int(42), BigInt.of(42)) then unit else trap("leaf 42")
+
+@test
+def eval-add() =
+  if evals-to(Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)]), BigInt.of(3)) then
+    unit
+  else
+    trap("1+2=3")
+
+@test
+def eval-mul() =
+  if evals-to(Ast.List([Ast.Name("*"), Ast.Int(6), Ast.Int(7)]), BigInt.of(42)) then
+    unit
+  else
+    trap("6*7=42")
+
+@test
+def eval-nested() =
+  if evals-to(
+      Ast.List([Ast.Name("+"), Ast.List([Ast.Name("*"), Ast.Int(2), Ast.Int(3)]), Ast.Int(4)]),
+      BigInt.of(10)
+    ) then
+    unit
+  else
+    trap("(+ (* 2 3) 4)=10")
+
+@test
+def eval-sub-negative() =
+  if evals-to(Ast.List([Ast.Name("-"), Ast.Int(3), Ast.Int(10)]), BigInt.of(-7)) then
+    unit
+  else
+    trap("3-10=-7")
+
+@test
+def eval-big() =
+  if evals-to(
+      Ast.List([Ast.Name("*"), Ast.Int(1000000000), Ast.Int(1000000000)]),
+      BigInt.of(1000000000000000000)
+    ) then
+    unit
+  else
+    trap("1e9*1e9 (needs BigInt)")
+
+export { eval }

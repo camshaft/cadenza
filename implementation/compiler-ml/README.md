@@ -71,6 +71,8 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
   `Map String Ast` environment with its `Ast`, recursively. Stresses a compound-VALUED `Map`.
 - `src/check.cdz` — an arity checker: counts call-forms `(Name op arg…)` whose arg count differs from
   `op`'s declared arity in a `Map String Int64` arity table (recursing into every child).
+- `src/eval.cdz` — an evaluator: reduces an arithmetic `Ast` (`+`/`-`/`*` over `Int` leaves) to a
+  `BigInt` result, recursively (so `1e9 * 1e9` doesn't overflow — it uses arbitrary precision).
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
