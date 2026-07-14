@@ -18447,6 +18447,116 @@ mod tests {
             .for_each(|ops| run_map_str_val_op_sequence(ops));
     }
 
+    // ── Perceus RESET / REUSE round-trip: a reused shell is byte-canonical + leak-free ──────────
+    // `op_reset` (Perceus: a unique dying node → an empty reuse token) + `op_arr_alloc_reuse` /
+    // `op_sum_new_reuse` (refit the token in place, no fresh Node) are SHIPPED but the compiler doesn't
+    // emit them yet (full Perceus deferred). They have a HISTORY of rep-divergence bugs (`@b90ab6b`
+    // heap-RAW→inline, `@0fb3362c` heap-HANDLES→inline) — a reused shell that keeps a leftover heap
+    // raw/handles Vec where a FRESH ctor gives inline is a canonical-form violation INVISIBLE to
+    // champ_eq/hash (they read via `Deref`), so only a `raw_is_heap`/`handles_is_heap` rep-assert catches
+    // it. Those are FIXED-shape tests; this fuzzes the COMBINATORIAL space (a source of random arity +
+    // inline/heap raw origin, reset, reused as an arr OR a sum of random arity). The invariant: a reused
+    // node is byte-IDENTICAL (`champ_eq` + `champ_hash`) to a from-scratch build of the same value, and
+    // the whole round-trip is leak/double-free-free (`live_nodes()==before`). A latent reuse bug would
+    // activate the instant the compiler emits reset/reuse — this pins the contract before then.
+    #[derive(Debug, bolero::TypeGenerator)]
+    struct ResetReuseCase {
+        src_shape: u8, // which source shell to reset
+        reuse_as_sum: bool,
+        target_n: u8, // target arr arity (0..=4) or sum disc (0..=3)
+        payload: u8,
+    }
+
+    fn run_reset_reuse_case(c: &ResetReuseCase) {
+        let before = live_nodes();
+        // Build a UNIQUE (rc==1) source shell of a chosen shape — the node `reset` will recycle.
+        let src = match c.src_shape % 6 {
+            0 => op_arr_alloc(2), // small tuple (inline handles, empty raw)
+            1 => op_arr_alloc(5), // wide arr (heap handles)
+            2 => op_sum_new(1, op_box_int(c.payload as i64)), // sum (1 inline handle, 4-byte inline raw)
+            3 => {
+                // a heap-RAW leaf (>INLINE_RAW_CAP bytes) — the `@b90ab6b` bug shape.
+                let bytes: Vec<u8> = (0..(INLINE_RAW_CAP as u32 + 8))
+                    .map(|k| (k & 0xff) as u8)
+                    .collect();
+                alloc(Vec::new(), bytes)
+            }
+            4 => {
+                // a shell with a HEAP CHILD (a nested arr as a sum payload) — so `op_reset`'s child-drop
+                // performs REAL reclamation; if reset forgot to drop the child, `live_nodes` catches the leak
+                // (the immediate-child shapes above can't — an immediate isn't a counted Node).
+                let inner = op_arr_alloc(2);
+                op_arr_set(inner, 0, op_box_int(c.payload as i64));
+                op_arr_set(inner, 1, op_box_int(c.payload as i64 + 1));
+                op_sum_new(0, inner)
+            }
+            _ => op_arr_alloc(0), // an inline unit — reset must decline (returns NULL), reuse allocs fresh
+        };
+        let token = op_reset(src); // unique → the shell (or NULL for the inline-unit case)
+        if c.reuse_as_sum {
+            let disc = (c.target_n % 3) as u32;
+            let reused = op_sum_new_reuse(disc, op_box_int(c.payload as i64), token);
+            let fresh = op_sum_new(disc, op_box_int(c.payload as i64));
+            assert!(
+                champ_eq(reused, fresh),
+                "reused sum == fresh sum (disc {disc}, src_shape {})",
+                c.src_shape % 6
+            );
+            assert_eq!(
+                champ_hash(reused),
+                champ_hash(fresh),
+                "…and hashes identically"
+            );
+            op_drop(reused);
+            op_drop(fresh);
+        } else {
+            let n = (c.target_n % 5) as u32; // 0..=4 slots
+            let build = |tok: Handle| -> Handle {
+                let a = op_arr_alloc_reuse(n, tok);
+                for i in 0..n {
+                    op_arr_set(a, i, op_box_int((c.payload as i64) + i as i64));
+                }
+                a
+            };
+            let reused = build(token);
+            let fresh = {
+                let a = op_arr_alloc(n);
+                for i in 0..n {
+                    op_arr_set(a, i, op_box_int((c.payload as i64) + i as i64));
+                }
+                a
+            };
+            assert!(
+                champ_eq(reused, fresh),
+                "reused arr == fresh arr (n {n}, src_shape {})",
+                c.src_shape % 6
+            );
+            assert_eq!(
+                champ_hash(reused),
+                champ_hash(fresh),
+                "…and hashes identically"
+            );
+            op_drop(reused);
+            op_drop(fresh);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the reset→reuse round-trip"
+        );
+    }
+
+    #[test]
+    fn prop_reset_reuse_roundtrip_is_canonical_and_leak_free() {
+        bolero::check!()
+            .with_type::<Vec<ResetReuseCase>>()
+            .for_each(|cases| {
+                for c in cases {
+                    run_reset_reuse_case(c);
+                }
+            });
+    }
+
     // ── RRB persistent VECTOR randomized differential vs `Vec<i64>` ─────────────────────────────
     // The map/set already have `prop_*_matches_reference` fuzz tests, but the RRB vector — the most
     // structurally intricate collection (relaxed-radix rebalancing on concat/split, path-copy on a
