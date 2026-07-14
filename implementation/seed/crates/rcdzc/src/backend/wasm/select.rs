@@ -4411,8 +4411,12 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+            // pushing the derived constant is equivalent and drops one import call per `None` (the same
+            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+            // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
             Ok(())
@@ -4645,8 +4649,12 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+            // pushing the derived constant is equivalent and drops one import call per `None` (the same
+            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+            // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
             Ok(())
@@ -4704,8 +4712,12 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+            // pushing the derived constant is equivalent and drops one import call per `None` (the same
+            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+            // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
             Ok(())
@@ -4853,8 +4865,12 @@ fn emit(
             out.push(Lir::LocalGet(str_slot));
             out.push(Lir::CallImport(OP_DROP));
             out.push(Lir::ConstI32(disc_none as i32));
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+            // pushing the derived constant is equivalent and drops one import call per `None` (the same
+            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+            // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
             Ok(())
@@ -5107,8 +5123,12 @@ fn emit(
             out.push(Lir::LocalGet(bytes_slot));
             out.push(Lir::CallImport(OP_DROP)); // release the un-consumed bytes reference
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+            // pushing the derived constant is equivalent and drops one import call per `None` (the same
+            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+            // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
             Ok(())

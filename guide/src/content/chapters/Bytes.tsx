@@ -19,6 +19,10 @@ export default function Bytes() {
       </P>
       <Runnable source={`(Bytes.len b"hi!")`} />
       <Runnable source={`(Bytes.len (Bytes.of (list 10 20 30)))`} />
+      <P>
+        Both are <C>3</C>: <C>b"hi!"</C> is the three octets <C>h</C>, <C>i</C>, <C>!</C>, and the built
+        sequence has three numbers in its list.
+      </P>
 
       <H2>Two ways to write the same bytes</H2>
       <P>
@@ -50,6 +54,7 @@ export default function Bytes() {
         Both return new values; the originals are untouched:
       </P>
       <Runnable source={`(Bytes.len (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))`} />
+      <P>Joining a 2-byte sequence with a 3-byte one gives <C>5</C> bytes.</P>
       <Runnable
         source={`(def (main)
   (Bytes.len

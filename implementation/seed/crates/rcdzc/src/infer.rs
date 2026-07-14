@@ -71,10 +71,74 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     // recompute, so leave it unmemoized and let the solved type win. Every FULLY-GROUND type is memoized as
     // before (the solve-once discipline holds for real types; `has_free_var` treats a deferred int
     // width/sign as ground — those default, they are not undetermined).
-    if !matches!(t, Ty::Any) && !t.has_free_var() {
+    if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) {
         db.types.fill(id, t.clone());
     }
     t
+}
+
+/// `Ty::has_free_var`, but MEMOIZED per shared compound `Rc` — for the `type_of` memoization guard above,
+/// which runs on EVERY node's solved type. A wide `Ty::Record`/`Ty::Tuple` (an N-field record annotation)
+/// is referenced from N nodes, each of which had the guard walk the whole O(N) payload → O(N²). The payload
+/// is immutable and its `Rc` is SHARED across those nodes (a memoized `typeval_of` / a solved param type
+/// hands back the same `Rc`), so the verdict caches by the `Rc`'s address (`Db::ty_has_free_var`, the
+/// fix-50 key). Scalars and thin wrappers recurse directly (already O(1)); only the wide `Rc`-backed
+/// payloads — `Record`/`Tuple`/`Sum`/`Nominal` — are cached, since those are the ones that make the walk
+/// superlinear. Identical result to `Ty::has_free_var`, just without the repeated deep walk.
+pub(crate) fn ty_has_free_var(db: &mut Db, t: &Ty) -> bool {
+    match t {
+        // The `Rc`-backed compounds: cache the whole-payload verdict by the `Rc`'s address so N references
+        // to the same shared type pay ONE walk, not N.
+        Ty::Record(fields) => {
+            let ptr = std::rc::Rc::as_ptr(fields) as *const () as usize;
+            if let Some(&v) = db.ty_has_free_var.get(&ptr) {
+                return v;
+            }
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            #[cfg(test)]
+            crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(c.get() + tys.len() as u64));
+            let v = tys.iter().any(|f| ty_has_free_var(db, f));
+            db.ty_has_free_var.insert(ptr, v);
+            v
+        }
+        Ty::Tuple(elems) => {
+            let ptr = std::rc::Rc::as_ptr(elems) as *const () as usize;
+            if let Some(&v) = db.ty_has_free_var.get(&ptr) {
+                return v;
+            }
+            let tys: Vec<Ty> = elems.to_vec();
+            #[cfg(test)]
+            crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(c.get() + tys.len() as u64));
+            let v = tys.iter().any(|e| ty_has_free_var(db, e));
+            db.ty_has_free_var.insert(ptr, v);
+            v
+        }
+        // Thin wrappers / leaves — already O(1) or O(depth-of-thin-nesting); recurse directly (no shared
+        // `Rc` to key on, and no wide fan-out to amortize). `Sum`/`Nominal` `args` is a `Vec` (no shared
+        // pointer identity) and holds only type ARGUMENTS (small — an instantiation's type params, not an
+        // N-wide payload), so a direct walk is fine — the wide case is the `Record`/`Tuple` above.
+        Ty::Var(_) => true,
+        Ty::Fn(p, r) => ty_has_free_var(db, p) || ty_has_free_var(db, r),
+        Ty::List(elem) | Ty::Set(elem) => ty_has_free_var(db, elem),
+        Ty::Map(k, v) => ty_has_free_var(db, k) || ty_has_free_var(db, v),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+            let tys: Vec<Ty> = args.clone();
+            tys.iter().any(|a| ty_has_free_var(db, a))
+        }
+        Ty::Qty { inner, .. } => ty_has_free_var(db, inner),
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::Type
+        | Ty::Any
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational
+        | Ty::Float(_) => false,
+    }
 }
 
 /// Whether the solved type of `id` is a `Ty::Nominal` — a cheap KIND check that does NOT clone the type.
@@ -863,13 +927,22 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
     let before = out.len();
     collect(db, ty_expr, out);
     if out.len() == before {
-        out.push(
-            Reject::coded(
-                Code::TypeMismatch,
-                non_type_annotation_message(db, ty_expr, lead),
-            )
-            .at(ty_expr),
-        );
+        // A type-CONSTRUCTOR form with a well-formed NON-TYPE in an argument position — `(List 5)`, `(Tuple
+        // Int64 5)`, `(-> Int64 5)` — names the SPECIFIC offending element + anchors THERE, rather than the
+        // flat "requires a type, but found a non-type" over the whole form (which never says which sub-part
+        // is wrong). Falls back to the flat message when no single argument is the culprit (a bare literal
+        // `(: x 5)`, or a head that is not a recognized type constructor).
+        if let Some((arg, msg)) = non_type_argument_message(db, ty_expr) {
+            out.push(Reject::coded(Code::TypeMismatch, format!("{lead}: {msg}")).at(arg));
+        } else {
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    non_type_annotation_message(db, ty_expr, lead),
+                )
+                .at(ty_expr),
+            );
+        }
     }
 }
 
@@ -989,6 +1062,87 @@ fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String
         if supplied == 1 { "was" } else { "were" },
         params.join(" "),
     ))
+}
+
+/// When `ty_expr` is a type-CONSTRUCTOR form (`(List T)`, `(Map K V)`, `(Tuple T…)`, `(-> A… R)`, `(Qty T
+/// u)`) with a well-formed NON-TYPE in one of its type-argument positions — a literal or value where a type
+/// belongs, `(List 5)` / `(Tuple Int64 5)` / `(-> Int64 5)` — return the offending CHILD node and a message
+/// naming that specific position, instead of the flat "requires a type, but found a non-type" that neither
+/// says WHICH element is wrong nor anchors at it. The type-argument positions are the form's children after
+/// the head (the last child of `->` is its result, the earlier ones its parameters; `Qty`'s second child is
+/// a UNIT, not a type, so it is excluded). Only fires for a child that (a) `typeval_of` rejects, (b) is not
+/// itself a wrong-arity ctor (that has its own message via `type_ctor_arity_message`), and (c) surfaces no
+/// fault of its own from `collect` (an unbound name is already CDZ0101 — this is for a WELL-FORMED value, a
+/// literal). The head must be a recognized type constructor (via `meta_apply_of`), so a user application in
+/// a type slot is not misread. `None` when no such position exists. Reports the FIRST offending argument
+/// (left-to-right), one fault per annotation.
+fn non_type_argument_message(db: &mut Db, ty_expr: StructId) -> Option<(StructId, String)> {
+    let children = match db.ast.get(ty_expr) {
+        crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
+        _ => return None,
+    };
+    let head = children[0];
+    // Recognize the constructor + how to describe its argument positions. `role(i, n)` names the i-th
+    // argument (0-based over the args after the head; `n` = arg count) for that constructor.
+    let role: fn(usize, usize) -> String = match crate::eval::meta_apply_of(db, head)? {
+        crate::resolved::Prim::ListCtor | crate::resolved::Prim::SetCtor => {
+            |_, _| "the element type".to_string()
+        }
+        crate::resolved::Prim::MapCtor => |i, _| {
+            if i == 0 {
+                "the key type".to_string()
+            } else {
+                "the value type".to_string()
+            }
+        },
+        crate::resolved::Prim::TupleCtor => |i, _| format!("element {i}'s type"),
+        crate::resolved::Prim::FnCtor => |i, n| {
+            // `(-> A… R)` — the LAST argument is the result, the earlier ones parameters.
+            if i + 1 == n {
+                "the result type".to_string()
+            } else {
+                format!("parameter {i}'s type")
+            }
+        },
+        // `Qty`'s first arg is the inner numeric TYPE; its second is a UNIT (validated separately, not a
+        // type), so only position 0 is a type slot here.
+        crate::resolved::Prim::QtyCtor => |_, _| "the inner type".to_string(),
+        _ => return None,
+    };
+    let args = &children[1..];
+    let n = args.len();
+    for (i, &arg) in args.iter().enumerate() {
+        // `Qty`'s unit position (index 1) is NOT a type slot — skip it (its own "is not a unit" check stands).
+        if matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(crate::resolved::Prim::QtyCtor)
+        ) && i == 1
+        {
+            continue;
+        }
+        if crate::eval::typeval_of(db, arg).is_some() {
+            continue; // this position IS a type — fine
+        }
+        // A wrong-arity nested ctor has its OWN (better) message — leave it to `type_ctor_arity_message`.
+        if type_ctor_arity_message(db, arg).is_some() {
+            return None;
+        }
+        // A fault of the argument's own (an unbound name → CDZ0101) is the real report — only a WELL-FORMED
+        // non-type (a literal `5`, a compound value) reaches this naming. Probe with a throwaway buffer.
+        let mut probe = Vec::new();
+        collect(db, arg, &mut probe);
+        if !probe.is_empty() {
+            return None;
+        }
+        return Some((
+            arg,
+            format!(
+                "{} must be a type, but this is a value — a type belongs here",
+                role(i, n)
+            ),
+        ));
+    }
+    None
 }
 
 /// A NON-LINEAR parameter list — a name bound more than once (`(fn (x x) …)`, `(f x x)`) — is CDZ0102: a
@@ -6323,6 +6477,8 @@ fn check_application(
                         // payload Bytes → `(String.to-bytes s)` — offer the SAME coercion fix the operator/
                         // argument position does (the D33 lesson: the same repair wherever the same mismatch
                         // surfaces). No coercion (e.g. Bool payload) → the bare reject.
+                        // Anchor at the offending ARGUMENT (the wrong-type payload value), not the whole
+                        // ctor application — the squiggle lands on `"x"` in `(T.Mk "x")`.
                         let mut reject = Reject::coded(
                             Code::Malformed,
                             format!(
@@ -6331,7 +6487,8 @@ fn check_application(
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
-                        );
+                        )
+                        .at(arg);
                         if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
                             reject = reject.with_fix(fix);
                         }
@@ -7085,10 +7242,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let cond_ty = type_of(db, cond);
             if !cond_ty.agrees_with(&Ty::Bool) {
                 trace!(target: "rcdzc::infer", node = id.0, cond_ty = %cond_ty.render_name(), "fault: if condition not Bool (CDZ0203)");
-                out.push(Reject::coded(
-                    Code::TypeMismatch,
-                    format!("if condition must be Bool, found {}", cond_ty.render_name()),
-                ));
+                // Anchor at the CONDITION expression, not the whole `(if …)` — the squiggle then lands on
+                // the non-Bool value (`5` in `(if 5 …)`), the actual culprit. (Without `.at`, `collect`
+                // stamps the coarse `if`-node default.) The branch-mismatch reject below stays at the `if`
+                // node: it concerns the RELATIONSHIP between both branches, not one sub-node.
+                out.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!("if condition must be Bool, found {}", cond_ty.render_name()),
+                    )
+                    .at(cond),
+                );
             }
             // Both branches are type-checked HERE (each `type_of`'d, and they must agree) EVEN THOUGH only
             // the condition-selected branch runs — so an unevaluated branch can never carry a deferred type
@@ -7154,10 +7318,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let t = type_of(db, operand);
                 if !t.agrees_with(&Ty::Bool) {
                     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!("`{op}` operand must be Bool, found {}", t.render_name()),
-                    ));
+                    // Anchor at the offending OPERAND, not the whole `(and …)`/`(or …)`.
+                    out.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!("`{op}` operand must be Bool, found {}", t.render_name()),
+                        )
+                        .at(operand),
+                    );
                 }
                 collect(db, operand, out);
             }
@@ -7166,10 +7334,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let t = type_of(db, operand);
             if !t.agrees_with(&Ty::Bool) {
                 trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0201)");
-                out.push(Reject::coded(
-                    Code::Malformed,
-                    format!("`not` operand must be Bool, found {}", t.render_name()),
-                ));
+                // Anchor at the offending OPERAND, not the whole `(not …)`.
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!("`not` operand must be Bool, found {}", t.render_name()),
+                    )
+                    .at(operand),
+                );
             }
             collect(db, operand, out);
         }

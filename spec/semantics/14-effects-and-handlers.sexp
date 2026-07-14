@@ -1294,6 +1294,23 @@
                 (match (Ask.get) (0 (Ask.get)) (n (+ n (Ask.get)))))) (export main)))
   (output (: 5 Int64)))
 
+(case "a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body"
+  (doc    "A match arm destructures a sum constructor, binding its payload, and that BOUND VALUE is the
+           argument to a perform in the arm body — the binder-into-perform-argument shape. The scrutinee
+           `(Some 5)` is a pure literal, so the `(Some n)` arm binds `n = 5` and its body `(Ctr.tick n)`
+           performs `Ctr.tick` with that bound payload. `Ctr.tick : Int64 -> Int64`, arm `(tick (d) s (resume
+           (+ d s) (+ s 1)))`, seeded 100: `(Ctr.tick 5)` = `5 + 100` = 105. Pins that a value bound by a
+           constructor pattern in a match arm flows correctly as a perform's argument (the arm binder is in
+           scope for the perform, and the fold threads the handler state through it) — distinct from the
+           performing-scrutinee case above (there the scrutinee performs and the arm reads STATE; here the
+           scrutinee is pure and the arm feeds its BOUND payload into the op).")
+  (input  (do
+            (effect Ctr (op tick (-> Int64 Int64)))
+            (def (main)
+              (handle Ctr 100 ((tick (d) s (resume (+ d s) (+ s 1))))
+                (match (Some 5) ((Some n) (Ctr.tick n)) (None 0)))) (export main)))
+  (output (: 105 Int64)))
+
 (case "the else-branch of an if threads a performed state to the continuation"
   (doc    "The else-branch (taken, cond false) performs once (reads 0, threads 0->1); the continuation reads
            1. Pins that BOTH arms thread out, not just the then-arm — the distribution wraps the continuation
@@ -1431,6 +1448,23 @@
               (let ((xs (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))))
                 ((. List len) xs))) (export main)))
   (output (: 3 Int64)))
+
+(case "a STRING-result effect op resumes with a string that folds through a concat"
+  (doc    "The effect fold's value column carries a heap STRING: an operation returning `String` is resumed
+           with a string literal, and that performed value flows into `String.concat` in the continuation.
+           `Env.name : Unit -> String`, arm `(name (u) s (resume \"cdz\" s))`, so `(Env.name)` yields the heap
+           string `\"cdz\"`; the body `(String.concat (Env.name) \"!\")` appends `\"!\"`, giving `\"cdz!\"`.
+           Pins that a performed String resume value threads through the fold like any scalar and composes
+           under a heap string operation — the String companion of the tuple/list value-column cases,
+           exercising the value-heap runtime for the resume value rather than an immediate. (wasm: the rust
+           target declines — it lacks the value-heap/String emission the component-model backend has, the
+           same backend-parity gap as the list-building cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Env (op name (-> Unit String)))
+            (def (main)
+              (handle Env 0 ((name (u) s (resume "cdz" s)))
+                (String.concat (Env.name) "!"))) (export main)))
+  (output (: "cdz!" String)))
 
 (case "a recursive walk threads TWO effects at once — a fresh-index counter and a running total"
   (doc    "The full compiler-pass shape: ONE recursive walk that reads a fresh index from `Idx` AND folds a

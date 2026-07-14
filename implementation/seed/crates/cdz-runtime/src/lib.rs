@@ -18292,6 +18292,129 @@ mod tests {
             .for_each(|ops| run_strkey_op_sequence(ops));
     }
 
+    // COMPOUND-VALUE variant — a `Map String String` (a compiler ENVIRONMENT: `Map String Ast`, the
+    // shape `subst.cdz`/`free-vars.cdz` use). Every OTHER map fuzzer uses an immediate INT value
+    // (`op_box_int`), which is refcount-FREE — so the compound-VALUE ownership discipline is untested:
+    // inserting a heap value transfers a reference; OVERWRITING a key must DROP the old value (else leak);
+    // REMOVING/dropping the map must free every value; FORK shares the values across versions. A String
+    // value is a heap `Node` (rc-tracked), so a double-free (overwrite frees twice), a leak (overwrite
+    // forgets the old), or a fork-aliasing bug (shared value freed early) would surface here as a
+    // `live_nodes()` imbalance — invisible to the int-valued fuzzers. `op_map_lookup` returns the value
+    // BORROWED (the map keeps ownership); the reference oracle holds owned `String`s for comparison.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum MapStrValOp {
+        Insert { key: u8, val: u8 },
+        Remove { key: u8 },
+        Fork,
+        DropForked,
+    }
+
+    // A small pool of distinct string VALUES (heap nodes), varied so overwrites really change content.
+    fn strval(v: u8) -> String {
+        match v % 6 {
+            0 => "apple".to_string(),
+            1 => "banana".to_string(),
+            2 => "".to_string(),
+            3 => "a-longer-value-string".to_string(),
+            4 => "x".to_string(),
+            _ => "banana".to_string(), // deliberate dup with #1 (distinct nodes, equal content)
+        }
+    }
+
+    fn run_map_str_val_op_sequence(ops: &[MapStrValOp]) {
+        let before = live_nodes();
+        let mut m = op_map_empty();
+        let mut reference: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeMap<String, String>)> = Vec::new();
+        for op in ops {
+            match *op {
+                MapStrValOp::Insert { key, val } => {
+                    let k = strkey_name(key);
+                    let v = strval(val);
+                    // Consumes both the key and the (heap) value; overwriting `k` must drop the old value.
+                    m = op_map_insert(m, op_str_new(k.clone()), op_str_new(v.clone()));
+                    reference.insert(k, v);
+                }
+                MapStrValOp::Remove { key } => {
+                    let k = strkey_name(key);
+                    let probe = op_str_new(k.clone());
+                    m = op_map_remove(m, probe); // BORROWS the key; frees the removed value
+                    op_drop(probe);
+                    reference.remove(&k);
+                }
+                MapStrValOp::Fork => {
+                    op_dup(m); // rc>1: shares the compound values across versions
+                    forks.push((m, reference.clone()));
+                }
+                MapStrValOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) size + per-key VALUE lookup vs the reference (a borrowed String value, read via op_str_get).
+        assert_eq!(
+            op_map_size(m) as usize,
+            reference.len(),
+            "compound-value map size matches reference"
+        );
+        for k in 0..8u8 {
+            let name = strkey_name(k);
+            let probe = op_str_new(name.clone());
+            let got = op_map_lookup(m, probe); // borrows both; returns the value BORROWED
+            op_drop(probe);
+            let want = reference.get(&name);
+            match (got == Handle::NULL, want) {
+                (true, None) => {}
+                (false, Some(w)) => assert_eq!(
+                    &op_str_get(got),
+                    w,
+                    "value for key {name:?} matches reference (borrowed, not dropped)"
+                ),
+                _ => panic!("presence mismatch for key {name:?}"),
+            }
+        }
+        // (2) forked snapshots undisturbed — the shared compound values survive via the fork.
+        for (h, snap) in &forks {
+            assert_eq!(
+                op_map_size(*h) as usize,
+                snap.len(),
+                "forked compound-value snapshot size intact"
+            );
+            for (name, wv) in snap {
+                let probe = op_str_new(name.clone());
+                let got = op_map_lookup(*h, probe);
+                op_drop(probe);
+                assert!(got != Handle::NULL, "forked snapshot key {name:?} present");
+                assert_eq!(
+                    &op_str_get(got),
+                    wv,
+                    "forked snapshot value for {name:?} intact"
+                );
+            }
+        }
+        // (3) no leak / no double-free — the balance check catches an overwrite that forgets the old
+        // value (leak), an overwrite/remove that frees twice, or a fork that shares a value freed early.
+        op_drop(m);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the compound-value map sequence"
+        );
+    }
+
+    #[test]
+    fn prop_map_str_val_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<MapStrValOp>>()
+            .for_each(|ops| run_map_str_val_op_sequence(ops));
+    }
+
     // ── RRB persistent VECTOR randomized differential vs `Vec<i64>` ─────────────────────────────
     // The map/set already have `prop_*_matches_reference` fuzz tests, but the RRB vector — the most
     // structurally intricate collection (relaxed-radix rebalancing on concat/split, path-copy on a

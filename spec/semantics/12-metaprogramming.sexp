@@ -45,6 +45,22 @@
   (input  (eval (quote (+ 1 2))))
   (output (: 3 Int64)))
 
+(case "eval of a quasiquote splicing a compile-time-known value"
+  (doc    "The core macro idiom (metaprogramming.md #Eval Is Optional / #Quasiquote Constructs AST With
+           Selective Evaluation): eval a quasiquoted form whose unquote splices a compile-time-known VALUE,
+           not just a bare literal. `(let ((x 3)) (eval `(+ ,x 4)))` reconstructs `(+ x 4)` and folds to 7.
+           The eval desugar reconstructs `(eval AST)` to the source the AST denotes; an active unquote lifts
+           its live operand into `(Ast.Int <e>)`, so reconstruction unwraps that back to `<e>` — a let-bound
+           name, a def-const, or a computed constant, all resolving in the eval's enclosing scope. (A bare-
+           LITERAL splice `(unquote 3)` and a plain `(quote …)` already worked; a NON-literal unquote once
+           left the eval un-desugared, so its head `eval` reported a misleading 'unbound name eval'.) The
+           reconstructed source must reach the enclosing `let`, so the desugar blanks the dead reified-
+           argument wrappers, leaving the spliced `x` node parented at the eval position. Expected 7.")
+  (input  (do
+            (def (main) (let ((x 3)) (eval (quasiquote (+ (unquote x) 4)))))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
