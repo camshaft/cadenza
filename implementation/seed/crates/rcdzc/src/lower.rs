@@ -8467,7 +8467,24 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
                 lhs: ly,
                 rhs: ry,
             },
-        ) => ox == oy && core_equiv(db, lx, ly) && core_equiv(db, rx, ry),
+        ) => {
+            // Base structural match: same operator, operands equal position-wise.
+            let positional = ox == oy && core_equiv(db, lx, ly) && core_equiv(db, rx, ry);
+            // COMMUTATIVITY of EQUALITY: `(= a b)` and `(= b a)` denote the identical boolean (equality is
+            // symmetric), so accept the SWAPPED operand match too. Only `Eq` — `<`/`>`/`<=`/`>=` flip
+            // direction when swapped, and this arm is shared with `Core::Arith` whose ops are never `Eq`, so
+            // `ox == Eq` fires ONLY for a comparison. Guarded on both operands trap-free so the swap changes
+            // no observable evaluation ORDER (a trapping operand's position could decide which trap fires
+            // first; a pure operand's cannot). Lets `(and (= a b) (= b a))` fold to one `(= a b)` via the
+            // idempotence path, which keys on `core_equiv`.
+            positional
+                || (ox == oy
+                    && matches!(ox, Prim::Eq)
+                    && is_trap_free(db, lx)
+                    && is_trap_free(db, rx)
+                    && core_equiv(db, lx, ry)
+                    && core_equiv(db, rx, ly))
+        }
         (
             Core::Convert {
                 op: ox,

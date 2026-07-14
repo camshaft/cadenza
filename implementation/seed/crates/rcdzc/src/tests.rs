@@ -16784,6 +16784,109 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mirrored_equality_pair_folds_by_commutativity() {
+        // `=` is COMMUTATIVE, so `(= a b)` and `(= b a)` are the SAME predicate — `core_equiv` now matches
+        // them (swapped operands, both trap-free), letting `(and (= a b) (= b a))` fold to one `(= a b)` via
+        // idempotence, and `(and (= a b) (not (= b a)))` fold to `false` via the complement law. Ordering
+        // comparisons are NOT commutative and must not swap-fold. A trapping operand declines the swap.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let eqs = |params: &str, body: &str| -> usize {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+                .iter()
+                .filter(|i| matches!(i, Lir::I64Eq | Lir::I64Ne))
+                .count()
+        };
+        // Mirrored equality folds to ONE compare under both connectives.
+        assert_eq!(
+            eqs("(: a Int64) (: b Int64)", "(: (and (= a b) (= b a)) Bool)"),
+            1,
+            "and mirrored eq → one eq"
+        );
+        assert_eq!(
+            eqs("(: a Int64) (: b Int64)", "(: (or (= a b) (= b a)) Bool)"),
+            1,
+            "or mirrored eq → one eq"
+        );
+        // Complement composes: `(and (= a b) (not (= b a)))` is `X && !X` → false, no compare at all.
+        assert_eq!(
+            eqs(
+                "(: a Int64) (: b Int64)",
+                "(: (and (= a b) (not (= b a))) Bool)"
+            ),
+            0,
+            "and eq/not-mirrored-eq → false"
+        );
+        // ORDERING is NOT commutative — `(< a b)` and `(< b a)` are DIFFERENT (a disjoint pair), so they must
+        // not collapse via a bogus swap-idempotence; both compares are consumed by the (correct) disjoint
+        // handling, which yields a constant here, so 0 eq/ne is fine — the point is the VALUE is right.
+        use wasmtime::component::Val;
+        let f = |params: &str, body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f {params}) (if {body} 1 0)) (export f))"
+            ))))
+            .expect("compile")
+        };
+        // VALUE PARITY: mirrored-eq forms equal `(= a b)`.
+        let andm = f("(: a Int64) (: b Int64)", "(and (= a b) (= b a))");
+        let orm = f("(: a Int64) (: b Int64)", "(or (= a b) (= b a))");
+        for (a, b) in [(3, 3), (3, 5), (0, 0)] {
+            let want = if a == b { 1 } else { 0 };
+            assert_eq!(
+                run_returns_with::<i64>(&andm, "f", &[Val::S64(a), Val::S64(b)]),
+                want,
+                "and-mirrored @{a},{b}"
+            );
+            assert_eq!(
+                run_returns_with::<i64>(&orm, "f", &[Val::S64(a), Val::S64(b)]),
+                want,
+                "or-mirrored @{a},{b}"
+            );
+        }
+        // `(< a b)` && `(< b a)` is a contradiction → always false (must NOT mis-fold to one comparison).
+        let lt = f("(: a Int64) (: b Int64)", "(and (< a b) (< b a))");
+        for (a, b) in [(3, 5), (5, 3), (4, 4)] {
+            assert_eq!(
+                run_returns_with::<i64>(&lt, "f", &[Val::S64(a), Val::S64(b)]),
+                0,
+                "ordering-mirror contradiction @{a},{b}"
+            );
+        }
+        // TRAP SAFETY: a trapping operand declines the commutative swap (needs trap-free), so both compares
+        // stay and the trap fires. `(/ 10 a)` traps at a=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (and (= (/ 10 a) b) (= b (/ 10 a))) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::S64(5)]),
+            "a trapping operand keeps both compares and traps"
+        );
+    }
+
+    #[test]
     fn a_short_circuit_connective_absorbs_a_repeated_conjunct() {
         // NESTED IDEMPOTENCE: `(and (and a b) a)` → `(and a b)`, `(or (or a b) b)` → `(or a b)` — one operand
         // is a nested SAME-connective node already containing the other, so re-applying it is redundant. The
