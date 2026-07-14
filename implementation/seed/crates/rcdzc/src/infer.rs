@@ -681,6 +681,41 @@ fn collection_or_text_module(ty: &Ty) -> Option<&'static str> {
     }
 }
 
+/// A `(match <value> …)` TEMPLATE for a SUM value member-accessed by name — `(. o foo)` on an `(Option
+/// …)`, `(. p x)` on a user sum. A sum's payload is not a field: it is reached by MATCHING each variant.
+/// Spells one arm per variant with a `…` body, so the reader sees the shape to write — `(match <value>
+/// ((Some x) …) ((None) …))`. Each arm binds a fresh `x0`/`x1`/… per payload slot (the arity from the
+/// variant's payload count) so a payload-carrying variant shows its binders. `None` for a sum whose decl
+/// is unknown (no variant set to spell) or a sum with no variants. Reads the variant set off the type's
+/// declaration (`ty::Sum { decl }`), so it names THIS sum's real variants.
+fn sum_match_hint(db: &mut Db, ty: &Ty) -> Option<String> {
+    let Ty::Sum { decl, .. } = ty else {
+        return None;
+    };
+    let decl = *decl;
+    let variants: Vec<(String, usize)> = db
+        .type_decl_by_occ(decl)?
+        .variants
+        .iter()
+        .map(|v| (v.name.clone(), v.payloads.len()))
+        .collect();
+    if variants.is_empty() {
+        return None;
+    }
+    let arms: Vec<String> = variants
+        .iter()
+        .map(|(name, arity)| {
+            if *arity == 0 {
+                format!("(({name}) …)")
+            } else {
+                let binders: Vec<String> = (0..*arity).map(|i| format!("x{i}")).collect();
+                format!("(({name} {}) …)", binders.join(" "))
+            }
+        })
+        .collect();
+    Some(format!("(match <value> {})", arms.join(" ")))
+}
+
 fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
     use crate::resolved::Prim;
     match prim {
@@ -6925,36 +6960,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // the type"). Only for a value with such a module; other non-records keep the plain
                         // message.
                         other => {
-                            // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`,
-                            // `(Map …)`, `(Set …)`, `String`, `Bytes` — is not a field read (these are not
-                            // records). Its operations live on the type MODULE and take the value as the
-                            // FIRST argument, so name the module + the `((. Module op) value …)` form
-                            // instead of the dead-end "requires a record". Any other non-record (a scalar, a
-                            // sum) has no operation module → keep the plain message.
-                            let reject = match collection_or_text_module(other) {
-                                Some(module) => {
-                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
-                                    Reject::coded(
-                                        Code::Malformed,
-                                        format!(
-                                            "a {} value has no field `{}` — its operations live on the \
-                                             `{module}` module and take the value as the first argument, \
-                                             e.g. `((. {module} <op>) <value> …)`",
-                                            other.render_name(),
-                                            key.name,
-                                        ),
-                                    )
-                                }
-                                None => {
-                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
-                                    Reject::coded(
-                                        Code::Malformed,
-                                        format!(
-                                            "member access requires a record, found {}",
-                                            other.render_name()
-                                        ),
-                                    )
-                                }
+                            // Redirect a NAMED member access on a non-record to the way its kind IS used,
+                            // instead of the dead-end "requires a record":
+                            //  • COLLECTION/TEXT (`(List …)`/`(Map …)`/`(Set …)`/`String`/`Bytes`) — not a
+                            //    field read; its operations live on the type MODULE, value-first (`(. List
+                            //    at) xs …`).
+                            //  • SUM (`(Option …)`, a user sum) — its payload is reached by MATCHING each
+                            //    variant, not by field access; spell a `(match <value> …)` template.
+                            //  • any other non-record (a scalar) has no such route → the plain message.
+                            let module = collection_or_text_module(other);
+                            let match_tmpl = if module.is_none() {
+                                sum_match_hint(db, other)
+                            } else {
+                                None
+                            };
+                            let ty_name = other.render_name();
+                            let reject = if let Some(module) = module {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!(
+                                        "a {ty_name} value has no field `{}` — its operations live on the \
+                                         `{module}` module and take the value as the first argument, e.g. \
+                                         `((. {module} <op>) <value> …)`",
+                                        key.name,
+                                    ),
+                                )
+                            } else if let Some(tmpl) = match_tmpl {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a sum value (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!(
+                                        "a {ty_name} value has no field `{}` — a sum's payload is reached \
+                                         by matching its variants, not by field access, e.g. `{tmpl}`",
+                                        key.name,
+                                    ),
+                                )
+                            } else {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!("member access requires a record, found {ty_name}"),
+                                )
                             };
                             out.push(reject)
                         }
