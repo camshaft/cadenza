@@ -48113,8 +48113,7 @@ mod cross_component_oracle {
                 // won't SUCCEED yet — but it must not fail with a TYPE error. Assert the decline is
                 // the emit decline, not a type reject.
                 let e = crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
-                    .err()
-                    .expect("declines pending X4b-3 emit");
+                    .expect_err("declines pending X4b-3 emit");
                 e.code.is_none() // a decline (no CDZ code), not a coded type rejection
             },
             "a well-typed extern application declines cleanly (emit pending), never a type reject"

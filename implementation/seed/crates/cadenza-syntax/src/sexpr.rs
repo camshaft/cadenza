@@ -900,27 +900,36 @@ mod tests {
 
     #[test]
     fn deeply_nested_input_is_diagnosed_not_crashed() {
-        // A pathologically deep but syntactically valid nest overflowed the native stack (SIGABRT) in
-        // the unguarded recursive descent; the depth guard makes it a clean `ReadError` instead. The
-        // depth here (limit + a margin) far exceeds `MAX_NESTING_DEPTH` — without the guard this
-        // recursion would abort the process (the real crash needs ~25000, but the guard fires at the
-        // limit, so a modest over-limit depth exercises it deterministically without a huge string).
-        let n = (MAX_NESTING_DEPTH as usize) + 50;
-        let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
-        let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
-        assert!(
-            err.0.contains("nests too deeply"),
-            "expected a depth-limit diagnostic, got: {}",
-            err.0
-        );
-        // Just UNDER the limit still parses (the guard does not reject a valid moderate nest). A depth
-        // of `limit - 1` open lists is within budget.
-        let ok = (MAX_NESTING_DEPTH as usize) - 1;
-        let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
-        assert!(
-            read(&shallow).is_ok(),
-            "a nest just under the limit must still parse"
-        );
+        // `read` recurses one native frame per nesting level, so DESCENDING to the depth guard
+        // (`MAX_NESTING_DEPTH` = 1024) needs more stack than a default `cargo test` worker on a small-
+        // stack platform (macOS ~512 KB–1 MB). Run on a large-stacked thread so the test exercises the
+        // depth guard, not the worker's stack limit (a spurious SIGABRT unrelated to this assertion).
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                // A pathologically deep but syntactically valid nest overflowed the native stack
+                // (SIGABRT) in the unguarded recursive descent; the depth guard makes it a clean
+                // `ReadError` instead. The depth here (limit + a margin) exceeds `MAX_NESTING_DEPTH`.
+                let n = (MAX_NESTING_DEPTH as usize) + 50;
+                let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
+                let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
+                assert!(
+                    err.0.contains("nests too deeply"),
+                    "expected a depth-limit diagnostic, got: {}",
+                    err.0
+                );
+                // Just UNDER the limit still parses (the guard does not reject a valid moderate nest).
+                let ok = (MAX_NESTING_DEPTH as usize) - 1;
+                let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
+                assert!(
+                    read(&shallow).is_ok(),
+                    "a nest just under the limit must still parse"
+                );
+            })
+            .expect("spawn deep-read worker");
+        if let Err(payload) = h.join() {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     /// The text a span covers, for span assertions.

@@ -2189,31 +2189,52 @@ mod tests {
 
     #[test]
     fn deeply_nested_input_is_diagnosed_not_crashed() {
-        // The Pratt parser recurses through `expr` per nesting level; unguarded, a pathologically deep
-        // nest overflowed the native stack (SIGABRT) or — once a naive guard returned an error node
-        // without stopping — SPUN on the unconsumed deep tail (a hang). The depth guard records ONE
-        // error and POISONS the parser (`depth_exceeded` ⇒ `at_end`), so parsing TERMINATES with a
-        // clean diagnostic. The nest here exceeds `crate::sexpr::MAX_NESTING_DEPTH`.
-        let n = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
-        let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
-        let p = read_ml(&src);
-        assert!(
-            !p.ok()
-                && p.errors
-                    .iter()
-                    .any(|e| e.message.contains("nests too deeply")),
-            "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
-            p.errors
-        );
-        // A nest well under the limit still parses cleanly (no over-rejection).
-        let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
-        let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
-        let ps = read_ml(&shallow);
-        assert!(
-            ps.ok(),
-            "a nest just under the limit must parse: {:?}",
-            ps.errors
-        );
+        // The Pratt parser recurses through `expr` one native frame per nesting level, so DESCENDING to
+        // the depth guard (`MAX_NESTING_DEPTH` = 1024) itself needs more stack than a default `cargo test`
+        // worker (~2 MB on Linux, ~512 KB–1 MB on macOS) — the guard fires cleanly, but the recursion
+        // reaching it would overflow the worker's stack first (a spurious SIGABRT that is NOT what this
+        // test asserts). Run the body on a large-stacked thread so it exercises the depth guard, not the
+        // worker's stack limit. (The compiler's own deep walks use the same 64 MB guard-sized stack.)
+        run_deep(|| {
+            // Unguarded, a pathologically deep nest overflowed the native stack (SIGABRT) or — once a
+            // naive guard returned an error node without stopping — SPUN on the unconsumed deep tail (a
+            // hang). The depth guard records ONE error and POISONS the parser (`depth_exceeded` ⇒
+            // `at_end`), so parsing TERMINATES with a clean diagnostic. The nest exceeds the limit.
+            let n = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+            let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+            let p = read_ml(&src);
+            assert!(
+                !p.ok()
+                    && p.errors
+                        .iter()
+                        .any(|e| e.message.contains("nests too deeply")),
+                "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
+                p.errors
+            );
+            // A nest well under the limit still parses cleanly (no over-rejection).
+            let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
+            let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
+            let ps = read_ml(&shallow);
+            assert!(
+                ps.ok(),
+                "a nest just under the limit must parse: {:?}",
+                ps.errors
+            );
+        });
+    }
+
+    /// Run `f` on a thread with a stack large enough to reach the parser's depth guard (the same
+    /// 64 MB the compiler sizes its deep-walk worker at), re-raising a panic so an assertion failure
+    /// inside still fails the test. The default `cargo test` worker stack is too small to DESCEND to
+    /// the depth limit before overflowing (macOS especially), which would mask the guarded behavior.
+    fn run_deep(f: impl FnOnce() + Send + 'static) {
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-parse worker");
+        if let Err(payload) = h.join() {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     #[test]
