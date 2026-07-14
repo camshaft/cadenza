@@ -17581,6 +17581,117 @@ mod tests {
             .for_each(|ops| run_set_op_sequence(ops));
     }
 
+    // STRING-ELEMENT variant — a `Set String` (a deduplicated string collection: keyword sets, a
+    // visited-name set, a compiler's interned-symbol set). `run_set_op_sequence` uses only INT elements
+    // (immediate), so the arity-0 HEAP-BYTE-LEAF champ path — arity-0 raw-byte FNV `champ_hash` + a
+    // slot-hit raw-byte `champ_eq` — is unexercised for a SET. This is a DISTINCT path from both the
+    // int-set fuzzer (immediate elements) AND the string-MAP-key fuzzer (heap-byte leaf but STRIDE 2, a
+    // key paired with a value): a set is STRIDE 1, so its data-node layout, collision handling, and
+    // canonical dedup differ. Reuses `strkey_name`'s 8 flat names; keys built FLAT (`op_str_new`) — a
+    // rope element is the compiler's to `bytes-compact` before insert (champ_eq is physical-bytes by
+    // contract), out of scope. Same four properties the int-set fuzz checks.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum StrSetOp {
+        Insert { elem: u8 },
+        Remove { elem: u8 },
+        Fork,
+        DropForked,
+    }
+
+    fn run_strset_op_sequence(ops: &[StrSetOp]) {
+        let before = live_nodes();
+        let mut s = op_set_empty();
+        let mut reference: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeSet<String>)> = Vec::new();
+        for op in ops {
+            match *op {
+                StrSetOp::Insert { elem } => {
+                    let name = strkey_name(elem);
+                    s = op_set_insert(s, op_str_new(name.clone())); // consumes the element
+                    reference.insert(name);
+                }
+                StrSetOp::Remove { elem } => {
+                    let name = strkey_name(elem);
+                    let probe = op_str_new(name.clone());
+                    s = op_set_remove(s, probe); // BORROWS the element
+                    op_drop(probe); // we own the probe
+                    reference.remove(&name);
+                }
+                StrSetOp::Fork => {
+                    op_dup(s); // rc>1: the next mutation path-copies, leaving this snapshot intact
+                    forks.push((s, reference.clone()));
+                }
+                StrSetOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) size + membership over the whole small keyspace (present + absent).
+        assert_eq!(
+            op_set_size(s) as usize,
+            reference.len(),
+            "string-set size matches reference"
+        );
+        for k in 0..8u8 {
+            let name = strkey_name(k);
+            let probe = op_str_new(name.clone());
+            let got = op_set_contains(s, probe); // borrows
+            op_drop(probe);
+            assert_eq!(
+                got,
+                reference.contains(&name),
+                "string-set membership of {name:?} matches reference"
+            );
+        }
+        // (2) canonical shape: same contents ⇒ byte-identical to a fresh twin (what set dedup rests on).
+        let twin = {
+            let mut t = op_set_empty();
+            for name in &reference {
+                t = op_set_insert(t, op_str_new(name.clone()));
+            }
+            t
+        };
+        assert!(
+            champ_eq(s, twin),
+            "string-set equals a fresh twin of the same contents (canonical)"
+        );
+        assert_eq!(champ_hash(s), champ_hash(twin), "…and hashes identically");
+        op_drop(twin);
+        // (3) forked snapshots undisturbed by later mutation of `s` (aliasing safety on the string path).
+        for (h, snap) in &forks {
+            assert_eq!(
+                op_set_size(*h) as usize,
+                snap.len(),
+                "forked string-set snapshot size intact"
+            );
+            for name in snap {
+                let probe = op_str_new(name.clone());
+                let got = op_set_contains(*h, probe);
+                op_drop(probe);
+                assert!(got, "forked string-set snapshot elem {name:?} intact");
+            }
+        }
+        // (4) no leak / no double-free across the whole sequence.
+        op_drop(s);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole string-set sequence"
+        );
+    }
+
+    #[test]
+    fn prop_strset_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<StrSetOp>>()
+            .for_each(|ops| run_strset_op_sequence(ops));
+    }
+
     // COMPOUND-KEY variant — 2-tuple keys are the ≤2-handle nodes the inline-`handles` change (#22)
     // targets, so this is the MOST load-bearing shape for de-risking it: every insert/lookup builds a
     // tuple node (node + 2-elem handles), hashes it via the shallow-compound path, and champ_eq-compares
