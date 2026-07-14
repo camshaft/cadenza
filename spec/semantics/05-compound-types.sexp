@@ -3268,6 +3268,30 @@
             (def (main) (f (mk 2))) (export main)))
   (output (: 2 Int64)))
 
+(case "a list of a sum is exhaustive when the empty and every variant's first-element arm are covered"
+  (doc    "The CONSTRUCTOR generalization of the list-of-bools case: `(match xs ((list) …) ((list (Some x)
+           .. r) …) ((list (None) .. r) …))` over `(List (Option Int64))` is exhaustive WITHOUT a `_`. A
+           list-element arm set is exhaustive when it covers the empty list AND every non-empty list
+           (core-semantics.md §A List Is Deconstructed By Element Patterns With An Optional Rest); the empty
+           arm covers length 0, and the ctor-lead rest arms saturate the first element's VARIANT SET
+           (`Some`/`None` — the whole sum), so every non-empty list matches. A ctor-lead element is a
+           discriminant TEST (excluded from length-coverage on its own), but the sum's variants are a finite
+           set, so covering every variant closes the non-empty tail — the list analogue of a total
+           `(match o ((Some x) …) ((None) …))`. The last saturating arm's discriminant is redundant once
+           reached (the others failed), so its payload binds unconditionally. `mk 2` builds `[(None),
+           (Some 7)]`, whose first element selects the `None` arm → 99.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (list)
+                (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7)))))
+            (def (f (: xs (List (Option Int64))))
+              (match xs
+                ((list) 0)
+                ((list (Some x) .. r) x)
+                ((list (None) .. r) 99)))
+            (def (main) (f (mk 2))) (export main)))
+  (output (: 99 Int64)))
+
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
            NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds

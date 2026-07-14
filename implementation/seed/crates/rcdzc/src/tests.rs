@@ -22292,6 +22292,114 @@ mod match_engine {
     }
 
     #[test]
+    fn saturating_ctor_list_first_elements_are_exhaustive_without_a_wildcard() {
+        // The CONSTRUCTOR analogue of the bool-saturation case: `(list) + (list (Some x) .. r) +
+        // (list (None) .. r)` over `(List (Option Int64))` is TOTAL — the empty arm covers length 0, and the
+        // two ctor-lead arms saturate the first element's VARIANT SET (`Some`/`None`, the whole sum) → every
+        // non-empty list matches. `desugar_saturating_ctor_list_elements` turns the LAST saturating arm into
+        // an unconditional `(list __ls .. r)` cover with the payload-binding moved to its body, so the check
+        // passes AND first-match-wins routing is preserved.
+        assert!(
+            reject_code(
+                "(module m \
+                   (def (f (: xs (List (Option Int64)))) \
+                     (match xs ((list) 0) ((list (Some x) .. r) x) ((list (None) .. r) 99))) \
+                   (def (main) (f (list (None)))) (export main))"
+            )
+            .is_none(),
+            "an Option-saturating list match is exhaustive without a wildcard"
+        );
+        // A 3-variant PAREN-nullary sum saturates too (each variant written `(R)`/`(G)`/`(B)`).
+        assert!(
+            reject_code(
+                "(module m (type C (R) (G) (B)) \
+                   (def (f (: xs (List C))) \
+                     (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2) ((list (B) .. _r) 3))) \
+                   (def (main) (f (list (R)))) (export main))"
+            )
+            .is_none(),
+            "a 3-variant-saturating list match is exhaustive without a wildcard"
+        );
+        // Runtime: build a list internally and dispatch, confirming the guard-drop preserves routing AND the
+        // moved-to-body payload binding still binds. mk(0) → [] → arm 0; mk(1) → [(Some 7), …] → the Some arm
+        // returns its payload 7; mk(2) → [(None), …] → the None arm (now unconditional) returns 99.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m \
+                   (def (mk (: n Int64)) \
+                     (if (< n 1) (list) \
+                       (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7))))) \
+                   (def (f (: xs (List (Option Int64)))) \
+                     (match xs ((list) 0) ((list (Some x) .. _r) x) ((list (None) .. _r) 99))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping ctor-saturation-list run");
+            return;
+        }
+        assert_eq!(run("0"), "0", "[] matches the empty arm");
+        assert_eq!(
+            run("1"),
+            "7",
+            "[(Some 7), …] matches the Some arm, binding its payload"
+        );
+        assert_eq!(
+            run("2"),
+            "99",
+            "[(None), …] matches the (now unconditional) None arm"
+        );
+    }
+
+    #[test]
+    fn a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects() {
+        // Sound: the ctor-saturation relaxation fires ONLY when EVERY variant AND the empty list are covered.
+        // A missing variant leaves that first-element value uncovered; a missing empty arm leaves length 0.
+        assert_eq!(
+            reject_code(
+                "(module m (type C (R) (G) (B)) (def (f (: xs (List C))) \
+                   (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2))) \
+                 (def (main) (f (list (R)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a missing variant (B) → that first-element value is uncovered"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List (Option Int64)))) \
+                   (match xs ((list (Some x) .. _r) x) ((list (None) .. _r) 99))) \
+                 (def (main) (f (list (None)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "no empty arm → length 0 uncovered even when the variant set saturates"
+        );
+    }
+
+    #[test]
+    fn a_bare_member_nullary_ctor_list_saturation_declines_to_require_a_wildcard() {
+        // KNOWN LIMITATION (honest decline, NOT a miscompile): the bare-MEMBER nullary form `C.R` (=
+        // `(. C R)`) is EXCLUDED from ctor-saturation — reusing a `(. C R)` node as a synthesized inner-match
+        // pattern head re-lowers as member ACCESS (CDZ0201) in the emit path (a synthesized-member-pattern
+        // resolve gap). So `(list) + (list C.R ..) + (list C.G ..) + (list C.B ..)` does NOT saturate here and
+        // correctly stays CDZ0210 (add a `_`). The paren-nullary `(R)` and applied `(Some x)` forms DO
+        // saturate (above). `bare_member_ctor_element` gates it; the honest length-coverage error stands.
+        assert_eq!(
+            reject_code(
+                "(module m (type C R G B) (def (f (: xs (List C))) \
+                   (match xs ((list) 0) ((list C.R .. _r) 1) ((list C.G .. _r) 2) ((list C.B .. _r) 3))) \
+                 (def (main) (f (list C.R))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "the bare-member nullary form declines to saturation → the honest add-`_` error stands"
+        );
+    }
+
+    #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
         // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
         // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant
