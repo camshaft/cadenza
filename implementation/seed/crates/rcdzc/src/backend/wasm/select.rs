@@ -5596,30 +5596,37 @@ fn emit(
             scrutinee,
             disc_present,
         } => {
-            // Reserve a fresh i32 slot for the sum handle ABOVE the running high-water (`*high`), NOT at
-            // `base`. When this `SumExpect` is a SUB-EXPRESSION whose SIBLING uses `base` for a different
-            // width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where the i64 `(+ i 1)` sibling also
-            // starts scratch at `base` — reusing `base` for the i32 handle re-types a slot the sibling
-            // `local.set`s at i64, an invalid module (`expected i64, found i32`). A slot at `*high` is
-            // guaranteed never pre-typed, so the handle never clashes with a sibling's scalar slot. This is
-            // the SAME "advance past the reserved handle slot" discipline `MatchSum`/`if`-cond use for a
-            // heap-handle sub-expression (the documented scratch-floor family). Emit the scrutinee ABOVE the
-            // handle slot (its own transient scratch floats clear), then stash the one handle; reading the
-            // slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE.
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
-            )?;
-            out.push(Lir::LocalSet(handle_slot));
+            // The sum handle is read TWICE — the disc probe (`sum-disc`) and the present-payload read
+            // (`sum-payload`), BOTH BORROWING (no rc change, never consume). HANDLE SLOT REUSE (mirrors
+            // `MatchSum`/`List.at`/`MatchList`): a REUSABLE handle — a `Param`/kept `let`-`LocalRef` already
+            // resident in a stable slot — is read from its OWN slot directly; no copy. A COMPUTED scrutinee
+            // (a call/`if`/fresh construction) is stashed ONCE into a fresh i32 slot reserved ABOVE the
+            // running high-water (`*high`), NOT at `base`: when this `SumExpect` is a SUB-EXPRESSION whose
+            // SIBLING uses `base` for a different width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where
+            // the i64 `(+ i 1)` sibling also starts scratch at `base` — reusing `base` for the i32 handle
+            // re-types a slot the sibling `local.set`s at i64, an invalid module. A slot at `*high` is
+            // guaranteed never pre-typed. Either way, reading the slot twice evaluates the scrutinee EXACTLY
+            // ONCE.
+            let handle_slot = match reusable_handle_slot(db, scrutinee, slots) {
+                Some(owner) => owner,
+                None => {
+                    let handle_slot = *high;
+                    *high = handle_slot + 1;
+                    scratch_ty.insert(handle_slot, ValType::I32);
+                    emit(
+                        db,
+                        scrutinee,
+                        slots,
+                        handle_slot + 1,
+                        high,
+                        scratch_ty,
+                        layout,
+                        out,
+                    )?;
+                    out.push(Lir::LocalSet(handle_slot));
+                    handle_slot
+                }
+            };
             // The result block type is this node's solved type (the payload type).
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
@@ -11607,6 +11614,54 @@ mod tests {
             Lir::LocalGet(0),
             "the list match's vec-len reads the scrutinee param slot 0 directly; got {:?}",
             &f.code[..=vec_len_pos]
+        );
+        // The scrutinee param slot 0 is never written — the handle-copy `local.set` is gone.
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the scrutinee param slot 0 is never copied (no handle stash); got {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn an_option_expect_on_a_param_reads_the_scrutinee_slot_directly_no_handle_copy() {
+        // (def (unwrap (: o (Option Int64))) (Option.expect o "v")) — the scrutinee is a parameter, resident
+        // in slot 0. `SumExpect` reads its handle TWICE — the disc probe (`sum-disc`) and the present-payload
+        // read (`sum-payload`), both BORROWING — so both read slot 0 DIRECTLY, no copy into a scratch slot
+        // (the c181 reuse, matching the `MatchSum`/`List.at`/`MatchList` discipline). So `sum-disc` reads
+        // `LocalGet(0)`, and slot 0 is never written.
+        let ast = crate::testkit::parse(
+            "(module m (def (unwrap (: o (Option Int64))) (Option.expect o \"v\")) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "unwrap");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The disc probe's `sum-disc` reads the scrutinee param slot 0 directly (no prior copy).
+        let disc_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_DISC))
+            .expect("a disc probe sum-disc");
+        assert_eq!(
+            f.code[disc_pos - 1],
+            Lir::LocalGet(0),
+            "the expect's sum-disc reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[..=disc_pos]
+        );
+        // The present-payload `sum-payload` also reads slot 0 directly.
+        let payload_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_PAYLOAD))
+            .expect("a present-payload sum-payload");
+        assert_eq!(
+            f.code[payload_pos - 1],
+            Lir::LocalGet(0),
+            "the expect's sum-payload reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[payload_pos - 1..=payload_pos]
         );
         // The scrutinee param slot 0 is never written — the handle-copy `local.set` is gone.
         assert!(

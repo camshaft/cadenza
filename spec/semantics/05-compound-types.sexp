@@ -989,6 +989,19 @@
             (def (main) (. (Result.expect (mk 41) "x") b)) (export main)))
   (output (: 42 Int64)))
 
+(case "two expects of one bound optional share its resident handle"
+  (doc    "TWO `Option.expect`s of the SAME bound optional `o` — a `let` binding produced by a FUNCTION
+           CALL, so a genuine runtime handle resident in its binding slot. Each `expect` reads the handle
+           TWICE (the disc probe `sum-disc` and the present-payload read `sum-payload`, both BORROWING), and
+           BOTH expects read that binding slot DIRECTLY — the handle is not copied into a fresh scratch slot
+           per expect. Value parity is the observable proof: `mk 5` = `Some 5`, so `5 + 5 = 10`. Pins the
+           handle-slot reuse for the `expect` unwrap (the `MatchSum`/`List.at`/`MatchList` reuse family).")
+  (input  (do
+            (def (mk n) (if (< n 0) (Some 0) (Some n)))
+            (def (twice n) (let ((o (mk n))) (+ (Option.expect o "a") (Option.expect o "b"))))
+            (def (main) (twice 5)) (export main)))
+  (output (: 10 Int64)))
+
 (case "a sum-type value is constructed through a variant"
   (doc    "Sign is declared where used as (Neg | Zero | Pos) (options/code-shape/); a value is one
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
