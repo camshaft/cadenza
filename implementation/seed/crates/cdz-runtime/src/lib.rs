@@ -1037,6 +1037,17 @@ fn op_bigint_mul(a: Handle, b: Handle) -> Handle {
 /// `bigint-div` — TRUNCATING integer division (quotient toward zero); TRAPS on a zero divisor (an
 /// unbounded range does not give `n/0` a value — numeric-model.md). Returns the quotient.
 fn op_bigint_div(a: Handle, b: Handle) -> Handle {
+    // FAST PATH (mirrors add/sub/mul): both operands fit i128 (the common case — a runtime BigInt is a
+    // BigInt by TYPE, magnitude usually small). Rust's `/` truncates toward zero — EXACTLY `divmod`'s
+    // quotient (differential-verified byte-identical across all sign combos + i128 extremes). `checked_div`
+    // returns `None` for the two non-representable cases — a ZERO divisor AND the `i128::MIN / -1` overflow
+    // — and BOTH then fall through to the `Big` path, which produces the identical result (or traps on
+    // zero via `divmod`'s `None`). So no separate zero-guard is needed: the fallback preserves the trap.
+    if let (Some(x), Some(y)) = (bigint_as_i128(a), bigint_as_i128(b)) {
+        if let Some(q) = x.checked_div(y) {
+            return box_bigint_i128(q);
+        }
+    }
     match unbox_bigint(a).divmod(&unbox_bigint(b)) {
         Some((q, _r)) => box_bigint(&q),
         None => trap_bigint_div_zero(),
@@ -1052,6 +1063,15 @@ fn trap_bigint_div_zero() -> ! {
 /// truncate-toward-zero). TRAPS on a zero divisor (same as `bigint-div`). `divmod` returns `(q, r)` with
 /// exactly this remainder, so this is the `r` half — the whole reason `divmod` computes both at once.
 fn op_bigint_rem(a: Handle, b: Handle) -> Handle {
+    // FAST PATH: Rust's `%` takes the DIVIDEND's sign — EXACTLY `divmod`'s remainder (differential-verified
+    // byte-identical). Like `div`, `checked_rem` returns `None` on a zero divisor and on `i128::MIN % -1`
+    // (defined as 0 but the paired division overflows), both falling through to the `Big` path (identical
+    // result, or the zero-divisor trap) — so no separate zero-guard is needed.
+    if let (Some(x), Some(y)) = (bigint_as_i128(a), bigint_as_i128(b)) {
+        if let Some(r) = x.checked_rem(y) {
+            return box_bigint_i128(r);
+        }
+    }
     match unbox_bigint(a).divmod(&unbox_bigint(b)) {
         Some((_q, r)) => box_bigint(&r),
         None => trap_bigint_div_zero(),
@@ -10033,6 +10053,31 @@ mod tests {
             "bigint_add x{N} allocs {bigadd} exceeds ceiling 2000 (i128 fast path: only the result node, ~1/op; was 4/op with the full Big unbox/box — a lost fast path would climb back to ~4000)"
         );
 
+        // (K4a) `bigint-div`/`-rem` — the RESULT-BUILDING division ops (B3b/B3c emit them for runtime BigInt
+        // `/`/`%`, and they back fixed-width int `/`/`%` once widened). They now share the SAME i128 fast
+        // path as add/sub/mul: read both operands as `i128` from raw bytes, `checked_div`/`checked_rem`
+        // (truncate-toward-zero / dividend-sign — byte-identical to `Big::divmod`), box the i128 result — so
+        // a small div/rem allocates ONLY the result node = 1/op (was ~4/op: 2 unbox limb Vecs + the `divmod`
+        // quotient+remainder Vecs + the node). A zero divisor or the `i128::MIN / -1` overflow falls through
+        // to the `Big` path (which traps on zero, or produces the wide result). Measure div + rem together.
+        let (bd_a, bd_b) = (op_bigint_of_i64(1_000_003), op_bigint_of_i64(97));
+        let bigdiv = measure(&mut || {
+            for _ in 0..N {
+                op_drop(op_bigint_div(bd_a, bd_b)); // borrows both operands
+                op_drop(op_bigint_rem(bd_a, bd_b));
+            }
+        });
+        op_drop(bd_a);
+        op_drop(bd_b);
+        println!("ALLOC bigint_div_rem x{N}: {bigdiv}");
+        // Per iteration: one div + one rem, each the result node only = 2/op → ~2·N. Was ~8/op (each op:
+        // 2 unbox Vecs + divmod's 2 result Vecs + node ≈ 4) before the fast path. The ceiling catches a
+        // regression that loses the fast path (climbs back to ~8·N = 8000) or adds per-op churn.
+        assert!(
+            bigdiv <= 4000,
+            "bigint_div_rem x{N} allocs {bigdiv} exceeds ceiling 4000 (i128 fast path: div + rem each the result node only, ~2/op combined; was ~8/op with the full Big unbox/divmod/box — a lost fast path would climb back to ~8000)"
+        );
+
         // (K4b) `bigint-cmp` — a READ-ONLY comparison (the primitive `<`/`>`/`<=`/`>=`/`=` on BigInt lower
         // to, and the BigInt map/set-key comparator). It compares the operands' `raw` sign-magnitude slices
         // DIRECTLY (`Big::cmp_sign_magnitude_bytes`) with NO `Big` decode → ZERO allocations (was 2/op, both
@@ -11653,6 +11698,82 @@ mod tests {
             check(op_bigint_mul, mul, &huge, &small, "mul op>i128");
         }
         assert_eq!(live_object_count(), before, "no leak across the boundary ops");
+    }
+
+    /// `bigint-div`/`-rem` i128 FAST PATH ↔ `Big` slow path at the boundary — the div/rem analogue of the
+    /// add/sub/mul boundary test above (they got the i128 fast path in a separate increment). The fast path
+    /// uses Rust's `checked_div`/`checked_rem` (truncate-toward-zero quotient, dividend-sign remainder —
+    /// EXACTLY `divmod`'s semantics), so the result leaf MUST be byte-identical (`champ_eq`) to boxing the
+    /// `Big`-`divmod` answer, across: (a) in-range operands + all four sign combos (fast path); (b) an
+    /// operand exceeding i128 → the fast path declines → `Big` runs; (c) the `i128::MIN / -1` OVERFLOW —
+    /// `checked_div`/`checked_rem` return `None`, so this MUST fall through to `Big` (the one non-zero case
+    /// where the native op can't represent the answer). A regression that dropped the `checked_*` guard
+    /// would panic here (overflow) instead of falling back.
+    #[test]
+    fn bigint_div_rem_i128_fast_path_matches_big_at_the_boundary() {
+        reset();
+        let before = live_object_count();
+        // Oracle: box the `Big`-divmod quotient / remainder and assert the op's leaf is canonical-equal.
+        let check = |a: &bigint::Big, b: &bigint::Big, name: &str| {
+            let (want_q, want_r) = a.divmod(b).expect("divisor non-zero in this test");
+            let (ha, hb) = (box_bigint(a), box_bigint(b));
+            let hq = op_bigint_div(ha, hb);
+            let hr = op_bigint_rem(ha, hb);
+            let (hwq, hwr) = (box_bigint(&want_q), box_bigint(&want_r));
+            assert!(
+                champ_eq(hq, hwq),
+                "{name}: div fast/slow leaf must be byte-identical (champ_eq to the Big quotient)"
+            );
+            assert!(
+                champ_eq(hr, hwr),
+                "{name}: rem fast/slow leaf must be byte-identical (champ_eq to the Big remainder)"
+            );
+            for h in [ha, hb, hq, hr, hwq, hwr] {
+                op_drop(h);
+            }
+        };
+        let big = |v: i128| {
+            bigint::Big::from_sign_magnitude_bytes(&{
+                let mut buf = [0u8; 17];
+                let n = bigint::Big::i128_to_sign_magnitude_bytes_into(v, &mut buf).unwrap();
+                buf[..n].to_vec()
+            })
+        };
+        // (a) IN-RANGE — all four sign combos + exact + remainder-larger-than-dividend + zero dividend.
+        for &(x, y) in &[
+            (17i128, 5i128),
+            (-17, 5),
+            (17, -5),
+            (-17, -5),
+            (100, 10),
+            (5, 7),
+            (-5, 7),
+            (0, 5),
+            (i64::MAX as i128, 3),
+            (i64::MIN as i128, 3),
+            (i128::MAX, 7),
+            (i128::MIN, 7),
+        ] {
+            check(&big(x), &big(y), "div/rem in-range");
+        }
+        // (b) an OPERAND exceeds i128 (~2^130) → the fast path declines → `Big` runs. Must be canonical.
+        {
+            let huge = big(i128::MAX).mul(&bigint::Big::from_i64(8)); // ~2^130
+            check(&huge, &big(7), "div/rem op>i128");
+            check(&huge, &big(-3), "div/rem op>i128 neg divisor");
+        }
+        // (c) the `i128::MIN / -1` OVERFLOW: `checked_div`/`checked_rem` return None → MUST fall to `Big`
+        //     (quotient 2^127, remainder 0). A dropped `checked_*` guard would PANIC on native overflow.
+        check(
+            &big(i128::MIN),
+            &big(-1),
+            "div/rem i128::MIN / -1 overflow → Big",
+        );
+        assert_eq!(
+            live_object_count(),
+            before,
+            "no leak across the div/rem boundary ops"
+        );
     }
 
     /// DESIGN VALIDATION for the pending BigInt ESCAPE (B3c): a runtime BigInt crossing the host boundary

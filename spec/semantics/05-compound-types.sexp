@@ -92,6 +92,31 @@
   (input      (record (a 1) (b 2) (a 3)))
   (error      CDZ0201))
 
+; The same fixed-field-set rule governs a record TYPE, not only a record VALUE. `(Record (x Int64) (x
+; Bool))` — the capital-`R` TYPE form (distinct from the lowercase `record` value alias) — names field
+; `x` twice, so it is ill-formed (CDZ0201, #A Record Has A Fixed Set Of Named Fields), the type-form twin
+; of the `(record (a 1) (a 2))` value reject above. The duplicate is not silently deduplicated to a
+; last-wins single field (which would compile `(Record (x Int64) (x Bool))` as `(Record (x Bool))`) — a
+; repeated field name is almost always an author error, so it is rejected wherever a record type is
+; written: an annotation's type position and a variant payload's type both catch it.
+
+(case "a record TYPE with a duplicate field name is a type error"
+  (doc    "`(Record (x Int64) (x Bool))` names field `x` twice in a record TYPE (the capital-`R` type
+           form) — a record's field names are a fixed SET whether written as a value or a type, so this is
+           ill-formed and rejected (CDZ0201), the type-form twin of the value-form `(record (a 1) (a 2))`
+           reject. Not silently deduplicated to `(Record (x Bool))` by a last-wins insert. Here the type is
+           written in an annotation's type position.")
+  (input      (: (record (x 1)) (Record (x Int64) (x Bool))))
+  (error      CDZ0201))
+
+(case "a duplicate field in a variant's record-type payload is a type error"
+  (doc    "The duplicate-field record TYPE is caught wherever a record type is written, not only in an
+           annotation: a sum variant whose payload type is `(Record (x Int64) (x Bool))` names `x` twice
+           and is rejected (CDZ0201). Pins that the fixed-field-set check reaches a record type nested in a
+           type declaration, the variant-payload companion of the annotation case above.")
+  (input      (do (type T (V (Record (x Int64) (x Bool)))) (def (main) 1) (export main)))
+  (error      CDZ0201))
+
 ; A SUM's variant names are a set too, exactly as a record's field names are — type-system.md #The
 ; Structural Types makes a sum "of named variants" whose shape is "its variant names with their payload
 ; types", and #Structural Values Are Comparable Only When Their Shapes Match speaks of a sum's "variant

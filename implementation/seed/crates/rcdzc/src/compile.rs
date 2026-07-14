@@ -1385,6 +1385,48 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for (payload, params) in &type_positions {
         validate_type_position(db, *payload, params, "a variant payload", &mut faults);
     }
+    // DUPLICATE FIELD in a RECORD TYPE — `(Record (x Int64) (x Bool))`. A record's field names are a fixed
+    // SET (the same rule the record VALUE `(record (a 1) (a 2))` is rejected for, `resolve::read_record_fields`),
+    // but a record TYPE built the field map by last-wins insert (`eval::RecordCtor`), silently accepting the
+    // duplicate (`x` became `Bool`) — so a `(Record (x Int64) (x Bool))` annotation / payload compiled as
+    // `(Record (x Bool))` with no diagnostic. Scan every user `(Record …)` TYPE form (the capital-R head is
+    // unambiguously a type form, distinct from the lowercase `record` value alias) for a repeated field name
+    // and reject it CDZ0201, anchored at the redundant `(name Type)` entry with a delete fix — the type-form
+    // twin of the value-form duplicate-field reject.
+    for i in 0..db.ast.structure.len() as u32 {
+        let id = StructId(i);
+        if !db.is_user_node(id) || db.ast.head_name(id) != Some("Record") {
+            continue;
+        }
+        let crate::ast::Struct::List(children) = db.ast.get(id) else {
+            continue;
+        };
+        let field_entries = children[1..].to_vec();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for entry in field_entries {
+            // Each field entry is `(name Type)`; read the field name (the entry's first child).
+            let Some(name) = (match db.ast.get(entry) {
+                crate::ast::Struct::List(kv) if kv.len() == 2 => db.ast.as_name(kv[0]),
+                _ => None,
+            })
+            .map(str::to_string) else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!("record type names field `{name}` more than once"),
+                    )
+                    .at(entry)
+                    .with_fix(crate::diag::Fix::delete_heuristic(
+                        entry,
+                        format!("remove the duplicate `{name}` field"),
+                    )),
+                );
+            }
+        }
+    }
     // Validate every EFFECT OPERATION's declared TYPE — `(op e (-> ArgT ResultT))`. An unknown type in an
     // operation's arg/result (`(op e (-> Nonesuch Unit))`) was silently accepted, exactly as a variant
     // payload was: the name resolved to nothing and the op's `(meta t)` arrow was corrupted to `Any`, so

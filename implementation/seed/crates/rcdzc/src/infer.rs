@@ -5783,6 +5783,45 @@ fn check_application(
             (Some(ka), Some(kb)) => ka != kb,
             _ => false,
         };
+        // ARITHMETIC on TWO TEXT operands of the SAME kind — `(+ s t)` / `(- b c)` on two Strings or two
+        // Bytes. Comparison (`= < >`) on two texts is VALID (lexical order / equality), so this fires ONLY
+        // for the arithmetic prims (Add/Sub/Mul/Div). The generic scheme-unify defaults the operator's
+        // `∀a.(Int a)→…` first parameter to `Int64`, then reports the second operand as "type mismatch:
+        // Int64 and String must be the same type here" — a PHANTOM `Int64` the author never wrote, reading
+        // as an internal clash. Name the real situation: arithmetic is not defined on text. For `+`
+        // specifically the intent is almost always CONCATENATION (the Python/JS reflex), and `String.concat`
+        // / `Bytes.concat` are the total operations — so offer the `((. String concat) …)` rewrite on the
+        // operator head (`(+ a b)` → `((. String concat) a b)`), the actionable repair.
+        let is_arith = matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            )
+        );
+        if is_arith && is_text(&a) && is_text(&b) && a == b {
+            let module = if a == Ty::Bytes { "Bytes" } else { "String" };
+            trace!(target: "rcdzc::infer", head = head.0, "fault: arithmetic on two text operands — not defined (CDZ0201)");
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "arithmetic is not defined on {} — Cadenza never coerces text to a number",
+                    a.render_name()
+                ),
+            );
+            // `+` on two texts is concatenation intent → rewrite the operator to the module's `concat`.
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Add) {
+                reject =
+                    reject.with_fix(Fix::replace_heuristic(head, format!("(. {module} concat)")));
+            }
+            out.push(reject);
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         let cross_kind = (is_text(&a) && is_scalar(&b))
             || (is_scalar(&a) && is_text(&b))
             || (is_compound(&a) && is_atom(&b))

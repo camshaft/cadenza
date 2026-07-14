@@ -217,15 +217,20 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
-- **OPEN (seed `rcdzc` — ML FRONT-END): a NULLARY variant DOTTED pattern (`Ty.TInt`) in a NESTED match
-  is mis-read as member ACCESS.** `repros/reject-ml-nullary-variant-pattern-in-nested-match.cdz`. `(match
-  x | Ty.TInt => (match y | Ty.TInt => …))` → CDZ0201 "member access requires a record". The OUTERMOST
-  match's nullary dotted patterns parse fine; only a nullary dotted pattern inside a NESTED match fails.
-  Bisected: the NON-nullary form `Ty.TInt(_)` nested works, and the S-EXPR surface (`((. Ty TInt))`) of
-  the same nested-nullary program compiles + runs — so it is specifically the ML reader mis-lexing a
-  bare `Ty.Ctor` PATTERN (no payload parens) as a `(. Ty Ctor)` member access when it is not the first
-  match's arm. WORKAROUND (used by `src/apply-ty.cdz`): a top-level `tag`-helper maps each nullary
-  variant to a scalar, so nullary comparison is `tag(x) == tag(y)` and no nested nullary match is needed.
+- **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
+  (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
+  `repros/reject-nullary-variant-pattern-in-nested-match.cdz`. `(match x | Ty.TInt => (match x | Ty.TInt
+  => …))` → CDZ0201 "member access requires a record". NOT ML-reader-only (my iter-24 note was wrong —
+  that test used a differently-wrapped sexpr): the ML reader emits `(. Ty TInt)` for a nullary pattern in
+  BOTH the outer and inner arms (identical arena shape), and the S-EXPR surface fails IDENTICALLY. The
+  resolver accepts the bare `(. Ty TInt)` as a nullary-ctor pattern at the OUTERMOST match arm but treats
+  it as a `Resolved::Member` expression in a NESTED match's arm (likely the inner match's scrutinee type
+  not resolving to `Sum` at that point → the scalar-match path lowers the arm pattern as an expr). The
+  correctly-WRAPPED nullary pattern `((. Ty TInt))` (a zero-arg ctor application) works nested + outer on
+  both surfaces, as does the non-nullary `Ty.TInt(_)`. Two fixes possible: the ML reader wraps a nullary
+  ctor pattern, OR the resolver treats a bare `(. T Ctor)` in ANY arm-pattern slot as a nullary ctor.
+  WORKAROUND (used by `src/apply-ty.cdz`): a top-level `tag`-helper maps each nullary variant to a scalar,
+  so nullary comparison is `tag(x) == tag(y)` and no nested nullary match is needed.
 
 - **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
   `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/
