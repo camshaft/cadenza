@@ -30192,6 +30192,38 @@ mod stage1 {
             !td.iter().any(|d| d.message.contains("not yet reducible")),
             "the misleading fold-decline is dropped: {td:?}"
         );
+        // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
+        // prelude type has NO user decl (neither `def_by_name` nor `type_decl_by_name`), so it slipped
+        // through to the leaky "not yet reducible" fold-decline while a USER type was named. `typeval_of`
+        // now classifies it as a type-value generically, so it reads the same "is a type" message.
+        for (src, head) in [
+            (
+                "(module m (def (main) (handle Int64 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+                "Int64",
+            ),
+            (
+                "(module m (def (main) (handle Option 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+                "Option",
+            ),
+        ] {
+            let mut prelude_head = crate::db::Db::load(parse(src));
+            let pd = crate::diagnostics(&mut prelude_head);
+            let d = pd
+                .iter()
+                .find(|d| d.message.contains("head must name an EFFECT"))
+                .unwrap_or_else(|| {
+                    panic!("a prelude-type handle head `{head}` names the real problem: {pd:?}")
+                });
+            assert!(
+                d.message.contains(&format!("`{head}`")) && d.message.contains("is a type"),
+                "names the prelude-type head `{head}` as a type: {}",
+                d.message
+            );
+            assert!(
+                !pd.iter().any(|d| d.message.contains("not yet reducible")),
+                "the misleading fold-decline is dropped for `{head}`: {pd:?}"
+            );
+        }
     }
 
     #[test]

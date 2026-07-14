@@ -694,10 +694,18 @@ pub fn arm_op_head_names_a_value(db: &mut Db, op: StructId) -> Option<(StructId,
     // unbound name). Both are the "handle head is not an effect" root cause — a value head leaks "member
     // access requires a record" from the arm's `(. head op)`, a type head leaks "record has no field `op`"
     // (a sum's variants are its fields) plus the fold-decline; naming the CATEGORY says what to fix.
-    let name = db.ast.as_name(operand)?;
-    if db.def_by_name(name).is_some() {
+    let name = db.ast.as_name(operand)?.to_string();
+    if db.def_by_name(&name).is_some() {
         Some((operand, "a value definition"))
-    } else if db.type_decl_by_name(name).is_some() {
+    } else if db.type_decl_by_name(&name).is_some() {
+        Some((operand, "a type"))
+    } else if crate::eval::typeval_of(db, operand).is_some() {
+        // A PRELUDE type-value head — `(handle Int64 …)`, `(handle Option …)`. `typeval_of` recognizes any
+        // type-value GENERICALLY (a prelude scalar/collection/ctor, no hard-coded name list — the
+        // no-keys-outside-the-prelude rule), so a prelude type is classified the same as a user `(type …)`
+        // head above. Without this, a prelude-type head is neither a `def_by_name` nor a
+        // `type_decl_by_name` (a prelude type has no user decl), so it slipped through to the leaky
+        // "not yet reducible by the tail-resumptive fold" fold-decline instead of naming the real problem.
         Some((operand, "a type"))
     } else {
         None
