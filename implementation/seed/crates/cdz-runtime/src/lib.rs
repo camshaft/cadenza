@@ -9772,7 +9772,7 @@ mod tests {
     /// factor — evidence for whether the O(min) node-merge redesign is worth a future tick). Also times
     /// UNION over COMPOUND (tuple) elements, where hashing an element walks its whole subtree — this is
     #[test]
-    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    #[ignore] // diagnostic timing — run with --release --ignored --nocapture (DEBUG ns numbers are ~10-50x inflated + ratio-distorted — worthless)
     fn set_algebra_cpu_scaling_probe() {
         let build = |lo: i64, hi: i64| -> Handle {
             let mut s = op_set_empty();
@@ -9848,7 +9848,7 @@ mod tests {
     /// trie descent (scales with map size). Run under `perf` to attribute the hot region. Never
     /// profiled before — the existing probes all use int/tuple/nested keys.
     #[test]
-    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    #[ignore] // diagnostic timing — run with --release --ignored --nocapture (DEBUG ns numbers are ~10-50x inflated + ratio-distorted — worthless)
     fn string_key_map_cpu_scaling_probe() {
         // Pre-build all key byte strings ONCE so the timed loops measure the runtime, not `format!`.
         let make_keys = |n: usize, len: usize| -> Vec<Vec<u8>> {
@@ -9894,7 +9894,7 @@ mod tests {
     /// sibling. Times shared push + shared update at growing N to reveal the copy-path hot region under
     /// `perf` (the alloc bench sees the count but not where the CPU goes). Never profiled before.
     #[test]
-    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    #[ignore] // diagnostic timing — run with --release --ignored --nocapture (DEBUG ns numbers are ~10-50x inflated + ratio-distorted — worthless)
     fn shared_vec_copy_path_cpu_scaling_probe() {
         for &n in &[1000i64, 4000, 16000, 64000] {
             // Build an N-element base vector, kept shared (rc>1) across the timed ops.
@@ -9933,7 +9933,7 @@ mod tests {
     /// dup every off-path sibling). Complements `shared_vec_copy_path_cpu_scaling_probe`; the map copy
     /// path was never dedicated-CPU-profiled.
     #[test]
-    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    #[ignore] // diagnostic timing — run with --release --ignored --nocapture (DEBUG ns numbers are ~10-50x inflated + ratio-distorted — worthless)
     fn shared_map_copy_path_cpu_scaling_probe() {
         for &n in &[1000i64, 4000, 16000, 64000] {
             // Build an N-entry base map, kept shared (rc>1) so each op path-copies instead of FBIP.
