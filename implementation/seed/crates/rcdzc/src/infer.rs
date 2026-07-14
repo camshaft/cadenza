@@ -5307,10 +5307,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let before = out.len();
                     collect(db, ann[1], out);
                     if out.len() == before {
+                        // Name a bound VALUE misused as a type (`(: x helper)` where `helper` is a value)
+                        // — the SHARED `non_type_annotation_message` the parameter + value annotation sites
+                        // use (M77), so the let-binder is not the odd one out with a generic "found a
+                        // non-type". (Parallel producers drift — the sibling's `@5fc3bc85` unknown-type
+                        // check landed here without the category message the other two sites already had.)
                         out.push(
                             Reject::coded(
                                 Code::TypeMismatch,
-                                "a binder's annotation requires a type, but found a non-type",
+                                non_type_annotation_message(db, ann[1], "a binder's annotation"),
                             )
                             .at(ann[1]),
                         );

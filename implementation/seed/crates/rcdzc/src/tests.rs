@@ -23751,6 +23751,15 @@ mod stage1 {
             value.contains("`helper` is a value, not a type"),
             "value annotation names the value: {value}"
         );
+        // The LET-BINDER annotation is the THIRD producer of this message (a parallel producer that
+        // drifted — a sibling's unknown-type check landed there without the category naming); it now
+        // shares the helper too.
+        let binder =
+            msg("(module m (def helper 5) (def (main) (let (((: x helper) 3)) x)) (export main))");
+        assert!(
+            binder.contains("`helper` is a value, not a type"),
+            "let-binder annotation names the value: {binder}"
+        );
         // A NON-name operand (a literal) keeps the generic "found a non-type" (no name to blame).
         let lit = msg("(module m (def (main) (: 5 42)) (export main))");
         assert!(
