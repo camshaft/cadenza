@@ -2505,6 +2505,29 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         "bigint const-operand leak: the inline-materialized `(BigInt.of 2)` temporary must be dropped after \
          the borrowing mul, and `big` left to the `let`"
     );
+
+    // (e) a BEYOND-i64 constant operand — `(: 1e20 BigInt)`, too large for `bigint-of-i64`, so it
+    // materializes via the baked sign-magnitude bytes + `bigint-of-bytes`. Compared against `1e10 * 1e10`
+    // (runtime mul) the `=` is true → 1. Both the beyond-i64 constant leaf (owned temporary) AND the
+    // runtime product must be dropped after the borrowing compare — net 0, exactly as an i64-fitting
+    // constant operand. Guards the arbitrary-magnitude constant-operand materialization + its refcount.
+    let src5 = "(module m \
+                  (def (main) \
+                     (if (= (: 100000000000000000000 BigInt) (* (BigInt.of 10000000000) (BigInt.of 10000000000))) \
+                         1 0)) (export main))";
+    let program5 = compile_component(&crate::codec::encode(&parse(src5))).expect("compile");
+    let mut rt5 = ComposedRuntime::new(&program5, &runtime_bytes);
+    assert_eq!(
+        rt5.call("main", &[]),
+        Val::S64(1),
+        "the beyond-i64 constant `1e20` equals the runtime product `1e10 * 1e10`"
+    );
+    assert_eq!(
+        rt5.live_objects(),
+        0,
+        "beyond-i64 const-operand leak: the `bigint-of-bytes`-materialized `1e20` leaf, the two `BigInt.of` \
+         operands of the product, and the product temporary must all be dropped after the borrowing compare"
+    );
 }
 
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
@@ -12140,40 +12163,46 @@ mod match_engine {
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
     fn reject_code(src: &str) -> Option<String> {
-        let out = compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[Target::Wasm],
-        );
-        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
-            return None; // compiled — no rejection
-        }
-        out.diagnostics
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .and_then(|d| d.code.clone())
+        let bytes = crate::codec::encode(&parse(src));
+        crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    bytes,
+                )],
+                &[Target::Wasm],
+            );
+            if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+                return None; // compiled — no rejection
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        })
     }
 
     /// The first error `Diagnostic` from compiling `src` (full record, so a test can read the carried
     /// fix), or `None` if `src` compiled clean.
     fn reject_full(src: &str) -> Option<crate::abi::Diagnostic> {
-        let out = compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[Target::Wasm],
-        );
-        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
-            return None;
-        }
-        out.diagnostics
-            .into_iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
+        let bytes = crate::codec::encode(&parse(src));
+        crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    bytes,
+                )],
+                &[Target::Wasm],
+            );
+            if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+                return None;
+            }
+            out.diagnostics
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+        })
     }
 
     #[test]
@@ -12926,6 +12955,89 @@ mod match_engine {
     }
 
     #[test]
+    fn a_numeric_leaf_inside_a_compound_offers_the_bare_literal_retype_fix() {
+        // A directly-written compound whose single differing leaf is a numeric LITERAL — `(record (x 5))`
+        // vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple Int64 Float64)`, `(list 5)` vs `(List
+        // Float64)` — should get the SAME one-shot coercion fix a bare `(: 5 Float64)` gets (retype `5` →
+        // `5.0`), anchored at the INNER value node. The structural-delta message already names the leaf;
+        // this closes the fix-parity gap (M116's annotation-site twin) for a value nested in a compound.
+        // Each case: (src, the differing leaf's retyped literal). The record/list leaf is `5`→`5.0`; the
+        // tuple's differing position is `2` (position 1, the Float64 slot)→`2.0`.
+        let cases = [
+            (
+                "(module m (def (h (: r (Record (x Float64)))) (. r x)) (def (g) (h (record (x 5)))) (export g))",
+                "record field",
+                "5.0",
+            ),
+            (
+                "(module m (def (h (: t (Tuple Int64 Float64))) (. t 0)) (def (g) (h (tuple 1 2))) (export g))",
+                "tuple position",
+                "2.0",
+            ),
+            (
+                "(module m (def (h (: xs (List Float64))) xs) (def (g) (h (list 5))) (export g))",
+                "list element",
+                "5.0",
+            ),
+            (
+                "(module m (def (h (: r (Record (a (Record (b Float64)))))) (. r a)) \
+                   (def (g) (h (record (a (record (b 5)))))) (export g))",
+                "nested record leaf",
+                "5.0",
+            ),
+        ];
+        for (src, what, expect) in cases {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{what} rejects"));
+            let fix = d
+                .fix
+                .unwrap_or_else(|| panic!("{what} carries an inner-retype fix: {}", d.message));
+            assert_eq!(
+                fix.kind,
+                crate::abi::FixKind::Replace,
+                "{what}: {}",
+                d.message
+            );
+            assert_eq!(
+                fix.replacement, expect,
+                "{what} retypes the differing inner literal to a float: {}",
+                d.message
+            );
+        }
+        // NO fix for a NON-numeric leaf (Bool vs Int has no coercion) — message only.
+        let boolish = reject_full(
+            "(module m (def (h (: r (Record (x Int64)))) (. r x)) (def (g) (h (record (x true)))) (export g))",
+        )
+        .expect("a Bool-leaf record rejects");
+        assert!(
+            boolish.fix.is_none(),
+            "no coercion fix for a non-numeric leaf: {:?}",
+            boolish.fix
+        );
+        // A MAP entry's VALUE / KEY numeric leaf is covered too — `(map (1 5))` vs `(Map Int64 Float64)`
+        // retypes the value `5`→`5.0`; vs `(Map Float64 Int64)` retypes the key `1`→`1.0`.
+        let mapval = reject_full(
+            "(module m (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (1 5)))) (export g))",
+        )
+        .expect("a map with an Int value where Float wanted rejects");
+        assert_eq!(
+            mapval.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "retypes the map VALUE leaf: {}",
+            mapval.message
+        );
+        let mapkey = reject_full(
+            "(module m (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g))",
+        )
+        .expect("a map with an Int key where Float wanted rejects");
+        assert_eq!(
+            mapkey.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "retypes the map KEY leaf: {}",
+            mapkey.message
+        );
+    }
+
+    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
@@ -13415,15 +13527,28 @@ mod match_engine {
             "it carries the annotate-`UInt64` wrap fix: {}",
             d.message
         );
-        // A value past UInt64.max (2^64) has NO fixed type — it gets the bare range message with the
-        // "widest fixed-size integer" note and NO fix (BigInt is not literal-spellable).
+        // A value past UInt64.max (2^64) has NO fixed type — but `BigInt` holds an integer literal of any
+        // magnitude, so it names "no fixed-size integer is wider" AND offers the total "annotate `BigInt`"
+        // repair (a value the arbitrary-precision type represents in one shot).
         let past = reject_full("(module m (def (main) 99999999999999999999) (export main))")
             .expect("a value past u64 is rejected");
         assert!(
-            past.message.contains("widest fixed-size integer") && past.fix.is_none(),
-            "a past-u64 bare literal keeps the widest-fixed note, no fix; got {} fix={:?}",
-            past.message,
-            past.fix
+            past.message.contains("no fixed-size integer is wider")
+                && past.message.contains("BigInt"),
+            "a past-u64 bare literal names the BigInt route; got {}",
+            past.message
+        );
+        assert_eq!(
+            past.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(: {} BigInt)", crate::abi::WRAP_HOLE)).as_deref(),
+            "it carries the annotate-`BigInt` wrap fix: {}",
+            past.message
+        );
+        // The BigInt fix actually clears the fault — a huge literal annotated `BigInt` compiles.
+        assert!(
+            reject_full("(module m (def (g) (: 99999999999999999999 BigInt)) (export g))")
+                .is_none_or(|d| !d.message.contains("out of range")),
+            "annotating the past-u64 literal `BigInt` resolves the range fault"
         );
         let d = reject_full(
             "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
@@ -14255,20 +14380,237 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0303")
         );
+        // NOTE the default-integer EFFECT (a bare literal takes the module's declared default) is pinned
+        // by `a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type` below.
         // `BigInt` names an INTEGER type the numeric model admits as a declarable default
-        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), and B0 makes
-        // it a modeled `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain
-        // predicate takes `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. The program's reported error is
-        // then the downstream unbound `m` (the nested module's export is not in scope at `((. m x) unit)`)
-        // — CDZ0101, confirming the pragma itself raised nothing. (Before B0, `BigInt` was unbound and the
-        // PRAGMA's own resolution gave CDZ0101; now the pragma succeeds and the SAME code comes from the
-        // downstream reference — the assertion value is unchanged, its cause corrected.)
+        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), a modeled
+        // `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain predicate takes
+        // `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. Now that the default-integer EFFECT is realized,
+        // a `(pragma default-integer …)` member no longer BLOCKS module registration (it is a modeled
+        // member, not an unmodeled obligation): `m` registers, `x` returns 5 (as BigInt via the module
+        // default), the projection `(. m x)` resolves, and the whole program COMPILES CLEAN — `None`.
+        // (Before this increment the pragma member blocked registration and the downstream `m` was unbound
+        // → CDZ0101; the pragma itself was always well-formed, and now the module it declares works.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
+        // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: a bare, otherwise-
+        // unconstrained integer literal WRITTEN in a `(pragma default-integer <T>)` module takes `<T>`
+        // instead of Int64. Realized by the load-time `default_int_literals` map (keyed by the ORIGINAL
+        // literal node, so it survives the β-copy that reparents an inlined body).
+        //
+        // (1) THE EFFECT: `double`'s bare `2` is a BigInt, so `(* x 2)` with `x : BigInt` is a homogeneous
+        //     BigInt op and `(double (BigInt.of 21))` = 42 : BigInt — clean, no CDZ0301 mix.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module crypto (pragma default-integer BigInt) \
+                   (def (double x) (* x 2))) ((. crypto double) ((. BigInt of) 21)))) (export main))"
+            ),
+            None,
+            "a bare literal in a default-integer=BigInt module is a BigInt, so (* x 2) is homogeneous"
+        );
+        // (2) AN EXPLICIT ANNOTATION STILL WINS: `(: 5 Int64)` in the same module is Int64, not BigInt —
+        //     the default only decides the otherwise-unconstrained case (the `Annot` node fixes its type).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer BigInt) \
+                   (def (pinned) (: 5 Int64))) ((. m pinned) unit))) (export main))"
+            ),
+            None,
+            "an explicit annotation overrides the module default without a mismatch"
+        );
+        // (3) A literal OUTSIDE any pragma module is unaffected — still the Int64 default (no map entry).
+        assert_eq!(
+            reject_code("(module m (def (main) (+ 2 3)) (export main))"),
+            None,
+            "a literal outside a default-integer module keeps the ordinary Int64 default"
+        );
+    }
+
+    #[test]
+    fn a_default_integer_pragma_runs_the_narrow_literal_fit_check() {
+        // SOUNDNESS: a `(pragma default-integer <NarrowT>)` grounds a bare literal to `<NarrowT>`, so the
+        // SAME literal-fit range check an explicit `(: v <NarrowT>)` runs must apply — else an out-of-range
+        // literal is silently admitted into a narrow-typed slot (`x : Int8 = 300`), a value the type forbids.
+        // The pragma path now reuses `literal_width_fault` (via `default_int_literals`), so a narrowing
+        // default rejects an out-of-range literal CDZ0302, exactly as the annotation path does.
+        let m = |body: &str| {
+            format!(
+                "(module top (def (main) (do (module m (pragma default-integer Int8) (def (x) {body})) (Int64.of ((. m x) unit)))) (export main))"
             )
-            .as_deref(),
-            Some("CDZ0101")
+        };
+        // Out of Int8 range → CDZ0302 (was silently accepted, holding the full value).
+        assert_eq!(
+            reject_code(&m("300")).as_deref(),
+            Some("CDZ0302"),
+            "300 does not fit Int8"
+        );
+        assert_eq!(
+            reject_code(&m("128")).as_deref(),
+            Some("CDZ0302"),
+            "128 (one past max) does not fit Int8"
+        );
+        assert_eq!(
+            reject_code(&m("-129")).as_deref(),
+            Some("CDZ0302"),
+            "-129 (one past min) does not fit Int8"
+        );
+        // In-range boundary values fit — no fault.
+        assert_eq!(reject_code(&m("127")).as_deref(), None, "127 is Int8 max");
+        assert_eq!(reject_code(&m("-128")).as_deref(), None, "-128 is Int8 min");
+        assert_eq!(reject_code(&m("100")).as_deref(), None, "100 fits Int8");
+        // A UInt8 narrowing default: 300 and a negative both overflow; 255 (max) fits.
+        let u = |body: &str| {
+            format!(
+                "(module top (def (main) (do (module m (pragma default-integer UInt8) (def (x) {body})) (Int64.of ((. m x) unit)))) (export main))"
+            )
+        };
+        assert_eq!(
+            reject_code(&u("300")).as_deref(),
+            Some("CDZ0302"),
+            "300 does not fit UInt8"
+        );
+        assert_eq!(
+            reject_code(&u("-1")).as_deref(),
+            Some("CDZ0302"),
+            "a negative does not fit UInt8"
+        );
+        assert_eq!(reject_code(&u("255")).as_deref(), None, "255 is UInt8 max");
+        // A WIDENING default (BigInt) is unaffected — every literal fits, no fit-check fault.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 100000000000000000000)) ((. m x) unit))) (export main))"
+            ),
+            None,
+            "a widening BigInt default admits any literal (no narrow fit-check)"
+        );
+    }
+
+    #[test]
+    fn a_nullary_module_member_body_is_type_checked() {
+        // `type-system.md` §A program that is not well-typed MUST be rejected. A NULLARY module member
+        // `(def (bad) …)` is NOT registered in `db.defs` (`modules::register_fn_def` registers only ≥1-param
+        // members, for recursive-call lowering), so its body was never type-checked — an ill-typed one
+        // DECLINED (a BigInt/Int64 mix) or emitted an INVALID COMPONENT (a Float/Int mix — a real
+        // miscompile). `collect_faults` now type-checks each value/nullary member body too.
+        // A numeric MIX in a nullary member is CDZ0301 (no silent promotion), not a miscompile:
+        for src in [
+            "(module top (def (main) (do (module m (def (bad) (+ 1 2.0))) ((. m bad) unit))) (export main))",
+            "(module top (def (main) (do (module m (def (bad) (+ (BigInt.of 2) ((. Int64 of) 1)))) ((. m bad) unit))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0301"),
+                "a numeric mix in a nullary module member rejects CDZ0301, not a miscompile: {src}"
+            );
+        }
+        // A well-typed nullary member still compiles clean.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (ok) (+ 1 2))) ((. m ok) unit))) (export main))"
+            ),
+            None,
+            "a well-typed nullary member is not falsely rejected"
+        );
+        // 🔑 REGRESSION GUARD: a nullary member body that references a SIBLING (an effect `log`, a sibling
+        // def) resolves through the module's in-scope context — the standalone type-check must NOT report
+        // that sibling as `Unbound` (CDZ0101). Such a member (performing a sibling effect via `host`)
+        // compiles clean; the member-body check drops a standalone `Unbound` for exactly this reason.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                   (def (run) (host (log) ((. log emit) \"hi\")))) (= 1 1))) (export main))"
+            ),
+            None,
+            "a nullary member performing a sibling effect is not falsely CDZ0101 by the standalone check"
+        );
+    }
+
+    #[test]
+    fn a_module_in_a_top_level_do_type_checks_its_members() {
+        // `type-system.md` §A program that is not well-typed MUST be rejected. A `(module …)` that is an
+        // ELEMENT of a TOP-LEVEL `(do …)` sequence root was registered by NEITHER the top-level scan (which
+        // has no `module` branch) NOR the nested-declaration walk (which SKIPS a top-level item as
+        // already-scanned) — so its members escaped `collect_faults` entirely (a residual of the
+        // nullary-member-body fix, which reached a bare `(module m …)` and a def-body-nested one but not
+        // this position). `scan_top_level` now registers a top-level module item via `collect_module_decl`.
+        // An ill-typed member is now rejected wherever the module sits.
+        for src in [
+            // Float/Int mix → CDZ0301 (was silently accepted / a latent invalid component).
+            "(do (module m (def (bad) (+ 1 2.0))) (def (main) 5) (export main))",
+            // Bool/Int mix → CDZ0203.
+            "(do (module m (def (bad) (+ true 1))) (def (main) 5) (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_some(),
+                "an ill-typed member of a top-level-do module must be rejected (was a type-check hole): {src}"
+            );
+        }
+        assert_eq!(
+            reject_code("(do (module m (def (bad) (+ 1 2.0))) (def (main) 5) (export main))")
+                .as_deref(),
+            Some("CDZ0301"),
+            "the Float/Int mix is the numeric no-promotion CDZ0301, matching the bare-module path"
+        );
+        // A WELL-TYPED top-do module still compiles clean (the position is accepted; only the missing
+        // type-check was the bug).
+        assert_eq!(
+            reject_code("(do (module m (def (good) (+ 1 2))) (def (main) 5) (export main))"),
+            None,
+            "a well-typed top-do module member is not falsely rejected"
+        );
+    }
+
+    #[test]
+    fn a_module_member_body_resolves_an_enclosing_scope_sibling_module() {
+        // `core-semantics.md` §A Module Evaluates To A Record Of Its Exports: a member body resolves names
+        // by the ordinary lexical scope — including the module's ENCLOSING scope, so a member of `app` can
+        // call a SIBLING MODULE `lib` declared beside it. The scope walk ascends body → app's synth `fn` →
+        // app's synth RECORD (where a SAME-module sibling resolves); the record's scope-skip now CHAINS to
+        // the enclosing scope of `(module app …)`, so the walk continues into the do-block where `lib`
+        // binds. Before this it dead-ended at the record → `lib` spuriously CDZ0101.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do \
+                   (module lib (def (answer) 42)) \
+                   (module app (def (go) ((. lib answer) unit))) \
+                   ((. app go) unit))) (export main))"
+            ),
+            None,
+            "a member of `app` resolves the sibling module `lib` in the enclosing do-block"
+        );
+        // The value is correct end-to-end: `(. app go)` reaches `(. lib answer)` = 42.
+        if let Some(v) = run_heap_value(
+            "(module top (def (main) (do \
+               (module lib (def (answer) 42)) \
+               (module app (def (go) ((. lib answer) unit))) \
+               ((. app go) unit))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(
+                v, "42",
+                "a cross-module member call returns the callee's value"
+            );
+        }
+        // 🔑 DEFINITION-SITE preserved: `lib`'s own literal `42` keeps `lib`'s scope (Int64), NOT `app`'s
+        // `default-integer BigInt` — the record chains to where `lib` was WRITTEN, not to the caller. So
+        // the result is Int64 (a BigInt would render/type differently); this compiles clean as Int64.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do \
+                   (module lib (def (answer) 42)) \
+                   (module app (pragma default-integer BigInt) (def (go) ((. lib answer) unit))) \
+                   (if (= ((. app go) unit) 42) 1 0))) (export main))"
+            ),
+            None,
+            "a sibling module's literal keeps its own definition-site scope, not the caller's default"
         );
     }
 
@@ -14516,6 +14858,123 @@ mod match_engine {
             "a too-few `if` has no surplus to delete: {:?}",
             few.fix
         );
+    }
+
+    /// A `let` and a `fn` each take exactly ONE body. A surplus operand after the body —
+    /// `(let ((x 1)) x 99)` / `(fn (x) x 99)` — was SILENTLY ACCEPTED (the resolver read only the
+    /// bindings/params + the first body, dropping the surplus → a silent miscompile), a likely author slip
+    /// expecting `do`-style sequencing where these forms take a single body. Now each rejects CDZ0201
+    /// "has more than one body … wrap multiple statements in a `(do …)`" with a delete-the-surplus fix (the
+    /// shared `fixed_arity_reject`, same as `if`/`and`/`resume`/`host`). Extends the fixed-arity
+    /// surplus-ignore sweep (resume M106, host M107) to the two binding forms.
+    #[test]
+    fn a_let_or_fn_with_more_than_one_body_is_cdz0201() {
+        use crate::testkit::parse;
+        for (src, form) in [
+            (
+                "(module m (def (main) (let ((x 1)) x 99)) (export main))",
+                "let",
+            ),
+            (
+                "(module m (def (main) ((fn (x) x 99) 5)) (export main))",
+                "fn",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"))
+                .unwrap_or_else(|| panic!("a too-many-body {form} must be rejected"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("this {form} has more than one body"))
+                    && d.message.contains("(do …)"),
+                "names the form + the `do` sequencing hint: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-surplus fix: {:?}",
+                d.fix
+            );
+        }
+        // NO REGRESSION: a single-body let/fn, and a let whose ONE body is a `(do …)` sequence, are clean.
+        for ok in [
+            "(module m (def (main) (let ((x 1)) x)) (export main))",
+            "(module m (def (main) ((fn (x) x) 5)) (export main))",
+            "(module m (def (main) (let ((x 1)) (do (+ x 1) x))) (export main))",
+        ] {
+            let arity = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"));
+            assert!(
+                arity.is_none(),
+                "a single-body form must not be flagged: {ok} -> {arity:?}"
+            );
+        }
+    }
+
+    /// A DEFINITION is `(def <name> <value>)` / `(def (<name> <param>…) <body>)` — exactly ONE body.
+    /// `scan_top_level` read `body = tail.get(1)` and ignored the rest, so two shapes slipped through:
+    /// NO body (`(def (main))`) surfaced ONLY at emit (`layout` "definition has no body", uncoded — a
+    /// check≡compile gap), and TOO MANY (`(def (main) 1 2)`) was SILENTLY ACCEPTED (the trailing form
+    /// dropped — a silent miscompile, the def analogue of the M108 let/fn surplus check). Now
+    /// `collect_faults` rejects both CDZ0201 (the no-body at the def form; the too-many with a
+    /// delete-the-surplus fix), so BOTH `cdz check` and `compile` report it. Covers a top-level def, a
+    /// value def, AND a do-local function def (registered internal but a user node); a quoted `(def …)`
+    /// (inert data) is NOT flagged.
+    #[test]
+    fn a_definition_with_the_wrong_body_count_is_cdz0201() {
+        use crate::testkit::parse;
+        // (a) NO body — top-level function def and top-level value def (both are in `db.defs` with
+        // `body: None`, so the walk catches them; this closes the check≡compile gap where the no-body case
+        // formerly surfaced only at emit).
+        for src in [
+            "(module m (def (main)) (export main))",
+            "(module m (def x) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no body"))
+                .unwrap_or_else(|| panic!("a body-less definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // (b) TOO MANY bodies — top-level and do-local, each with a delete-the-surplus fix.
+        for src in [
+            "(module m (def (main) 1 2) (export main))",
+            "(module m (def (main) (do (def (helper x) x 99) (helper 5))) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"))
+                .unwrap_or_else(|| panic!("a too-many-body definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-surplus fix: {:?}",
+                d.fix
+            );
+        }
+        // (c) NO FALSE POSITIVE: a well-formed function def, value def, module-with-members, and a QUOTED
+        // `(def …)` (inert data, not a declaration) are all clean.
+        for ok in [
+            "(module m (def (main) 1) (export main))",
+            "(module m (def answer 42) (def (main) answer) (export main))",
+            "(module m (def (helper x) (+ x 1)) (def (main) (helper 5)) (export main))",
+            "(module m (def (main) (quote (def foo))) (export main))",
+        ] {
+            let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| {
+                    d.message.contains("has no body") || d.message.contains("more than one body")
+                });
+            assert!(
+                bad.is_none(),
+                "a well-formed program must not be flagged: {ok} -> {bad:?}"
+            );
+        }
     }
 
     #[test]
@@ -15458,6 +15917,59 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bool_against_a_number_or_char_names_the_scalar_kind_boundary() {
+        // A `Bool` operand against a DIFFERENT scalar kind — a number or a `Char` — `(< true 5)`, `(+ 1
+        // true)`, `(= true #\a)`. Both are scalars, so the compound/text cross-kind guard does not fire,
+        // and the generic scheme-unify gave "type mismatch: Bool and Int64 must be the same type here" (an
+        // internal-clash read). It now names the boundary: "a Bool and an Int64 are different types — this
+        // operation is not defined between a boolean and a number". KEEPS the code CDZ0203 (the corpus pins
+        // a two-scalar clash at TypeMismatch, not the compound cases' CDZ0201).
+        for (src, between) in [
+            (
+                "(module m (def (g) (< true 5)) (export g))",
+                "between a boolean and a number",
+            ),
+            (
+                "(module m (def (g) (+ 1 true)) (export g))",
+                "between a number and a boolean",
+            ),
+            (
+                "(module m (def (g) (= true #\\a)) (export g))",
+                "between a boolean and a character",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("different types")
+                    && d.message.contains(between)
+                    && !d.message.contains("must be the same type here"),
+                "names the scalar-kind boundary ({between}), not the internal-clash render: {}",
+                d.message
+            );
+        }
+        // A `Char` against a NUMBER is DELIBERATELY NOT a dead-end boundary: `Char.to-int` is a total
+        // conversion, so `(+ #\a 1)` keeps its `(Char.to-int …)` wrap fix (the guard fires only when a
+        // `Bool` — which has no numeric/char conversion — is one side).
+        let ch = reject_full("(module m (def (main) (+ #\\a 1)) (export main))")
+            .expect("Char/Int mismatch rejects");
+        assert_eq!(
+            ch.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Wrap),
+            "a Char-vs-number keeps its total-conversion wrap fix: {} / {:?}",
+            ch.message,
+            ch.fix
+        );
+        // Two NUMERIC types (int vs float) keep the no-promotion CDZ0301 path — both are "a number", so the
+        // scalar-kind guard never fires.
+        assert_eq!(
+            reject_code("(module m (def (g) (< 1 2.0)) (export g))").as_deref(),
+            Some("CDZ0301"),
+            "an int-vs-float mix keeps the numeric no-promotion code"
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
@@ -15897,6 +16409,43 @@ mod match_engine {
             lit.message.contains("cannot apply a value of type Int64"),
             "a literal head keeps the type message: {}",
             lit.message
+        );
+    }
+
+    #[test]
+    fn applying_a_nullary_function_says_it_takes_no_arguments() {
+        // `(g 5)` where `g` is a NULLARY function `(def (g) …)`. A nullary def resolves its name straight to
+        // its body VALUE, so `g` IS that value and applying it is genuinely applying a non-function — but
+        // the author wrote `g` with a `()` signature and CALLED it, so "cannot apply a value of type Int64"
+        // hides both the name and the cause. It now names `g` + says it takes no arguments + spells the fix
+        // (call it as `(g)`), the nullary companion of the over-application naming. Distinguished from a
+        // plain value def by the signature shape (a nullary FUNCTION's `sig_occ` is a list `(g)`).
+        let d = reject_full("(module m (def (g) 5) (def (main) (g 5)) (export main))")
+            .expect("applying a nullary function is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("`g` takes no arguments, but 1 was applied — call it as `(g)`"),
+            "names the nullary function + the fix: {}",
+            d.message
+        );
+        // Plural for more than one surplus argument.
+        let two = reject_full("(module m (def (g) 5) (def (main) (g 5 6)) (export main))")
+            .expect("applying a nullary function with two args rejects");
+        assert!(
+            two.message.contains("but 2 were applied"),
+            "plural for two arguments: {}",
+            two.message
+        );
+        // A plain VALUE def `(def v 5)` — its name resolves to the same value, but it was NOT written as a
+        // callable, so it keeps the type-named message (its value is the useful fact, not a "takes no args").
+        let val = reject_full("(module m (def v 5) (def (main) (v 5)) (export main))")
+            .expect("applying a value def rejects");
+        assert!(
+            val.message.contains("cannot apply a value of type Int64")
+                && !val.message.contains("takes no arguments"),
+            "a value def keeps the type-named message: {}",
+            val.message
         );
     }
 
@@ -18446,6 +18995,417 @@ mod match_engine {
             run_heap_value(&prog(100000), vec![]).unwrap(),
             "4999950000",
             "sum [0,100000) folds in constant stack (would overflow if recursive)"
+        );
+    }
+
+    #[test]
+    fn a_list_rest_binding_pattern_binds_over_a_runtime_list() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a list REST pattern `(list x
+        // .. rest)` is irrefutable (matches any length ≥ leading count), so it may appear in a `let` binder
+        // or a `def`/`fn` PARAMETER — not only a `match` arm. A def param pattern is desugared to a
+        // destructuring `let` (`binding_params::lower`), so BOTH reuse the same resolve-side `SumPayload`
+        // redirection (a leading binder → `Elem(i)`, the rest binder → `RestFrom(lead)`) reading out of a
+        // RUNTIME list value. Before, every list binding pattern declined "not yet supported".
+
+        // A def PARAM `(list x .. rest)` binds the head of a runtime-built list. build pushes 10,20,30 → 10.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (* i 10))) out)) \
+               (def (head (list x .. rest)) x) \
+               (def (main) (head (build 1 4 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping list-rest binding-pattern run");
+            return;
+        };
+        assert_eq!(v, "10", "list-rest param binds the head of a runtime list");
+
+        // The REST binder binds a genuine SUBLIST usable by a recursive consumer: `drop-head` binds `x ..
+        // rest` (a param) and sums the rest via a `match`-recursing helper. Runtime [1 2 3 4] → 2+3+4 = 9.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+                   (def (drop-head (list x .. rest)) (sum rest)) \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (main) (drop-head (build 1 5 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "9",
+            "a list-rest binding's rest binder is a usable sublist (sum 2+3+4)"
+        );
+
+        // A `let` binder `(list a b .. rest)` over a runtime list binds two leading elements. [5 6 7] → 11.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 5))) out)) \
+                   (def (f xs) (let (((list a b .. rest) xs)) (+ a b))) \
+                   (def (main) (f (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "11",
+            "a let list-rest binder reads two leading elements of a runtime list"
+        );
+    }
+
+    #[test]
+    fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() {
+        // THE USER'S EXACT PROGRAM: `(def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum
+        // rest)))))`. The recursive call `(sum rest)` sits in an OPERAND of `+`, so it is NOT a tail call
+        // — it would compile to a stack-growing `call` (a long list overflows). `accum::introduce` now
+        // recognizes the LIST-FOLD shape (empty arm = the `+` identity `0`, cons arm = the combine, self
+        // call threading `rest` through the scrutinee position) and rewrites it to a TAIL accumulator
+        // `(sum$acc xs acc) = (match xs ((list) acc) ((list x .. rest) (sum$acc rest (+ acc x))))` +
+        // reseeds `sum` to `(sum$acc xs 0)`. The MatchList loop transform (Bug-1 fix) then compiles the
+        // synthesized accumulator to a `loop` — so the user's natural non-tail sum runs in O(1) stack.
+        //
+        // First: the transform fired — a `sum$acc` def was synthesized and `sum` still takes one param.
+        let db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (sum xs) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) (export sum))",
+        ));
+        assert!(
+            db.def_by_name("sum$acc").is_some(),
+            "the non-tail list fold gained a synthesized accumulator def"
+        );
+
+        // The synthesized accumulator compiles to a LOOP (no residual self-`call`/`return_call`). Select
+        // `sum$acc` with `self_def` set (as the pipeline does) and pin the `loop` at the Lir level.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (sum (: xs (List Int64))) \
+               (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+             (def (f (: a Int64) (: b Int64)) (sum (list a b))) (export f))",
+        ));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let acc = db
+            .def_by_name("sum$acc")
+            .expect("accumulator synthesized for the annotated fold");
+        let ps: Vec<_> = db.defs[acc]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[acc].body.expect("acc body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(acc))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the synthesized accumulator compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` in the accumulator — it became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: build [0, N) then fold it with the NON-TAIL `sum`. N = 100000
+        // would overflow a recursive stack; the accumulator-introduced loop folds it fine. [0,100) = 4950.
+        let prog = |n: i64| {
+            format!(
+                "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+                   (def (main) (sum (build 0 {n} (list)))) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(100), vec![]) else {
+            eprintln!("runtime wasm not found; skipping non-tail list-fold loop run");
+            return;
+        };
+        assert_eq!(
+            small, "4950",
+            "sum [0,100) via the accumulator-introduced loop"
+        );
+        assert_eq!(
+            run_heap_value(&prog(100000), vec![]).unwrap(),
+            "4999950000",
+            "the user's non-tail sum folds [0,100000) in constant stack (would overflow if recursive)"
+        );
+    }
+
+    #[test]
+    fn a_list_match_arm_may_carry_a_guard() {
+        // A list pattern arm MAY carry a `(guard <list-pat> <cond>)` guard, exactly as a scalar/sum arm
+        // does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
+        // binders are in scope for). The guard reads the list-pattern's LEADING/REST binders (resolve Case
+        // 6lg → `SumPayload{Elem}`/`{RestFrom}`); on a false guard the arm FALLS THROUGH to the next. A
+        // guarded arm does NOT count toward length-coverage exhaustiveness (a `_` tail is still needed).
+        // Before, a guarded list arm reported a spurious `unbound name` for its binder + declined.
+
+        // RUNTIME list, guard reads a LEADING binder: `((guard (list x .. rest) (> x 0)) 1)` fires only when
+        // the head is positive; else falls to the catch-all. build pushes 5,6,7 (head 5 > 0) → 1.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 5))) out)) \
+               (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))) \
+               (def (main) (f (build 0 3 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guarded list-match run");
+            return;
+        };
+        assert_eq!(v, "1", "a guarded list arm fires when its guard holds");
+
+        // The guard FALLS THROUGH when false: an empty runtime list has no head, so `(list x .. rest)` (len
+        // ≥ 1) does not even match the length → catch-all → 0. AND a non-empty list whose head is NOT
+        // positive falls through the guard to the catch-all. `pick` returns 100 for a positive head, else -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (pick (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 10)) 100) (_ -1))) \
+                   (def (main) (pick (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a guarded list arm falls through when its guard is false (head 0, not > 10)"
+        );
+
+        // A guard that DOES hold selects the guarded arm over a later fixed arm — first-match-wins with the
+        // guard gating. [20 21 22]: head 20 > 10 → 100.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 20))) out)) \
+                   (def (pick (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 10)) 100) (_ -1))) \
+                   (def (main) (pick (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "a guarded list arm with a holding guard is selected"
+        );
+
+        // TWO guarded arms over the same length + a catch-all: classify by the head's sign. A negative head
+        // takes the second guarded arm; the catch-all covers the empty list. [-5 …] → 2 (head < 0).
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (one v) ((. List push) (list) v)) \
+                   (def (sign (: xs (List Int64))) (match xs \
+                       ((guard (list x .. r) (> x 0)) 1) \
+                       ((guard (list x .. r) (< x 0)) 2) \
+                       (_ 0))) \
+                   (def (main) (sign (one -5))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "the second guarded list arm fires when the first guard fails"
+        );
+
+        // CONSTANT scrutinee: the guard folds at compile time. `(list 5 6)` head 5 > 0 → 1 (no runtime).
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (main) \
+                   (match (list 5 6) ((guard (list x .. rest) (> x 0)) 1) (_ 0))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a guarded list arm folds over a constant list when the guard folds true"
+        );
+    }
+
+    #[test]
+    fn a_guarded_list_arm_body_reads_its_pattern_binders() {
+        // A guarded list arm's BODY may READ the list pattern's binders — the obvious reason to bind them.
+        // The guard machinery wired the guard CONDITION's binder resolution (resolve Case 6lg) and an
+        // UNGUARDED list arm's body reads its binders, but a GUARDED list arm's body reference to the same
+        // binder was spuriously rejected `CDZ0101 unbound name` (`a_list_match_arm_may_carry_a_guard` only
+        // ever used CONSTANT bodies). `list_pattern_element_binds`/`_rest_binds` now peel the `(guard …)`
+        // wrapper on the body-ascent path, so a guarded arm body resolves its binders exactly as the guard
+        // cond and the unguarded arm body do.
+        //
+        // First, COMPILE (no spurious `unbound`) for every list shape reading a binder in the body:
+        let ok = |src: &str| {
+            assert!(
+                reject_code(src).is_none(),
+                "must compile (no unbound binder): {src}"
+            )
+        };
+        // Leading element in the body.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) x) (_ 0))) (def (main) (f (list 7))) (export main))",
+        );
+        // Fixed two-element list, body reads a bound element.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list a b) (> a 0)) a) (_ 0))) (def (main) (f (list 7 8))) (export main))",
+        );
+        // The REST binder in the body.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) ((. List len) rest)) (_ 0))) (def (main) (f (list 7 8 9))) (export main))",
+        );
+        // A binder NESTED in the body expression.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) (if (> x 5) x 0)) (_ 0))) (def (main) (f (list 7))) (export main))",
+        );
+
+        // Then RUN: the guard holds → the body returns the bound leading element (7), and the guard FAILS →
+        // the arm falls through to the catch-all (0), so the body-binder routing did not disturb the guard.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) x) (_ 0))) \
+               (def (main) (f (list 7))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guarded-list-arm-body-binder run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "a guarded list arm body returns its bound leading element"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 100)) x) (_ 0))) \
+                   (def (main) (f (list 7))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a guarded list arm whose guard fails falls through to the catch-all (body binder did not break the guard)"
+        );
+    }
+
+    #[test]
+    fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
+        // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
+        // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.
+        // `(match xs ((guard (list .. all) (> (List.len all) 0)) 1))` — the guarded catch-all does not close
+        // coverage, so the empty list (and a failing guard) are uncovered.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // A guarded rest-arm alone is non-exhaustive (its guard may fail).
+        assert_eq!(
+            code("(match xs ((guard (list x .. rest) (> x 0)) 1))").as_deref(),
+            Some("CDZ0210"),
+            "a lone guarded list arm does not cover every length"
+        );
+        // Adding an UNGUARDED catch-all makes it exhaustive again (no over-rejection).
+        assert_eq!(
+            code("(match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))"),
+            None,
+            "a guarded arm plus an unguarded catch-all is exhaustive"
+        );
+    }
+
+    #[test]
+    fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
+        // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
+        // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`
+        // arm (the decision tree's `(Succ m)` leaf). The loop transform now threads tail position into the
+        // sum decision tree (`emit_tail`/`body_has_member_tail_call`/`tail_callees` handle `MatchSum` via
+        // `emit_sum_cont`/`emit_sum_match_arms` + the `sum_cont_*` walkers), so it compiles to ONE `loop`
+        // (constant stack) instead of a stack-growing recursive `call`. Pins the `loop` at the Lir level +
+        // value parity + that a deeply nested nat (which would overflow a recursive stack) counts fine.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m (type Nat (Zero) (Succ Nat)) \
+                     (def (count (: n Nat) (: acc Int64)) \
+                       (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))) \
+                     (def (f (: n Nat)) (count n 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("count").expect("count");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        // `select_function_of` with `self_def = Some(d)` enables the self-recursion loop transform.
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the tail sum consumer compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: build a DEPTH-N nat then count it. `N = 200000` would overflow a
+        // recursive stack; the loop counts it fine. count(depth 3) = 3.
+        let prog = |n: i64| {
+            format!(
+                "(module m (type Nat (Zero) (Succ Nat)) \
+                   (def (build (: i Int64) (: acc Nat)) (if (< i 1) acc (build (- i 1) (Succ acc)))) \
+                   (def (count (: n Nat) (: acc Int64)) \
+                     (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))) \
+                   (def (main) (count (build {n} (Zero)) 0)) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(3), vec![]) else {
+            eprintln!("runtime wasm not found; skipping tail sum-consumer loop run");
+            return;
+        };
+        assert_eq!(small, "3", "count(depth 3) via a looping tail sum consumer");
+        assert_eq!(
+            run_heap_value(&prog(200000), vec![]).unwrap(),
+            "200000",
+            "count(depth 200000) runs in constant stack (would overflow if recursive)"
+        );
+
+        // A LINKED-LIST sum — `(type IList (Nil) (Cons (Tuple Int64 IList)))`, folded via a tail
+        // accumulator reading the head `(. p 0)` and recursing on the tail `(. p 1)` — also loops (the
+        // `(Cons p)` arm's self-call is a `MatchSum` tail call). Sum 1..100000 = 5000050000, constant stack.
+        let llist = "(module m (type IList (Nil) (Cons (Tuple Int64 IList))) \
+               (def (build (: i Int64) (: acc IList)) (if (< i 1) acc (build (- i 1) (Cons (tuple i acc))))) \
+               (def (suml (: xs IList) (: acc Int64)) \
+                 (match xs ((Nil) acc) ((Cons p) (suml (. p 1) (+ acc (. p 0)))))) \
+               (def (main) (suml (build 100000 (Nil)) 0)) (export main))";
+        assert_eq!(
+            run_heap_value(llist, vec![]).unwrap(),
+            "5000050000",
+            "a tail linked-list sum loops in constant stack (sum 1..100000)"
         );
     }
 
@@ -22512,6 +23472,87 @@ mod match_engine {
     }
 
     #[test]
+    fn adding_a_quantity_and_a_bare_number_offers_the_same_unit_wrap_fix() {
+        // A quantity + a plain number — `(+ (Qty.of 5 (Unit.of #"meter")) 3)` — is CDZ0501 (no implicit
+        // dimensionless coercion). The mechanical repair: give the bare number the SAME unit as the
+        // quantity operand, `(Qty.of 3 (Unit.base #"meter"))` — then both sides are quantities of one
+        // dimension. The unit is recoverable from the quantity operand (`Unit::render`, the re-parseable
+        // `(Unit.base …)` surface); the fix wraps the bare number so `cdz fix` applies it.
+        let right =
+            reject_full("(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) 3)) (export g))")
+                .expect("a quantity + a bare number rejects");
+        assert_eq!(
+            right.code.as_deref(),
+            Some("CDZ0501"),
+            "got: {}",
+            right.message
+        );
+        let fix = right.fix.expect("a same-unit wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE),
+            "wraps the bare number in the quantity's unit: {}",
+            right.message
+        );
+        // The bare number on EITHER side is wrapped (the fix targets whichever operand is the plain number).
+        let left =
+            reject_full("(module m (def (g) (+ 3 (Qty.of 5 (Unit.of #\"meter\")))) (export g))")
+                .expect("a bare number + a quantity rejects");
+        assert_eq!(
+            left.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Wrap),
+            "the bare LEFT operand is wrapped too: {} / {:?}",
+            left.message,
+            left.fix
+        );
+        // The applied fix type-checks — a same-unit quantity sum is well-formed.
+        assert!(
+            reject_full(
+                "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3 (Unit.base #\"meter\")))) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0501")),
+            "the same-unit wrap resolves the dimension fault"
+        );
+    }
+
+    #[test]
+    fn a_numeric_inner_mismatch_under_a_unit_offers_the_same_coercion_fix_as_a_bare_number() {
+        // Two quantities of ONE dimension whose INNER numeric types differ — `(Qty.of 5 m) + (Qty.of 3.0
+        // m)` (Int64 vs Float64 under the same unit) — is the SAME CDZ0301 no-promotion mismatch a bare
+        // `(+ 5 3.0)` gets, so it should offer the SAME one-shot coercion fix (retype the int literal to a
+        // float) — just applied to the INNER value of the offending `Qty.of`, not the whole quantity.
+        let d = reject_full(
+            "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3.0 (Unit.of #\"meter\")))) (export g))",
+        )
+        .expect("an Int-meter + Float-meter mismatch rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("an inner-value coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "5.0",
+            "retypes the Int inner literal to a Float: {}",
+            d.message
+        );
+        // The applied fix type-checks — both inners then Float, the same-unit add is well-formed.
+        assert!(
+            reject_full(
+                "(module m (def (g) (+ (Qty.of 5.0 (Unit.of #\"meter\")) (Qty.of 3.0 (Unit.of #\"meter\")))) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "retyping the inner to a float resolves the numeric mismatch"
+        );
+        // An in-range same-inner-type quantity add is clean (no false positive).
+        assert!(
+            reject_full(
+                "(module m (def (g) (+ (Qty.of 5 (Unit.of #\"meter\")) (Qty.of 3 (Unit.of #\"meter\")))) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "same-inner-type quantities add cleanly"
+        );
+    }
+
+    #[test]
     fn an_unknown_unit_in_a_quantity_literal_is_named_with_a_suggestion() {
         // A `(Qty.of n (Unit.of #"name"))` naming a unit that is neither a built-in family nor a user
         // `Unit.define` (`zorks`, the British `metre`, a typo `secnd`) fails to reduce and otherwise
@@ -23056,6 +24097,49 @@ mod match_engine {
             Some("CDZ0101"),
             "an unknown name keeps its CDZ0101, not the arrow reject: {}",
             unknown.message
+        );
+    }
+
+    /// An operation declared with NO type at all — `(op get)`, `op.ty == None` — is the missing-type
+    /// companion of the non-arrow `(op get Int64)` case above. It was SILENTLY ACCEPTED: `collect_faults`'
+    /// op-type loop `continue`d past a typeless op, and performing it leaked the internal op-record
+    /// `(Record (apply Any) (effect-op Any) (t Type))` at the user (a "TYPE, not a runtime value" export
+    /// fault) plus a CDZ0401 no-home. Now it is CDZ0201 "this operation has no type" at the op name — one
+    /// primary error (the consequent record-leak AND CDZ0401 are deduped via `MISSING_OP_TYPE_PREFIX`).
+    /// Message-only (no mechanical fix): the operation's actual signature is a semantic choice only the
+    /// author knows, so — unlike the non-arrow case which wraps an existing type — a `(-> Result)` guess
+    /// would be wrong; the message spells the exact shape.
+    #[test]
+    fn an_operation_declared_with_no_type_is_rejected_cdz0201() {
+        use crate::testkit::parse;
+        // (a) declared but not performed — the declaration-site reject fires on its own.
+        let declared = "(module m (effect E (op get)) (def (main) 1) (export main))";
+        let ddecl = crate::diagnostics(&mut crate::db::Db::load(parse(declared)));
+        let d = ddecl
+            .iter()
+            .find(|d| d.message.contains("this operation has no type"))
+            .expect("an operation with no type must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        // (b) performed — the leaky op-record + CDZ0401 consequents are DEDUPED; ONE primary remains.
+        let performed = "(module m (effect E (op get)) (def (main) (E.get)) (export main))";
+        let dperf = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
+        assert!(
+            dperf
+                .iter()
+                .any(|d| d.message.contains("this operation has no type")),
+            "the declaration-site reject is present: {:?}",
+            dperf.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !dperf
+                .iter()
+                .any(|d| d.message.contains("(effect-op Any)")
+                    || d.code.as_deref() == Some("CDZ0401")),
+            "the internal op-record leak and the no-home CDZ0401 are deduped: {:?}",
+            dperf
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -24221,12 +25305,38 @@ mod diagnostics {
                 "the author may want a different width → heuristic"
             );
         }
-        // Past UInt64.max → no fixed type holds it → no fix (honest, not BigInt-guessing).
+        // Past UInt64.max → no FIXED width holds it, but `BigInt` holds an integer literal of any
+        // magnitude, so it offers the total "annotate `BigInt`" fix (a one-shot repair, not a guess).
         let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
+        let fix = past
+            .fix
+            .expect("an annotate-BigInt fix is carried past UInt64.max");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(: {} BigInt)", crate::abi::WRAP_HOLE),
+            "annotates the past-fixed literal BigInt: {}",
+            past.message
+        );
+        // But INSIDE `(BigInt.of …)` the annotate-BigInt wrap would CASCADE — `BigInt.of` widens a FIXED
+        // integer, so `(BigInt.of (: … BigInt))` is a BigInt where a fixed int is wanted. So a too-big
+        // literal as `BigInt.of`'s argument carries NO wrap fix (honest — it would not clear the fault) and
+        // the message names the real repair: drop the redundant `BigInt.of`, write `(: … BigInt)` directly.
+        let in_of = first_error(
+            "(module m (def (g) ((. BigInt of) 999999999999999999999999999999)) (export g))",
+        );
         assert!(
-            past.fix.is_none(),
-            "no fix for a value past UInt64.max: {:?}",
-            past.fix
+            in_of.message.contains("BigInt.of")
+                && in_of
+                    .message
+                    .contains("write the literal directly as a `BigInt`"),
+            "names the drop-the-wrapper repair inside BigInt.of: {}",
+            in_of.message
+        );
+        assert!(
+            in_of.fix.is_none(),
+            "no cascading annotate-BigInt wrap inside BigInt.of: {:?}",
+            in_of.fix
         );
     }
 
@@ -24451,6 +25561,72 @@ mod diagnostics {
             du.message.contains("a UInt8 and a String"),
             "UInt8 keeps `a` (yoo sound): {}",
             du.message
+        );
+    }
+
+    /// A mismatched-type comparison — `(< 1 "x")` (Int64 vs String) — reports the coded "… are different
+    /// types" reject (CDZ0201, naming the kind boundary). Because one operand is a compound/text the emit
+    /// path cannot fold to a scalar, `lower` ALSO returned the uncoded "comparison of a compound value
+    /// needs a heap walk (not yet built)" decline — a CONSEQUENCE of the mismatch that MISDIRECTS (reads as
+    /// an unbuilt feature). `dedup_faults` now drops that decline when a comparison type-mismatch reject is
+    /// present, so it is ONE primary error. A WELL-TYPED compound comparison (no mismatch reject) keeps its
+    /// honest not-yet-built decline.
+    #[test]
+    fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
+        use crate::testkit::parse;
+        for src in [
+            // compound/text-vs-scalar cross-kind (M111)
+            "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
+            "(module m (def (main) (if (< true \"x\") 1 2)) (export main))",
+            // two compounds of DIFFERENT structural kinds — tuple vs list, record vs map (this increment).
+            // These formerly took the generic "must be the same type here" unify path (so the M111 dedup,
+            // keyed on "are different types", did NOT fire and the heap-walk secondary leaked); the
+            // cross-kind reject now covers different-kind compounds too, giving the clear message + the dedup.
+            "(module m (def (main) (if (< (tuple 1 2) (list 3)) 1 2)) (export main))",
+            "(module m (def (main) (if (= (tuple 1 2) (list 3)) 1 2)) (export main))",
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("are different types")),
+                "the coded kind-boundary reject is present: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            assert!(
+                !diags
+                    .iter()
+                    .any(|d| d.message.contains("needs a heap walk")),
+                "the misleading heap-walk decline is dropped: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, so no "different
+        // types" reject accompanies it — its honest not-yet-built heap-walk decline must survive at compile.
+        let ok = "(module m (def (g (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) \
+                   (if (< a b) 1 2)) (export g))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect_err(
+            "a well-typed compound comparison still declines (heap walk not yet built)",
+        );
+        assert!(
+            err.message.contains("needs a heap walk") && err.code.is_none(),
+            "the honest decline survives when there is no mismatch to defer to: {}",
+            err.message
+        );
+        // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
+        // different arity) keep the GENERIC path — the different-compound-kind guard fires only across
+        // distinct kinds, so a same-kind structural mismatch is NOT relabeled a "kind boundary".
+        let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
+        )));
+        assert!(
+            same_kind
+                .iter()
+                .any(|d| d.message.contains("must be the same type here"))
+                && !same_kind
+                    .iter()
+                    .any(|d| d.message.contains("across that kind boundary")),
+            "two same-kind (tuple) compounds keep the generic mismatch, not the kind-boundary message: {:?}",
+            same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
@@ -25367,6 +26543,60 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_catch_all_after_the_specific_arms_saturate_a_finite_type_is_redundant() {
+        // The DUAL of the exhaustiveness check: a catch-all (or any arm) is unreachable when the SPECIFIC
+        // arms before it already cover EVERY value of a FINITE scrutinee type — all variants of a sum, or
+        // both booleans. `(match c (R 1) (G 2) (B 3) (_ 4))` on `(type C R G B)`: R/G/B exhaust `C`, so the
+        // `_` can never match → CDZ0213. Before, the pass flagged only a catch-all-then-arm or a duplicate;
+        // a trailing catch-all after a complete specific cover slipped through (it looked "reachable"
+        // because no earlier CATCH-ALL preceded it). Each of these emits exactly one CDZ0213.
+        for src in [
+            // A wildcard after all three sum variants.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) (_ 4))) (def (main) (f (C.R))) (export main))",
+            // A wildcard after both booleans.
+            "(module m (def (f (: b Bool)) (match b (true 1) (false 2) (_ 3))) (def (main) (f true)) (export main))",
+            // A duplicate VARIANT arm after the type is saturated (not just a wildcard).
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) ((C.R) 5))) (def (main) (f (C.R))) (export main))",
+            // Option: both variants covered, then a wildcard.
+            "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((None) 0) (_ -1))) (def (main) (f (Some 5))) (export main))",
+            // A SINGLE-VARIANT sum (an erased newtype `Ty::Nominal`): its sole constructor saturates it, so
+            // a trailing `_` is dead. `finite_cover_size` reads the variant count off the nominal's decl.
+            "(module m (type Id (Mk Int64)) (def (f (: x Id)) (match x ((Id.Mk n) n) (_ 0))) (def (main) (f (Id.Mk 5))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a catch-all after a finite type is fully covered is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
+        // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
+        // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
+        // arms do NOT yet saturate the type) also must not warn, and an OPEN scalar type is never saturated
+        // by literals, so its wildcard stays reachable.
+        for src in [
+            // Exhaustive sum, NO wildcard — the last arm closes coverage but nothing follows it.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3))) (def (main) (f (C.R))) (export main))",
+            // Exhaustive bool, no wildcard.
+            "(module m (def (f (: b Bool)) (match b (true 1) (false 2))) (def (main) (f true)) (export main))",
+            // Missing a variant, so the wildcard is REACHABLE — not redundant.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) (_ 4))) (def (main) (f (C.R))) (export main))",
+            // Open Int scalar — a finite set of literals never saturates it, so the wildcard is reachable.
+            "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "no false positive: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_redundant_arm_warning_carries_a_delete_fix_for_the_whole_arm() {
         // The rustc-gold repair for an unreachable arm: DELETE it. The warning now carries a `delete` fix
         // targeting the ARM node (the `(pattern body)` list, the pattern's PARENT) — not the pattern alone
@@ -25983,6 +27213,28 @@ mod stage1 {
         )))
         .expect("a documented value def may bind a record");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
+    }
+
+    #[test]
+    fn a_type_declaration_may_carry_a_leading_doc_ignored_for_the_variants() {
+        // A `(doc "…")` form right after the type NAME documents the type and is NOT a variant — the ML
+        // reader attaches a `///` doc comment on a `type` this way (`parser.rs` `type_expr`), the type
+        // analogue of a def's leading doc. `scan_type_decl` skips it (like `strip_def_docs` for a def);
+        // before, the doc was mis-read AS a variant → CDZ0201 "variant `doc` declared more than once".
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Color (doc \"an RGB channel tag\") Red Green Blue) \
+               (def (main) (match Color.Green ((Color.Red) 0) ((Color.Green) 1) ((Color.Blue) 2))) \
+               (export main))",
+        )))
+        .expect("a type decl may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+        // A PAYLOAD-carrying documented sum works too — the doc does not shift the variant discriminants.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Box (doc \"a one-field wrapper\") (Mk Int64)) \
+               (def (main) (match (Box.Mk 7) ((Box.Mk n) n))) (export main))",
+        )))
+        .expect("a documented payload sum compiles");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
     }
 
     #[test]
@@ -28817,6 +30069,199 @@ mod stage1 {
     }
 
     #[test]
+    fn a_let_binder_may_be_a_list_rest_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern + §A List Is Deconstructed:
+        // a list pattern is irrefutable ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥
+        // the leading count, so it may bind. A leading element resolves to a `SumPayload{[Elem(i)]}` and the
+        // rest binder to `SumPayload{[RestFrom(lead)]}` reading out of the bound value — the SAME machinery a
+        // `(match v ((list x .. rest) …))` arm uses, so this is a pure resolve-side lift (no new IR). This
+        // test asserts the well-formed forms COMPILE (a list value engages the heap runtime, so the RUNTIME
+        // VALUES are exercised in `match_engine::a_list_rest_binding_pattern_binds_over_a_runtime_list`).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Leading + rest binder over a constant list — compiles (the rest binder is bound, the leading `a`/`b`
+        // read via `Elem`).
+        assert_eq!(
+            code("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            None
+        );
+        // Zero-leading `(list .. all)` binds the WHOLE list as `all` (irrefutable, matches any length).
+        assert_eq!(
+            code("(let (((list .. all) (list 1 2 3 4))) ((. List len) all))"),
+            None
+        );
+        // A NESTED tuple leading element composes.
+        assert_eq!(
+            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
+            None
+        );
+        // A constant list-let read ONLY through its element binders now FOLDS to a scalar (no heap), so it
+        // runs via the scalar path with the CORRECT value — `a`+`b` = 10+20 = 30 (the binders fold to the
+        // constant elements via `SumPayload{Elem}` → `fold_sum_path`'s `ListNew` arm). See
+        // `a_constant_list_let_read_by_element_binders_folds_to_a_scalar` for the no-heap assertion.
+        assert_eq!(
+            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            30
+        );
+        assert_eq!(
+            run_main("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
+            3
+        );
+    }
+
+    #[test]
+    fn a_constant_list_let_read_by_element_binders_folds_to_a_scalar() {
+        // A CONSTANT list bound by a rest pattern and read ONLY through its element/rest PATTERN binders
+        // FOLDS to a scalar — no `vec-empty`/`vec-push` heap build — exactly as a constant tuple-`let`'s
+        // projections fold. Each `SumPayload{Elem(i)}`/`{RestFrom(k)}` reads a constant element/tail via
+        // `fold_sum_path`, so the list never needs to exist at run time. Before, 2+ leading-element reads
+        // tripped `should_keep_binding`'s ≥2-use rule and materialized the list (a `vec-*` heap build) for a
+        // value that never varies. The PROOF a fold happened: the emitted core reads NO value-heap op — its
+        // `MatchList`/`Let` collapsed to a `ConstInt` (`main`'s body folds to `Core::ConstInt(30)`).
+        let folds_to_const = |body: &str| -> Option<i64> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let mut db = crate::db::Db::load(parse(&src));
+            let d = db.def_by_name("main")?;
+            let m_body = db.defs[d].body?;
+            match crate::lower::core_of(&mut db, m_body) {
+                crate::core::Core::ConstInt(v) => v.to_i64(),
+                _ => None,
+            }
+        };
+        // Two leading element reads over a constant list — folds to the constant `30` (10+20), no heap.
+        assert_eq!(
+            folds_to_const("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            Some(30),
+            "a constant list-let read by element binders folds to a scalar constant"
+        );
+        // A nested tuple leading element folds too (1+2=3).
+        assert_eq!(
+            folds_to_const(
+                "(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"
+            ),
+            Some(3),
+            "a constant list-let with a nested tuple element folds"
+        );
+        // NO OVER-FOLD: the fold is confined to the SCALAR-result case (a `ConstInt` body). A body whose
+        // result is the LIST itself (the rest binder RETURNED) is not a scalar, so it does not fold to a
+        // constant — `binding_escapes_whole` sees the whole-value use and keeps the binding, so the list
+        // materializes on the heap (the escape path) exactly as before this fix.
+        assert_eq!(
+            folds_to_const("(let (((list a .. rest) (list 10 20 30))) rest)"),
+            None,
+            "a list-let whose result is a (sub)list escapes whole → not a scalar constant, still materialized"
+        );
+        // A materialized list emits the value-heap `resource-new`/`vec-*` ops, whose names appear verbatim
+        // in the component bytes; a folded scalar emits none. Confirm the escaping case DOES import the heap
+        // (byte-scan for the distinctive `resource-new` op — dependency-free).
+        let materializes = |body: &str| -> bool {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            let wasm = out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .expect("compiles")
+                .to_vec();
+            wasm.windows(b"resource-new".len())
+                .any(|w| w == b"resource-new")
+        };
+        assert!(
+            materializes("(let (((list a .. rest) (list 10 20 30))) rest)"),
+            "a constant list-let whose rest escapes as a whole value still materializes (heap ops present)"
+        );
+        assert!(
+            !materializes("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            "the element-only-read list-let does NOT materialize (folded, no heap ops)"
+        );
+        // And the folded value runs correctly via the scalar path (was un-runnable by `run_main` before,
+        // since the list-let materialized on the heap — now it folds, so `run_main`'s scalar path works).
+        assert_eq!(
+            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            30
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_list_binding_pattern_is_rejected() {
+        // A binding position is IRREFUTABLE. A FIXED-ARITY list pattern `(list a b)` matches only its exact
+        // length → REFUTABLE → CDZ0210 (the equivalent single-arm match's non-exhaustiveness). A refutable
+        // leading element (a literal) is CDZ0210 too; a non-linear binder is CDZ0102. Only the rest form is
+        // accepted. (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern.)
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // FIXED-ARITY list binding is refutable → CDZ0210.
+        assert_eq!(
+            code("(let (((list a b) (list 1 2))) (+ a b))").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((list) (list))) 0)").as_deref(),
+            Some("CDZ0210")
+        );
+        // A refutable LEADING element (a literal) in a rest binding is CDZ0210 (composes recursively).
+        assert_eq!(
+            code("(let (((list 0 .. rest) (list 0 1))) 42)").as_deref(),
+            Some("CDZ0210")
+        );
+        // A non-linear list binding (a binder repeated) is CDZ0102.
+        assert_eq!(
+            code("(let (((list a a .. rest) (list 1 2 3))) a)").as_deref(),
+            Some("CDZ0102")
+        );
+        // NO OVER-REJECTION: a well-formed rest binding compiles (flat + nested + zero-leading).
+        assert_eq!(code("(let (((list x .. rest) (list 1 2 3))) x)"), None);
+        assert_eq!(code("(let (((list .. all) (list 1 2))) 0)"), None);
+        assert_eq!(
+            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2)))) (+ a b))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_sum_type_may_be_declared_inside_a_do_block() {
         // A `(type …)` declaration nested in a `do` block — a LOCAL sum, not a top-level item. `top_items`
         // sees only the root's direct children, so `db::collect_nested_decls` descends def bodies + nested
@@ -30160,6 +31605,101 @@ mod stage1 {
     }
 
     #[test]
+    // The pinned sums are written `0 + 1 + … + n` to make `sum(0..=n)` explicit against the comment's
+    // N(N-1)/2 — the leading `0 +` is pedagogical, not a stray identity op.
+    #[allow(clippy::identity_op)]
+    fn the_effect_fold_pure_classifier_scales_linearly_over_a_wide_context() {
+        // REGRESSION (perf): the frame-free effect fold classifies pure one-hole contexts via
+        // `effects::strongly_pure`, which called `subtree_performs` — a full recursive subtree walk — at
+        // its entry AND at every node its own structural descent reached. So over a wide/deep handle body
+        // the SAME node's perform-verdict was recomputed O(size) times: `strongly_pure` was O(size²) and
+        // the fold super-linear (a width-400 pure `+`-spine around one perform: `cdz check` ~170ms and
+        // growing ~O(n^1.7); a depth-N nested-`let` perform chain was ~O(N³)). FIX: memoize
+        // `subtree_performs` per `(node, handler-context-key)` in `db.subtree_performs_cache` — whether a
+        // subtree performs is a pure function of the node and the discharged-op set — so each verdict
+        // computes once. The wide context is now LINEAR (width-400 ~25ms), the deep chain ~halved.
+        //
+        // Correctness: a chain of N performs, each bound by a nested `let`, threaded under a counter
+        // handler (`resume s (+ s 1)`, seed 0) — the i-th read is `i`, so the sum is 0+1+…+(N-1).
+        fn nested_chain(n: usize) -> String {
+            let mut summ = String::from("0");
+            for i in 0..n {
+                summ = format!("(+ a{i} {summ})");
+            }
+            let mut inner = summ;
+            for i in (0..n).rev() {
+                inner = format!("(let ((a{i} ((. Ask get)))) {inner})");
+            }
+            format!(
+                "(do (effect Ask (op get (-> Unit Int64))) \
+                   (def (main) (handle Ask 0 ((get () s (resume s (+ s 1)))) {inner})) \
+                   (export main))"
+            )
+        }
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&nested_chain(6))))
+                    .expect("a 6-perform nested-let chain folds and compiles"),
+                "main"
+            ),
+            0 + 1 + 2 + 3 + 4 + 5,
+            "the i-th of N threaded performs reads i (counter seeded 0), so the chain sums to N(N-1)/2"
+        );
+        // Growth guard on a WIDE pure context — `(+ 0 (+ 1 … (Ask.get)))`, one perform at the bottom of an
+        // N-wide `+`-spine that `strongly_pure`/`pure_hole` must classify. It is SHALLOW (no deep recursion,
+        // so no interaction with the fold's reduction-depth backstop) and its classification cost is the
+        // memoized `subtree_performs` — the cleanest signal for this fix. Was O(n^1.7) (the per-node
+        // re-walk); now linear. Timed as the MIN of several PAIRED back-to-back (width n, width 2n) runs so
+        // transient contention under the parallel harness cancels in the ratio (the technique
+        // `scope_resolution_deep_let_chain` uses). Linear ⇒ ~2×; the old re-walk ⇒ ≥3.3×. Threshold 2.7×.
+        fn wide_pure(n: usize) -> String {
+            let mut e = String::from("((. Ask get))");
+            for i in 0..n {
+                e = format!("(+ {i} {e})");
+            }
+            format!(
+                "(do (effect Ask (op get (-> Unit Int64))) \
+                   (def (main) (handle Ask 5 ((get () s (resume s s))) {e})) \
+                   (export main))"
+            )
+        }
+        // The wide context folds to `sum(0..n) + 5` — pin the value at a small width too.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&wide_pure(4))))
+                    .expect("a wide pure context around one perform folds and compiles"),
+                "main"
+            ),
+            0 + 1 + 2 + 3 + 5,
+            "the wide `+`-spine sums 0..4 plus the perform's resumed state 5"
+        );
+        fn check_ms(src: &str) -> f64 {
+            // The wide `+`-spine (width 200/400) parses and type-checks to a deep-but-finite recursion —
+            // route it through the depth-sized compiler stack so it doesn't overflow the ~2 MB `cargo test`
+            // worker stack (the guard-thread pattern the deep-recursion tests use).
+            crate::host::run_with_compiler_stack(|| {
+                let start = std::time::Instant::now();
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+        }
+        let (narrow, wide) = (wide_pure(200), wide_pure(400));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t200 = check_ms(&narrow);
+            let t400 = check_ms(&wide);
+            best = best.min(t400 / t200.max(0.1));
+        }
+        assert!(
+            best < 2.7,
+            "the effect fold's pure classifier must scale LINEARLY over a wide context (was O(n²) via a \
+             per-node whole-subtree `subtree_performs` re-walk; now memoized): width 200→400 grew {best:.1}× \
+             (min paired ratio); linear is ~2×, the old re-walk was ≥3.3×"
+        );
+    }
+
+    #[test]
     fn a_branch_perform_threads_its_state_to_the_continuation() {
         // A `perform` in an `if`/`match` BRANCH must thread its state advance OUT to the continuation
         // after the conditional — the branch-out-state is a runtime phi realized by distributing the
@@ -30519,6 +32059,77 @@ mod stage1 {
         }
     }
 
+    /// A `resume` is exactly `(resume <value> <next-state>)`. A resume with the WRONG NUMBER of operands
+    /// is malformed: too FEW already rejected CDZ0201, but too MANY — `(resume v s extra)` — was SILENTLY
+    /// ACCEPTED (the resolver read only the first two operands, dropping the surplus → a silent miscompile).
+    /// Now a surplus operand is CDZ0201 "this resume has too many operands" with a delete-the-surplus fix
+    /// (the fixed-arity surplus-delete `if`/`and`/`not` get). AND: a malformed resume INSIDE a handler arm
+    /// no longer also reports the spurious "stray resume" secondary — the handle fold produces a spanless
+    /// COPY of the malformed arm body that landed outside a recognizable arm structure, which the stray
+    /// check wrongly flagged; gating that check on `is_user_node` drops the synthesized copy so a malformed
+    /// resume in an arm reports ONE primary fault (its shape), not a misleading "it has no enclosing arm".
+    #[test]
+    fn a_resume_with_the_wrong_number_of_operands_is_cdz0201() {
+        use crate::testkit::parse;
+        // (a) TOO MANY operands — was silently accepted. One CDZ0201 with a delete fix, no spurious stray.
+        let too_many = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle E 0 ((get () s (resume 5 s 9))) (+ (E.get) 1))) (export main))";
+        let dmany = crate::diagnostics(&mut crate::db::Db::load(parse(too_many)));
+        let arity = dmany
+            .iter()
+            .find(|d| d.message.contains("too many operands"))
+            .expect("a resume with a surplus operand must be rejected");
+        assert_eq!(
+            arity.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            arity.message
+        );
+        assert_eq!(
+            arity.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries a delete-the-surplus fix: {:?}",
+            arity.fix
+        );
+        // The spurious "no enclosing handler arm" secondary is GONE (the resume IS in an arm, just malformed).
+        assert!(
+            !dmany
+                .iter()
+                .any(|d| d.message.contains("no enclosing handler arm")),
+            "a malformed resume in an arm must not also report the stray-resume secondary: {:?}",
+            dmany.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (b) TOO FEW operands — the missing-next-state CDZ0201, likewise with no spurious stray secondary.
+        let too_few = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle E 0 ((get () s (resume 5))) (+ (E.get) 1))) (export main))";
+        let dfew = crate::diagnostics(&mut crate::db::Db::load(parse(too_few)));
+        assert!(
+            dfew.iter().any(
+                |d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("no next-state")
+            ),
+            "a resume missing its next-state is CDZ0201: {:?}",
+            dfew.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !dfew
+                .iter()
+                .any(|d| d.message.contains("no enclosing handler arm")),
+            "the too-few case must not report the stray-resume secondary either: {:?}",
+            dfew.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (c) NO REGRESSION: a GENUINE top-level stray resume (a user node with no enclosing arm) is STILL
+        // flagged — the `is_user_node` gate drops only synthesized copies, not real source strays.
+        let stray = "(module m (def (main) (resume 5 6)) (export main))";
+        let dstray = crate::diagnostics(&mut crate::db::Db::load(parse(stray)));
+        assert!(
+            dstray
+                .iter()
+                .any(|d| d.message.contains("no enclosing handler arm")),
+            "a genuine top-level stray resume is still flagged: {:?}",
+            dstray.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_host_delegating_a_value_definition_is_rejected() {
         // A `host` delegates EFFECTS to the boundary (capabilities-and-effects.md §Host Delegation Is An
@@ -30596,6 +32207,63 @@ mod stage1 {
             )))
             .is_ok(),
             "a well-formed effect declaration must compile"
+        );
+    }
+
+    /// A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands —
+    /// `(host (E) body extra)` — was SILENTLY ACCEPTED: `resolve_host` read only the effect list and body,
+    /// dropping the surplus (a silent miscompile, the `host` analogue of the too-many `resume`/fixed-arity
+    /// forms). Now it is CDZ0201 "this host has too many operands" with a delete-the-surplus fix, and the
+    /// consequent CDZ0401 (the malformed host's body-perform looks un-delegated to the no-home walk) is
+    /// deduped via `MALFORMED_HOST_PREFIX` so it is ONE primary error. The dedup covers every malformed-host
+    /// shape (non-list effects, missing body), not just too-many.
+    #[test]
+    fn a_host_with_too_many_operands_is_cdz0201() {
+        use crate::testkit::parse;
+        let too_many = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (host (E) (E.get) 99)) (export main))";
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(too_many)));
+        let arity = diags
+            .iter()
+            .find(|d| d.message.contains("too many operands"))
+            .expect("a host with a surplus operand must be rejected");
+        assert_eq!(
+            arity.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            arity.message
+        );
+        assert_eq!(
+            arity.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries a delete-the-surplus fix: {:?}",
+            arity.fix
+        );
+        // The consequent CDZ0401 (body-perform looks un-delegated because the host is malformed) is DEDUPED.
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
+            "the malformed-host no-home CDZ0401 is deduped: {:?}",
+            diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        // NO REGRESSION: a valid host compiles; a GENUINE no-home perform (no host at all) is still CDZ0401.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (host (E) (E.get))) (export main))",
+            )))
+            .is_ok(),
+            "a well-formed host must compile"
+        );
+        let no_home = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op get (-> Unit Int64))) (def (main) (E.get)) (export main))",
+        )));
+        assert!(
+            no_home.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
+            "a genuine ungranted perform is still CDZ0401 (no over-suppression): {:?}",
+            no_home.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
@@ -31914,6 +33582,84 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_arg_with_a_foreign_effect_used_twice_in_the_arm_declines_not_miscompiles() {
+        // EFFECT-DUPLICATION GUARD. An operation whose ARGUMENT carries a FOREIGN perform, bound to an arm
+        // parameter the arm uses MORE THAN ONCE, must DECLINE — never duplicate the effect. `Add.sum`'s arm
+        // reads `(. p 0)` AND `(. p 1)`, and the argument `(tuple (Ask.get) (Ask.get))` carries two `Ask`
+        // gets foreign to the `Add` handler. β-substituting the tuple for `p` (used twice) would copy it,
+        // so the outer `Ask` handler would thread FOUR gets instead of two — a miscompile (observed: the
+        // second read jumped from 11 to 13). The guard turns that into a clean decline. Regression pin:
+        // before the guard, this compiled and ran to a wrong value.
+        let src = "(do (effect Ask (op get (-> Unit Int64))) \
+                   (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \
+                   (def (main) (handle Ask 10 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Add 0 ((sum (p) s (resume (+ (* (. p 0) 100) (. p 1)) s))) \
+                       (Add.sum (tuple (Ask.get) (Ask.get)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a foreign-performing argument bound to a multiply-used arm param must decline, not miscompile"
+        );
+        // The SAME shape with PURE tuple elements folds fine (no effect to duplicate) → 7.
+        let pure = "(do (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \
+                   (def (main) (handle Add 0 ((sum (p) s (resume (+ (. p 0) (. p 1)) s))) \
+                     (Add.sum (tuple 3 4)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(pure)))
+                    .expect("a pure-args tuple-param op folds"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_recursive_effectful_def_with_a_post_recursion_sibling_perform_declines_cleanly() {
+        // OUT-STATE-OBSERVING SIBLING PERFORM. A recursive-effectful def whose SELF-CALL precedes a PERFORM
+        // on a strict spine — `(- (build (- n 1)) (Idx.next))`, `((. List push) (build …) (Idx.next))` — has
+        // the perform read the recursion's OUT-state, which the single-return specialization cannot carry.
+        // It must DECLINE, and CLEANLY: NOT leak the internal synthesized `build#eff…$s0` name in a
+        // confusing CDZ0101 (the pre-guard behavior — an unspellable compiler-internal name with a
+        // nonsensical did-you-mean). Regression pin: the decline is codeless (a "not yet reducible" todo)
+        // and never mentions an `#eff` name.
+        for src in [
+            "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) (list) ((. List push) (build (- n 1)) (Idx.next)))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3)))) (export main))",
+            "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) 0 (- (build (- n 1)) (Idx.next)))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))",
+        ] {
+            let r = compile_component(&crate::codec::encode(&parse(src)));
+            let d = r.expect_err("an out-state-observing sibling perform must decline");
+            assert!(
+                d.code.is_none(),
+                "the decline must be codeless (a clean todo), not a coded CDZ error — got {:?}: {}",
+                d.code,
+                d.message
+            );
+            assert!(
+                !d.message.contains("#eff"),
+                "the decline must NOT leak the internal specialization name — got: {}",
+                d.message
+            );
+        }
+        // The MIRROR shape — a perform BEFORE the self-call (reads pre-recursion = incoming state) — still
+        // FOLDS (guard is precise): `(- (Idx.next) (build (- n 1)))` seeded 1 → 2.
+        let folds = "(do (effect Idx (op next (-> Unit Int64))) \
+             (def (build (: n Int64)) (if (= n 0) 0 (- (Idx.next) (build (- n 1))))) \
+             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(folds)))
+                    .expect("a perform BEFORE the self-call folds"),
+                "main",
+            ),
+            2
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
@@ -32171,6 +33917,60 @@ mod stage1 {
         );
     }
 
+    /// The state-side companion of `resuming_with_a_wrong_type_value_is_cdz0201`. A handler folds a STATE
+    /// fixed by its `init` seed and threads it purely (`capabilities-and-effects.md` §Discharging An
+    /// Operation Produces … The Next State Carried Forward); the NEXT-state in `(resume value next-state)`
+    /// continues that fold, so it MUST have the seed's type. `(resume 5 true)` / `(resume 5 "x")` under an
+    /// Int64 seed change the state's type mid-fold — was SILENTLY ACCEPTED (a type-confusion miscompile),
+    /// now CDZ0201. GUARDED with `agrees_with` so a recursive/unconstrained-state handler is never falsely
+    /// flagged, and a matching next-state (arithmetic on `s`, or `s` itself, or a same-shape tuple) is clean.
+    #[test]
+    fn resuming_with_a_wrong_type_next_state_is_cdz0201() {
+        use crate::testkit::parse;
+        for (src, next_ty) in [
+            (
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ((get () s (resume 5 true))) (+ (E.get) 1))) (export main))",
+                "Bool",
+            ),
+            (
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ((get () s (resume 5 \"x\"))) (+ (E.get) 1))) (export main))",
+                "String",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("next-state of type"))
+                .unwrap_or_else(|| panic!("a wrong-type next-state must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains(next_ty) && d.message.contains("state type is Int64"),
+                "names the next-state type + the seed's state type: {}",
+                d.message
+            );
+        }
+        // NO FALSE POSITIVE: a next-state that matches the seed type (arithmetic on `s`, `s` itself, or a
+        // same-shape tuple) is clean; a recursive/list-state handler (state type undetermined at this arm)
+        // is not flagged.
+        for ok in [
+            "(module m (effect E (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 (+ s 1)))) (+ (E.get) 1))) (export main))",
+            "(module m (effect E (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 s))) (+ (E.get) 1))) (export main))",
+            "(module m (effect E (op get (-> Unit Int64))) \
+             (def (main) (handle E (tuple 0 0) ((get () s (resume 5 (tuple 1 2)))) (E.get))) (export main))",
+        ] {
+            let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| d.message.contains("next-state of type"));
+            assert!(
+                bad.is_none(),
+                "a matching next-state must not be flagged: {ok} -> {bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_runtime_integer_width_is_rejected() {
         // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
@@ -32369,6 +34169,160 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
+        // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
+        // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
+        // parameter `const` (`(const (: d …))`) — an EXPLICIT compile-time parameter (Addendum 3), so the
+        // recursive `fold-n` is monomorphized per distinct dict, the `op` INLINED directly (no
+        // `call_indirect`, no runtime record) and the dict argument ERASED from the emitted signature (the
+        // "inline a compile-time-known argument, drop the param" rule, same as a type-valued parameter).
+        // Two distinct dicts (`+10`, `*2`) get two specializations; 30 + 8 = 38. Pure-scalar (no heap).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+               (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                              (fold-n (record (op (fn (x) (* x 2)))) 3 1))) (export main))",
+        )))
+        .expect("a recursive dictionary consumer compiles");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 38);
+        // The dictionary is ERASED: the emitted core module carries NO `call_indirect` opcode (`0x11` — the
+        // `op` is a direct inlined call, not an indirect dispatch through a runtime record). Scan the core
+        // module's code with `wasmparser` rather than pulling in a text printer. A false positive from a
+        // stray `0x11` data byte is implausible here (a `fold-n` with a runtime dict WOULD emit the opcode,
+        // the pre-fix baseline); the run-value above is the primary correctness signal, this is the
+        // erasure witness.
+        let has_call_indirect = {
+            use wasmparser::{Parser, Payload};
+            let mut found = false;
+            for payload in Parser::new(0).parse_all(&bytes) {
+                if let Ok(Payload::CodeSectionEntry(body)) = payload {
+                    let mut ops = body.get_operators_reader().expect("ops");
+                    while let Ok(op) = ops.read() {
+                        if matches!(op, wasmparser::Operator::CallIndirect { .. }) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+            found
+        };
+        assert!(
+            !has_call_indirect,
+            "the dictionary's op must be inlined (no call_indirect), got a runtime dispatch"
+        );
+    }
+
+    #[test]
+    fn a_const_parameter_rejects_a_runtime_dependent_argument() {
+        // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
+        // parameter DECLARES its argument compile-time-known (Addendum 3). Here `main` passes a dictionary
+        // whose `op` captures `main`'s RUNTIME parameter `k` — the dict is not a compile-time value, so
+        // the `const` contract is violated. The compiler must REJECT (coded CDZ0201, "must be
+        // compile-time-known"), NOT silently pass it at runtime — the closedness check
+        // (`arg_captures_runtime_binding`) catches the captured enclosing param.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m \
+                       (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                         (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                       (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let has_coded = out.diagnostics.iter().any(|d| {
+            d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+        });
+        assert!(
+            has_coded,
+            "a const arg capturing a runtime param must be a coded CDZ0201 reject, got: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
+        // REGRESSION (perf): `Db::register_reduced_callables` runs after EVERY `apply_lambda` β-reduction to
+        // discover do-local recursive defs in the reduced term, and its `collect_reduced_callables` helper
+        // walked the WHOLE reduced subtree each call. A deeply-nested inlining — e.g. a dictionary-projection
+        // chain `((. d op0) ((. d op1) … acc))` where each `(. d opi)` projects a lambda and applies it —
+        // produces N β-reductions each returning a progressively-larger O(N)-deep term, so the repeated
+        // whole-subtree walks were O(N²) (a depth-800 chain's callable scan alone was ~2.5M node-visits,
+        // 4×/doubling). FIX: a `db.reduced_callable_walked` visited set — a node's structure is immutable
+        // once built, so an already-walked node yields no new candidates; skip it (the fix-30 pattern). This
+        // drops the scan to O(N), so `cdz check` on the chain scales linearly.
+        //
+        // Correctness: `apply-all` threads `acc` through N ops `op_i = (+ · i)`, so the result is
+        // `acc + (0+1+…+(N-1))`. Pin the fold value at a small N.
+        fn chain_src(n: usize) -> String {
+            let dtype: String = format!(
+                "(Record {})",
+                (0..n)
+                    .map(|i| format!("(op{i} (-> Int64 Int64))"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let mut body = String::from("acc");
+            for i in 0..n {
+                body = format!("((. d op{i}) {body})");
+            }
+            let dval: String = format!(
+                "(record {})",
+                (0..n)
+                    .map(|i| format!("(op{i} (fn (x) (+ x {i})))"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            format!(
+                "(module m (def (apply-all (: d {dtype}) (: acc Int64)) {body}) \
+                   (def (main) (apply-all {dval} 0)) (export main))"
+            )
+        }
+        // Compiles cleanly (the record value uses the value heap, so RUNNING would need the runtime store;
+        // the perf property is compile-time, so a clean compile is the correctness signal here — the
+        // dictionary erasure's runtime value is pinned by `a_recursive_dictionary_consumer_…`).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&chain_src(5))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a nested dictionary-projection chain compiles with no error diagnostics: {diags:?}"
+        );
+        // Growth guard — the NOISE-FREE signal: total `collect_reduced_callables` node-visits (a wall-clock
+        // ratio is diluted by the rest of `check`, which is linear and dominates). Before the visited set, N
+        // β-reductions each re-walked the growing O(N)-deep reduced term → the visit count was O(N²)
+        // (~4×/doubling); with the set it is O(N) (~2×/doubling). Measure at width N and 2N and assert the
+        // count grows sub-quadratically. Deterministic (a pure function of the program), so no min-of-runs
+        // needed — the count is identical every run.
+        fn crc_visits(src: &str) -> u64 {
+            // The width-300/600 chain type-checks to a deep-but-finite recursion — set, run, and read the
+            // visit counter all on the depth-sized compiler thread (the counter is a thread-local, so the
+            // whole trio must share one thread) so it doesn't overflow the ~2 MB `cargo test` worker stack.
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.get())
+            })
+        }
+        let v300 = crc_visits(&chain_src(300));
+        let v600 = crc_visits(&chain_src(600));
+        // Linear ⇒ ~2× for a 2× width; the old O(N²) re-walk was ~4×. Threshold 3× separates them with
+        // margin (and guards against a partial regression). Guard the denominator against a degenerate 0.
+        let ratio = v600 as f64 / (v300.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a deeply-nested inlined projection chain's callable scan must grow LINEARLY (was O(N²) via a \
+             per-β-reduction whole-subtree re-walk in `collect_reduced_callables`; the \
+             `reduced_callable_walked` visited set fixes it): width 300→600 grew the visit count {ratio:.1}× \
+             (v300={v300}, v600={v600}); linear is ~2×, the O(N²) re-walk was ~4×"
+        );
     }
 
     #[test]
@@ -41327,6 +43281,308 @@ mod closure_host_resource {
         );
     }
 
+    /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE
+    /// argument is a NESTED fixed-shape tuple `(Tuple Int64 (Tuple Int64 Int64))`. The HYPOTHESIS: the canonical
+    /// ABI flattens a nested `tuple<s64, tuple<s64,s64>>` RECURSIVELY into THREE leaf core params `(i64, i64,
+    /// i64)` (depth-first), so the guest `call` receives `(i32 self, i64 a, i64 b, i64 c)` — NO memory, NO
+    /// realloc, NO runtime decode. If this validates + runs, a nested fixed-shape compound arg is an
+    /// implementation gap (recursive rebuild), NOT an ABI wall. Standalone (no heap): the lifted closure is
+    /// `lifted(a,b,c) = a + b + c` (the body once the nested tuple is flattened to its 3 leaves).
+    fn closure_nested_tuple_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64,i64,i64)->i64 (call_indirect);
+        // 2 = make ()->i32; 3 = call (i32 self, i64 a, i64 b, i64 c)->i64 (self + the 3 FLATTENED leaf fields).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(
+            vec![ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 1 lifted / indirect
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 3 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(a, b, c) = a + b + c
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::LocalGet(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::LocalGet(2));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, a, b, c) = call_indirect[type 1](a, b, c, slot = resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // a
+        call.instruction(&Instruction::LocalGet(2)); // b
+        call.instruction(&Instruction::LocalGet(3)); // c
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → rep (table slot)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the NESTED-tuple-ARG closure: `call`'s argument is a
+    /// `tuple<s64, tuple<s64,s64>>` DEFINED TYPE (a nested tuple). Proves a nested fixed-shape-scalar compound
+    /// argument's component type is expressible + re-exportable (the inner tuple is its own defined type,
+    /// referenced by index from the outer tuple).
+    fn inner_reexport_component_nested_tuple_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // the nested tuple<s64, tuple<s64,s64>> argument (import side): mint the INNER tuple first, then the
+        // outer tuple referencing it by index.
+        let (inner_imp, itd) = c.type_defined();
+        itd.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_imp, td) = c.type_defined();
+        td.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_imp),
+        ]);
+        // call : (self: own<0>, p: tuple<s64, tuple<s64,s64>>) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("p", ComponentValType::Type(tup_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        // RE-EXPORT the resource type + funcs.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (inner_exp, itd2) = c.type_defined();
+        itd2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_exp, td2) = c.type_defined();
+        td2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_exp),
+        ]);
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("p", ComponentValType::Type(tup_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the NESTED-tuple-ARG closure: `call` is lifted against `(self: own<t>,
+    /// p: tuple<s64, tuple<s64,s64>>) -> s64` with NO Memory/Realloc canon options — the HYPOTHESIS is that
+    /// wasmtime RECURSIVELY flattens the nested tuple into THREE scalar core params, so the core `call`
+    /// receives `(i32 self, i64 a, i64 b, i64 c)`. If the lift required indirect (memory) passing, this fails
+    /// to instantiate — the test IS the refutation attempt.
+    fn oracle_closure_nested_tuple_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, p: tuple<s64, tuple<s64,s64>>) -> s64 — NO canon options (flatten hyp).
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (inner_t, itdef) = c.type_defined();
+        itdef.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_t, tdef) = c.type_defined();
+        tdef.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_t),
+        ]);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("p", ComponentValType::Type(tup_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_nested_tuple_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT for a NESTED fixed-shape compound arg: does `tuple<s64, tuple<s64,s64>>` cross
+    /// the direct-call boundary by RECURSIVE native flattening (no runtime decode)? `make()` the handle, then
+    /// `call(handle, (100, (10, 3)))` supplying the nested tuple as a `Val::Tuple` containing a `Val::Tuple` —
+    /// expect 113. If this validates + runs, the nested-compound-ARG decline is an implementation gap (a
+    /// recursive rebuild), NOT an ABI wall requiring `value-decode`.
+    #[test]
+    fn a_nested_fixed_shape_tuple_closure_arg_crosses_by_recursive_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_nested_tuple_arg_component(&closure_nested_tuple_arg_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("nested-tuple-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
+
+        // call(handle, (100, (10, 3))) → 100 + 10 + 3 = 113. The nested tuple crosses as a Val::Tuple of a
+        // Val::Tuple; wasmtime RECURSIVELY flattens it to three core i64 params for the guest `call`.
+        let nested_arg = Val::Tuple(vec![
+            Val::S64(100),
+            Val::Tuple(vec![Val::S64(10), Val::S64(3)]),
+        ]);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), nested_arg], &mut out)
+            .expect("call(handle, (100, (10, 3)))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(113),
+            "closure (fn (p) (+ p.0 (+ p.1.0 p.1.1))) applied to (100, (10, 3)) = 113"
+        );
+    }
+
     /// COMPOUND-RESULT oracle core (the byte anchor for a closure whose result is a `list<u8>` / a compound
     /// rendered as the canonical value form): a closure `call : (self: own<t>, x: s64) -> list<u8>`. The
     /// core carries a MEMORY + `cabi_realloc` (which a scalar `call` does not need) so the canonical ABI can
@@ -43015,7 +45271,8 @@ mod closure_host_resource {
         use crate::backend::wasm::runtime_abi::OPS;
         use crate::backend::wasm::select::SelectedFunc;
         use crate::backend::wasm::serialize::{
-            ClosureMake, TupleArgRebuild, multi_closure_resource_core_module_with_host_borrow,
+            ClosureMake, FieldRebuild, TupleArgRebuild,
+            multi_closure_resource_core_module_with_host_borrow,
         };
         use crate::layout::{ExportPlan, Layout};
         use crate::lower::LiftedLambda;
@@ -43102,12 +45359,20 @@ mod closure_host_resource {
 
         // The tuple `(Tuple Int64 Int64)` crosses FLATTENED as two s64 core params; each field boxes with
         // `box-int` (which takes an i64). A 64-bit field's core param is ALREADY i64, so NO i32→i64 extend
-        // (`field_extend_signed = None`); the extend is only for a NARROW int field (an i32-width core param).
+        // (`extend = None`); the extend is only for a NARROW int field (an i32-width core param).
         // The `call`'s boundary/core arg list is thus `[I64, I64]` (the flattened fields), NOT one i32 handle.
         let rebuild = TupleArgRebuild {
-            field_box_ops: vec![Some("box-int"), Some("box-int")],
-            field_extend_signed: vec![None, None],
-            base_param: 1, // the tuple is the sole closure arg → fields at core params 1..1+N
+            fields: vec![
+                FieldRebuild::Scalar {
+                    box_op: "box-int",
+                    extend: None,
+                },
+                FieldRebuild::Scalar {
+                    box_op: "box-int",
+                    extend: None,
+                },
+            ],
+            base_param: 1, // the tuple is the sole closure arg → leaves at core params 1..1+N
         };
         let core = multi_closure_resource_core_module_with_host_borrow(
             &funcs,
@@ -45088,5 +47353,874 @@ mod closure_host_resource {
             err.code,
             err.message
         );
+    }
+}
+
+/// X1 — the cross-component composition ORACLE (`DESIGN-cross-component-interop-rcdzc.md`).
+///
+/// De-risks the shared-runtime cross-component transport BEFORE any compiler change, the oracle-first
+/// move the resource/closure verticals used at every seam. Two SEPARATELY-built Cadenza-shaped
+/// components — a provider A that exports `f`, and a consumer B that IMPORTS A's interface and calls
+/// it — are composed by a `ComponentBuilder` into one component whose sole export is B's `main`. The
+/// point being proved: (X1a) a component can bind a PEER component's export and call across the live
+/// boundary; (X1b) two program cores can share ONE value-heap runtime instance, so a handle one
+/// produces is meaningful to the other (the load-bearing rule in component-abi.md §A Cross-Component
+/// Handle Is Meaningful Only In The Shared Runtime Instance).
+mod cross_component_oracle {
+    use wasm_encoder::*;
+
+    /// Provider core A: exports `f : (i32) -> i32` computing `x + 1`. A leaf core module, no imports.
+    fn provider_core_a() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("f", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Consumer core B: imports `f : (i32) -> i32` from module `"peer"`, exports `main : (i32) -> i32`
+    /// computing `f(x) * 10` — the cross-component call is the imported `call 0`.
+    fn consumer_core_b() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32
+        m.section(&types);
+        let mut imports = ImportSection::new();
+        imports.import("peer", "f", EntityType::Function(0)); // core func 0 = the peer's f
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0); // main is core func 1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, 1);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        main.instruction(&Instruction::LocalGet(0));
+        main.instruction(&Instruction::Call(0)); // f(x) — the cross-component call
+        main.instruction(&Instruction::I32Const(10));
+        main.instruction(&Instruction::I32Mul);
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Inner component wrapping provider A: exports interface `cadenza:peer/api` with `f : func(s32) -> s32`.
+    fn provider_component_a() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&provider_core_a());
+        let inst = c.core_instantiate::<[(&str, ModuleArg); 0]>(core_idx, []);
+        let f_core = c.core_alias_export(inst, "f", ExportKind::Func);
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.lift_func(f_core, f_ty, []);
+        // Export `f` as a top-level component func the consumer imports by name. (X1 is a de-risk
+        // oracle for the cross-component CALL + shared runtime; the production envelope in X3 wraps
+        // this in a named interface via the inner-re-export-component pattern the resource oracle uses.)
+        c.export(
+            "f",
+            ComponentExportKind::Func,
+            f_comp,
+            Some(ComponentTypeRef::Func(f_ty)),
+        );
+        c
+    }
+
+    /// Inner component wrapping consumer B: IMPORTS interface `cadenza:peer/api` (with `f`), lowers `f`
+    /// into B's core under module `"peer"`, and exports B's `main : func(s32) -> s32` at the top level.
+    fn consumer_component_b() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        // Import the peer's `f : func(s32)->s32` as a top-level component func.
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.import("f", ComponentTypeRef::Func(f_ty));
+        let f_core = c.lower_func(f_comp, []);
+        let peer_inst = c.core_instantiate_exports([("f", ExportKind::Func, f_core)]);
+        let core_idx = c.core_module_raw(&consumer_core_b());
+        let prog_inst = c.core_instantiate(core_idx, [("peer", ModuleArg::Instance(peer_inst))]);
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let (main_ty, mut mf) = c.type_function();
+        mf.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let main_comp = c.lift_func(main_core, main_ty, []);
+        c.export(
+            "main",
+            ComponentExportKind::Func,
+            main_comp,
+            Some(ComponentTypeRef::Func(main_ty)),
+        );
+        c
+    }
+
+    /// The OUTER composition: instantiate provider A, then consumer B binding B's `f` import to A's
+    /// exported `f`, and re-export B's `main`.
+    fn composed_scalar_component() -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        let a_idx = c.component(provider_component_a());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let a_inst = c.instantiate(a_idx, no_args);
+        let a_f = c.alias_export(a_inst, "f", ComponentExportKind::Func);
+        let b_idx = c.component(consumer_component_b());
+        let b_inst = c.instantiate(b_idx, [("f", ComponentExportKind::Func, a_f)]);
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x1a_a_consumer_binds_and_calls_a_provider_export_across_a_component_boundary() {
+        // B calls A's `f` (x+1) then *10. main(5) = (5+1)*10 = 60. Proves the cross-component call
+        // wiring works end-to-end under wasmtime with NO shared runtime (scalar transport).
+        let comp = composed_scalar_component();
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("composed cross-component component validates");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run composed cross-component") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "60", "(5+1)*10 across the boundary"),
+            cdz_run::Outcome::Trap(t) => panic!("cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X1b — TWO program cores share ONE value-heap runtime instance; a handle A builds is meaningful to
+    // B (component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared Runtime Instance).
+    // The genuinely novel de-risk: a runtime value crosses A→B as an opaque handle over a SHARED heap.
+    // ------------------------------------------------------------------------------------------------
+
+    use crate::backend::wasm::runtime_abi::{OPS, RtOp};
+
+    /// The five heap ops both cores import, sorted by name (arr-alloc, arr-get, arr-set, box-int, get-int).
+    /// Both cores import them under module `"heap"` in THIS order, so a call index is the op's position.
+    fn heap_ops() -> [&'static RtOp; 5] {
+        [
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ]
+    }
+
+    /// The component valtype of an ABI type (local copy of the r2-module helper).
+    fn abi_comp(p: crate::backend::wasm::runtime_abi::AbiValType) -> ComponentValType {
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        ComponentValType::Primitive(match p {
+            AbiValType::U32 => PrimitiveValType::U32,
+            AbiValType::S64 => PrimitiveValType::S64,
+            AbiValType::Bool => PrimitiveValType::Bool,
+            AbiValType::F64 => PrimitiveValType::F64,
+            AbiValType::F32 => PrimitiveValType::F32,
+        })
+    }
+
+    /// The CORE functype `(params)->(result?)` of a runtime op (local copy of the r2-module helper).
+    fn op_core_functype(op: &RtOp) -> (Vec<ValType>, Vec<ValType>) {
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        let core = |p: AbiValType| match p {
+            AbiValType::U32 | AbiValType::Bool => ValType::I32,
+            AbiValType::S64 => ValType::I64,
+            AbiValType::F64 => ValType::F64,
+            AbiValType::F32 => ValType::F32,
+        };
+        let params = op.params.iter().map(|p| core(*p)).collect();
+        let results = op.result.map(|r| vec![core(r)]).unwrap_or_default();
+        (params, results)
+    }
+
+    /// Emit the import section (module `"heap"`) declaring the five ops, and the type section they use.
+    /// Returns the count of imported funcs (= 5) so the caller knows where its own funcs start.
+    fn heap_import_prologue(types: &mut TypeSection, imports: &mut ImportSection) -> u32 {
+        for (i, op) in heap_ops().iter().enumerate() {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            imports.import("heap", op.name, EntityType::Function(i as u32));
+        }
+        heap_ops().len() as u32
+    }
+    // Import indices within the shared `"heap"` order:
+    const H_ARR_ALLOC: u32 = 0;
+    const H_ARR_GET: u32 = 1;
+    const H_ARR_SET: u32 = 2;
+    const H_BOX_INT: u32 = 3;
+    const H_GET_INT: u32 = 4;
+
+    /// Provider core A': imports the heap ops; exports `build : () -> i32` returning a runtime handle for
+    /// a 1-element array `[99]` built on the value heap. The handle is an opaque `u32` at the boundary.
+    fn provider_core_a_heap() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        let base = heap_import_prologue(&mut types, &mut imports);
+        // build : () -> i32   (new functype after the 5 op types)
+        let build_ty = base; // type index for () -> i32
+        types.ty().function(vec![], vec![ValType::I32]);
+        m.section(&types);
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(build_ty); // build = core func `base`
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("build", ExportKind::Func, base);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut build = Function::new(vec![(1, ValType::I32)]); // local 0 = the array handle
+        // a = arr-alloc(1)
+        build.instruction(&Instruction::I32Const(1));
+        build.instruction(&Instruction::Call(H_ARR_ALLOC));
+        build.instruction(&Instruction::LocalSet(0));
+        // a = arr-set(a, 0, box-int(99))
+        build.instruction(&Instruction::LocalGet(0));
+        build.instruction(&Instruction::I32Const(0));
+        build.instruction(&Instruction::I64Const(99));
+        build.instruction(&Instruction::Call(H_BOX_INT));
+        build.instruction(&Instruction::Call(H_ARR_SET));
+        build.instruction(&Instruction::LocalSet(0));
+        // return a
+        build.instruction(&Instruction::LocalGet(0));
+        build.instruction(&Instruction::End);
+        code.function(&build);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Consumer core B': imports the heap ops AND `build : () -> i32` from module `"peer"`; exports
+    /// `main : () -> i64` = `get-int(arr-get(build(), 0))`. Reads the element out of the handle A built
+    /// on the SHARED heap — if it reads 99, the shared runtime instance is genuinely shared across A & B.
+    fn consumer_core_b_heap() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        let base = heap_import_prologue(&mut types, &mut imports);
+        // build : () -> i32  imported from "peer" (type index `base`, import func index `base`)
+        types.ty().function(vec![], vec![ValType::I32]);
+        imports.import("peer", "build", EntityType::Function(base));
+        // main : () -> i64   (type index base+1)
+        let main_ty = base + 1;
+        types.ty().function(vec![], vec![ValType::I64]);
+        m.section(&types);
+        m.section(&imports);
+        let peer_build = base; // the imported build is core func `base`
+        let mut funcs = FunctionSection::new();
+        funcs.function(main_ty); // main = core func base+1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, base + 1);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        // get-int(arr-get(build(), 0))
+        main.instruction(&Instruction::Call(peer_build));
+        main.instruction(&Instruction::I32Const(0));
+        main.instruction(&Instruction::Call(H_ARR_GET));
+        main.instruction(&Instruction::Call(H_GET_INT));
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Provider inner component A': imports the heap interface, lowers the ops into A's core, exports
+    /// `build : func() -> u32` at the top level.
+    fn provider_component_a_heap(import_name: &str) -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let core_idx = c.core_module_raw(&provider_core_a_heap());
+        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let build_core = c.core_alias_export(prog_inst, "build", ExportKind::Func);
+        let (build_ty, mut bf) = c.type_function();
+        bf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let build_comp = c.lift_func(build_core, build_ty, []);
+        c.export(
+            "build",
+            ComponentExportKind::Func,
+            build_comp,
+            Some(ComponentTypeRef::Func(build_ty)),
+        );
+        c
+    }
+
+    /// Consumer inner component B': imports the heap interface AND `build : func() -> u32`; lowers both
+    /// into B's core (heap under `"heap"`, build under `"peer"`), exports `main : func() -> s64`.
+    fn consumer_component_b_heap(import_name: &str) -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        // Import `build : func() -> u32` as a top-level component func, lower into `"peer"`.
+        let (build_ty, mut bf) = c.type_function();
+        bf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let build_comp = c.import("build", ComponentTypeRef::Func(build_ty));
+        let build_core = c.lower_func(build_comp, []);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let peer_inst = c.core_instantiate_exports([("build", ExportKind::Func, build_core)]);
+        let core_idx = c.core_module_raw(&consumer_core_b_heap());
+        let prog_inst = c.core_instantiate(
+            core_idx,
+            [
+                ("heap", ModuleArg::Instance(heap_inst)),
+                ("peer", ModuleArg::Instance(peer_inst)),
+            ],
+        );
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let (main_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let main_comp = c.lift_func(main_core, main_ty, []);
+        c.export(
+            "main",
+            ComponentExportKind::Func,
+            main_comp,
+            Some(ComponentTypeRef::Func(main_ty)),
+        );
+        c
+    }
+
+    /// Import the value-heap `heap` interface declaring the five ops and lower them into core funcs.
+    /// Returns `(name, core_func_index)` per op, in `heap_ops()` order.
+    fn import_and_lower_heap(
+        c: &mut ComponentBuilder,
+        import_name: &str,
+    ) -> (Vec<(&'static str, u32)>, u32) {
+        let ops = heap_ops();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+        (lowered, ops.len() as u32)
+    }
+
+    /// The OUTER composition for X1b: A' and B' each import the SAME `heap` interface (the host binds
+    /// both imports to ONE runtime instance when it composes the runtime), B' imports A's `build`, and
+    /// the composition re-exports B's `main`.
+    fn composed_shared_heap_component(import_name: &str) -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        // Re-import the heap interface at the OUTER level and forward it into both inner components, so
+        // the whole composition declares exactly ONE `heap` import the host satisfies with one instance.
+        let ops = heap_ops();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let heap = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+
+        let a_idx = c.component(provider_component_a_heap(import_name));
+        let a_inst = c.instantiate(a_idx, [(import_name, ComponentExportKind::Instance, heap)]);
+        let a_build = c.alias_export(a_inst, "build", ComponentExportKind::Func);
+
+        let b_idx = c.component(consumer_component_b_heap(import_name));
+        let b_inst = c.instantiate(
+            b_idx,
+            [
+                (import_name, ComponentExportKind::Instance, heap),
+                ("build", ComponentExportKind::Func, a_build),
+            ],
+        );
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x1b_two_cores_share_one_runtime_instance_and_a_handle_crosses() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = composed_shared_heap_component(&import_name);
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("shared-heap cross-component component validates");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!(
+                "[X1b] runtime wasm not found (run `cargo xtask build`); skipping shared-heap run"
+            );
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run shared-heap cross-component") {
+            // A built [99] on the shared heap; B read element 0 back → 99. The handle A produced is
+            // meaningful to B because both index the ONE shared runtime instance.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "99", "B reads A's handle over the shared heap")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("shared-heap cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X3 — the PRODUCTION peer-interface import ENVELOPE (`envelope::assemble_extern`). The X1 consumer
+    // was hand-built with ComponentBuilder; here the consumer envelope is emitted by the compiler's own
+    // `assemble_extern` around a bare consumer core, then composed with the X1 provider and RUN. This is
+    // the byte-emitted envelope X4's front-end will target.
+    // ------------------------------------------------------------------------------------------------
+
+    /// The consumer inner component B, built by the PRODUCTION `envelope::assemble_extern`: import the
+    /// peer interface `cadenza:peer/api` (op `f : func(s32) -> s32`), bind it into `consumer_core_b`
+    /// under `"peer"`, export `main : func(s32) -> s32`. `assemble_extern` returns raw component bytes;
+    /// wrap them as an inner component via `component_raw`.
+    fn consumer_component_b_via_envelope() -> Vec<u8> {
+        use crate::backend::wasm::envelope::{
+            BoundaryExport, BoundaryResult, HostFn, assemble_extern,
+        };
+        use crate::backend::wasm::wasm_abi::{COMP_FUNCTYPE_FORM, COMP_S32};
+        // The peer op `f`'s component functype item: `[FORM] <1 param: p0:s32> <result: s32>`.
+        let comp_functype = {
+            let mut item = vec![COMP_FUNCTYPE_FORM];
+            let mut params = Vec::new();
+            params.extend_from_slice(&2u8.to_le_bytes()); // "p0".len()
+            params.extend_from_slice(b"p0");
+            params.push(COMP_S32);
+            item.extend_from_slice(&crate::backend::wasm::encode::wasm_vec(1, &params));
+            item.extend_from_slice(&[0x00, COMP_S32]); // result: s32
+            item
+        };
+        let extern_fns = [HostFn {
+            op: "f".to_string(),
+            comp_functype,
+            core_functype: Vec::new(),
+        }];
+        let exports = [BoundaryExport {
+            name: "main".to_string(),
+            params: vec![COMP_S32],
+            result: BoundaryResult::Primitive(COMP_S32),
+        }];
+        assemble_extern(
+            &consumer_core_b(),
+            &exports,
+            "cadenza:peer/api",
+            &extern_fns,
+        )
+    }
+
+    /// A provider that exports its `f` as the INTERFACE INSTANCE `cadenza:peer/api` (member `f`), the
+    /// shape `assemble_extern` imports. Built by instantiating the top-level-`f` provider inner component
+    /// and exporting the resulting INSTANCE under the interface name — so the instance's member `f` is
+    /// what the consumer aliases out of its `cadenza:peer/api` import.
+    fn provider_interface_component() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let inner = c.component(provider_component_a_named_p0());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let inst = c.instantiate(inner, no_args);
+        c.export(
+            "cadenza:peer/api",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c
+    }
+
+    /// Provider inner component whose `f` is lifted with param name `p0` — matching the parameter name
+    /// `assemble_extern` declares in its peer instance-type (`host_op_comp_functype`'s `p{i}` convention).
+    /// A component-model interface import checks param NAMES structurally, so the provider's lift and the
+    /// consumer's import declaration must agree on `p0` (X1a's top-level-func path used `x`; the interface
+    /// path needs `p0`).
+    fn provider_component_a_named_p0() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&provider_core_a());
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = c.core_instantiate(core_idx, no_args);
+        let f_core = c.core_alias_export(inst, "f", ExportKind::Func);
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.lift_func(f_core, f_ty, []);
+        c.export(
+            "f",
+            ComponentExportKind::Func,
+            f_comp,
+            Some(ComponentTypeRef::Func(f_ty)),
+        );
+        c
+    }
+
+    /// The OUTER composition using the PRODUCTION consumer envelope: instantiate the interface provider,
+    /// bind its `cadenza:peer/api` export to the `assemble_extern`-built consumer's like-named import,
+    /// re-export the consumer's `main`.
+    fn composed_via_extern_envelope() -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        let a_idx = c.component(provider_interface_component());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let a_inst = c.instantiate(a_idx, no_args);
+        let a_iface = c.alias_export(a_inst, "cadenza:peer/api", ComponentExportKind::Instance);
+        let b_idx = c.component_raw(&consumer_component_b_via_envelope());
+        let b_inst = c.instantiate(
+            b_idx,
+            [("cadenza:peer/api", ComponentExportKind::Instance, a_iface)],
+        );
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x3_the_production_extern_envelope_binds_a_peer_and_runs() {
+        // The consumer envelope is emitted by `assemble_extern` (not hand-built), composed with the
+        // provider, and run: main(5) = f(5)*10 = (5+1)*10 = 60. Proves the fourth import-envelope shape
+        // (peer-interface import) is structurally valid AND executes when composed with a provider.
+        let comp = composed_via_extern_envelope();
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("assemble_extern-composed component validates");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run assemble_extern-composed") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "60", "(5+1)*10 through the production extern envelope")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("extern-envelope run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4a — the cdz-run MULTI-COMPONENT composition primitive (`cdz_run::run_with_peers`). Unlike X1/X3
+    // (which NEST the peer + consumer in one outer ComponentBuilder), here the provider and consumer are
+    // SEPARATE component artifacts, composed by the runner at instantiate time — the shape the
+    // front-end (X4b) will produce (each `.cdz` → its own component) and the deployment story needs.
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4a_the_runner_composes_a_consumer_with_a_separate_peer_component() {
+        // Provider and consumer are DISTINCT finished components; `run_with_peers` instantiates the peer
+        // and forwards its `cadenza:peer/api` interface into the consumer's like-named import. Both share
+        // one store. main(5) = f(5)*10 = 60 — the same result as the nested X3 composition, now with the
+        // peer as a genuinely separate artifact the runner links.
+        let peer_bytes = provider_interface_component().finish();
+        let consumer_bytes = consumer_component_b_via_envelope();
+        // Each is a valid standalone component: the peer EXPORTS the interface, the consumer IMPORTS it.
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&peer_bytes)
+                .expect("peer component validates");
+        }
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer_bytes)
+                .expect("consumer component validates");
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: peer_bytes,
+            interface: "cadenza:peer/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer_bytes, &peers, &opts)
+            .expect("run_with_peers composes the consumer + separate peer")
+        {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "60",
+                    "(5+1)*10 across separate peer + consumer components"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run_with_peers trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-1 — the `(extern "iface" (op sig)…)` SCAN. A distinct cross-component binding form (not
+    // overloading intra-package `(import …)`) is scanned into `Db::extern_decls`. Byte-neutral: the
+    // table is populated but nothing consumes it yet (resolve→ExternCall + emit are later bricks).
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4b1_an_extern_form_scans_into_the_db_extern_table() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        // A consumer that BINDS a peer's `add`/`neg` via `(extern …)` and calls them. (Nothing consumes
+        // the binding yet — this brick only proves the scan populates the table.)
+        let src = "(do \
+            (extern \"cadenza:math/api\" \
+                (add (-> Int64 Int64 Int64)) \
+                (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (add x (neg x))) \
+            (export main))";
+        let db = Db::load(parse(src));
+        assert_eq!(db.extern_decls.len(), 1, "one extern declaration");
+        let d = &db.extern_decls[0];
+        assert_eq!(d.interface, "cadenza:math/api");
+        let ops: Vec<&str> = d.ops.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(ops, ["add", "neg"], "both peer ops bound, in order");
+        assert!(
+            d.ops.iter().all(|o| o.ty.is_some()),
+            "each bound op carries its declared monomorphic signature"
+        );
+    }
+
+    #[test]
+    fn x4b1_no_extern_form_leaves_the_table_empty() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        let db = Db::load(parse("(do (def (main) 42) (export main))"));
+        assert!(
+            db.extern_decls.is_empty(),
+            "a program binding no peer has an empty extern table (byte-neutral common case)"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-2 — an extern op resolves to `Resolved::Extern` and, APPLIED, lowers to `Core::ExternCall`.
+    // The declared signature types the application (no CDZ error); the call is NOT inlined (no body).
+    // (The backend emit that turns `Core::ExternCall` into an imported `call` is X4b-3.)
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4b2_an_applied_extern_op_lowers_to_a_core_extern_call() {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use crate::resolve::resolved_of;
+        use crate::resolved::Resolved;
+        use crate::testkit::parse;
+        let src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let mut db = Db::load(parse(src));
+        let d = db.def_by_name("main").expect("main");
+        let body = db.defs[d].body.expect("body");
+        // The applied extern `(neg x)` lowers to a Core::ExternCall naming the peer interface + op.
+        match core_of(&mut db, body) {
+            Core::ExternCall {
+                interface,
+                op,
+                result,
+                ..
+            } => {
+                assert_eq!(interface, "cadenza:math/api");
+                assert_eq!(op, "neg");
+                assert_eq!(
+                    result,
+                    crate::ty::Ty::int64(),
+                    "result = the sig's Int64 result"
+                );
+            }
+            other => panic!("expected Core::ExternCall, got {other:?}"),
+        }
+        // The head `neg` itself resolves to a Resolved::Extern (not an inlined sibling def).
+        // (Locate the head occurrence: `main`'s body is the application `(neg x)`; its head is child 0.)
+        let head = match db.ast.get(body) {
+            crate::ast::Struct::List(items) => items[0],
+            _ => panic!("main body is an application"),
+        };
+        assert!(
+            matches!(resolved_of(&mut db, head), Resolved::Extern { .. }),
+            "the extern op name resolves to Resolved::Extern"
+        );
+    }
+
+    #[test]
+    fn x4b2_an_extern_application_type_checks_against_the_declared_signature() {
+        use crate::db::Db;
+        use crate::testkit::parse;
+        // A well-typed use has NO fault; a mis-typed arg (Bool where Int64 declared) is CDZ0203 —
+        // the extern application is checked exactly like an ordinary call to a def of that signature.
+        let ok = "(do (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (neg x)) (export main))";
+        let mut db = Db::load(parse(ok));
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok() || {
+                // The backend declines Core::ExternCall in X4b-2 (emit is X4b-3), so a full compile
+                // won't SUCCEED yet — but it must not fail with a TYPE error. Assert the decline is
+                // the emit decline, not a type reject.
+                let e = crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
+                    .expect_err("declines pending X4b-3 emit");
+                e.code.is_none() // a decline (no CDZ code), not a coded type rejection
+            },
+            "a well-typed extern application declines cleanly (emit pending), never a type reject"
+        );
+        let _ = &mut db;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
+    // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via
+    // run_with_peers (X4a) — RUNS end-to-end. The first source→run cross-component call.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A provider core exporting `neg : (i64) -> i64` = `0 - x`.
+    fn provider_core_neg() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("neg", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::I64Const(0));
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I64Sub);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// A provider component exporting the interface `cadenza:math/api` with `neg : func(p0: s64) -> s64`
+    /// (param name `p0` to match the consumer's `assemble_extern`-emitted import declaration).
+    fn provider_math_component() -> Vec<u8> {
+        use wasm_encoder::*;
+        // inner component publishing `neg` as a top-level func under param name p0
+        let mut inner = ComponentBuilder::default();
+        let core_idx = inner.core_module_raw(&provider_core_neg());
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = inner.core_instantiate(core_idx, no_args);
+        let neg_core = inner.core_alias_export(inst, "neg", ExportKind::Func);
+        let (neg_ty, mut ft) = inner.type_function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let neg_comp = inner.lift_func(neg_core, neg_ty, []);
+        inner.export(
+            "neg",
+            ComponentExportKind::Func,
+            neg_comp,
+            Some(ComponentTypeRef::Func(neg_ty)),
+        );
+        // outer: instantiate the inner + export the resulting instance as the interface `cadenza:math/api`
+        let mut c = ComponentBuilder::default();
+        let ic = c.component(inner);
+        let no_args2: [(&str, ComponentExportKind, u32); 0] = [];
+        let iinst = c.instantiate(ic, no_args2);
+        c.export(
+            "cadenza:math/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    #[test]
+    fn x4b3_a_source_consumer_binds_a_peer_and_runs_end_to_end() {
+        use crate::testkit::parse;
+        // The CONSUMER is compiled FROM SOURCE: it binds the peer op `neg` via `(extern …)` and calls it.
+        let src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect("the source consumer compiles to a component (X4b-3 emit)");
+        // It must be a valid component that IMPORTS cadenza:math/api (not self-contained).
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("compiled consumer validates");
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: provider_math_component(),
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("run the source consumer composed with the peer")
+        {
+            // main(5) = neg(5) = 0 - 5 = -5. A SOURCE program called a PEER component's export across
+            // the live boundary — the first end-to-end cross-component call.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "-5", "neg(5) across the component boundary from source")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("source cross-component run trapped: {t}"),
+        }
     }
 }

@@ -242,6 +242,9 @@ impl<'a> Printer<'a> {
             // ML lexer's `#\` path) to the same leaf.
             Leaf::Char(c) => self.doc.word(literal::render_char(*c)),
             Leaf::BadChar(s) => self.doc.word(format!("#\\{s}")),
+            // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads (via the ML
+            // lexer's glued-suffix scan) to the same leaf.
+            Leaf::Suffixed { value, kind } => self.doc.word(literal::render_suffixed(value, *kind)),
         }
     }
 
@@ -301,12 +304,30 @@ impl<'a> Printer<'a> {
             self.doc.end();
             return;
         }
+        // A set literal `((. Set of) (list …))` renders back to `#(…)` — the inverse of the parser's
+        // `set_literal`. Checked before the name-head dispatch since the head is the member-access LIST
+        // `(. Set of)`, not a name. Like the quantity/unit sugars, `Set` needs no shadow guard (the
+        // member access re-reads identically); the inner list IS shadow-gated via `literal_ctor`.
+        if let Some(elems) = self.set_literal(items) {
+            return self.bracketed("#(", ")", false, &elems, |p, e| p.expr(e, 0));
+        }
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
         let head = self.head_name(items[0]);
         let args = &items[1..];
 
         if let Some(head) = head {
+            // ---- type-suffix resugar: `(: <suffixed> BigInt|Rational)` -> the bare `100N`/`0.5R` ----
+            // The reader desugars a type suffix to this annotation; print just the suffixed atom (the
+            // suffix carries the type). A bare `(: 100 BigInt)` value-output (plain `Int` child) is NOT
+            // matched and still prints as an explicit annotation.
+            if head == ":"
+                && args.len() == 2
+                && let Struct::Atom(l) = self.a.get(args[0])
+                && matches!(self.a.leaf(*l), Leaf::Suffixed { .. })
+            {
+                return self.expr(args[0], parent_prec);
+            }
             // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);
@@ -380,6 +401,11 @@ impl<'a> Printer<'a> {
                 "comment" if args.len() == 2 && self.is_string(args[0]) => {
                     return self.print_comment(args[0], args[1]);
                 }
+                // A binary literal `(bin <segment> …)` renders as `b[<segment>, …]` — the inverse of the
+                // parser's `bin_literal`/`bin_pattern`. `bin` is a reserved grammar form (structurally
+                // dispatched like `match`, never a shadowable value), so this always sugars, in both
+                // expression and pattern position; the empty form `(bin)` prints as `b[]`.
+                "bin" => return self.print_bin(args),
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -597,7 +623,15 @@ impl<'a> Printer<'a> {
                 }
                 if let Struct::List(pair) = self.a.get(b) {
                     let (n, e) = (pair[0], pair[1]);
-                    self.expr(n, 0);
+                    // A binder is a plain NAME (`Atom`) or a destructuring PATTERN (`List` —
+                    // `(tuple a b)` / `(list x .. rest)` / …). A pattern binder renders through the
+                    // pattern surface (`(a, b)`, `[x, .. rest]`), the inverse of `let_expr` routing a
+                    // pattern-opening binder to `pattern`; a plain name renders as an ordinary expr.
+                    if matches!(self.a.get(n), Struct::List(_)) {
+                        self.pattern(n);
+                    } else {
+                        self.expr(n, 0);
+                    }
                     self.doc.word(" = ");
                     self.value(e);
                 }
@@ -799,6 +833,16 @@ impl<'a> Printer<'a> {
     /// a plain binder prints as itself. (Any other shape in parameter position — it shouldn't
     /// occur — falls back to the ordinary expression printer.)
     fn print_param(&mut self, p: StructId) {
+        // A `(const BINDER)` wrapper — an EXPLICIT compile-time parameter. Emit the `const ` keyword prefix
+        // then the inner binder (so `(const (: d T))` → `const d: T`, `(const d)` → `const d`). The ML
+        // reader's `param` accepts a leading `const`; s-expr keeps the `(const …)` form.
+        if let Some(t) = self.a.as_form(p, "const")
+            && t.len() == 1
+        {
+            self.doc.word("const ");
+            self.print_param(t[0]);
+            return;
+        }
         if let Some(t) = self.a.as_form(p, ":")
             && t.len() == 2
         {
@@ -1549,6 +1593,15 @@ impl<'a> Printer<'a> {
             .any(|&e| self.head_name(e).as_deref() == Some(".."))
     }
 
+    /// `b[<segment>, …]` — a binary literal, the surface for the `(bin <segment> …)` grammar form (the
+    /// inverse of the parser's `bin_literal`/`bin_pattern`). Each segment is an ordinary call-shaped
+    /// expression/pattern (`u16(258)`, `bits(1, 1)`, `bytes(rest)`), printed at `0`; the empty form
+    /// `(bin)` prints as `b[]`. The `[` is glued to `b` (the lexer emits one `BinOpen` token), so the
+    /// open delimiter is the literal string `b[`.
+    fn print_bin(&mut self, segs: &[StructId]) {
+        self.bracketed("b[", "]", false, segs, |p, s| p.expr(s, 0));
+    }
+
     /// `[e, …]`, with an optional `.. rest` spread (`[1, 2, .. rest]`).
     fn print_list_literal(&mut self, elems: &[StructId]) {
         if self.has_rest_marker(elems) {
@@ -1747,6 +1800,13 @@ impl<'a> Printer<'a> {
                             p.pattern(sub);
                         }
                     });
+                    return;
+                }
+                // binary pattern `(bin <segment> …)` -> `b[<segment>, …]`, the pattern-position twin of
+                // the construction literal (unconditional — `bin` is a reserved grammar form, not a
+                // shadowable ctor). Each segment is a sub-pattern (`u16(n)` binds `n`); `(bin)` -> `b[]`.
+                if self.head_name(items[0]).as_deref() == Some("bin") {
+                    self.print_pattern_seq("b[", "]", &items[1..], |p, s| p.pattern(s));
                     return;
                 }
                 // dotted constructor `(. A B)` prints as A.B
@@ -1952,6 +2012,33 @@ impl<'a> Printer<'a> {
         Some((items[2], name))
     }
 
+    /// If `items` is a set literal `((. Set of) (list e …))`, return its element occurrences — so it
+    /// prints as the concise `#(e, …)` surface (the inverse of the parser's `set_literal`). All of
+    /// these must hold, else the general `Set.of(…)` call form renders it (a faithful round-trip
+    /// either way):
+    ///   * head is the member access `(. Set of)` and there is exactly one argument;
+    ///   * that argument is a `list` LITERAL (a `("list" …)` primitive or an UNSHADOWED `(list …)`
+    ///     alias, via `literal_ctor` — a shadowed `list` is a user application, kept as a call);
+    ///   * the list carries no `.. rest` marker (the `#(…)` surface has no rest form, so a spread list
+    ///     falls back to `Set.of([…, .. rest])`).
+    fn set_literal(&self, items: &[StructId]) -> Option<Vec<StructId>> {
+        if items.len() != 2 || !self.is_member_call(items[0], "Set", "of") {
+            return None;
+        }
+        let Struct::List(list) = self.a.get(items[1]) else {
+            return None;
+        };
+        let &head = list.first()?;
+        if self.literal_ctor(head).as_deref() != Some("list") {
+            return None;
+        }
+        let elems = &list[1..];
+        if self.has_rest_marker(elems) {
+            return None;
+        }
+        Some(elems.to_vec())
+    }
+
     /// True iff `id` is the member-access head `(. obj key)` with the given object and key names.
     fn is_member_call(&self, id: StructId, obj: &str, key: &str) -> bool {
         matches!(self.a.get(id), Struct::List(m)
@@ -2037,11 +2124,40 @@ impl<'a> Printer<'a> {
         }
         match self.a.get(args[0]) {
             Struct::List(binds) => binds.iter().all(|&b| match self.a.get(b) {
-                Struct::List(p) => p.len() == 2 && self.head_name(p[0]).is_some(),
+                // Each binding is a `(binder value)` pair. The binder is a plain NAME (`head_name`) or
+                // a destructuring PATTERN the surface can round-trip (`is_binder_pattern`). Any OTHER
+                // list binder — e.g. a constructor-application pattern `Mk(n)` (`((. Id Mk) n)`), which
+                // the reader has no let-binder surface for — falls back to the generic call form, which
+                // round-trips via idempotence.
+                Struct::List(p) => {
+                    p.len() == 2 && (self.head_name(p[0]).is_some() || self.is_binder_pattern(p[0]))
+                }
                 _ => false,
             }),
             _ => false,
         }
+    }
+
+    /// Whether `id` is a destructuring pattern the ML surface can render AND read back in a BINDER
+    /// position (a `let` binder or a `def`/`fn` parameter): a tuple `(tuple …)`, a list `(list …)`, a
+    /// map `(map …)`, or a binary `(bin …)`. These are exactly the compound patterns `param`/`let_expr`
+    /// route to `pattern` (their surfaces `(a, b)`/`[x, .. rest]`/`#{ k = p }`/`b[u16(n)]` re-lex to a
+    /// binder-position pattern). A constructor-application pattern like `Mk(n)` is deliberately EXCLUDED
+    /// — the reader has no binder surface for it, so sugaring it would not round-trip; it stays the
+    /// generic call form. STRING-headed ctor primitives (`"tuple"`/`"list"`/`"map"`) and their NAME
+    /// aliases both qualify (a name alias is not shadowable in this structural position).
+    fn is_binder_pattern(&self, id: StructId) -> bool {
+        // Read the HEAD child of the pattern list (the printer's `head_ctor`/`head_name` inspect an
+        // atom, so apply them to `items[0]`, not the list itself). The head is a STRING primitive
+        // (`"tuple"`) or a NAME alias (`tuple`); both denote the same binder-position construct.
+        let Struct::List(items) = self.a.get(id) else {
+            return false;
+        };
+        let Some(&head) = items.first() else {
+            return false;
+        };
+        let name = self.head_ctor(head).or_else(|| self.head_name(head));
+        matches!(name.as_deref(), Some("tuple" | "list" | "map" | "bin"))
     }
 
     fn is_match_shape(&self, args: &[StructId]) -> bool {
@@ -2688,6 +2804,120 @@ mod tests {
             "#{ \"a\" = 1, \"b\" = 2 }"
         );
         assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
+    }
+
+    #[test]
+    fn set_literal_round_trips() {
+        // `#(…)` is sugar for `Set.of([…])` — the third built-in collection surface. It round-trips
+        // and the independent s-expr oracle prints the desugared shape back as `#(…)`.
+        assert_eq!(assert_roundtrip("#(1, 2, 3)", 80), "#(1, 2, 3)");
+        assert_eq!(assert_roundtrip("#(x)", 80), "#(x)");
+        // Empty set: `#()` is `Set.of([])`, distinct from the empty map `#{}` / list `[]`.
+        assert_eq!(assert_roundtrip("#()", 80), "#()");
+        // The oracle: the desugared member-access application prints as the `#(…)` surface.
+        let a = sexpr::read("((. Set of) (list 1 2 3))").unwrap();
+        assert_eq!(print(&a, 80), "#(1, 2, 3)");
+        assert_eq!(
+            print(&sexpr::read("((. Set of) (list))").unwrap(), 80),
+            "#()"
+        );
+        // Wide sets break all-or-nothing like a list.
+        assert_eq!(
+            assert_roundtrip("#(1000, 2000, 3000, 4000)", 20),
+            "#(\n  1000,\n  2000,\n  3000,\n  4000\n)"
+        );
+    }
+
+    #[test]
+    fn set_literal_falls_back_to_call_form() {
+        // A shadowed `Set` (or a `Set.of` applied to a non-`list`-literal argument) is NOT a set
+        // literal — it renders as the ordinary `Set.of(…)` member call, which round-trips faithfully.
+        // A `Set.of` over a computed list (a bare `xs`, not a `list` literal) stays a call.
+        assert_eq!(assert_roundtrip("Set.of(xs)", 80), "Set.of(xs)");
+        // A shadowed inner `list` alias keeps the call form (the literal gate is `literal_ctor`).
+        let shadowed = "let list = f in Set.of(list(1, 2))";
+        let out = assert_roundtrip(shadowed, 80);
+        assert!(
+            out.contains("Set.of(list(1, 2))"),
+            "shadowed `list` must stay a call, got {out:?}"
+        );
+        // A `Set.of` over a `.. rest` spread list has no `#(…)` surface — stays the call form.
+        assert_eq!(
+            assert_roundtrip("Set.of([1, .. rest])", 80),
+            "Set.of([1, .. rest])"
+        );
+    }
+
+    #[test]
+    fn bin_literal_round_trips() {
+        // `b[…]` is the surface for the `(bin …)` grammar form — the structured sibling of `b"…"`. It
+        // round-trips in both construction and pattern position, and the s-expr oracle sugars `(bin …)`
+        // back to `b[…]`.
+        assert_eq!(
+            assert_roundtrip("b[u16(258), u8(1)]", 80),
+            "b[u16(258), u8(1)]"
+        );
+        assert_eq!(
+            assert_roundtrip("b[bits(1, 1), bits(2, 3)]", 80),
+            "b[bits(1, 1), bits(2, 3)]"
+        );
+        assert_eq!(assert_roundtrip("b[]", 80), "b[]");
+        // The oracle: a hand-authored `(bin …)` prints as the `b[…]` surface.
+        assert_eq!(
+            print(&sexpr::read("(bin (u16 258) (u8 1))").unwrap(), 80),
+            "b[u16(258), u8(1)]"
+        );
+        assert_eq!(print(&sexpr::read("(bin)").unwrap(), 80), "b[]");
+        // Pattern position: `b[…]` segments are sub-patterns (`u16(n)` binds `n`), and it round-trips.
+        assert_eq!(
+            assert_roundtrip("match x with | b[u16(n), bytes(rest)] => n", 80),
+            "match x with\n  | b[u16(n), bytes(rest)] => n"
+        );
+        assert_eq!(
+            print(&sexpr::read("(match x ((bin (u16 n)) n))").unwrap(), 80),
+            "match x with\n  | b[u16(n)] => n"
+        );
+    }
+
+    #[test]
+    fn destructuring_binder_patterns_round_trip() {
+        // A destructuring PATTERN in a `def`/`fn` parameter or a `let` binder renders through the
+        // pattern surface (the inverse of `param`/`let_expr` routing a pattern-opening binder to
+        // `pattern`), so it round-trips instead of falling to the garbage generic-call form.
+        assert_eq!(
+            assert_roundtrip("def f((a, b)) = a + b", 80),
+            "def f((a, b)) = a + b"
+        );
+        assert_eq!(
+            assert_roundtrip("def head([x, .. rest]) = x", 80),
+            "def head([x, .. rest]) = x"
+        );
+        // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
+        assert_eq!(
+            assert_roundtrip("let (a, b) = p in a + b", 80),
+            "let (a, b) = p in\na + b"
+        );
+        assert_eq!(
+            assert_roundtrip("let [x, .. rest] = ys in x", 80),
+            "let [x, .. rest] = ys in\nx"
+        );
+        assert_eq!(
+            assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
+            "let x = 1, (a, b) = p in\nx + a"
+        );
+        // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
+        assert_eq!(
+            print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
+            "let (a, b) = p in\na + b"
+        );
+        // A CONSTRUCTOR-application pattern binder (`Mk(n)` = `((. Id Mk) n)`) has no reader binder
+        // surface, so it must stay the generic call form (round-tripping via idempotence), NOT sugar to
+        // a pattern binder the reader could not parse back (the regression `is_binder_pattern` guards).
+        let ctor = print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80);
+        assert!(
+            !ctor.contains("let Id.Mk(n) ="),
+            "a ctor-pattern let binder must not sugar to a pattern binder, got {ctor:?}"
+        );
     }
 
     #[test]

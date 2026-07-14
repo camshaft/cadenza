@@ -1,6 +1,6 @@
 ; Rows and open sums — witnesses type-system.md #Records Are Rows, Open By Default Under Inference,
 ; #A Sum Type May Be Open, With A Mandatory Open-Tail Arm, and #An Open Sum's Payload May Be
-; Schema-Typed. These are (needs rows) / (needs open-sums) cases a later generation realizes; the seed
+; Schema-Typed. These exercise rows / open-sums, which a later generation realizes; the seed
 ; realizes closed records and closed sums (05-compound-types) but not row polymorphism or open sums.
 ; The primary clause is the recorded oracle: a well-typed program's value, or — for an ill-typed one —
 ; its (error <CODE>) rejection (a rule a generation does not yet cover is declined, not run).
@@ -33,9 +33,9 @@
 ; `Record.merge` (disjoint union) — from which `extend`/`with`/`pop` reduce by a meaning-preserving
 ; rewrite. Each yields a NEW closed record (the value heap is immutable); each result shape is fixed
 ; statically from the operands' shapes. A field-name list `(a b …)` is written literally, as a `record`
-; literal writes names — not a runtime value. These are `(needs rows)` cases (the same tag the open-record
-; cases above carry): the seed does not realize row inference, and `Record.*` is an unbound name to it, so
-; it SKIPS them rather than rejecting the unbound prelude name (a gate FAIL) — the `(needs sets)` discipline.
+; literal writes names — not a runtime value. These are rows cases (like the open-record
+; cases above): the seed does not realize row inference, and `Record.*` is an unbound name to it, so
+; it DECLINES them rather than rejecting the unbound prelude name (which would be a gate FAIL).
 
 (case "projecting a record restricts it to the named fields"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields: `Record.project`
@@ -174,8 +174,8 @@
 ; element 0 off. A tuple's arity is part of its type, so every result arity is fixed statically and there
 ; is no disjointness constraint (positions are anonymous). `k` is a compile-time position written as a
 ; literal, exactly as `(. x N)` writes its index; a split outside `0..=len` is a type error, the `(. x N)`
-; static-bounds rule (05-compound-types "tuple elements are accessed by index"). `(needs rows)`: these ride
-; the same later-generation layer and `Tuple.*` is an unbound name to the seed.
+; static-bounds rule (05-compound-types "tuple elements are accessed by index"). These ride
+; the same later-generation rows layer and `Tuple.*` is an unbound name to the seed, so it declines them.
 
 (case "concatenating two tuples appends their elements"
   (doc    "Witnesses type-system.md #Two Tuples Are Concatenated Into One Of Their Combined Length:

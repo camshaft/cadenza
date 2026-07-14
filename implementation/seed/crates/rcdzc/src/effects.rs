@@ -2691,6 +2691,27 @@ fn thread_bounded(
                 rewritten_args.push(ra);
                 cur = next;
             }
+            // EFFECT-DUPLICATION GUARD. The arm body β-reduces by SUBSTITUTING each argument for its
+            // parameter, so a param used more than once COPIES its argument. If that argument reaches a
+            // perform — of THIS handler's op OR a FOREIGN one (`arg_reaches_any_perform`) — duplicating it
+            // would run the effect once per use: `(E.op (tuple (A.get) (A.get)))` whose arm reads `(. p 0)`
+            // AND `(. p 1)` would thread four gets, not two (a miscompile). Decline instead — this fold
+            // cannot represent it without a let-binding the tail surface does not model. A param whose arg
+            // reaches NO perform (a literal, a name, a PURE compound like `(record (a 3) (b 4))`) duplicates
+            // no effect, so multi-use is fine; a single-use param likewise runs its arg exactly once. This
+            // mirrors the applied-lambda pre-reduction's pure-args soundness guard. (`arg_reaches_any_perform`
+            // is used, NOT `body_reaches_foreign_perform`, because the latter over-reports a record literal's
+            // field-pair as an unresolvable call — spuriously declining a pure record argument.)
+            if arm.params.len() == rewritten_args.len() {
+                for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
+                    if !is_unit_param(db, p)
+                        && arg_reaches_any_perform(db, a, ctx)
+                        && count_param_refs(db, arm.body, p) > 1
+                    {
+                        return None;
+                    }
+                }
+            }
             // The arm binds its params to the args and its state binder to THIS SLOT's current state.
             // Substitute both into the arm body (a capture-safe arena substitution), then extract the tail
             // resume.
@@ -3303,6 +3324,68 @@ fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usi
     }
 }
 
+/// Whether `node` contains a call resolving to `callee_def` (a recursive self-call), anywhere.
+fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && callee_def_index_of(db, head) == Some(callee_def)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| contains_self_call(db, c, callee_def)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` reaches ANY perform — discharged by `ctx` OR foreign — anywhere in the subtree.
+/// `arg_reaches_any_perform` already detects both (a bare `effect_op_of` head is a perform regardless of
+/// which handler owns it), so it is the precise detector reused for the spine-order guard.
+fn contains_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    arg_reaches_any_perform(db, node, ctx)
+}
+
+/// Whether the recursive body has a strict application in which a SELF-CALL operand PRECEDES a
+/// PERFORM operand (a discharged or foreign effect) — the shape the single-return specialization CANNOT
+/// thread soundly: a strict operator evaluates its operands left-to-right, so a perform AFTER the self-call
+/// reads the recursion's OUT-state, which the specialized `f#ctx` does not return (it threads only the
+/// INCOMING state to each perform). Threading it anyway produces a body that resumes the later perform
+/// against the incoming state — the wrong state — and leaves a stray unresolvable resume that surfaces the
+/// internal `f#ctx$s0` name in a confusing CDZ0101. Declining UP FRONT keeps the decline clean (a "not yet
+/// compiled" todo) and PROTECTS against the wrong-state miscompile. The associative `+`/`*` cases never
+/// reach here — accumulator-introduction rewrites them to tail form before the effect fold. See
+/// `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`: a perform BEFORE the self-call
+/// (reads pre-recursion state = the incoming state) folds fine; only self-call-THEN-perform is the gap.
+fn selfcall_precedes_perform_in_operands(
+    db: &mut Db,
+    node: StructId,
+    callee_def: usize,
+    ctx: &HandlerCtx,
+) -> bool {
+    // At a strict application, scan operands left-to-right: once an operand contains a self-call, any LATER
+    // operand that reaches a perform is the offending shape. (A perform in the SAME or an EARLIER operand
+    // than the self-call is fine — it reads pre-recursion state.)
+    if let Resolved::Apply { args, .. } = resolved_of(db, node) {
+        let mut seen_self_call = false;
+        for &a in args.iter() {
+            if seen_self_call && contains_any_perform(db, a, ctx) {
+                return true;
+            }
+            if contains_self_call(db, a, callee_def) {
+                seen_self_call = true;
+            }
+        }
+    }
+    // Recurse structurally — the shape can be nested inside a branch/let/operand.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| selfcall_precedes_perform_in_operands(db, c, callee_def, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Recursive worker for [`recursive_self_calls_all_tail`]: verify every self-call (a call resolving to
 /// `callee_def`) occurs only at a `tail` position. Returns `false` at the first off-tail self-call.
 fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -> bool {
@@ -3386,6 +3469,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         .map(|s| s.state_ty.clone())
         .collect::<Option<Vec<_>>>()?;
     if slot_tys.iter().any(ty_has_any) {
+        return None;
+    }
+    // OUT-STATE-OBSERVING SIBLING PERFORM: decline cleanly. The single-return specialization threads each
+    // perform against the INCOMING state, which is correct only when the perform is evaluated no later than
+    // the self-call on a strict spine. When a SELF-CALL operand PRECEDES a PERFORM operand (`(- (build …)
+    // (Idx.next))`, `((. List push) (build …) (Idx.next))`), the perform reads the recursion's OUT-state —
+    // which `f#ctx` does not return. Threading it produces a wrong-state body and a stray resume that leaks
+    // the internal `f#ctx$s0` name in a confusing CDZ0101. Declining here keeps the decline clean AND
+    // protects against the wrong-state miscompile (see
+    // `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`). The associative `+`/`*` cases
+    // are rewritten to tail form by accumulator-introduction before the fold, so they never reach here.
+    if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) {
         return None;
     }
 
@@ -4004,6 +4099,100 @@ fn count_resumes(db: &mut Db, node: StructId) -> u32 {
     here + below
 }
 
+/// The number of references to the parameter `binder` in the arm body at `node` — how many times a
+/// substituted argument would be COPIED when the arm body β-reduces. A reference resolves to
+/// `Resolved::Param { binder }` (or a `Ref` transitively to it). Used to guard the perform-threading arm
+/// against duplicating a PERFORMING argument: substituting an arg that reaches an effect into a param used
+/// more than once would run that effect once per use (a miscompile — `(E.op (tuple (A.get) (A.get)))` whose
+/// arm reads `(. p 0)` AND `(. p 1)` duplicated the two inner gets, threading four reads instead of two).
+fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
+    // A reference matches the way `beta_reduce` substitutes: either a `Param { binder }` whose binder IS
+    // the arm param, OR a `Ref { value }` whose chain reaches that binder transitively (an op-arm param
+    // `p` used as `(. p 0)` resolves to a `Ref` reaching `p`'s declaration occurrence, not a `Param`).
+    let here = match resolved_of(db, node) {
+        Resolved::Param { binder: b } => u32::from(b == binder),
+        Resolved::Ref { value } => {
+            let mut target = value;
+            let mut hit = false;
+            loop {
+                if target == binder {
+                    hit = true;
+                    break;
+                }
+                match resolved_of(db, target) {
+                    Resolved::Ref { value: next } => target = next,
+                    _ => break,
+                }
+            }
+            u32::from(hit)
+        }
+        _ => 0,
+    };
+    let below = match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .map(|&c| count_param_refs(db, c, binder))
+            .sum(),
+        Struct::Atom(_) => 0,
+    };
+    here + below
+}
+
+/// Whether the argument subtree at `node` reaches ANY perform — of THIS handler's op (discharged) OR a
+/// FOREIGN one (an outer handler's / host op) — following NON-RECURSIVE callee bodies (bounded depth). The
+/// duplication guard's precise "does this argument carry an effect that must not be copied" test. UNLIKE
+/// `body_reaches_foreign_perform`, it does NOT over-report an unresolvable/record-field-pair head as an
+/// effect: a record literal `(record (a 3) (b 4))` resolves its field pairs as `Apply` nodes whose "head"
+/// is the label `a` (no `meta_apply`, no lambda body), which the conservative foreign-walk misreads as an
+/// unresolvable call and flags — spuriously declining a PURE record argument. Here an `Apply` whose head is
+/// not an effect op and not a followable function simply DESCENDS into its args (a perform can only hide in
+/// a sub-expression, never in a bare label head), so a pure compound argument is correctly effect-free. A
+/// recursive callee is over-reported (it may perform; bounded, safe — a recursive performing arg is rare
+/// and declining it is sound). Combines the discharged-op detection (`is_perform`) with the foreign-op one
+/// (`effect_op_of` outside `ctx.arms`).
+fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    // The inner walk takes NO `HandlerCtx`: an `effect_op_of` head is a perform regardless of which handler
+    // owns it, so this ANY-perform detector never consults `ctx` (unlike its sibling
+    // `body_reaches_foreign_perform`, which needs it to distinguish a FOREIGN op). Dropping the pass-through
+    // parameter clears clippy's only-used-in-recursion lint; `ctx` stays in the outer signature for a
+    // uniform call shape with the sibling detector.
+    let _ = ctx;
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
+        if depth > 32 {
+            return true; // too deep — assume it may perform (safe over-report)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            // A perform of ANY effect operation — this handler's (discharged) or another's (foreign).
+            if crate::eval::effect_op_of(db, head).is_some() {
+                return true;
+            }
+            // A user function call: follow a NON-RECURSIVE callee body; a recursive one over-reports.
+            // (A non-function head — a compound constructor, a record field-pair label — is NOT followed:
+            // it hides no perform in the head, only its args, which the descent below covers.)
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            {
+                if crate::eval::is_recursive(db, callee) {
+                    return true;
+                }
+                if walk(db, callee, depth + 1) {
+                    return true;
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, depth + 1));
+        }
+        // A bare `resume` reached in an argument is an effect too.
+        if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, 0)
+}
+
 /// Whether the subtree at `node` transitively reaches a FOREIGN perform — an effect operation NOT
 /// discharged by THIS handler `ctx` (an outer handler's effect, or a host-delegated op), following
 /// NON-RECURSIVE calls into their bodies (bounded depth). CONSERVATIVE (over-reports, never under-reports):
@@ -4054,6 +4243,23 @@ fn is_unit_param(db: &mut Db, param: StructId) -> bool {
 /// Whether the subtree at `node` performs an operation `ctx` discharges — a fast pre-check so a
 /// perform-free subtree is copied wholesale rather than threaded position-by-position. Structural walk.
 fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    // MEMOIZE per `(node, ctx.key)`: the classifiers `strongly_pure`/`pure_hole` call this at MANY nodes
+    // as they descend a handle body, and `strongly_pure` in particular re-ran this WHOLE-subtree walk at
+    // every node it visited — so a deep body (an N-perform nested-`let` chain) recomputed the same node's
+    // verdict O(depth) times, making the scan O(N²) and the fold O(N³). Whether a subtree performs is a
+    // pure function of the node and the DISCHARGED-OP SET (`ctx.key`, the resolved-identity string), so a
+    // memo collapses the repeats to O(1). (Node ids are never reused with a different meaning; a synthesized
+    // node gets a fresh id, so a stale entry cannot mislead.)
+    let cache_key = (node, ctx.key.clone());
+    if let Some(&v) = db.subtree_performs_cache.get(&cache_key) {
+        return v;
+    }
+    let v = subtree_performs_uncached(db, node, ctx);
+    db.subtree_performs_cache.insert(cache_key, v);
+    v
+}
+
+fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && is_perform(db, head, ctx).is_some()
     {

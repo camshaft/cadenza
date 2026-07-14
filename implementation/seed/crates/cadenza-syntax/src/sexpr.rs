@@ -48,6 +48,8 @@ pub const MAX_NESTING_DEPTH: u32 = 1024;
 //# A textual syntax MUST provide a parser that converts its text to the canonical binary AST.
 //= spec/contracts/ast-encoding.md#a-textual-syntax-parses-to-and-prints-from-the-canonical-form
 //# No textual syntax MUST be privileged as the stored form, so that a program's identity is its binary AST and not any one rendering of it.
+//= spec/capabilities/agent-authoring.md#textual-syntaxes-round-trip-through-the-canonical-form
+//# Parsing a textual rendering of a program MUST yield its canonical binary AST.
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
     let mut p = Reader::new(text, &mut b, false);
@@ -142,6 +144,8 @@ fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>),
 //# A textual syntax MUST be a lossless projection of the canonical form, such that parsing its text yields the canonical form and printing the canonical form yields text that parses back to the same canonical form.
 //= spec/contracts/ast-encoding.md#a-textual-syntax-parses-to-and-prints-from-the-canonical-form
 //# A textual syntax MUST provide a printer that converts the canonical binary AST to its text.
+//= spec/capabilities/agent-authoring.md#textual-syntaxes-round-trip-through-the-canonical-form
+//# Printing a program's canonical binary AST in a textual syntax MUST yield text that parses back to the same canonical binary AST.
 pub fn print(arenas: &Arenas) -> String {
     let mut out = String::new();
     print_node(arenas, arenas.root, &mut out);
@@ -160,6 +164,14 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
     match a.get(id) {
         Struct::Atom(l) => print_leaf(a.leaf(*l), out),
         Struct::List(items) => {
+            // RESUGAR: a `(: <suffixed-literal> BigInt|Rational)` node is the desugared form of a type
+            // suffix (`100N`), so print just the suffixed atom — the suffix already carries the type.
+            // (A bare `(: 100 BigInt)` value-output, whose value child is a plain `Int` not a
+            // `Suffixed`, is NOT matched, so it still prints the explicit annotation.)
+            if let Some(atom) = suffixed_annotation_atom(a, items) {
+                print_node(a, atom, out);
+                return;
+            }
             out.push('(');
             for (i, &child) in items.iter().enumerate() {
                 if i > 0 {
@@ -169,6 +181,19 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
             }
             out.push(')');
         }
+    }
+}
+
+/// If `items` is a `(: <atom> <type>)` annotation whose value child is a `Leaf::Suffixed`, return that
+/// atom's id (the printer resugars it back to the bare `100N`/`0.5R` form). Else `None`. Shared by the
+/// single-line and pretty s-expr printers so both resugar identically.
+fn suffixed_annotation_atom(a: &Arenas, items: &[StructId]) -> Option<StructId> {
+    if items.len() != 3 || a.as_name(items[0]) != Some(":") {
+        return None;
+    }
+    match a.get(items[1]) {
+        Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Suffixed { .. }) => Some(items[1]),
+        _ => None,
     }
 }
 
@@ -227,6 +252,12 @@ fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc, top: bool) {
             // The reader never produces an empty list; render defensively as `()`.
             if items.is_empty() {
                 doc.word("()");
+                return;
+            }
+            // RESUGAR a desugared type-suffix `(: <suffixed> BigInt|Rational)` to the bare `100N` atom
+            // (same rule as the single-line printer, so both round-trip identically).
+            if let Some(atom) = suffixed_annotation_atom(a, items) {
+                pretty_node(a, atom, doc, false);
                 return;
             }
             // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
@@ -312,6 +343,10 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::BadChar(s) => {
             out.push_str("#\\");
             out.push_str(s);
+        }
+        // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads to the same leaf.
+        Leaf::Suffixed { value, kind } => {
+            out.push_str(&crate::literal::render_suffixed(value, *kind))
         }
     }
 }
@@ -800,6 +835,17 @@ impl<'a, 'b> Reader<'a, 'b> {
         // a hit). `classify_word_nonname` returns `Some` only for the number/bool kinds, so a bare name
         // never allocates on the common repeated-identifier path.
         match crate::literal::classify_word_nonname(tok) {
+            // A TYPE-SUFFIXED numeric literal (`100N`, `0.5R`) DESUGARS to the annotation `(: <literal>
+            // BigInt|Rational)` — a suffix IS a terse annotation, so all typing/grounding reuses the
+            // annotation path (and the compiler's codec decodes the `Suffixed` leaf straight to a plain
+            // `Int`/`Float`, seeing exactly `(: 100 BigInt)`). The `Suffixed` atom is kept as the value
+            // child so the PRINTER re-emits the suffix. The whole `(: … …)` list covers the token span.
+            Some(leaf @ Leaf::Suffixed { kind, .. }) => {
+                let colon = self.mk_name(":", span);
+                let value = self.mk_atom_leaf(leaf, span);
+                let ty = self.mk_name(kind.type_name(), span);
+                self.mk_list(vec![colon, value, ty], span)
+            }
             Some(leaf) => self.mk_atom_leaf(leaf, span),
             None => {
                 let id = self.b.leaf_name(tok);
@@ -854,27 +900,36 @@ mod tests {
 
     #[test]
     fn deeply_nested_input_is_diagnosed_not_crashed() {
-        // A pathologically deep but syntactically valid nest overflowed the native stack (SIGABRT) in
-        // the unguarded recursive descent; the depth guard makes it a clean `ReadError` instead. The
-        // depth here (limit + a margin) far exceeds `MAX_NESTING_DEPTH` — without the guard this
-        // recursion would abort the process (the real crash needs ~25000, but the guard fires at the
-        // limit, so a modest over-limit depth exercises it deterministically without a huge string).
-        let n = (MAX_NESTING_DEPTH as usize) + 50;
-        let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
-        let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
-        assert!(
-            err.0.contains("nests too deeply"),
-            "expected a depth-limit diagnostic, got: {}",
-            err.0
-        );
-        // Just UNDER the limit still parses (the guard does not reject a valid moderate nest). A depth
-        // of `limit - 1` open lists is within budget.
-        let ok = (MAX_NESTING_DEPTH as usize) - 1;
-        let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
-        assert!(
-            read(&shallow).is_ok(),
-            "a nest just under the limit must still parse"
-        );
+        // `read` recurses one native frame per nesting level, so DESCENDING to the depth guard
+        // (`MAX_NESTING_DEPTH` = 1024) needs more stack than a default `cargo test` worker on a small-
+        // stack platform (macOS ~512 KB–1 MB). Run on a large-stacked thread so the test exercises the
+        // depth guard, not the worker's stack limit (a spurious SIGABRT unrelated to this assertion).
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                // A pathologically deep but syntactically valid nest overflowed the native stack
+                // (SIGABRT) in the unguarded recursive descent; the depth guard makes it a clean
+                // `ReadError` instead. The depth here (limit + a margin) exceeds `MAX_NESTING_DEPTH`.
+                let n = (MAX_NESTING_DEPTH as usize) + 50;
+                let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
+                let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
+                assert!(
+                    err.0.contains("nests too deeply"),
+                    "expected a depth-limit diagnostic, got: {}",
+                    err.0
+                );
+                // Just UNDER the limit still parses (the guard does not reject a valid moderate nest).
+                let ok = (MAX_NESTING_DEPTH as usize) - 1;
+                let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
+                assert!(
+                    read(&shallow).is_ok(),
+                    "a nest just under the limit must still parse"
+                );
+            })
+            .expect("spawn deep-read worker");
+        if let Err(payload) = h.join() {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     /// The text a span covers, for span assertions.

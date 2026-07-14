@@ -89,6 +89,35 @@ fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
     item
 }
 
+/// The core functype `0x60 <params> <result>` of a cross-component extern op (X4b) — its scalar
+/// parameter/result core valtypes. Scalar-only this increment (a `value`-handle param is X5).
+fn extern_import_functype(f: &crate::backend::wasm::host::ExternImport) -> Vec<u8> {
+    let mut item = vec![0x60];
+    let params: Vec<u8> = f.params.iter().map(|v| v.core_byte()).collect();
+    item.extend_from_slice(&wasm_vec(params.len(), &params));
+    match &f.result {
+        Some(v) => {
+            let r = [v.core_byte()];
+            item.extend_from_slice(&wasm_vec(1, &r));
+        }
+        None => item.extend_from_slice(&wasm_vec(0, &[])),
+    }
+    item
+}
+
+/// One core import item for a cross-component extern op — imported from module `"peer"` (the name the
+/// consumer's peer-instance is bound under), the op resolved by its name (X4b).
+fn extern_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
+    const PEER_MODULE: &str = "peer";
+    let mut item = uleb_bytes(PEER_MODULE.len() as u64);
+    item.extend_from_slice(PEER_MODULE.as_bytes());
+    item.extend_from_slice(&uleb_bytes(op_name.len() as u64));
+    item.extend_from_slice(op_name.as_bytes());
+    item.push(0x00); // import desc: func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
 /// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
 /// name to its core function index (its position `0..k` in the import section), so a `CallImport`
 /// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
@@ -191,6 +220,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             // A host import occupies core-func index `index` — the host-import set is laid FIRST in the
             // core module's import section (this increment is host-ONLY, so no runtime ops precede it, and
             // the index is exactly the op's position in the host-import set). `call <index>`.
+            out.push(op::CALL);
+            uleb128(*index as u64, out);
+        }
+        Lir::CallExternImport(index) => {
+            // A cross-component extern import occupies core-func index `index` — X4b-3 is extern-ONLY (no
+            // host/runtime imports precede it), so the index is exactly the op's position in the
+            // extern-import set. `call <index>`. (Composition with host/runtime shifts the base by
+            // `h + k` — a later increment; the select layer would add the base then.)
             out.push(op::CALL);
             uleb128(*index as u64, out);
         }
@@ -493,7 +530,19 @@ pub fn core_module(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], layout)
+    core_module_impl(funcs, imports, &[], &[], layout)
+}
+
+/// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
+/// imported from module `"peer"`, laid AFTER the host + runtime imports (core-func indices `h+k..`). A
+/// `Lir::CallExternImport(i)` resolves to `h + k + i`. X4b-3 scope: an extern-ONLY program (`host_fns`
+/// and `imports` empty), so the base is 0.
+pub fn core_module_with_extern(
+    funcs: &[SelectedFunc],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, &[], &[], extern_fns, layout)
 }
 
 /// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
@@ -507,29 +556,35 @@ pub fn core_module_with_host(
     host_fns: &[crate::backend::wasm::host::HostImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, host_fns, layout)
+    core_module_impl(funcs, imports, host_fns, &[], layout)
 }
 
 fn core_module_impl(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     host_fns: &[crate::backend::wasm::host::HostImport],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let h = host_fns.len();
-    let import_count = h + imports.len();
+    let e = extern_fns.len();
+    let import_count = h + imports.len() + e;
 
     // Type section: HOST import functypes first (type indices `0..h`), then RUNTIME import functypes
-    // (`h..import_count`), then one functype per defined function (`import_count..import_count+n`).
-    // Numbering imports' types first keeps a defined func's type index equal to `import_count + its
-    // emission position`, which the function section references.
+    // (`h..h+k`), then CROSS-COMPONENT extern functypes (`h+k..import_count`), then one functype per
+    // defined function (`import_count..import_count+n`). Numbering imports' types first keeps a defined
+    // func's type index equal to `import_count + its emission position`, which the function section
+    // references.
     let mut type_items = Vec::new();
     for f in host_fns {
         type_items.extend_from_slice(&host_import_functype(f));
     }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
+    }
+    for f in extern_fns {
+        type_items.extend_from_slice(&extern_import_functype(f));
     }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
@@ -562,6 +617,13 @@ fn core_module_impl(
             let ti = (h + j) as u32;
             import_items.extend_from_slice(&import_item(o.name, ti));
             import_index.insert(o.name, ti);
+            import_n += 1;
+        }
+        // CROSS-COMPONENT extern ops (X4b) — imported from module `"peer"` at core-func indices
+        // `h+k..h+k+e`, using type indices `h+k..h+k+e` (laid after host + runtime functypes above).
+        for (j, f) in extern_fns.iter().enumerate() {
+            let ti = (h + imports.len() + j) as u32;
+            import_items.extend_from_slice(&extern_import_item(&f.op, ti));
             import_n += 1;
         }
         if needs_memory {
@@ -1323,19 +1385,59 @@ pub struct PlainExport {
 /// flattening` oracle. `None` (the common case) is byte-identical to the scalar path.
 #[derive(Clone)]
 pub struct TupleArgRebuild {
-    /// The box op per field (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`, or `None` for a field
-    /// that is ALREADY a u32 handle — a nested compound — and is `arr-set` as-is). One entry per field, in
-    /// field order. Length = the number of FLATTENED core params this compound contributes.
-    pub field_box_ops: Vec<Option<&'static str>>,
-    /// True per field when it is an INTEGER (or enum-discriminant) that must be i32→i64 sign/zero extended
-    /// before `box-int` (which takes an i64). Mirrors `emit_box_i32_to_i64_extend`. Same length/order as
-    /// `field_box_ops`; ignored for a field whose box op is `None` or a float.
-    pub field_extend_signed: Vec<Option<bool>>,
-    /// The CORE-PARAM index the tuple's flattened fields START at. `1` when the tuple is the SOLE closure arg
-    /// (fields at params `1..1+N`, after `self`=0). When the tuple sits AMONG scalar args, the PREFIX scalar
-    /// args occupy params `1..base_param` and the tuple's fields `base_param..base_param+N`; the SUFFIX
+    /// The fields of this compound, in cell order. Each is either an aliased-width SCALAR leaf (consumes ONE
+    /// flattened core param, boxed with a single op) or a NESTED fixed-shape compound (consumes its own
+    /// flattened leaves depth-first, rebuilt into its own sub-cell first). A NESTED field builds an i32 handle
+    /// which the parent `arr-set`s directly (no box op). See [`FieldRebuild`].
+    pub fields: Vec<FieldRebuild>,
+    /// The CORE-PARAM index this compound's flattened LEAVES start at. `1` when the tuple is the SOLE closure
+    /// arg (leaves at params `1..1+L`, after `self`=0). When the tuple sits AMONG scalar args, the PREFIX
+    /// scalar args occupy params `1..base_param` and the tuple's leaves `base_param..base_param+L`; the SUFFIX
     /// scalars follow. The shared `call` body pushes prefix scalars, the rebuilt tuple, then suffix scalars.
+    /// A NESTED compound field's leaves continue in the SAME flat sequence (depth-first), so this base is the
+    /// running leaf cursor the recursive [`emit_tuple_rebuild`] threads.
     pub base_param: u32,
+}
+
+/// One field of a [`TupleArgRebuild`] cell: an aliased-width SCALAR leaf (a single flattened core param,
+/// boxed) or a NESTED fixed-shape compound (its own sub-fields, rebuilt into a sub-cell whose i32 handle the
+/// parent stores directly). Mirrors the value-heap `Core::Tuple`/`Core::Record` build shape recursively.
+#[derive(Clone)]
+pub enum FieldRebuild {
+    /// A scalar leaf: `box_op` (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`) applied to the one
+    /// flattened core param at the running leaf cursor; `extend` = `Some(signed)` when a NARROW int (an i32
+    /// core param) must be i32→i64 extended before `box-int` (which takes i64), else `None`.
+    Scalar {
+        box_op: &'static str,
+        extend: Option<bool>,
+    },
+    /// A nested fixed-shape compound field: rebuild its own sub-cell (recursively, consuming the next
+    /// contiguous run of flattened leaf params) → an i32 handle the parent `arr-set`s AS-IS (no box op).
+    Nested(Vec<FieldRebuild>),
+}
+
+impl FieldRebuild {
+    /// The number of FLATTENED core leaf params this field consumes (1 for a scalar; the recursive sum for a
+    /// nested compound). Used to thread the running leaf cursor across sibling fields.
+    fn leaf_count(&self) -> u32 {
+        match self {
+            FieldRebuild::Scalar { .. } => 1,
+            FieldRebuild::Nested(sub) => sub.iter().map(FieldRebuild::leaf_count).sum(),
+        }
+    }
+
+    /// Collect the box ops this field (recursively) references, so the `call` core imports them. A nested
+    /// field has no box op of its own (its handle is stored as-is) but its leaves do.
+    pub fn collect_box_ops(&self, out: &mut impl FnMut(&'static str)) {
+        match self {
+            FieldRebuild::Scalar { box_op, .. } => out(box_op),
+            FieldRebuild::Nested(sub) => {
+                for f in sub {
+                    f.collect_box_ops(out);
+                }
+            }
+        }
+    }
 }
 
 /// Emit the tuple-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape tuple/record
@@ -1351,33 +1453,56 @@ fn emit_tuple_rebuild(
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
+    // Rebuild the TOP-LEVEL cell, threading the leaf cursor from `base_param`; `local.tee` the resulting
+    // handle into `tuple_local` for the post-dispatch drop (only the OUTER cell is dropped — its nested
+    // sub-cells are its elements, reclaimed with it).
+    let mut cursor = rebuild.base_param;
+    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, out);
+    out.push(crate::backend::wasm::wasm_abi::op::LOCAL_TEE);
+    uleb128(tuple_local as u64, out); // stash for the post-dispatch drop; leaves [arr] on the stack
+}
+
+/// Emit ONE value-heap cell for a run of [`FieldRebuild`] fields, consuming flattened leaf params from
+/// `*cursor` (advanced past each leaf, depth-first). `arr-alloc N` + per field: index, then either the boxed
+/// scalar leaf OR a recursively-rebuilt nested sub-cell handle, then `arr-set` (FBIP array threaded on the
+/// stack). Leaves the cell handle on the stack. Recursion mirrors `Core::Tuple`/`Core::Record`.
+fn emit_cell_rebuild(
+    fields: &[FieldRebuild],
+    cursor: &mut u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
     use crate::backend::wasm::wasm_abi::op;
-    let nfields = rebuild.field_box_ops.len();
     out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(nfields as i64, out);
+    crate::backend::wasm::encode::sleb128(fields.len() as i64, out);
     out.push(op::CALL);
     uleb128(imp("arr-alloc"), out); // [arr]
-    for (i, box_op) in rebuild.field_box_ops.iter().enumerate() {
+    for (i, field) in fields.iter().enumerate() {
         out.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(i as i64, out); // [arr, i]
-        out.push(op::LOCAL_GET);
-        uleb128((rebuild.base_param + i as u32) as u64, out); // the flattened field param → [arr, i, field]
-        if let Some(bop) = box_op {
-            if let Some(signed) = rebuild.field_extend_signed[i] {
-                out.push(if signed {
-                    op::I64_EXTEND_I32_S
-                } else {
-                    op::I64_EXTEND_I32_U
-                });
+        match field {
+            FieldRebuild::Scalar { box_op, extend } => {
+                out.push(op::LOCAL_GET);
+                uleb128(*cursor as u64, out); // the flattened leaf param → [arr, i, leaf]
+                *cursor += 1;
+                if let Some(signed) = extend {
+                    out.push(if *signed {
+                        op::I64_EXTEND_I32_S
+                    } else {
+                        op::I64_EXTEND_I32_U
+                    });
+                }
+                out.push(op::CALL);
+                uleb128(imp(box_op), out);
             }
-            out.push(op::CALL);
-            uleb128(imp(bop), out);
+            FieldRebuild::Nested(sub) => {
+                // Rebuild the nested sub-cell (consumes its own leaves) → an i32 handle stored AS-IS.
+                emit_cell_rebuild(sub, cursor, imp, out); // → [arr, i, sub-handle]
+            }
         }
         out.push(op::CALL);
         uleb128(imp("arr-set"), out); // → [arr]
     }
-    out.push(op::LOCAL_TEE);
-    uleb128(tuple_local as u64, out); // stash for the post-dispatch drop; leaves [arr] on the stack
 }
 
 /// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading an optional
@@ -1400,13 +1525,15 @@ fn emit_closure_call_args(
         uleb128(l as u64, out);
     };
     if let Some(rebuild) = tuple_arg {
-        let nfields = rebuild.field_box_ops.len() as u32;
+        // The tuple consumes `nleaves` flattened core params (recursively — a nested field contributes its
+        // own leaves), so the SUFFIX scalars start at `base + nleaves`.
+        let nleaves: u32 = rebuild.fields.iter().map(FieldRebuild::leaf_count).sum();
         let base = rebuild.base_param;
         for a in 1..base {
             get(a, out); // a prefix scalar arg
         }
         emit_tuple_rebuild(rebuild, tuple_local, imp, out); // → the rebuilt tuple handle
-        for a in (base + nfields)..(1 + arity) {
+        for a in (base + nleaves)..(1 + arity) {
             get(a, out); // a suffix scalar arg
         }
     } else {

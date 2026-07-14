@@ -33,6 +33,7 @@
 1503	value_encode_stringkeymap x100
 0	value_eq_nested x1000
 1200	vec_concat x100
+6994	vec_drop_fold x1000
 0	vec_get x1000
 18	vec_of_arr_big len=100
 4000	vec_of_arr_small x1000

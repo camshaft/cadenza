@@ -334,8 +334,8 @@
   (doc    "`\"\\q\"` uses a backslash before `q`, which begins none of the recognized escape sequences,
            so the reader MUST reject it at compile time (collections-and-text.md #A String Literal's
            Escapes Are A Closed Set) rather than drop the backslash and read `q` (length 1) or emit an
-           implementation-defined character. Carries `(needs strict-escapes)`: the seed's reader today
-           accepts an unknown escape as the bare character, so it SKIPS this case until a generation
+           implementation-defined character. The seed's reader today
+           accepts an unknown escape as the bare character, so it DECLINES this case until a generation
            enforces the closed set; a later generation rejects the program.")
   (input  "\q")
   (error  CDZ0001))

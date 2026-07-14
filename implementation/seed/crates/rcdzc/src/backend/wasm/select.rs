@@ -175,6 +175,9 @@ const OP_BYTES_CONCAT: &str = "bytes-concat";
 /// `lower`). Boxed sign-magnitude heap leaves; add/sub/mul never trap, div traps on zero, to-i64-checked
 /// traps out of range. Spellings MUST match `runtime.wit` / the generated `runtime_abi.rs` table.
 const OP_BIGINT_OF_I64: &str = "bigint-of-i64";
+/// `bigint-of-bytes(buf) -> u32` — a BigInt leaf from a Bytes leaf holding the canonical sign-magnitude
+/// bytes; the beyond-i64 CONSTANT materialization (`bigint-of-i64` handles only an i64-fitting constant).
+const OP_BIGINT_OF_BYTES: &str = "bigint-of-bytes";
 const OP_BIGINT_TO_I64_CHECKED: &str = "bigint-to-i64-checked";
 const OP_BIGINT_ADD: &str = "bigint-add";
 const OP_BIGINT_SUB: &str = "bigint-sub";
@@ -461,8 +464,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::SetAlgebra { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
-        // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
-        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+        // A call CONSUMES its arguments; a host call OR a cross-component call likewise consumes its
+        // arguments across the boundary.
+        Core::Call { args, .. } | Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
         // A sequencing block: the binding escapes if it escapes any statement or the tail.
@@ -1165,9 +1169,7 @@ pub fn collect_used_ops(
         Core::BigIntToI64 { operand } => {
             out.insert(OP_BIGINT_TO_I64_CHECKED);
             out.insert(OP_DROP);
-            if const_bigint_materializes(db, operand) {
-                out.insert(OP_BIGINT_OF_I64);
-            }
+            insert_const_bigint_materialize_ops(db, operand, out);
             collect_used_ops(db, operand, out);
         }
         Core::BigIntBinOp { op, lhs, rhs } => {
@@ -1179,21 +1181,19 @@ pub fn collect_used_ops(
                 crate::core::BigIntOp::Rem => OP_BIGINT_REM,
             });
             out.insert(OP_DROP);
-            if const_bigint_materializes(db, lhs) || const_bigint_materializes(db, rhs) {
-                out.insert(OP_BIGINT_OF_I64);
-            }
+            insert_const_bigint_materialize_ops(db, lhs, out);
+            insert_const_bigint_materialize_ops(db, rhs, out);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
         // A BigInt comparison imports `bigint-cmp` (the three-way primitive) AND `drop` (to reclaim an
         // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper),
-        // plus `bigint-of-i64` for an inline-materialized constant operand.
+        // plus the materialization ops for an inline-materialized constant operand.
         Core::BigIntCmp { lhs, rhs, .. } => {
             out.insert(OP_BIGINT_CMP);
             out.insert(OP_DROP);
-            if const_bigint_materializes(db, lhs) || const_bigint_materializes(db, rhs) {
-                out.insert(OP_BIGINT_OF_I64);
-            }
+            insert_const_bigint_materialize_ops(db, lhs, out);
+            insert_const_bigint_materialize_ops(db, rhs, out);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -1307,6 +1307,14 @@ pub fn collect_used_ops(
                 }
             }
         }
+        // A CROSS-COMPONENT call: its arguments are evaluated before crossing the boundary, so recurse
+        // to collect any runtime op an argument's construction needs (the call itself is a peer import,
+        // not a runtime op). X2 declines the emit; this keeps the used-op walk complete for later.
+        Core::ExternCall { args, .. } => {
+            for arg in args {
+                collect_used_ops(db, arg, out);
+            }
+        }
         Core::Seq { stmts, tail } => {
             for s in stmts {
                 collect_used_ops(db, s, out);
@@ -1369,11 +1377,15 @@ pub fn collect_used_ops(
             collect_cont_ops(db, scrutinee, &root, out);
         }
         // A list match reads `vec-len` to dispatch by length; arm bodies' element/rest binders bring in
-        // `vec-get`/`vec-split` via their own `SumPayload` occurrences.
+        // `vec-get`/`vec-split` via their own `SumPayload` occurrences. A guarded arm's GUARD is also
+        // emitted (its ops must be collected too).
         Core::MatchList { scrutinee, arms } => {
             out.insert(OP_VEC_LEN);
             collect_used_ops(db, scrutinee, out);
             for arm in &arms {
+                if let Some(g) = arm.guard {
+                    collect_used_ops(db, g, out);
+                }
                 collect_used_ops(db, arm.body, out);
             }
         }
@@ -1455,12 +1467,13 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
         }
-        // A CONSTANT typed `BigInt` used as an in-body runtime value MATERIALIZES via `bigint-of-i64` at
-        // `emit` (a map key/value, set element, call arg, op operand — it must be an i32 handle, not a raw
-        // i64), so declare that import here to match. (A whole-export constant BigInt takes the baked-bytes
-        // path and never reaches `emit`, but importing an unused op is harmless if it did.)
+        // A CONSTANT typed `BigInt` used as an in-body runtime value MATERIALIZES at `emit` (a map key/value,
+        // set element, call arg, op operand — it must be an i32 handle, not a raw i64): `bigint-of-i64` for
+        // an i64-fitting value, or `bytes-alloc`/`bytes-set`/`bigint-of-bytes` for a beyond-i64 one — declare
+        // whichever it needs here to match `emit_const_bigint_leaf`. (A whole-export constant BigInt takes
+        // the baked-bytes path and never reaches `emit`, but an unused import would be harmless if it did.)
         Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => {
-            out.insert(OP_BIGINT_OF_I64);
+            insert_const_bigint_materialize_ops(db, id, out);
         }
         // A constant Rational used as an in-body runtime value MATERIALIZES via `bigint-of-i64` (×2 the
         // components) + `rational-of` at `emit` — declare those imports to match. (A component beyond i64
@@ -1888,7 +1901,39 @@ fn body_has_member_tail_call(db: &mut Db, id: StructId, members: &[usize]) -> bo
         Core::MatchList { arms, .. } => arms
             .iter()
             .any(|a| body_has_member_tail_call(db, a.body, members)),
+        // A SUM match's decision tree has tail positions at its LEAF/GUARDED bodies — `emit_tail` threads
+        // the loop context into each (a tail self-call in a `(Succ m) → (count m …)` arm iterates the
+        // loop), so a member tail-call in any leaf makes the function loopable. This is what lets a
+        // tail-recursive sum-type consumer `(count n acc) = (match n ((Zero) acc) ((Succ m) (count m (+
+        // acc 1))))` become a constant-stack loop.
+        Core::MatchSum { root, .. } => sum_cont_has_member_tail_call(db, &root, members),
         _ => false,
+    }
+}
+
+/// The `body_has_member_tail_call` recursion over a sum decision tree ([`SumCont`]): a `Leaf`/`Guarded`
+/// BODY is a tail position (a member tail-call there loops); the `Guarded.els`, `LitTest.then_`/`els`, and
+/// `Switch` arm continuations are the remaining sub-matrix, all in the same tail position, so recurse
+/// through them. The guard `cond` / literal `probe` are predicates evaluated BEFORE the body, not tail
+/// positions, so they are not considered.
+fn sum_cont_has_member_tail_call(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    members: &[usize],
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => body_has_member_tail_call(db, *body, members),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            body_has_member_tail_call(db, *body, members)
+                || sum_cont_has_member_tail_call(db, els, members)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_has_member_tail_call(db, then_, members)
+                || sum_cont_has_member_tail_call(db, els, members)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_has_member_tail_call(db, &a.cont, members)),
     }
 }
 
@@ -1923,7 +1968,30 @@ fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 tail_callees(db, arm.body, out);
             }
         }
+        Core::MatchSum { root, .. } => sum_cont_tail_callees(db, &root, out),
         _ => {}
+    }
+}
+
+/// The `tail_callees` recursion over a sum decision tree ([`SumCont`]): collect the callees in TAIL
+/// position (the `Leaf`/`Guarded` bodies), descending the same continuations `sum_cont_has_member_tail_call`
+/// tests. The tail-call analogue of that predicate.
+fn sum_cont_tail_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<usize>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => tail_callees(db, *body, out),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            tail_callees(db, *body, out);
+            sum_cont_tail_callees(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_tail_callees(db, then_, out);
+            sum_cont_tail_callees(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                sum_cont_tail_callees(db, &arm.cont, out);
+            }
+        }
     }
 }
 
@@ -2451,6 +2519,69 @@ fn emit_tail(
                 TailPos::Tail(tl),
             )
         }
+        // A SUM match in tail position: dispatch on the discriminant decision tree, each LEAF/GUARDED body
+        // in tail position (a self-tail-call in a `(Succ m) → (count m …)` arm becomes a `return_call` /
+        // loop iteration). Mirrors the non-tail `MatchSum` emit — materialize the scrutinee handle once (a
+        // reusable param/local is re-read cheaply per probe; a computed scrutinee is stashed in a fresh
+        // i32 slot so it is evaluated ONCE) — then `emit_sum_cont_tailable` with `Tail(tl)`. Without this,
+        // `MatchSum` fell through to non-tail `emit`, so a tail-recursive sum consumer never looped (`(count
+        // n acc) = (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))` stack-recursed).
+        Core::MatchSum { scrutinee, root } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "sum match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
+            // Same scrutinee discipline as the non-tail `MatchSum` emit: a reusable handle (a param/local
+            // already in a slot) is re-read per probe; a computed one is materialized ONCE into a fresh i32
+            // slot above the high-water so every re-read hits the slot (and its transient scratch never
+            // clashes with the arm bodies at `base`).
+            let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
+                (slots.clone(), base)
+            } else {
+                let slot = *high;
+                *high = slot + 1;
+                scratch_ty.insert(slot, ValType::I32);
+                emit(
+                    db,
+                    scrutinee,
+                    slots,
+                    slot + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
+                out.push(Lir::LocalSet(slot));
+                let mut m = slots.clone();
+                m.insert(scrutinee, slot);
+                (m, (*high).max(slot + 1))
+            };
+            emit_sum_cont(
+                db,
+                scrutinee,
+                &root,
+                result_it,
+                block_ty,
+                &arms_slots,
+                arms_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                TailPos::Tail(tl),
+            )
+        }
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
         _ => emit(db, id, slots, base, high, scratch_ty, layout, out),
     }
@@ -2864,18 +2995,10 @@ fn emit(
             // BigInt that is a whole nullary EXPORT takes the baked-bytes `constant_value_form` path and
             // never reaches here; this is only the in-body runtime-value use.
             if matches!(type_of(db, id), Ty::BigInt) {
-                match v.to_i64() {
-                    Some(x) => {
-                        out.push(Lir::ConstI64(x));
-                        out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
-                        return Ok(());
-                    }
-                    None => {
-                        return Err(Reject::decline(
-                            "a constant BigInt beyond i64 range is not yet materialized as a heap leaf",
-                        ));
-                    }
-                }
+                // Materialize the constant as a heap leaf: fits-i64 via `bigint-of-i64`, beyond-i64 via
+                // `bigint-of-bytes` on its baked canonical sign-magnitude bytes (`emit_const_bigint_leaf`).
+                emit_const_bigint_leaf(&v, out);
+                return Ok(());
             }
             // Ground the literal to the machine width its solved type fixes. The constant must FIT the
             // width (checked at annotation time; a value that does not fit never reaches here for an
@@ -4632,6 +4755,7 @@ fn emit(
                 scratch_ty,
                 layout,
                 out,
+                TailPos::NonTail,
             )
         }
         // A runtime LIST match → dispatch by LENGTH. Read `vec-len(scrutinee)` once, then a chain of
@@ -5286,6 +5410,35 @@ fn emit(
             out.push(Lir::CallHostImport(index));
             Ok(())
         }
+        // A CROSS-COMPONENT call — X2 lands the IR foundation only; the peer-interface import envelope
+        // (X3) and the front-end binding that CONSTRUCTS an ExternCall (X4) arrive in later increments,
+        // so nothing produces one on the normal path yet and the emit DECLINES cleanly
+        // (decline-don't-miscompile; component-abi.md §Cross-Component Value Exchange).
+        // A CROSS-COMPONENT call (X4b) — push each scalar argument, then `call` the peer op by its
+        // position in the program's extern-import set (`layout.extern_order`). Structurally the host-call
+        // emit, but resolves against the extern set (bound under module `"peer"`). X4b-3 scope: scalar
+        // args (a `Unit` arg carries no boundary slot; a compound/`value` arg is X5 and declined upstream
+        // by the undelegable-op check).
+        Core::ExternCall {
+            interface,
+            op,
+            args,
+            ..
+        } => {
+            let index = layout.extern_index(&interface, &op).ok_or_else(|| {
+                Reject::decline(
+                    "a cross-component call's operation is not in the extern-import set",
+                )
+            })?;
+            for &arg in &args {
+                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
+                    continue;
+                }
+                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            }
+            out.push(Lir::CallExternImport(index));
+            Ok(())
+        }
         // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
         // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
         // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced
@@ -5709,16 +5862,65 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
 /// possible drop), call the op (which pops the borrowed handle and pushes the scalar), then drop the
 /// remembered handle if it was owned. Declines (via `heap_operand_ownership`) an operand whose ownership
 /// cannot be proved — reject, never a leak or double-free.
-/// Whether a BigInt operand is a CONSTANT BigInt (`Core::ConstInt` typed `Ty::BigInt` — a folded
-/// `(BigInt.of <const>)`) that FITS `i64`, so it materializes inline via `bigint-of-i64` at a use site (a
-/// runtime arithmetic/comparison operand). A constant BigInt has no heap leaf of its own (`BigInt.of` on a
-/// constant folds to a `Core::ConstInt` that only knows how to emit as a scalar), so an op that needs a
-/// heap HANDLE materializes it here. A constant BEYOND `i64` range is not covered (an arbitrary-magnitude
-/// constant leaf is a B4 concern) — reported separately as a decline. `collect_used_ops` uses this to
-/// declare the `bigint-of-i64` import when an operand needs it.
-fn const_bigint_materializes(db: &mut Db, id: StructId) -> bool {
-    matches!(core_of(db, id), Core::ConstInt(v) if v.to_i64().is_some())
-        && matches!(type_of(db, id), Ty::BigInt)
+/// Register the runtime ops the inline materialization of a CONSTANT BigInt operand emits, so
+/// `collect_used_ops` imports them: `bigint-of-i64` for an i64-fitting constant, or `bytes-alloc` +
+/// `bytes-set` + `bigint-of-bytes` for a beyond-i64 one (the baked-sign-magnitude-bytes path). Mirrors the
+/// two branches of `emit_const_bigint_leaf`. A non-constant / non-BigInt operand registers nothing.
+fn insert_const_bigint_materialize_ops(
+    db: &mut Db,
+    operand: StructId,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    if let Core::ConstInt(v) = core_of(db, operand)
+        && matches!(type_of(db, operand), Ty::BigInt)
+    {
+        if v.to_i64().is_some() {
+            out.insert(OP_BIGINT_OF_I64);
+        } else {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            out.insert(OP_BIGINT_OF_BYTES);
+        }
+    }
+}
+
+/// The canonical sign-magnitude heap-leaf bytes of a constant integer — `[sign][LE magnitude, trailing
+/// zero bytes stripped]`, zero → `[0x00]` — byte-IDENTICAL to `bigint::Big::to_sign_magnitude_bytes` in
+/// `cdz-runtime`, so a leaf built from these bytes via `bigint-of-bytes` is the SAME rep `bigint-of-i64` /
+/// runtime arithmetic produces (so `bigint-cmp`/`value-eq` compare it correctly). `IntValue.magnitude` is
+/// big-endian with no leading zero bytes, so reversing yields little-endian with no trailing zero bytes;
+/// zero is the empty magnitude → the single sign byte `[0]` (never negative-zero).
+fn const_bigint_sign_magnitude_bytes(v: &crate::ast::IntValue) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(1 + v.magnitude.len());
+    // Zero is non-negative on the wire (matches the runtime canonical form + `IntValue::zero`).
+    bytes.push((v.negative && !v.magnitude.is_empty()) as u8);
+    bytes.extend(v.magnitude.iter().rev().copied()); // big-endian → little-endian
+    bytes
+}
+
+/// Emit a CONSTANT BigInt as a fresh OWNED heap-leaf handle on the stack. Fits i64 → `bigint-of-i64`;
+/// beyond i64 → bake its canonical sign-magnitude bytes as a Bytes leaf (`bytes-alloc` + per-byte
+/// `bytes-set`, exactly as a constant string materializes) then re-tag as a BigInt via `bigint-of-bytes`
+/// (which consumes the byte leaf). Shared by the in-body value materialization (`Core::ConstInt`-typed-
+/// BigInt) and the operand path (`emit_bigint_operand`).
+fn emit_const_bigint_leaf(v: &crate::ast::IntValue, out: &mut Emit) {
+    match v.to_i64() {
+        Some(x) => {
+            out.push(Lir::ConstI64(x));
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [fresh owned BigInt handle : i32]
+        }
+        None => {
+            let bytes = const_bigint_sign_magnitude_bytes(v);
+            out.push(Lir::ConstI32(bytes.len() as i32)); // [len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            for (i, &byte) in bytes.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+            }
+            out.push(Lir::CallImport(OP_BIGINT_OF_BYTES)); // consumes buf → [fresh owned BigInt handle : i32]
+        }
+    }
 }
 
 /// Emit ONE BigInt operand as a heap HANDLE on the stack and return its ownership (for a possible post-op
@@ -5739,16 +5941,11 @@ fn emit_bigint_operand(
     if let Core::ConstInt(v) = core_of(db, operand)
         && matches!(type_of(db, operand), Ty::BigInt)
     {
-        return match v.to_i64() {
-            Some(x) => {
-                out.push(Lir::ConstI64(x));
-                out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [fresh owned BigInt handle : i32]
-                Ok(HandleOwnership::Owned)
-            }
-            None => Err(Reject::decline(
-                "a constant BigInt beyond i64 range is not yet materialized as a heap leaf (B4)",
-            )),
-        };
+        // A constant BigInt operand has no heap leaf of its own — materialize one (fits-i64 via
+        // `bigint-of-i64`, beyond-i64 via `bigint-of-bytes` on its baked sign-magnitude bytes). A FRESH
+        // OWNED handle either way; the borrowing op drops it after.
+        emit_const_bigint_leaf(&v, out);
+        return Ok(HandleOwnership::Owned);
     }
     let o = heap_operand_ownership(db, operand)?;
     let op_base = *high;
@@ -6214,57 +6411,99 @@ fn emit_list_arms_tailable(
         out.push(Lir::Unreachable);
         return Ok(());
     };
-    let is_tail_arm = rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any);
+    // An UNGUARDED `Any` (or the final) arm is the unconditional tail. A GUARDED arm — even an `Any`/rest
+    // one — may FAIL its guard, so it is NOT unconditional: it still tests its guard and falls through.
+    let is_tail_arm = first.guard.is_none()
+        && (rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any));
     if is_tail_arm {
         // The unconditional final arm — its body is in the SAME tail position as the whole match.
         return emit_arm_body(
             db, first.body, result_it, arm_slots, arm_base, high, scratch_ty, layout, out, tail,
         );
     }
-    out.push(Lir::LocalGet(len_slot));
-    match first.cond {
-        crate::core::ListArmCond::LenEq(n) => {
-            out.push(Lir::ConstI32(n as i32));
-            out.push(Lir::I32Eq);
+    // Open the LENGTH test — except for an `Any` cond (a guarded catch-all/rest), whose length always holds
+    // so its only gate is the guard. For a length-carrying cond, `if (len ⋈ k)` wraps the arm.
+    let has_len_test = !matches!(first.cond, crate::core::ListArmCond::Any);
+    if has_len_test {
+        out.push(Lir::LocalGet(len_slot));
+        match first.cond {
+            crate::core::ListArmCond::LenEq(n) => {
+                out.push(Lir::ConstI32(n as i32));
+                out.push(Lir::I32Eq);
+            }
+            crate::core::ListArmCond::LenGe(k) => {
+                out.push(Lir::ConstI32(k as i32));
+                out.push(Lir::I32GeU);
+            }
+            crate::core::ListArmCond::Any => unreachable!(),
         }
-        crate::core::ListArmCond::LenGe(k) => {
-            out.push(Lir::ConstI32(k as i32));
-            out.push(Lir::I32GeU);
-        }
-        crate::core::ListArmCond::Any => unreachable!("Any is the tail arm"),
+        out.push(Lir::If(block_ty));
     }
-    out.push(Lir::If(block_ty));
-    // This arm's body sits inside the freshly-opened `if`; a self-loop `br` from it must target one level
-    // further out, so bump the tail depth.
-    emit_arm_body(
-        db,
-        first.body,
-        result_it,
-        arm_slots,
-        arm_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-        deeper_tail(tail),
-    )?;
-    out.push(Lir::Else);
-    // The remaining arms are ALSO one `if` deeper — pass the bumped tail.
-    emit_list_arms_tailable(
-        db,
-        rest,
-        len_slot,
-        block_ty,
-        result_it,
-        arm_slots,
-        arm_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-        deeper_tail(tail),
-    )?;
-    out.push(Lir::End);
+    // Inside the length `if` (or unconditionally, for an `Any` guarded arm): emit the arm's body, gated on
+    // its GUARD when present. A guarded arm becomes `if guard then body else <rest>` — a false guard FALLS
+    // THROUGH to the remaining arms, exactly as a false length test does; the guard is a boolean the arm's
+    // element/rest binders are in scope for (resolve Case 6lg), emitted as an operand before the `if`. The
+    // body/rest sit one `if` deeper per opened `if`, so the tail depth bumps accordingly.
+    let after_len_tail = if has_len_test {
+        deeper_tail(tail)
+    } else {
+        tail
+    };
+    match first.guard {
+        None => {
+            emit_arm_body(
+                db,
+                first.body,
+                result_it,
+                arm_slots,
+                arm_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                after_len_tail,
+            )?;
+        }
+        Some(g) => {
+            // The guard reads the scrutinee handle (in `arm_slots`) via its binders' `SumPayload`; emit it
+            // as an i32 boolean at `arm_base`. The body/rest start scratch ABOVE the guard's high-water (a
+            // guard stashing a heap handle types a low slot i32; a body reusing that slot at i64 would fail
+            // validation — the same discipline the scalar guard emit follows).
+            emit(db, g, arm_slots, arm_base, high, scratch_ty, layout, out)?;
+            let body_base = *high;
+            out.push(Lir::If(block_ty));
+            let deeper = deeper_tail(after_len_tail);
+            emit_arm_body(
+                db, first.body, result_it, arm_slots, body_base, high, scratch_ty, layout, out,
+                deeper,
+            )?;
+            out.push(Lir::Else);
+            emit_list_arms_tailable(
+                db, rest, len_slot, block_ty, result_it, arm_slots, body_base, high, scratch_ty,
+                layout, out, deeper,
+            )?;
+            out.push(Lir::End);
+        }
+    }
+    if has_len_test {
+        out.push(Lir::Else);
+        // The remaining arms are ALSO one `if` deeper — pass the bumped tail.
+        emit_list_arms_tailable(
+            db,
+            rest,
+            len_slot,
+            block_ty,
+            result_it,
+            arm_slots,
+            arm_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            deeper_tail(tail),
+        )?;
+        out.push(Lir::End);
+    }
     Ok(())
 }
 
@@ -6447,9 +6686,21 @@ fn try_emit_disc_br_table(
     let join_from_arm_extra = if has_default_block { 1 } else { 0 };
     for (k, arm) in disc_arms.iter().enumerate() {
         out.push(Lir::End); // close $a_k → its br_table target lands here
+        // The br_table path is only taken in NON-tail position (`emit_sum_match_arms` skips it when
+        // looping — see there), so a continuation here is never a loop iteration.
         emit_sum_cont(
-            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            db,
+            scrutinee,
+            &arm.cont,
+            result_it,
+            block_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
             out,
+            TailPos::NonTail,
         )?;
         out.push(Lir::Br((m - 1 - k as u32) + join_from_arm_extra)); // br to $join, carrying the value
     }
@@ -6458,7 +6709,18 @@ fn try_emit_disc_br_table(
     if let Some(d) = default {
         out.push(Lir::End); // close $default
         emit_sum_cont(
-            db, scrutinee, &d.cont, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            db,
+            scrutinee,
+            &d.cont,
+            result_it,
+            block_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            TailPos::NonTail,
         )?;
     }
     out.push(Lir::End); // close $join
@@ -6487,15 +6749,30 @@ fn emit_sum_match_arms(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    tail: TailPos,
 ) -> Result<(), Reject> {
     // BR_TABLE DECISION TREE: a switch that tests ≥3 DISTINCT discriminants dispatches in O(1) via a
     // jump table instead of a linear `if (disc == k)` cascade (the arms below). Sum discriminants are
     // contiguous `0..variant_count`, so the table is dense with no wasted slots. `try_emit_disc_br_table`
     // returns `Some(())` when it emitted the table, `None` to fall through to the linear chain (too few
     // arms, or a shape it does not handle — a leading default, non-distinct discs).
-    if let Some(()) = try_emit_disc_br_table(
-        db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-    )? {
+    // SKIPPED ONLY FOR A SELF-LOOP (`Tail(Some(tl))`): the table wraps its arm continuations in nested
+    // control-flow BLOCKS (`$join`/`$a_k`), a different block-nesting than the linear `if`-chain; a
+    // self-tail-call compiled as a loop `br tl.depth` inside an arm would need a table-specific depth (not
+    // the `deeper_tail` +1-per-`if` accounting the linear chain uses). The linear chain loops correctly and
+    // covers the common recursive-sum shapes (2-variant Cons/Nil, Succ/Zero, Node/Leaf never hit the
+    // ≥3-disc table anyway), so fall back to it when a self-loop is in play. A `NonTail` match (a sum match
+    // used as an operand) OR a `Tail(None)` one (a non-self-recursive function body — EVERY body is emitted
+    // via `emit_tail`, so this is the common case) keeps the O(1) table: the table's continuations are
+    // emitted `NonTail` (a `return_call` `br`s to `$join` fine — it's frame-replacing, not depth-relative;
+    // and a self-loop `br` never occurs here since there is no loop), so it is byte-identical to the
+    // pre-tail behavior for both.
+    if !matches!(tail, TailPos::Tail(Some(_)))
+        && let Some(()) = try_emit_disc_br_table(
+            db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        )?
+    {
         return Ok(());
     }
     match arms.split_first() {
@@ -6503,14 +6780,14 @@ fn emit_sum_match_arms(
             "sum match ran off the end with no covering arm",
         )),
         // A default arm, or the last arm of an exhaustive switch — its probe is redundant, so emit its
-        // continuation unconditionally.
+        // continuation unconditionally (in the SAME tail position as the whole switch — no `if` opened).
         Some((arm, [])) => emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
         Some((arm, _)) if arm.disc.is_none() => emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
@@ -6529,9 +6806,13 @@ fn emit_sum_match_arms(
                 out.push(Lir::I32Eq);
             }
             out.push(Lir::If(block_ty));
+            // The matched arm's continuation and the fall-through switch both sit one `if` deeper — bump
+            // the tail depth so a self-loop `br` inside either targets the loop top (mirrors the scalar
+            // `emit_probe_chain` / list `emit_list_arms_tailable` disc-nesting).
+            let deeper = deeper_tail(tail);
             emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
             // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
@@ -6544,7 +6825,7 @@ fn emit_sum_match_arms(
             out.push(Lir::Else);
             emit_sum_match_arms(
                 db, scrutinee, path, rest, result_it, block_ty, slots, else_base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -6556,7 +6837,10 @@ fn emit_sum_match_arms(
 /// match's result width `result_it`, as the scalar-match arms are); a nested SWITCH emits a fresh switch
 /// chain on its deeper sub-value (`emit_sum_match_arms`), which is the decision tree recursing to share
 /// the outer probe. The nested switch's `if`s reuse the SAME `block_ty` (both branches yield the match's
-/// one result type at every depth).
+/// one result type at every depth). `tail` carries the [`TailPos`]: in a TAIL sum match each LEAF/GUARDED
+/// body is a tail position (a self-tail-call there iterates the loop / becomes a `return_call`), and the
+/// nested dispatch bumps the threaded loop `depth` +1 per enclosing `if` (via `deeper_tail`). `NonTail` is
+/// byte-identical to the pre-tail behavior (bodies emit via `emit`).
 #[allow(clippy::too_many_arguments)]
 fn emit_sum_cont(
     db: &mut Db,
@@ -6570,13 +6854,15 @@ fn emit_sum_cont(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    tail: TailPos,
 ) -> Result<(), Reject> {
     match cont {
         crate::core::SumCont::Leaf(body) => {
-            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                return emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out);
-            }
-            emit(db, *body, slots, base, high, scratch_ty, layout, out)
+            // A bare-`ConstInt` leaf grounds to the result width (never a tail call); otherwise the body is
+            // emitted at the ambient `tail` position — in a tail match a self-tail-call in the body loops.
+            emit_arm_body(
+                db, *body, result_it, slots, base, high, scratch_ty, layout, out, tail,
+            )
         }
         // A GUARDED arm: `if cond then body else <els>`. The guard cond is a boolean (an i32); each of the
         // body and the fall-through `els` produces the match's result type (`block_ty`), grounding a
@@ -6592,17 +6878,16 @@ fn emit_sum_cont(
             // `*high == base`, so this is byte-identical for the common case.
             let body_base = *high;
             out.push(Lir::If(block_ty));
-            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                emit_operand(
-                    db, *body, rit, slots, body_base, high, scratch_ty, layout, out,
-                )?;
-            } else {
-                emit(db, *body, slots, body_base, high, scratch_ty, layout, out)?;
-            }
+            // Both the body and the fall-through `els` sit one `if` deeper — bump the tail depth so a
+            // self-loop `br` from either targets the loop top (mirrors `emit_arm_guarded_body`).
+            let deeper = deeper_tail(tail);
+            emit_arm_body(
+                db, *body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
+            )?;
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -6672,9 +6957,11 @@ fn emit_sum_cont(
                 }
             }
             out.push(Lir::If(block_ty));
+            // Both continuations sit one `if` deeper — bump the tail depth (mirrors the guard/switch sites).
+            let deeper = deeper_tail(tail);
             emit_sum_cont(
                 db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out,
+                out, deeper,
             )?;
             // The `els` continuation starts scratch above the `then_`'s high-water — same discipline as
             // the disc-switch/guard sites: a `then_` that stashes an i32 heap handle must not have its
@@ -6683,14 +6970,14 @@ fn emit_sum_cont(
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, els_base, high, scratch_ty, layout,
-                out,
+                out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
         }
         crate::core::SumCont::Switch { path, arms } => emit_sum_match_arms(
             db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
     }
 }

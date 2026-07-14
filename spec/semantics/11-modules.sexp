@@ -13,8 +13,8 @@
 ; §Sequencing), which is why these cases are `(do (module m …) <form-using-m>)`.
 ;
 ; Scope of this file: SINGLE-module semantics, which the seed realizes (options/realized-capability-set/).
-; Cases with no (needs …) are core (the seed runs them); those comparing against a built manifest list
-; carry (needs collections).
+; The seed runs the core cases; a case comparing against a built manifest list needs collections, so a
+; generation without collections declines it.
 ;
 ; MULTI-FILE PACKAGE composition — explicit imports, visibility, cyclic-dependency rejection, colliding-
 ; import rejection (modules-and-namespaces.md) — IS now witnessed, at the end of this file, via the
@@ -62,6 +62,23 @@
               (do (module m (def (answer) 42))
                   ((. m answer) (/ 1 0)))) (export main)))
   (error  CDZ0203))
+
+(case "a module in a top-level do sequence type-checks its members"
+  (doc    "A `(module …)` may sit as an ELEMENT of a top-level `(do …)` sequence root. Its members must be
+           type-checked exactly as a bare top-level `(module …)`'s are: an ill-typed nullary member — here
+           `(def (bad) (+ 1 2.0))`, a Float/Int mix — MUST be rejected CDZ0301, not silently accepted. This
+           position was a type-check hole: the top-level scan registers only def/export/type/effect items
+           (no `module` branch), and the nested-declaration walk SKIPS a top-level item as already-scanned,
+           so a module here was registered by NEITHER path — its members escaped `collect_faults` while a
+           bare `(module m …)` and a def-body-nested one were both checked. Now a top-level module item is
+           registered via the shared module-gather, so its member bodies are type-checked wherever the
+           module sits (core-semantics.md #A program that is not well-typed MUST be rejected). Also holds
+           for a Bool/Int mix and an unbound name in the member.")
+  (input  (do
+            (module m (def (bad) (+ 1 2.0)))
+            (def (main) 5)
+            (export main)))
+  (error  CDZ0301))
 
 (case "each definition in a module registers a reachable export field"
   (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports (2nd sentence:
@@ -439,9 +456,9 @@
 ; never ignored: a meaning-changing directive that some toolchain silently dropped would let one source
 ; compile to two meanings, the drift the one-executable-semantics / canonical-form principles forbid
 ; (constitution §IX, §X). A recognized key with the wrong argument shape is CDZ0602. The pinned registry
-; today defines one key, `default-integer` (its behavior witnessed in 06-numeric-model.sexp under
-; `needs numeric-model`); these cases pin the general mechanism. `(needs module-pragmas)`: the pragma
-; channel is realized by a later generation, so the seed's gate skips these — they pin the contract.
+; today defines one key, `default-integer` (its behavior witnessed by the numeric cases in
+; 06-numeric-model.sexp); these cases pin the general mechanism. The pragma
+; channel is realized by a later generation, so the seed declines these — they pin the contract.
 
 (case "an unrecognized pragma key is rejected rather than ignored"
   (doc    "`(pragma frobnicate 3)` names a key the pinned registry does not define, so the module is
@@ -631,3 +648,24 @@
             (def (main) (match (mk) ((Box.W n) n) ((Box.E) 0)))
             (export main)))
   (output (: 42 Int64)))
+
+(case "a sum TYPE and its constructors are imported by name and constructed in the entry"
+  (doc    "Beyond exporting a sum VALUE (the cases above, where the entry RE-DECLARES a structurally-
+           identical type), here `lib` EXPORTS the nominal sum TYPE `Color` itself plus a consumer `to-int`,
+           and the entry `(import \"lib\" (Color to-int))` brings the TYPE + its constructors into scope and
+           CONSTRUCTS `(Color.Green)` locally. The imported type's identity crosses the link, so a value the
+           entry builds with the imported constructor dispatches correctly in the lib's `to-int` match →
+           `Green` = 2. Pins that a nominal sum type + its constructors compose across an explicit import
+           (not only sum VALUES with a re-declared type) — the value built against the imported type is the
+           SAME nominal type the lib's consumer expects.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (to-int (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export to-int)))
+  (input  (do
+            (import "lib" (Color to-int))
+            (def (main) (to-int (Color.Green)))
+            (export main)))
+  (output (: 2 Int64)))

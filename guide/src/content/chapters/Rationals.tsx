@@ -25,6 +25,26 @@ export default function Rationals() {
       </P>
       <Runnable source={`(Rational.of-int 5)`} />
 
+      <H2>Writing one directly: the <C>R</C> suffix</H2>
+      <P>
+        Spelling out <C>Rational.of</C> every time is wordy when you already know the number. A decimal
+        with an <C>R</C> suffix is a rational <em>literal</em> — the compiler reads the decimal exactly and
+        converts it to a fraction, so <C>0.5R</C> is <C>1/2</C> and <C>1.25R</C> is <C>5/4</C>:
+      </P>
+      <Runnable source={`0.5R`} />
+      <P>
+        It's the very same value as the constructor — <C>0.5R</C> equals <C>(Rational.of 1 2)</C> — just
+        terser to write. Here's the point of it, and the contrast with <strong>Floating-point numbers</strong>:
+        write the tenths as rationals and <C>0.1 + 0.2</C> is <em>exactly</em> <C>3/10</C>, where the float{" "}
+        <C>(+. 0.1 0.2)</C> drifted to <C>0.30000000000000004</C>:
+      </P>
+      <Runnable source={`(+ 0.1R 0.2R)`} />
+      <P>
+        Same digits you'd type for a float, one letter's difference — and the answer is the number you
+        meant, not the nearest float to it. (Integers take an <C>N</C> suffix for the arbitrary-precision{" "}
+        <C>BigInt</C> type, the same idea for whole numbers that outgrow <C>Int64</C>.)
+      </P>
+
       <H2>Always in lowest terms</H2>
       <P>
         A rational normalizes itself on construction: it's stored in lowest terms, with the sign on the
@@ -90,16 +110,18 @@ export default function Rationals() {
         id="rationals:2"
         prompt={
           <>
-            Confirm the exact sum: is <C>1/6 + 1/3</C> equal to <C>1/2</C>? Fill in the second fraction so
-            the equality holds and the answer is <C>1</C>.
+            Division is exact — "how many quarters are in a half?" Divide <C>1/2</C> by a quarter so the
+            result is <C>2/1</C>; fill in the divisor's denominator. When it's right the check gives{" "}
+            <C>1</C>.
           </>
         }
-        starter={`(if (= (+ (Rational.of 1 6) (Rational.of 1 ?)) (Rational.of 1 2)) 1 0)`}
-        solution={`(if (= (+ (Rational.of 1 6) (Rational.of 1 3)) (Rational.of 1 2)) 1 0)`}
+        starter={`(if (= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1)) 1 0)`}
+        solution={`(if (= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1)) 1 0)`}
         expected="1"
         hint={
           <>
-            <C>1/6 + 1/3</C> is <C>1/6 + 2/6 = 3/6 = 1/2</C>, so the missing denominator is <C>3</C>.
+            A quarter is <C>(Rational.of 1 4)</C>. Dividing by it multiplies by its reciprocal <C>4/1</C>,
+            so <C>1/2</C> becomes <C>4/2 = 2/1</C> — exactly two, no rounding.
           </>
         }
       />

@@ -1064,6 +1064,63 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // Validate every top-level DEFINITION's BODY COUNT. A def is `(def <sig> <body>)` — exactly ONE body.
+    // `scan_top_level` reads `body = tail.get(1)` and IGNORES the rest, so two shapes slipped through:
+    //   • NO body — `(def (main))` — leaving `body: None`. This surfaced ONLY at emit (`layout` declined
+    //     "definition has no body", uncoded, so `cdz check` reported nothing — a check≡compile gap).
+    //   • TOO MANY bodies — `(def (main) 1 2)` — silently ACCEPTED, the trailing `2` dropped (a silent
+    //     miscompile, the `def` analogue of the M108 let/fn surplus check + a likely `do`-sequencing slip).
+    // Reject both here CDZ0201 so BOTH surfaces report it: the no-body case anchored at the def form; the
+    // too-many case with a delete-the-surplus fix. Walked over the raw `(def …)` AST tail (the def FORM is
+    // the sig occurrence's parent), for USER definitions — gated on `is_user_node(sig_occ)` so a
+    // SYNTHESIZED def (a module-member alias, a β-reduced copy — well-formed by construction) is skipped
+    // and a QUOTED `(def …)` (inert data, not a declaration) is never flagged. This covers BOTH a
+    // top-level def AND a do-local FUNCTION def (registered INTERNAL by `register_do_local_callables` but
+    // still a user node), so `(do (def (helper x) x 99) …)` is caught too. A `sig_occ` shared by two
+    // registered defs (a do-local recursive fn registered under both its original and a β-copy) is
+    // de-duplicated so its form is checked once. A VALUE def `(def NAME VALUE)` and a FUNCTION def
+    // `(def (NAME p…) BODY)` share the shape — both `<head> <sig> <body>` — so the tail after `def` is
+    // `[sig, body…]`.
+    let mut seen_def_forms: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    let user_def_forms: Vec<StructId> = db
+        .defs
+        .iter()
+        .filter(|d| db.is_user_node(d.sig_occ))
+        .filter_map(|d| db.parent_of(d.sig_occ))
+        .filter(|&form| seen_def_forms.insert(form))
+        .collect();
+    for form in user_def_forms {
+        let Some(tail) = db.ast.as_form(form, "def").map(|t| t.to_vec()) else {
+            continue;
+        };
+        // tail[0] is the signature; tail[1] the body; tail[2..] surplus. A `(doc …)`-wrapped def is
+        // normalized away before scan (db.rs), so the tail here is the bare `(def sig body…)`.
+        match tail.len() {
+            0 | 1 => {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "this definition has no body — a definition is `(def <name> <value>)` or \
+                         `(def (<name> <param>…) <body>)`",
+                    )
+                    .at(form),
+                );
+            }
+            2 => {} // well-formed: exactly one body
+            _ => {
+                // TOO MANY bodies — delete the first surplus (tail[2]); `fixed_arity_reject`'s
+                // surplus-delete, the same as let/fn/resume/host. The message names `(do …)` as the way to
+                // sequence multiple statements, matching the let/fn wording.
+                faults.push(crate::resolve::fixed_arity_reject(
+                    form,
+                    &tail,
+                    2,
+                    "this definition has more than one body — a definition takes a single body \
+                     (wrap multiple statements in a `(do …)`)",
+                ));
+            }
+        }
+    }
     // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
     // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
     // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a
@@ -1191,9 +1248,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         faults.push(Reject::coded(Code::Malformed, msg).at(head_occ));
     }
     let mut non_arrow_op_types: Vec<StructId> = Vec::new();
+    // An operation declared with NO type at all — `(op get)` — has `op.ty == None`. It was SILENTLY
+    // ACCEPTED (this loop `continue`d past it), and performing it later leaked the internal op-record type
+    // `(Record (apply Any) (effect-op Any) (t Type))` at the user (the leaky-representation anti-pattern) —
+    // the missing-type companion of the non-arrow `(op get Int64)` case below. Collect each such op's NAME
+    // occurrence to reject after the borrow (the same defer-then-report shape as `non_arrow_op_types`).
+    let mut missing_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
         for op in &e.ops {
-            let Some(ty) = op.ty else { continue };
+            let Some(ty) = op.ty else {
+                missing_op_types.push(op.name_occ);
+                continue;
+            };
             match db.ast.get(ty) {
                 // `(-> A B …)` — each element after the arrow head is a type position (record-split).
                 crate::ast::Struct::List(children)
@@ -1241,6 +1307,22 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 )),
             );
         }
+    }
+    // An operation declared with NO type — `(op get)`. Reject it CDZ0201 at the op NAME (the companion of
+    // the non-arrow reject above). NO mechanical fix: the non-arrow case WRAPS an existing type it can see,
+    // but here there is no type at all — the operation's actual signature is a semantic choice only the
+    // author knows (a `(-> Result)` guess would compile but is almost certainly wrong), so this is
+    // honestly message-only (like a "retype the value" fault). The message spells the exact shape a
+    // well-formed op takes, so the author knows precisely what to write.
+    for &name_occ in &missing_op_types {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "this operation has no type — an operation is declared `(op <name> (-> Arg… Result))` \
+                 and performed like a function (a nullary operation is `(op <name> (-> Result))`)",
+            )
+            .at(name_occ),
+        );
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
@@ -1390,6 +1472,38 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             collect_reached_poisons(db, body, &mut faults);
         }
     }
+    // MODULE-MEMBER VALUE/NULLARY BODIES. `modules::register_fn_def` registers only a ≥1-PARAM member in
+    // `db.defs` (for recursive-call lowering), so a bare-name VALUE `(def v V)` or a NULLARY `(def (v) V)`
+    // module member is NOT in `db.defs` and its body was NOT type-checked by the loop above — an ill-typed
+    // one (`(module m (def (bad) (+ 1 2.0)))`) slipped through to a DECLINE or an INVALID COMPONENT
+    // (`type-system.md §A program that is not well-typed MUST be rejected`). Type-check each such member
+    // body here so it rejects with its code (CDZ0301/…) rather than miscompiling. A ≥1-param member's body
+    // IS in `db.defs` (already checked above), so gather it into `checked_bodies` to avoid a redundant
+    // second walk. A member reached only through its module's synthesized record still runs this check —
+    // well-formedness is unconditional over every definition (`§454`).
+    let checked_bodies: std::collections::HashSet<StructId> =
+        db.defs.iter().filter_map(|d| d.body).collect();
+    let member_value_bodies: Vec<StructId> = db
+        .modules
+        .iter()
+        .flat_map(|m| module_member_value_bodies(db, m.occ))
+        .filter(|b| !checked_bodies.contains(b))
+        .collect();
+    for body in member_value_bodies {
+        // Keep only the TYPE faults, DROPPING an `Unbound` (CDZ0101): a member body references its
+        // SIBLINGS by bare name (a sibling effect `log`, a sibling def), which resolve through the module's
+        // in-scope context — but this STANDALONE `type_errors` walk re-resolves from the body node without
+        // that context and spuriously reports the sibling `Unbound`. A GENUINELY unbound name still faults
+        // where the member is actually reached (the reached-poison walk over the export that inlines it, or
+        // the projection site), so dropping the standalone `Unbound` loses no real error while it removes
+        // the false positive. The MISCOMPILE this pass exists to catch is a TYPE fault (CDZ0301/0302/0303 —
+        // a numeric mix that would emit an invalid component), which is scope-independent and kept.
+        for fault in type_errors(db, body) {
+            if fault.code != Some(Code::Unbound) {
+                faults.push(fault);
+            }
+        }
+    }
     // ENTRYPOINT NO-HOME CHECK (CDZ0401). An effect operation reached from an ENTRYPOINT with neither an
     // enclosing handler nor a host delegation escapes ungranted — the merged "no home" check
     // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This is an
@@ -1425,7 +1539,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // gap). Reject each stray `resume` with a coded CDZ0201 (Malformed — it is structurally well-formed but
     // in an invalid position), anchored at the `resume` occurrence.
     for id in (0..db.ast.structure.len() as u32).map(StructId) {
-        if db.ast.head_name(id) == Some("resume") && crate::resolve::is_stray_resume(db, id) {
+        // Only a USER (source-written) `resume` can be a stray one — a SYNTHESIZED reduction copy (a
+        // `beta_reduce`/handle-fold node) is not source the author can move. A MALFORMED resume
+        // (`(resume v)` / `(resume v s extra)`) reports its own CDZ0201 at its source node (the resolve
+        // poison), and the handle fold then produces a spanless COPY of the arm body that lands outside a
+        // recognizable handle-arm structure — which `is_stray_resume` would wrongly flag "stray", a
+        // MISLEADING second error (the resume IS in an arm, just malformed). Gating on `is_user_node`
+        // drops that synthesized copy so a malformed resume reports ONE primary fault (its shape), while a
+        // genuine top-level `(resume …)` — a user node with no enclosing arm — is still flagged.
+        if db.ast.head_name(id) == Some("resume")
+            && db.is_user_node(id)
+            && crate::resolve::is_stray_resume(db, id)
+        {
             faults.push(
                 Reject::coded(
                     Code::Malformed,
@@ -1736,6 +1861,38 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     dedup_faults(db, faults)
 }
 
+/// The BODY occurrence of each VALUE / NULLARY `(def …)` member of the module at `mod_form` — a bare-name
+/// `(def v V)` (body `V`) or a nullary `(def (v) V)` (body `V`). A ≥1-param member is EXCLUDED (its body
+/// is registered in `db.defs` by `modules::register_fn_def` and checked with the top-level defs); this
+/// gathers only the members that registration skips, so `collect_faults` can type-check them too. Reads
+/// the raw `(module …)` form (its members are the tail after the name). Does NOT descend into a nested
+/// `(module inner …)` member — that inner module is its own `ModuleDecl` and is walked when this function
+/// is called for `inner.occ`, so each member is gathered exactly once.
+fn module_member_value_bodies(db: &Db, mod_form: StructId) -> Vec<StructId> {
+    let Some(tail) = db.ast.as_form(mod_form, "module") else {
+        return Vec::new();
+    };
+    let mut bodies = Vec::new();
+    for &member in tail.get(1..).unwrap_or(&[]) {
+        let Some(def_tail) = db.ast.as_form(member, "def") else {
+            continue;
+        };
+        let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
+            continue;
+        };
+        // A bare-name value `(def v V)` — the sig is an atom (a name). A list signature `(NAME p…)` is a
+        // function; it is a VALUE-body case (checked here) only when NULLARY (`(NAME)`, no params).
+        let is_value_or_nullary = match db.ast.get(sig) {
+            crate::ast::Struct::Atom(_) => db.ast.as_name(sig).is_some(),
+            crate::ast::Struct::List(children) => children.len() == 1, // `(NAME)` — nullary, no params
+        };
+        if is_value_or_nullary {
+            bodies.push(body);
+        }
+    }
+    bodies
+}
+
 /// Collapse duplicate faults — the SAME issue reported by more than one collection pass. A fault is
 /// keyed by `(code, anchor node)`: the type-check walk and the reached-poison walk both visit an
 /// unconditionally-evaluated position, so an unbound name (or any fault) in a REACHABLE spot is found
@@ -1827,6 +1984,35 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_non_arrow_op_type_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed)
             && r.message.starts_with(crate::diag::NON_ARROW_OP_TYPE_PREFIX)
+    });
+    // Likewise: an operation declared with NO type (`(op get)`) is rejected CDZ0201 at the op name.
+    // Performing it leaks BOTH the internal op-record (`OP_VALUE_RECORD_LEAK`) into a "TYPE, not a runtime
+    // value" export fault AND a CDZ0401 no-home (the untyped op has no valid perform semantics) — both
+    // CONSEQUENCES of the untyped declaration. Drop them for the declaration-site reject (with its
+    // add-a-type fix), the missing-type companion of the non-arrow suppression.
+    let has_missing_op_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::MISSING_OP_TYPE_PREFIX)
+    });
+    // Likewise: a MALFORMED `host` (missing effect-list/body, non-list effects, or too many operands) is
+    // rejected CDZ0201 at the form. The malformed host never resolved as a delegation, so its body's
+    // perform is seen by the entrypoint no-home walk as un-delegated → a CONSEQUENT CDZ0401 that misdirects
+    // (the author DID write a `host`). Drop that CDZ0401 whenever a malformed-host reject is present,
+    // keeping the CDZ0201 that says how to fix the host — the `host` analogue of the noncanonical-handle
+    // CDZ0401 suppression.
+    let has_malformed_host_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
+    });
+    // Likewise: a COMPARISON whose operands are a genuine TYPE MISMATCH (`(< 1 "x")`) is rejected by
+    // `infer` as a coded "… are different types …" (CDZ0201/CDZ0203 naming the kind boundary). Because one
+    // operand is a compound/text the emit path cannot fold to a scalar, `lower` ALSO returns the uncoded
+    // "comparison of a compound value needs a heap walk" decline — a CONSEQUENCE of the mismatch, not an
+    // independent unbuilt-feature limit. Drop it when a comparison type-mismatch reject is present, keeping
+    // the coded reject (which names the real defect) as the ONE primary error.
+    let has_different_types_comparison_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && r.message
+                .contains(crate::diag::DIFFERENT_TYPES_COMPARISON_MARKER)
     });
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
@@ -2059,8 +2245,30 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             }
             // A perform-site type mismatch that LEAKS the internal op-value record (`(effect-op Any)` — a
             // synthesized meta-channel field no user type spells) is the CONSEQUENCE of a malformed
-            // non-arrow op type; drop it in favor of the declaration-site CDZ0201 (with its wrap fix).
-            if has_non_arrow_op_type_reject && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            // non-arrow OR untyped op declaration; drop it in favor of the declaration-site CDZ0201.
+            if (has_non_arrow_op_type_reject || has_missing_op_type_reject)
+                && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            {
+                return false;
+            }
+            // An untyped op declaration (`(op get)`) additionally makes its perform reach the entrypoint
+            // with no valid home — a consequent CDZ0401. Drop it for the declaration-site reject (the real,
+            // fixable defect is the missing type, not a missing handler).
+            if has_missing_op_type_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A malformed `host` never resolved as a delegation, so its body's perform looks un-delegated
+            // to the no-home walk — a consequent CDZ0401. Drop it for the malformed-host CDZ0201 (the real,
+            // fixable defect is the host's shape, not a missing handler).
+            if has_malformed_host_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A mismatched-type comparison (`(< 1 "x")`) reports the coded "… are different types" reject;
+            // the emit path ALSO declines "comparison of a compound value needs a heap walk" (one operand
+            // is a compound/text it cannot fold). Drop that misleading decline for the coded reject.
+            if has_different_types_comparison_reject
+                && r.is_decline()
+                && r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
             {
                 return false;
             }
@@ -2297,9 +2505,10 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
                 collect_reached_poisons(db, arg, out);
             }
         }
-        // A host call unconditionally evaluates its arguments before crossing the boundary — descend into
-        // each (the call itself is a boundary import, not a def whose body could fault).
-        Core::HostCall { args, .. } => {
+        // A host call OR a cross-component call unconditionally evaluates its arguments before crossing
+        // the boundary — descend into each (the call itself is a boundary import, not a def whose body
+        // could fault).
+        Core::HostCall { args, .. } | Core::ExternCall { args, .. } => {
             for arg in args {
                 collect_reached_poisons(db, arg, out);
             }
@@ -2551,14 +2760,36 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
     None
 }
 
-/// Collect REDUNDANT-ARM warnings (CDZ0211) across every `match` in every def body — an arm an EARLIER
-/// arm already fully covers, so first-match-wins makes it dead. Walks all user nodes (like the unused-
-/// binding pass) rather than only reached bodies, so a redundant arm in an uncalled helper is surfaced
-/// too. For each match, scan arms left to right keeping the set of already-covered keys plus whether a
-/// catch-all has appeared; an arm whose cover is already subsumed (a prior catch-all shadows anything, a
-/// prior identical literal/variant shadows its repeat) warns. Conservative: an unclassifiable arm
-/// (`arm_cover` → `None`) neither shadows nor is flagged, so a guarded/refining/tuple arm never yields a
-/// false positive.
+/// The number of DISTINCT full-variant / bool covers that EXHAUST the scrutinee's type — `Some(n)` for a
+/// FINITE type (a `Ty::Sum` with `n` variants, or `Bool` with 2), `None` for an OPEN type (Int/String/…,
+/// which no finite literal set exhausts). Used by [`collect_redundant_arm_warnings`] to flag a catch-all /
+/// arm that is unreachable because the SPECIFIC arms before it already cover every value of the type — the
+/// dual of the exhaustiveness check (which faults a match MISSING coverage; this warns on coverage the
+/// arms make REDUNDANT). Reads the sum's declaration by its `decl` occurrence (the same source of truth
+/// `lower`'s exhaustiveness uses), so the count agrees exactly with what a full cover needs.
+fn finite_cover_size(db: &mut Db, scrutinee: StructId) -> Option<usize> {
+    // Read the variant count off a SUM declaration, whether the scrutinee's type is a boxed `Ty::Sum` or an
+    // ERASED single-variant newtype `Ty::Nominal { decl }` (whose `decl` is still that sum — a newtype has
+    // exactly one variant, so its sole constructor arm saturates it). A nominal wrapping a NON-sum (a
+    // newtype over a scalar) has no variant set → not finite here.
+    match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::Bool => Some(2),
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => db
+            .type_decl_by_occ(decl)
+            .and_then(|d| (!d.variants.is_empty()).then_some(d.variants.len())),
+        _ => None,
+    }
+}
+
+/// Collect REDUNDANT-ARM warnings (CDZ0213) across every `match` in every def body — an arm an EARLIER
+/// arm (or set of arms) already fully covers, so first-match-wins makes it dead. Walks all user nodes
+/// (like the unused-binding pass) rather than only reached bodies, so a redundant arm in an uncalled
+/// helper is surfaced too. For each match, scan arms left to right keeping the set of already-covered keys
+/// plus whether coverage is CLOSED — a catch-all has appeared, OR (for a FINITE scrutinee type — a sum or
+/// Bool) the distinct full-variant/bool covers already SATURATE the type. An arm whose cover is subsumed
+/// (a repeat of a covered literal/variant) OR any arm after coverage closed warns. Conservative: an
+/// unclassifiable arm (`arm_cover` → `None`) neither shadows, saturates, nor is flagged, so a
+/// guarded/refining/tuple arm never yields a false positive.
 fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
     use crate::resolved::Resolved;
     let node_count = db.ast.structure.len();
@@ -2568,10 +2799,15 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         if !db.is_user_node(id) {
             continue;
         }
-        let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
+        let Resolved::Match { scrutinee, arms } = crate::resolve::resolved_of(db, id) else {
             continue;
         };
-        let mut catch_all_seen = false;
+        // The scrutinee's finite cover size — `Some(n)` iff the specific arms CAN exhaust the type (a sum
+        // of `n` variants, or Bool = 2). `None` for an open type, where only a catch-all closes coverage.
+        let cover_size = finite_cover_size(db, scrutinee);
+        // Coverage is CLOSED once a catch-all is seen OR the distinct full-variant/bool covers reach the
+        // finite type's size — either way every subsequent arm is unreachable.
+        let mut coverage_closed = false;
         // A HASH SET of already-covered literal/variant keys — an O(1) membership probe per arm. A `Vec`
         // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
         // distinct-variant arms scanned the growing covered list).
@@ -2579,8 +2815,8 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
-                // Any arm after a catch-all is unreachable.
-                _ if catch_all_seen => true,
+                // Any arm after coverage closed (a catch-all, or the type saturated) is unreachable.
+                _ if coverage_closed => true,
                 // A repeat of an already-covered literal / full-variant cover.
                 Some(c) => covered.contains(c),
                 // Unclassifiable — not provably redundant.
@@ -2589,8 +2825,9 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if redundant && db.is_user_node(*pat) {
                 let mut diag = Diagnostic::warning(
                     crate::diag::Code::RedundantArm,
-                    "this match arm is unreachable — an earlier arm already covers every value it \
-                     would match (a duplicate or a pattern shadowed by an earlier catch-all)",
+                    "this match arm is unreachable — the earlier arms already cover every value it \
+                     would match (a duplicate, a pattern shadowed by an earlier catch-all, or a \
+                     catch-all after the specific arms already cover the whole type)",
                     Some(*pat),
                 );
                 // The rustc-gold repair: DELETE the whole `(<pattern> <body>)` arm. An unreachable arm
@@ -2611,9 +2848,15 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 out.push(diag);
             }
             match cover {
-                Some(ArmCover::CatchAll) => catch_all_seen = true,
+                Some(ArmCover::CatchAll) => coverage_closed = true,
                 Some(c) => {
                     covered.insert(c);
+                    // If the distinct full covers now saturate a FINITE type, coverage is closed: any
+                    // later arm (including a catch-all) is unreachable. Count only `Variant`/`Lit` covers
+                    // (a `CatchAll` already closed above), which is exactly `covered`'s size here.
+                    if cover_size.is_some_and(|n| covered.len() >= n) {
+                        coverage_closed = true;
+                    }
                 }
                 _ => {}
             }
@@ -2774,6 +3017,7 @@ fn walk_for_dead_traps(
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
+        | Resolved::Extern { .. }
         | Resolved::Poison(_) => {}
     }
 }

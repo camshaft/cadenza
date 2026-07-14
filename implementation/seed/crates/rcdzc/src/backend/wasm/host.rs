@@ -205,6 +205,78 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
     }
 }
 
+/// One CROSS-COMPONENT extern import a `Core::ExternCall` names (X4b) — the peer INTERFACE, the operation
+/// NAME (the func the interface exports), and its boundary signature. Two calls are the same import iff
+/// `(interface, op)` match; the SET is ordered (its position is the import's core-func index in the
+/// `"peer"`-bound import block, laid AFTER the host + runtime imports). The peer analogue of [`HostImport`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExternImport {
+    /// The peer interface the op is imported through (`cadenza:pkg/iface`).
+    pub interface: String,
+    /// The operation's name — the func the peer interface exports.
+    pub op: String,
+    /// The op's boundary parameters (scalar; a `Unit` domain is elided). X4b-3 scope: scalar/unit only
+    /// (a `value`-handle param is X5); a param with no scalar ABI makes the call undelegable (declines).
+    pub params: Vec<AbiValType>,
+    /// The op's boundary result — `None` for a `Unit` result.
+    pub result: Option<AbiValType>,
+}
+
+/// Collect the ordered set of CROSS-COMPONENT extern imports a body reaches (X4b) — the peer ops a
+/// `Core::ExternCall` names, in first-encountered order, deduped by `(interface, op)`. The peer analogue
+/// of [`collect_host_imports`]; the caller runs it over `layout.order`. Descends every sub-position so a
+/// call under a branch is still imported.
+pub fn collect_extern_imports(db: &mut Db, id: StructId, out: &mut Vec<ExternImport>) {
+    match core_of(db, id) {
+        Core::ExternCall {
+            interface,
+            op,
+            args,
+            result,
+        } => {
+            // The op's boundary signature — parameter kinds from the arg types, result from `result`. A
+            // `Unit` arg/result is elided. X4b-3 crosses scalars; a non-scalar (compound/`value`) param
+            // is X5, so it maps to no scalar ABI here (the envelope declines an undelegable op).
+            let mut params = Vec::new();
+            for &a in &args {
+                let at = crate::infer::type_of(db, a);
+                if !matches!(at, Ty::Unit)
+                    && let Some(v) = abi_val_type(&at)
+                {
+                    params.push(v);
+                }
+            }
+            let result_abi = if matches!(result, Ty::Unit) {
+                None
+            } else {
+                abi_val_type(&result)
+            };
+            let imp = ExternImport {
+                interface,
+                op,
+                params,
+                result: result_abi,
+            };
+            if !out
+                .iter()
+                .any(|e| e.interface == imp.interface && e.op == imp.op)
+            {
+                out.push(imp);
+            }
+            for a in args {
+                collect_extern_imports(db, a, out);
+            }
+        }
+        _ => {
+            if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
+                for c in children {
+                    collect_extern_imports(db, c, out);
+                }
+            }
+        }
+    }
+}
+
 /// The index of the host import for `(effect, op)` in the ordered set — the core-func index a
 /// `Core::HostCall` lowers its call to. `None` if not in the set (a compiler bug — the set is collected
 /// from the same `Core::HostCall` nodes selection emits).

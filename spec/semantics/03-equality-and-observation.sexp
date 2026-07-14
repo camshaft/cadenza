@@ -329,6 +329,23 @@
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "a CONSTANT recursive sum compares equal to a differently-built RUNTIME one"
+  (doc    "A mixed-provenance equality: the LEFT operand `(S (S Z))` is a COMPILE-TIME-CONSTANT recursive
+           `Nat`, the RIGHT `(mk k)` is a RUNTIME-built spine of the same shape (`mk` recurses `k` times).
+           `value-eq` must reconcile a folded constant sum with a heap-walked runtime one — the const side
+           has a statically-known spine, the runtime side is discovered variant-by-variant. At `k = 2` both
+           are `S(S(Z))` → equal → 1; at `k = 3` the runtime spine is one deeper → unequal → 0 (the
+           companion case). Pins that structural equality composes a CONSTANT operand with a RUNTIME operand
+           over a recursive sum, not only two runtime operands.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (main (: k Int64)) (if (= (Nat.S (Nat.S (Nat.Z))) (mk k)) 1 0))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 (case "two runtime Ok values of a multi-parameter sum compare equal by a heap walk"
   (doc    "The MULTI-PARAMETER-sum companion: `Result` has TWO type parameters (`Ok a`, `Err b`), and
            `(Ok (sumto 3))` fixes only `a = Int64` — the `Err` parameter `b` is a PHANTOM no value here
@@ -588,10 +605,9 @@
 ; every nullary variant takes — and a consumer deconstructs it with an exhaustive three-arm match.
 ; `compare` is the PRIMITIVE from which `<` `>` `<=` `>=` `=` are each definable (the operators MUST
 ; AGREE with it), so a type has one order surfaced two ways that cannot disagree. It also names the
-; canonical element order Set/Map serialize in. Tagged `(needs ordering)` — a FRESH capability the
-; seed does not realize (NOT `collections`; the seed would otherwise RUN these and reject the unbound
-; `Ordering`/`compare` names with a coded diagnostic — a gate FAIL — rather than skip). A later
-; generation realizes `compare`; until then the seed's behavior gate SKIPS these.
+; canonical element order Set/Map serialize in. Ordering is a FRESH capability the
+; seed does not realize (distinct from `collections`). A later generation realizes `compare`; until
+; then the seed DECLINES these rather than running them to a wrong value.
 
 (case "comparing a lesser value to a greater yields Less"
   (doc    "`(compare 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less

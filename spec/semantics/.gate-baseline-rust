@@ -153,6 +153,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a default-integer pragma naming a non-integer type is rejected
+pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegation naming an effect that is never reached is rejected as latent authority
@@ -434,6 +435,7 @@ pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
 pass	a nullary module export applied to a non-unit argument is rejected
+pass	a module in a top-level do sequence type-checks its members
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
@@ -1533,6 +1535,7 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
+todo	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an empty scrutinee matches an empty bin pattern

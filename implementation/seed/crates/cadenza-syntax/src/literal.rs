@@ -10,7 +10,7 @@
 //! (`_`) positions are not preserved; the integer's base (dec/hex/bin) IS, so the printed form
 //! re-reads to the same leaf.
 
-use crate::ast::{Decimal, Leaf, Radix};
+use crate::ast::{Decimal, Leaf, Radix, SuffixBody, SuffixKind};
 use num_bigint::BigInt;
 use std::str::FromStr;
 use unicode_normalization::UnicodeNormalization;
@@ -50,6 +50,43 @@ pub fn classify_word_nonname(text: &str) -> Option<Leaf> {
     }
     if let Some(d) = parse_float(text) {
         return Some(Leaf::Float(d));
+    }
+    // A TYPE-SUFFIXED numeric literal (`100N`, `0.5R`): the body failed the bare int/float parse only
+    // because of a trailing suffix letter. Peel a single `N`/`R` and re-parse the body; the body must
+    // itself be a well-formed integer (for `N`) or integer-or-float (for `R`). This runs LAST so a bare
+    // number (the common case) never pays for it, and so a body that fails to parse falls through to a
+    // `Name` (rejected downstream) exactly as a malformed bare number does. A suffix is CASE-SENSITIVE
+    // (`100n` is not a suffix — it stays a `Name`), keeping one canonical spelling.
+    if let Some(leaf) = classify_suffixed(text) {
+        return Some(leaf);
+    }
+    None
+}
+
+/// A numeric literal with a trailing `N`/`R` type suffix → a [`Leaf::Suffixed`], or `None` if `text`
+/// is not a suffixed numeric literal (no suffix char, or a body that is not a well-formed literal of a
+/// shape the suffix admits). `N` (→ `BigInt`) admits only an INTEGER body; `R` (→ `Rational`) admits
+/// an integer OR a decimal body (`5R` = 5/1, `0.5R` = 1/2). Split out of [`classify_word_nonname`] so
+/// the bare-number fast path is unaffected.
+fn classify_suffixed(text: &str) -> Option<Leaf> {
+    let last = text.chars().next_back()?;
+    let kind = SuffixKind::from_char(last)?;
+    let body = &text[..text.len() - last.len_utf8()];
+    // The body must be a well-formed literal on its own. An integer body serves both suffixes; a float
+    // body serves only `R` (a fractional `BigInt` is meaningless — `N` over a decimal is not a literal).
+    if let Some((value, radix)) = parse_int(body) {
+        return Some(Leaf::Suffixed {
+            value: SuffixBody::Int { value, radix },
+            kind,
+        });
+    }
+    if kind == SuffixKind::Rational
+        && let Some(d) = parse_float(body)
+    {
+        return Some(Leaf::Suffixed {
+            value: SuffixBody::Float(d),
+            kind,
+        });
     }
     None
 }
@@ -405,6 +442,18 @@ pub fn render_int(value: &BigInt, radix: Radix) -> String {
     if neg { format!("-{digits}") } else { digits }
 }
 
+/// Render a TYPE-SUFFIXED numeric literal (`100N`, `0.5R`) — the body in its own canonical form
+/// (int in its base, decimal shortest) followed by the suffix character. The dual of the classifier's
+/// suffix peel, so a suffixed leaf round-trips to text that re-reads to the same leaf.
+pub fn render_suffixed(value: &SuffixBody, kind: SuffixKind) -> String {
+    let mut s = match value {
+        SuffixBody::Int { value, radix } => render_int(value, *radix),
+        SuffixBody::Float(d) => render_decimal(d),
+    };
+    s.push(kind.suffix_char());
+    s
+}
+
 /// Render an exact `Decimal` as the shortest text that re-parses to the same value. Always contains
 /// a `.` or exponent so it re-lexes as a Float, never an Int. `nan`/`inf` are not `Decimal`s (they
 /// are names), so this only ever renders a finite value; `-0.0` prints with its sign.
@@ -517,6 +566,45 @@ mod tests {
         assert_eq!(parse_int("1__0"), None); // doubled
         assert_eq!(parse_int("0x"), None); // no digits
         assert_eq!(parse_int("_1"), None); // leading underscore is not an int
+    }
+
+    #[test]
+    fn type_suffix_classifies_and_round_trips() {
+        // `N` selects BigInt over an integer body; `R` selects Rational over an int OR decimal body.
+        for (src, want_kind) in [
+            ("100N", SuffixKind::BigInt),
+            ("0xFFN", SuffixKind::BigInt),
+            ("5R", SuffixKind::Rational),
+            ("0.5R", SuffixKind::Rational),
+            ("1.25R", SuffixKind::Rational),
+        ] {
+            let leaf = classify_word(src);
+            let Leaf::Suffixed { value, kind } = &leaf else {
+                panic!("{src} did not classify as Suffixed: {leaf:?}");
+            };
+            assert_eq!(*kind, want_kind, "{src} suffix kind");
+            // Round-trip: render∘classify is identity (the printed form re-reads to the same leaf).
+            let printed = render_suffixed(value, *kind);
+            assert_eq!(
+                classify_word(&printed),
+                leaf,
+                "{src} → {printed} round-trip"
+            );
+        }
+        // A non-suffix trailing letter, a lowercase suffix, or a fractional `N` is NOT a suffixed
+        // literal — it stays a bare `Name` (rejected downstream), never silently mis-read.
+        assert!(
+            matches!(classify_word("100n"), Leaf::Name(_)),
+            "lowercase n"
+        );
+        assert!(
+            matches!(classify_word("0.5N"), Leaf::Name(_)),
+            "fractional N"
+        );
+        assert!(
+            matches!(classify_word("100X"), Leaf::Name(_)),
+            "unknown suffix"
+        );
     }
 
     #[test]

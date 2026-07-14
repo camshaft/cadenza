@@ -77,21 +77,23 @@ export default function ControlFlow() {
         id="control-flow:1"
         prompt={
           <>
-            Write the recursive step of <C>fact</C> (factorial). The base case is done; fill in the step
-            so <C>(fact 5)</C> gives <C>120</C> — that's <C>5 × 4 × 3 × 2 × 1</C>.
+            Write <C>pow2</C>, which computes 2 to the <C>n</C>. Here <C>n</C> is just a <em>counter</em> —
+            it says how many times to double, but the doubling itself is always the same. Fill in the step
+            so <C>(pow2 5)</C> gives <C>32</C>.
           </>
         }
-        starter={`(def (fact n)
+        starter={`(def (pow2 n)
   (if (= n 0) 1 ?))
-(def (main) (fact 5))`}
-        solution={`(def (fact n)
-  (if (= n 0) 1 (* n (fact (- n 1)))))
-(def (main) (fact 5))`}
-        expected="120"
+(def (main) (pow2 5))`}
+        solution={`(def (pow2 n)
+  (if (= n 0) 1 (* 2 (pow2 (- n 1)))))
+(def (main) (pow2 5))`}
+        expected="32"
         hint={
           <>
-            Factorial multiplies where the sum added: the step is <C>n</C> times the factorial of one
-            less — <C>(* n (fact (- n 1)))</C>.
+            Unlike <C>sm</C> above, <C>n</C> doesn't appear in the step — you just double the result of one
+            fewer step: <C>(* 2 (pow2 (- n 1)))</C>. (Write <C>(* n …)</C> by habit and you'd get factorial,
+            <C>120</C>, not <C>32</C>.)
           </>
         }
       />

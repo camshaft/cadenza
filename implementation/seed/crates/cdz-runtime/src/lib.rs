@@ -947,6 +947,23 @@ fn unbox_bigint(h: Handle) -> bigint::Big {
 fn op_bigint_of_i64(v: i64) -> Handle {
     box_bigint(&bigint::Big::from_i64(v))
 }
+/// `bigint-of-bytes` — build a BigInt leaf from a Bytes leaf holding the canonical sign-magnitude bytes
+/// (`[sign][LE magnitude, trailing-zeros-stripped]`). The compiler emits this to materialize a CONSTANT
+/// BigInt whose magnitude exceeds i64 range (too large for `bigint-of-i64`): it bakes the sign-magnitude
+/// bytes as a Bytes leaf (`bytes-alloc`/`bytes-set`, like a constant string) then re-tags them here. The
+/// input may be a rope (a concat/slice) in general, so FLATTEN it before reading `raw` — exactly as the
+/// value-encode `Shape::Bytes` walker does. `from_sign_magnitude_bytes` re-normalizes (a malformed/empty
+/// input decodes as zero — total), so `box_bigint` re-emits the canonical leaf form. CONSUMES `buf` (the
+/// transient byte leaf is dropped after its content is read).
+fn op_bigint_of_bytes(buf: Handle) -> Handle {
+    bytes_flatten(buf);
+    let big = with_node(buf, bigint::Big::zero(), |n| {
+        bigint::Big::from_sign_magnitude_bytes(&n.raw)
+    });
+    let out = box_bigint(&big);
+    op_drop(buf);
+    out
+}
 /// `bigint-to-i64-checked` — the CHECKED narrowing back to `i64`: the value if it fits, else TRAP
 /// (`options/numeric-model/explicit-checked.md` — `Int64.of` of an out-of-range BigInt traps). Reads the
 /// leaf's sign-magnitude `raw` slice DIRECTLY (`Big::i64_checked_from_sign_magnitude_bytes`) — a narrowing
@@ -4204,6 +4221,76 @@ fn vec_split_subtree(node: Handle, level: u32, idx: u32) -> (Handle, Handle) {
     (left, right)
 }
 
+/// The RIGHT-ONLY twin of `vec_split_subtree`: build ONLY the tail `[idx, …)` subtree, never the
+/// discarded left prefix. `vec-drop` (the `(list p… .. rest)` REST binder, the HOT per-element fold step)
+/// throws the left half away, so `vec_split_subtree`'s left leaf + `left_children` Vec + left relaxed node
+/// + the dup-then-drop of every left element are PURE WASTE — roughly half the split's allocation. This
+/// keeps only the kept side: whole children AFTER the boundary (dup'ed — they survive the caller's
+/// `op_drop(v)`) plus the boundary child's own tail (recursively). The dropped children ([0,sub) and the
+/// boundary child's head) are NOT dup'ed, so the caller's `op_drop(v)` reclaims them — identical ownership
+/// to the split path, minus the transient left half. Returns the right subtree at `node`'s level (NULL if
+/// the tail is empty). Same relaxed-rebuild + bounded-depth discipline as `vec_split_subtree`.
+fn vec_take_tail(node: Handle, level: u32, idx: u32) -> Handle {
+    if level == 0 {
+        let arity = vec_arity(node) as u32;
+        if idx >= arity {
+            return Handle::NULL;
+        }
+        let mut hs = Vec::with_capacity((arity - idx) as usize);
+        for j in idx..arity {
+            let e = vec_child(node, j as usize);
+            op_dup(e);
+            hs.push(e);
+        }
+        return alloc(hs, Vec::new()); // strict leaf — kept tail elements
+    }
+    let arity = vec_arity(node);
+    let (sub, loc) = if vec_is_relaxed(node) {
+        vec_find_child_relaxed(node, idx)
+    } else {
+        let sub = ((idx >> level) & VEC_MASK) as usize;
+        (sub, idx & ((1u32 << level) - 1))
+    };
+    // Only the boundary child is split (its tail kept); its head + all children [0, sub) are left for the
+    // caller's `op_drop(v)` to reclaim (never dup'ed here).
+    let cr = vec_take_tail(vec_child(node, sub), level - VEC_BITS, loc);
+    let mut right_children: Vec<Handle> = Vec::with_capacity(arity - sub);
+    if cr != Handle::NULL {
+        right_children.push(cr);
+    }
+    for j in (sub + 1)..arity {
+        let c = vec_child(node, j);
+        op_dup(c);
+        right_children.push(c);
+    }
+    if right_children.is_empty() {
+        Handle::NULL
+    } else {
+        vec_relaxed_node(right_children, level)
+    }
+}
+
+/// `vec-drop(v, index)` — the tail `[index, len)`, CONSUMING `v`. The `(list p… .. rest)` REST-binder op
+/// and the per-element step of a list fold, so it is HOT. Builds ONLY the kept tail spine (`vec_take_tail`)
+/// — NOT the discarded left prefix a `split`+drop-left would materialize then free — then reclaims the
+/// original tree (`op_drop(v)` frees every node the tail did not `dup`). Boundaries mirror `op_vec_split`:
+/// `index == 0` returns `v` unchanged (whole tail); `index >= len` returns the canonical empty.
+fn op_vec_drop_tail(v: Handle, index: u32) -> Handle {
+    let (count, shift, root) = vec_read_header(v);
+    if index == 0 {
+        return v; // whole vector is the tail — flow through unchanged (its rc already covers the caller)
+    }
+    if index >= count {
+        op_drop(v);
+        return op_vec_empty();
+    }
+    let rroot = vec_take_tail(root, shift, index);
+    // rroot is non-NULL (0 < index < count) at level `shift` — split never raises height.
+    let tail = vec_alloc_header(count - index, shift, rroot);
+    op_drop(v); // reclaim the original tree; kept subtrees survive via the dups in vec_take_tail
+    tail
+}
+
 /// `vec-split` — split `v` at element `index` into `(left, right)` where `left` is elements
 /// `[0, index)` and `right` is elements `[index, len)`. CONSUMES `v`; returns TWO new owned vectors.
 /// Boundaries: `index == 0` → `(empty, v)` (v flows through as the right output, unchanged); `index >=
@@ -4277,6 +4364,9 @@ impl Guest for Component {
     }
     fn bigint_of_i64(v: i64) -> u32 {
         op_bigint_of_i64(v).to_u32()
+    }
+    fn bigint_of_bytes(buf: u32) -> u32 {
+        op_bigint_of_bytes(Handle::from_u32(buf)).to_u32()
     }
     fn bigint_to_i64_checked(handle: u32) -> i64 {
         op_bigint_to_i64_checked(Handle::from_u32(handle))
@@ -4464,10 +4554,9 @@ impl Guest for Component {
         (l.to_u32(), r.to_u32())
     }
     fn vec_drop(v: u32, index: u32) -> u32 {
-        // The tail `[index, len)` — split and keep only the RIGHT half, reclaiming the LEFT prefix.
-        let (l, r) = op_vec_split(Handle::from_u32(v), index);
-        op_drop(l); // reclaim the dropped prefix
-        r.to_u32()
+        // The tail `[index, len)` — builds ONLY the kept spine (no discarded left prefix). Byte-identical
+        // to `split`+drop-left (guarded by `vec_drop_tail_matches_split_drop_left`), ~half the allocation.
+        op_vec_drop_tail(Handle::from_u32(v), index).to_u32()
     }
     fn bigint_rem(a: u32, b: u32) -> u32 {
         op_bigint_rem(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
@@ -8833,6 +8922,32 @@ mod tests {
         );
         op_drop(m2);
 
+        // (C2) vec-drop FOLD pattern — a `(match xs ((list x .. rest) …))` list fold binds `rest` =
+        // `vec-drop(v, 1)` each iteration (the natural `sum`, now a constant-stack loop). `vec-drop` builds
+        // ONLY the kept tail spine (`op_vec_drop_tail`), NOT the discarded left prefix a `split`+drop-left
+        // would materialize-then-free — halving the per-step allocation (13925 → ~7000 over the walk, ~7/
+        // elem = the kept-tail spine rebuild; the residual O(log N)/step is inherent to RRB drop-front, which
+        // only a `vec-iter` CURSOR eliminates — a compiler-coordinated follow-up). Walk a fresh N-elem vec.
+        {
+            let mut fv = op_vec_empty();
+            for k in 0..N as i64 {
+                fv = op_vec_push(fv, op_box_int(k));
+            }
+            let fold = measure(&mut || {
+                op_dup(fv); // keep fv; the loop consumes the dup'd chain
+                let mut cur = fv;
+                while op_vec_len(cur) > 0 {
+                    cur = op_vec_drop_tail(cur, 1);
+                }
+            });
+            println!("ALLOC vec_drop_fold x{N}: {fold}");
+            assert!(
+                fold <= 9000,
+                "vec_drop_fold x{N} allocs {fold} exceeds ceiling 9000 (~7/elem: the kept-tail spine only; was 13925 via split+drop-left building the discarded prefix. A regression to the split path would ~2x; a vec-iter cursor would cut to ~O(1)/elem)"
+            );
+            op_drop(fv);
+        }
+
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
         let mut v = op_vec_empty();
         let push = measure(&mut || {
@@ -13003,13 +13118,11 @@ mod tests {
     /// `vec-drop(v, index)` (op 72, the `(list p… .. rest)` REST-pattern binder) returns the TAIL
     /// `[index, len)` as one vector and RECLAIMS the dropped prefix `[0, index)`. It's `vec-split` keeping
     /// only the right half — a single-u32 result, CONSUMING `v`. Landed `@494d2e44` with no runtime test.
-    /// This mirrors the wit wrapper's EXACT body (`op_vec_split` then `op_drop` the left) and guards:
-    /// correct tail content across offsets, the `index==0` (whole) + `index>=len` (empty) edges, the
-    /// result's RRB invariants, and — since it's consuming and reclaims the prefix — NO LEAK.
+    /// This mirrors the wit wrapper's EXACT body (`op_vec_drop_tail`, the build-only-the-tail path) and
+    /// guards: correct tail content across offsets, the `index==0` (whole) + `index>=len` (empty) edges,
+    /// the result's RRB invariants, and — since it's consuming and reclaims the prefix — NO LEAK.
     fn vec_drop_impl(v: Handle, index: u32) -> Handle {
-        let (l, r) = op_vec_split(v, index);
-        op_drop(l);
-        r
+        op_vec_drop_tail(v, index)
     }
     #[test]
     fn vec_drop_returns_the_tail_and_reclaims_the_prefix() {
@@ -13034,6 +13147,55 @@ mod tests {
                 "vec-drop({idx}) reclaims the prefix + result fully — no leak (consuming op)"
             );
         }
+    }
+
+    /// `op_vec_drop_tail` (build-only-the-tail) must be BYTE-IDENTICAL to the old `split`+drop-left it
+    /// replaced — same tail content AND same canonical RRB shape (`champ_eq`), just ~half the allocation
+    /// (no discarded left prefix). Differential across offsets on BOTH a strict (push-built) and a RELAXED
+    /// (concat-built) vector — the relaxed case is where the boundary-node rebuild + size-table recompute
+    /// must match. Also covers a 3-level vector (full-depth descent) and the whole/empty edges.
+    #[test]
+    fn vec_drop_tail_matches_split_drop_left() {
+        reset();
+        let before = live_nodes();
+        // `[lo, hi)` as a push-built vector.
+        fn vrange(lo: i64, hi: i64) -> Handle {
+            let mut v = op_vec_empty();
+            for i in lo..hi {
+                v = op_vec_push(v, op_box_int(i));
+            }
+            v
+        }
+        // Two builders: a STRICT push-built vector, and a RELAXED concat-built one (same 0..N contents).
+        let strict = |n: u32| vrange(0, n as i64);
+        let relaxed = |n: u32| {
+            // concat two halves so the boundary interior nodes go relaxed.
+            let mid = (n / 2) as i64;
+            op_vec_concat(vrange(0, mid), vrange(mid, n as i64))
+        };
+        for build in [&strict as &dyn Fn(u32) -> Handle, &relaxed] {
+            for &n in &[40u32, 1500] {
+                for &idx in &[0u32, 1, 2, n / 2, n - 1, n, n + 5] {
+                    // Reference: split + drop-left (a fresh copy).
+                    let vr = build(n);
+                    let (l, r) = op_vec_split(vr, idx);
+                    op_drop(l);
+                    // Under test: drop-tail (another fresh copy).
+                    let vt = build(n);
+                    let t = op_vec_drop_tail(vt, idx);
+                    assert!(
+                        champ_eq(r, t),
+                        "drop_tail(n={n}, idx={idx}) is champ_eq to split+drop-left (byte-identical canonical shape)"
+                    );
+                    assert_eq!(op_vec_len(t), op_vec_len(r), "same length");
+                    assert_eq!(vec_to_ints(t), vec_to_ints(r), "same tail content");
+                    assert_vec_invariants(t);
+                    op_drop(r);
+                    op_drop(t);
+                }
+            }
+        }
+        assert_eq!(live_nodes(), before, "no leak across the differential");
     }
 
     #[test]
@@ -17440,6 +17602,94 @@ mod tests {
         op_drop(cur2);
         op_drop(adv);
         op_drop(m2);
+    }
+
+    #[test]
+    fn bigint_of_bytes_round_trips_a_beyond_i64_value() {
+        // `op_bigint_of_bytes` builds a BigInt leaf from the canonical sign-magnitude bytes of a Bytes leaf
+        // — the compiler's beyond-i64 constant materialization. Bake the sign-magnitude bytes of a value
+        // LARGER than i64 (1e20 = 10000000000² > i64::MAX ~9.2e18) into a Bytes leaf, build the BigInt, and
+        // confirm it equals the SAME value computed by runtime arithmetic. Also confirms it CONSUMES buf.
+        reset();
+        let expected =
+            op_bigint_mul(op_bigint_of_i64(10_000_000_000), op_bigint_of_i64(10_000_000_000));
+        // The canonical sign-magnitude bytes of a beyond-i64 value (what the compiler would bake).
+        let sm_bytes = |v: i128| -> alloc::vec::Vec<u8> {
+            let mut buf = [0u8; 32];
+            let n = bigint::Big::i128_to_sign_magnitude_bytes_into(v, &mut buf).expect("fits 32");
+            buf[..n].to_vec()
+        };
+        let sm = sm_bytes(100_000_000_000_000_000_000i128);
+        let buf = op_bytes_alloc(sm.len() as u32);
+        for (i, &b) in sm.iter().enumerate() {
+            op_bytes_set(buf, i as u32, b as u32);
+        }
+        let got = op_bigint_of_bytes(buf); // consumes buf
+        assert_eq!(
+            op_bigint_cmp(got, expected),
+            0,
+            "bigint-of-bytes(sign-magnitude bytes of 1e20) equals 1e10 * 1e10"
+        );
+        // A negative beyond-i64 value round-trips with its sign.
+        let neg_sm = sm_bytes(-100_000_000_000_000_000_000i128);
+        let nbuf = op_bytes_alloc(neg_sm.len() as u32);
+        for (i, &b) in neg_sm.iter().enumerate() {
+            op_bytes_set(nbuf, i as u32, b as u32);
+        }
+        let ngot = op_bigint_of_bytes(nbuf);
+        let neg_expected = op_bigint_sub(op_bigint_of_i64(0), expected); // -expected
+        assert_eq!(
+            op_bigint_cmp(ngot, neg_expected),
+            0,
+            "bigint-of-bytes of a negative value keeps its sign"
+        );
+        op_drop(got);
+        op_drop(ngot);
+        op_drop(expected);
+        op_drop(neg_expected);
+    }
+
+    /// `op_bigint_of_bytes` calls `bytes_flatten(buf)` before reading `raw` — because a Bytes leaf may be a
+    /// ROPE (concat/slice nodes), whose `raw` holds the node's HEADER bytes, NOT the content (the same
+    /// rope-read landmine fixed in `str-get`, `@9b24aeb2`). The compiler bakes a FLAT leaf, so that flatten
+    /// is defensive — and the sibling's round-trip test builds via `op_bytes_alloc` (flat), leaving the
+    /// flatten path UNEXERCISED. Pin it: build the SAME sign-magnitude bytes as a ROPE (concat across a
+    /// seam) and confirm `bigint-of-bytes` yields the identical BigInt as the flat leaf — proving the
+    /// flatten materializes the rope before decoding, not reading concat-header garbage as a magnitude.
+    #[test]
+    fn bigint_of_bytes_flattens_a_rope_input() {
+        reset();
+        let before = live_object_count();
+        // Sign-magnitude bytes of a beyond-i64 value (1e20). `[sign][LE magnitude]` — several bytes.
+        let mut buf = [0u8; 32];
+        let n = bigint::Big::i128_to_sign_magnitude_bytes_into(100_000_000_000_000_000_000i128, &mut buf)
+            .expect("fits 32");
+        let sm = &buf[..n];
+        assert!(sm.len() >= 4, "the value needs a multi-byte magnitude to span a rope seam");
+        // A leaf carrying a byte slice.
+        let leaf = |bytes: &[u8]| -> Handle {
+            let h = op_bytes_alloc(bytes.len() as u32);
+            for (i, &b) in bytes.iter().enumerate() {
+                op_bytes_set(h, i as u32, b as u32);
+            }
+            h
+        };
+        // FLAT reference.
+        let flat_big = op_bigint_of_bytes(leaf(sm)); // consumes
+        // ROPE of the same bytes: concat [.. mid] + [mid ..], the seam mid-magnitude.
+        let mid = sm.len() / 2;
+        let rope = op_bytes_concat(leaf(&sm[..mid]), leaf(&sm[mid..])); // consumes both leaves
+        let rope_big = op_bigint_of_bytes(rope); // flattens the rope, then decodes; consumes
+        assert_eq!(
+            op_bigint_cmp(flat_big, rope_big),
+            0,
+            "bigint-of-bytes of a ROPE equals the flat leaf — the bytes_flatten materialized it before decoding"
+        );
+        // And byte-identical leaves (the champ-key / canonical property).
+        assert!(champ_eq(flat_big, rope_big), "the two BigInt leaves are byte-identical (canonical)");
+        op_drop(flat_big);
+        op_drop(rope_big);
+        assert_eq!(live_object_count(), before, "no leak (both byte leaves consumed, both BigInts dropped)");
     }
 
     #[test]

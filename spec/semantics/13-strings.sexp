@@ -551,8 +551,9 @@
 ; exhaustiveness obligation (CDZ0210) forces a branch that handles the bad case. This is the principled
 ; alternative to a trapping decode: where a type can make the partiality explicit and force it to be
 ; handled, the language prefers that over a trap (it REFINES total-or-trap — a trap is what remains for
-; partialities a type cannot surface, not the first resort). Tagged `(needs binary-matching)`: the
-; `from-bytes`/`utf8`-segment decode is realized with the `bin` form (options/realized-capability-set/).
+; partialities a type cannot surface, not the first resort). The
+; `from-bytes`/`utf8`-segment decode is realized with the `bin` form (options/realized-capability-set/),
+; so a generation without binary matching declines it.
 
 (case "decoding well-formed UTF-8 bytes yields the string"
   (doc    "`(String.from-bytes (Bytes.of (list 99 97 102 195 169)))` decodes the UTF-8 bytes of \"café\"
@@ -694,11 +695,9 @@
 ; literal.md); `Char` is a prelude record, so `Char.to-int` is `(. Char to-int)` and `Char.from-int`
 ; is `(. Char from-int)`, and `String.scalar-at` reads one scalar of a string.
 ;
-; Tagged `(needs chars)` — a FRESH capability the seed does not realize (NOT the realized
-; `collections`, which would make the seed RUN these and reject the unbound `Char`/`String.scalar-at`
-; names with a coded diagnostic — a gate FAIL — rather than skip; the same reason `symbols` uses its
-; own tag). A later generation realizes scalar access and the `Char` value form; until then the seed's
-; behavior gate SKIPS these — they pin the contract the realization must meet, not seed declines.
+; `chars` is a FRESH capability the seed does not realize (distinct from the realized
+; `collections`). A later generation realizes scalar access and the `Char` value form; until then the
+; seed DECLINES these — they pin the contract the realization must meet.
 
 (case "reading a string's scalar in bounds yields Some of the char"
   (doc    "Witnesses collections-and-text.md #A String's Scalars Are Addressable: `(String.scalar-at

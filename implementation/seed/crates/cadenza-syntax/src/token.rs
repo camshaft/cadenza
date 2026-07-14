@@ -63,14 +63,15 @@ pub enum Kind {
     RBrace,
     LBracket,
     RBracket,
-    Comma,         // arg/binding/arm separator, and the `,` unquote prefix
-    Dot,           // `.`
-    DotDot, // `..` — the rest/spread marker in a collection literal or pattern (`[x, .. rest]`)
-    Colon,  // `:`
-    Semi,   // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
+    BinOpen, // `b[` — opens a binary literal `b[<segment>, …]` (desugars to `(bin …)`); glued like `b"`
+    Comma,   // arg/binding/arm separator, and the `,` unquote prefix
+    Dot,     // `.`
+    DotDot,  // `..` — the rest/spread marker in a collection literal or pattern (`[x, .. rest]`)
+    Colon,   // `:`
+    Semi,    // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
     FatArrow, // `=>`
-    Arrow,  // `->`
-    Hash,   // `#`
+    Arrow,   // `->`
+    Hash,    // `#`
     Backtick, // `` ` `` beginning a `` `{ … } `` quasiquote
     UnquoteSplice, // `,@`
 

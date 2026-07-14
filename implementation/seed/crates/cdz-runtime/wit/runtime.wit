@@ -360,6 +360,14 @@ interface heap {
   rational-mul: func(a: u32, b: u32) -> u32;           // 79 — a * b
   rational-div: func(a: u32, b: u32) -> u32;           // 80 — a / b (traps on a zero divisor)
   rational-cmp: func(a: u32, b: u32) -> s64;           // 81 — three-way compare: -1 / 0 / 1
+
+  // ── BigInt-from-bytes (index 82) — `bigint-of-bytes(buf)` reads a Bytes leaf holding the canonical
+  //    sign-magnitude bytes (`[sign][LE magnitude, trailing-zeros-stripped]`, the `bigint::Big` leaf form)
+  //    and returns a fresh BigInt leaf. The compiler emits this to MATERIALIZE a constant BigInt whose
+  //    magnitude exceeds i64 range — one too large for `bigint-of-i64` — by baking its sign-magnitude
+  //    bytes as a Bytes leaf (`bytes-alloc`/`bytes-set`, like a constant string) then re-tagging them as a
+  //    BigInt. CONSUMES `buf` (the transient byte leaf is dropped). APPENDED last (frozen-contract rule).
+  bigint-of-bytes: func(buf: u32) -> u32;              // 82 — BigInt leaf from canonical sign-magnitude bytes
 }
 
 world runtime {

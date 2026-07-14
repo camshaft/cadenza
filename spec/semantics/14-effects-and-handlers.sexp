@@ -29,8 +29,9 @@
 ; function may perform an operation its CALLER discharges and the same function called under two handlers is
 ; discharged by each in turn — which handler is fixed statically by monomorphizing the handler context.
 ;
-; These are (needs effects) cases a later generation realizes; the seed realizes the mandatory capability
-; floor but not the effect surface or the algebraic-handler layer. A response-returning delegated call fixes
+; These exercise the effect surface, which a later generation realizes; the seed realizes the mandatory
+; capability floor but not the effect surface or the algebraic-handler layer (so it declines these). A
+; response-returning delegated call fixes
 ; its response with (host-responses …) so the run is a deterministic function of input and that response.
 
 (case "a run's result is a deterministic function of a host call's recorded response"
@@ -528,6 +529,53 @@
                 (apply1 (fn (z) (* z 2)) 10))) (export main)))
   (output (: 25 Int64)))
 
+(case "an arm that binds its resume in a lambda and applies it immediately folds"
+  (doc    "An arm that names its continuation as a LAMBDA and APPLIES it in place — `(flip (u) s (let ((k (fn
+           (x) (resume (* x 2) s)))) (k 5)))`. This LOOKS like the captured-continuation frontier (a `k`
+           bound to the resume), but `k` does NOT escape — it is applied immediately, `(k 5)`. So the
+           applied-lambda pre-reduction inlines it to `(resume (* 5 2) s)` = `(resume 10 s)`, an ORDINARY
+           non-tail resume the pure one-hole fold serves: `C = (+ 100 [])` over the body `(+ 100 (Amb.flip))`,
+           so the handle yields `(+ 100 10)` = 110. Pins that binding the resume in a lambda and applying it
+           in-arm is NOT the hard captured-`k` case (which needs a reified continuation) — an immediately-
+           applied continuation-lambda reduces away, distinguishing 'names k' from 'k escapes'.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (let ((k (fn (x) (resume (* x 2) s)))) (k 5))))
+                (+ 100 (Amb.flip)))) (export main)))
+  (output (: 110 Int64)))
+
+(case "an applied lambda whose body enters a mutually-recursive performing group folds"
+  (doc    "Composes the applied-lambda pre-reduction with mutual-recursion specialization: the handle body
+           is `((fn (m) (ev m)) 4)`, a lambda applied to a pure literal whose body ENTERS the
+           mutually-recursive performing group `ev`/`od`. Pre-reduction inlines the pure-arg redex to
+           `(ev 4)`, then the mutual pair specializes under the state handler exactly as a direct `(ev 4)`
+           would — the two folds compose. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)` =
+           `7 + 6 + 0` = 13. Pins that an applied lambda is a transparent wrapper over a recursive-effectful
+           call, folding to the same result as the unwrapped call.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (Ctr.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (ev (- n 1)))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1))))
+                ((fn (m) (ev m)) 4))) (export main)))
+  (output (: 13 Int64)))
+
+(case "an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation"
+  (doc    "Composes the applied-lambda pre-reduction with an ABORTIVE (non-resuming) handler. The body
+           `(+ 100 ((fn (x) (Bail.bail x)) 42))` wraps the abortive perform in a lambda application in a
+           STRICT operand position. Pre-reduction inlines the pure-arg redex to `(+ 100 (Bail.bail 42))`,
+           where the abort abandons the surrounding `(+ 100 …)` — the abortive arm's value 42 becomes the
+           whole handle's value (NOT 142). Pins that an abort reached through an applied-lambda wrapper still
+           unwinds the enclosing strict context, the abortive analogue of the resumptive compositions above.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n))
+                (+ 100 ((fn (x) (Bail.bail x)) 42)))) (export main)))
+  (output (: 42 Int64)))
+
 (case "a performing argument to a multiply-using performing callee is not duplicated"
   (doc    "The SOUNDNESS ANCHOR for the applied-lambda pre-reduction: a call is β-reduced early (before the
            pure-one-hole classifier) ONLY when its arguments are strongly PURE. Here the argument itself
@@ -576,6 +624,20 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main)))
   (output (: 13 Int64)))
+
+(case "TWO performs in an if condition both fold on the strict-first spine"
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume 1 s)))
+                (if (= (Amb.flip) (Amb.flip)) 100 200))) (export main)))
+  (doc    "Both operands of an `if` CONDITION perform — `(if (= (Amb.flip) (Amb.flip)) 100 200)`. The
+           condition is a strict, evaluated-first position and `=`'s two operands are strict-first
+           sub-positions, so BOTH flips lie on the uniform strict spine and fold: each resumes 1 (a
+           tail-resumptive arm, seed 0 read twice — no state advance), so the condition is `(= 1 1)` = true
+           and the handle yields the then-branch 100. Extends the single-perform-in-a-condition case to two
+           performs in the SAME condition — a compiler pass that reads two fresh values to decide a branch.")
+  (output (: 100 Int64)))
 
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
@@ -1488,6 +1550,58 @@
               (handle E unit ((put (xs) s (resume unit s))) (E.put 42))) (export main)))
   (error  CDZ0203))
 
+(case "an operation with a TUPLE parameter binds the compound and the arm projects it"
+  (doc    "The positive companion: an operation whose declared PARAMETER is a compound `(Tuple Int64
+           Int64)` binds the whole tuple to the arm's parameter, which the arm projects. `Add.sum : (->
+           (Tuple Int64 Int64) Int64)`; performed as `(Add.sum (tuple 3 4))`, the arm binds `p` to the pair
+           and resumes with `(+ (. p 0) (. p 1))` = 7. Pins that a compound OP parameter threads through the
+           fold and is projectable in the arm (the type-position spelling is capital `Tuple`, the type
+           constructor — lowercase `tuple` is the value constructor). NOTE: the arm here projects `p` from a
+           pure `(tuple 3 4)` argument; when the tuple argument itself PERFORMS and the arm uses `p` more
+           than once, the fold declines rather than duplicate the perform (see the effect-duplication guard
+           — a substituted performing argument copied per param-use would re-issue its effect).")
+  (input  (do
+            (effect Add (op sum (-> (Tuple Int64 Int64) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (resume (+ (. p 0) (. p 1)) s)))
+                (Add.sum (tuple 3 4)))) (export main)))
+  (output (: 7 Int64)))
+
+(case "an operation with a RECORD parameter binds the compound and the arm reads its fields"
+  (doc    "The record companion of the tuple-parameter case: an operation whose declared PARAMETER is a
+           `(Record (a Int64) (b Int64))` binds the whole record to the arm's parameter, whose fields the arm
+           reads by member access. `Add.sum : (-> (Record (a Int64) (b Int64)) Int64)`; performed as
+           `(Add.sum (record (a 3) (b 4)))`, the arm binds `p` and resumes with `(+ (. p a) (. p b))` = 7.
+           The arm references `p` TWICE (once per field), but the argument is a PURE record — it reaches no
+           perform — so substituting it into both uses duplicates no effect and the fold serves it (the
+           effect-duplication guard only declines a param whose argument REACHES A PERFORM, not a pure
+           compound; the precise perform-detector does not misread a record's field pairs as a call). Pins
+           that a record OP parameter threads and is field-readable, matching the tuple parameter.")
+  (input  (do
+            (effect Add (op sum (-> (Record (a Int64) (b Int64)) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (resume (+ (. p a) (. p b)) s)))
+                (Add.sum (record (a 3) (b 4))))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context"
+  (doc    "The compound-parameter case through the NON-tail-resumptive (pure one-hole) fold path rather than
+           the tail-resumptive threading path. The arm `(+ 1 (resume (+ (* (. p 0) 100) (. p 1)) s))` resumes
+           NON-tail (the resume is inside `+ 1`), so its delimited continuation is folded as a pure one-hole
+           context: the perform IS the whole body (`C = []`), so `(resume v s)` yields `v` and the arm value
+           is `(+ 1 v)`. The resume value projects the bound tuple parameter `p` TWICE — `(* (. p 0) 100)`
+           and `(. p 1)` — over the PURE argument `(tuple 3 4)`, so `v = 304` and the handle yields
+           `(+ 1 304)` = 305. Pins that the pure-one-hole substitution binds a compound op parameter and
+           tolerates projecting it multiple times when the argument is pure (a pure argument copied per
+           projection duplicates no effect — the same soundness the tail-path duplication guard enforces,
+           here satisfied because the argument reaches no perform).")
+  (input  (do
+            (effect Add (op sum (-> (Tuple Int64 Int64) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (+ 1 (resume (+ (* (. p 0) 100) (. p 1)) s))))
+                (Add.sum (tuple 3 4)))) (export main)))
+  (output (: 305 Int64)))
+
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
 ; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).
 ; A handler arm resumes the continuation with the value the operation yields — `(resume <value> <state>)`
@@ -1752,7 +1866,6 @@
               (handle Ask unit ((query (n) s (resume (Resp.Yes n) s)))
                 (match (Ask.query k) ((Resp.Yes v) v) ((Resp.No) -1))))
             (export main)))
-  (needs  effects)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -1771,7 +1884,6 @@
                 ((run (c) s (match c ((Cmd.Add n) (resume (+ n 1) s)) ((Cmd.Mul n) (resume (* n 2) s)))))
                 (Exec.run (Cmd.Mul k))))
             (export main)))
-  (needs  effects)
   (call   main (: 5 Int64))
   (output (: 10 Int64)))
 
@@ -1791,6 +1903,5 @@
               (handle Tick (St.Cnt 0) ((bump (u) s (resume (cur s) (nxt s))))
                 (+ (Tick.bump) (Tick.bump))))
             (export main)))
-  (needs  effects)
   (call   main (: 0 Int64))
   (output (: 1 Int64)))

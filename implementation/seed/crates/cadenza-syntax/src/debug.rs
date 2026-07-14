@@ -104,6 +104,13 @@ fn leaf(l: &Leaf) -> String {
         Leaf::BadEscape(c) => format!("BadEscape {c:?}"),
         Leaf::Char(c) => format!("Char {c:?}"),
         Leaf::BadChar(s) => format!("BadChar {s:?}"),
+        Leaf::Suffixed { value, kind } => {
+            format!(
+                "Suffixed {} ({})",
+                crate::literal::render_suffixed(value, *kind),
+                kind.type_name()
+            )
+        }
     }
 }
 

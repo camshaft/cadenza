@@ -130,17 +130,19 @@ export default function RecordsTuples() {
         id="records-tuples:3"
         prompt={
           <>
-            Use <C>Record.with</C> to set the <C>y</C> field of <C>(record (x 10) (y 20))</C> to <C>50</C>,
-            then read <C>y</C> back — the answer is <C>50</C>.
+            <C>(record (x 10) (y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back —
+            the answer is <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or{" "}
+            <C>extend</C>? Fill in the blank.
           </>
         }
-        starter={`(. (Record.with (record (x 10) (y 20)) (y ?)) y)`}
-        solution={`(. (Record.with (record (x 10) (y 20)) (y 50)) y)`}
-        expected="50"
+        starter={`(. (Record.? (record (x 10) (y 20)) (z 30)) z)`}
+        solution={`(. (Record.extend (record (x 10) (y 20)) (z 30)) z)`}
+        expected="30"
         hint={
           <>
-            The second argument is a <C>(field value)</C> pair — here <C>(y 50)</C> — and <C>y</C> already
-            exists, so <C>Record.with</C> is the right tool (not <C>Record.extend</C>).
+            <C>with</C> only updates a field that already exists; adding a brand-new one is{" "}
+            <C>Record.extend</C>. (Try <C>with</C> and the compiler declines — <C>z</C> isn't there to
+            update.)
           </>
         }
       />
