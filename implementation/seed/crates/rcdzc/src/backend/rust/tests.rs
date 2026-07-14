@@ -898,6 +898,26 @@ fn rustc_roundtrip_recursive_sum_folds() {
 }
 
 #[test]
+fn rustc_roundtrip_mutually_recursive_sums_fold() {
+    // A MUTUALLY-recursive pair of sums (`A` references `B`, `B` references `A`) — NEITHER variant mentions
+    // its OWN decl, but the A→B→A cycle needs Box indirection all the same (E0072 otherwise). Both edges
+    // box: `A { AN(Box<B>) }`, `B { BN(Box<A>) }`, construction `Box::new(…)`, match derefs. `sa(A::AN(…B…))`
+    // walks A→B→A to the `AL 9` leaf = 9. Pins that the cycle detector boxes a MUTUAL recursion, not only a
+    // direct self-reference — and that it RUNS on rustc, matching the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type A (AL Int64) (AN B)) (type B (BL Int64) (BN A)) \
+           (def (sa (: a A)) (match a (((. A AL) n) n) (((. A AN) b) (sb b)))) \
+           (def (sb (: b B)) (match b (((. B BL) n) n) (((. B BN) a) (sa a)))) (export sa))",
+    );
+    if let Some(out) = rustc_run(&rs, "sa(A::AN(Box::new(B::BN(Box::new(A::AL(9))))))") {
+        assert_eq!(out, "9");
+    }
+    if let Some(out) = rustc_run(&rs, "sa(A::AL(42))") {
+        assert_eq!(out, "42");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.

@@ -336,11 +336,14 @@ fn decl_emits(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
     })
 }
 
-/// Whether any of `variant`'s payload type-expressions mentions the sum declaration `decl_occ` — a
-/// RECURSIVE variant, whose payload field the enum boxes (`Box<…>`) to stay finite-sized. Resolves each
-/// payload occurrence to its solved type and walks it with `mentions_decl`. Used by `emit_one_enum` to
-/// decide whether to box a variant's field, and by the construct/match sites (via `variant_is_recursive`)
-/// to agree on the box/deref.
+/// Whether any of `variant`'s payload type-expressions is part of a recursive CYCLE back to the sum
+/// declaration `decl_occ` — a RECURSIVE variant, whose payload field the enum boxes (`Box<…>`) to stay
+/// finite-sized. A payload counts as recursive when its type can transitively REACH BACK to `decl_occ`
+/// through the sum-reference graph (`reaches_decl`), which catches BOTH a direct self-reference (`(Cons
+/// Int64 L)` — `L` reaches `L`) AND a MUTUAL cycle (`(type A (AN B))`+`(type B (BN A))` — A's payload `B`
+/// reaches A through B's payload). A payload that reaches OTHER sums but never returns to `decl` (a plain
+/// `(Outer Inner)` where `Inner` is acyclic) is NOT boxed. Used by `emit_one_enum` to box a variant's
+/// field, and by the construct/match sites (via `variant_is_recursive`) to agree on the box/deref.
 fn variant_payloads_mention(
     db: &mut Db,
     variant: &crate::db::Variant,
@@ -348,8 +351,58 @@ fn variant_payloads_mention(
 ) -> bool {
     let occs = variant.payloads.clone();
     occs.iter().any(|&pty| {
-        crate::eval::typeval_of(db, pty).is_some_and(|ty| mentions_decl(&ty, decl_occ))
+        crate::eval::typeval_of(db, pty)
+            .is_some_and(|ty| reaches_decl(db, &ty, decl_occ, &mut std::collections::HashSet::new()))
     })
+}
+
+/// Whether the type `ty` can transitively reach the sum declaration `decl_occ` through the sum-reference
+/// graph — a CYCLE detector for boxing a recursive (self- OR mutually-recursive) variant field. A direct
+/// mention of `decl_occ` is a hit; otherwise, for each OTHER sum `ty` mentions, follow that sum's variant
+/// payloads (its own reference edges) looking for a path back to `decl_occ`. `visited` (sum decl occs
+/// already expanded) bounds the walk — a finite sum graph is fully explored once. A `List<Rose>` /
+/// `Vec`-like element does NOT continue the walk here: those built-in containers provide their own heap
+/// indirection (a Rust `Vec<Rose>` is finite-sized regardless), so a self-reference UNDER a `List`/`Map`/
+/// `Set` needs no `Box` at the variant — only a DIRECT sum/tuple/record payload position does.
+fn reaches_decl(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    decl_occ: crate::ast::StructId,
+    visited: &mut std::collections::HashSet<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Sum { decl: d, args, .. } | Ty::Nominal { decl: d, args, .. } => {
+            if *d == decl_occ {
+                return true;
+            }
+            // A reference to another sum: does IT (through its own payloads) reach back to `decl_occ`?
+            // Expand it once (visited-guarded). Also follow any type args (a generic instantiation).
+            if args.iter().any(|a| reaches_decl(db, a, decl_occ, visited)) {
+                return true;
+            }
+            if visited.insert(*d)
+                && let Some(td) = db.type_decl_by_occ(*d)
+            {
+                let payload_occs: Vec<crate::ast::StructId> =
+                    td.variants.iter().flat_map(|v| v.payloads.clone()).collect();
+                for pty in payload_occs {
+                    if let Some(pt) = crate::eval::typeval_of(db, pty)
+                        && reaches_decl(db, &pt, decl_occ, visited)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        // A DIRECT tuple/record payload position continues the walk — a `(Tuple Int64 L)` / `(Record (l
+        // L))` reaches `decl` if any element/field does. (A `List`/`Map`/`Set` element does NOT — the
+        // container's heap indirection already makes it finite; only a by-value position needs the Box.)
+        Ty::Tuple(elems) => elems.iter().any(|e| reaches_decl(db, e, decl_occ, visited)),
+        Ty::Record(fields) => fields.values().any(|t| reaches_decl(db, t, decl_occ, visited)),
+        _ => false,
+    }
 }
 
 /// Whether the `disc`-th variant of the sum TYPE `ty` is RECURSIVE (its payload mentions the sum's own
