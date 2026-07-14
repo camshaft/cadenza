@@ -37002,6 +37002,71 @@ mod stage1 {
     }
 
     #[test]
+    fn check_no_home_follows_a_shared_callee_body_once_per_handler_context() {
+        // REGRESSION (perf): `effects::check_no_home_walk` (the CDZ0401 no-home check, run over every export
+        // body) FOLLOWS a non-recursive call into its callee body — a perform may be cross-function — but did
+        // so with NO dedup (only a `depth > 64` backstop). A helper called from N sites (here `(mk)`, a
+        // nullary constructor of an O(N)-field record, projected field-by-field in `main`) had its whole
+        // O(N) body RE-WALKED once per call site → O(sites × body) = O(N²). The sibling
+        // `body_reached_effects_walk` already had a `visited` guard; this walk was missing it. FIX: dedup the
+        // callee-follow by `(callee_body, handled-set)` — a callee walked under an identical handled set
+        // yields identical CDZ0401s, so re-walking is redundant; a DIFFERENT handled set (an effect granted
+        // at one site, ungranted at another) is a distinct key and still walked (so the diagnostic is
+        // preserved — verified by `check_no_home` probes out-of-band).
+        //
+        // The NOISE-FREE signal is the total `check_no_home_walk` node-visit count (a wall-clock ratio is
+        // diluted by the rest of `check`, and this shape also exercises a separate projection-fold cost). It
+        // is a deterministic pure function of the program, so no min-of-runs is needed.
+        fn proj_src(n: usize) -> String {
+            let fields: String = (0..n)
+                .map(|i| format!("(f{i} {i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // A balanced `+`-tree of `(. (mk) f_i)` projections — every leaf is a fresh `(mk)` call, so the
+            // callee-follow dedup is exactly what bounds the walk.
+            fn tree(items: &[String]) -> String {
+                if items.len() == 1 {
+                    return items[0].clone();
+                }
+                let m = items.len() / 2;
+                format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+            }
+            let projs: Vec<String> = (0..n).map(|i| format!("(. (mk) f{i})")).collect();
+            format!(
+                "(module m (def (mk) (record {fields})) (def (main) {}) (export main))",
+                tree(&projs)
+            )
+        }
+        // A small instance compiles clean (no spurious CDZ0401 — there is no effect here at all).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&proj_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide-record projection compiles with no error diagnostics: {diags:?}"
+        );
+        fn cnh_visits(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::CHECK_NO_HOME_VISITS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::CHECK_NO_HOME_VISITS.with(|c| c.get())
+            })
+        }
+        let v400 = cnh_visits(&proj_src(400));
+        let v800 = cnh_visits(&proj_src(800));
+        // Linear ⇒ ~2× for a 2× width; the old per-site callee re-walk was ~4× (O(N²)). Threshold 3×
+        // separates the regimes with margin. Guard the denominator against a degenerate 0.
+        let ratio = v800 as f64 / (v400.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "the CDZ0401 no-home walk must follow a shared callee body a BOUNDED number of times (was \
+             O(N²) via an un-deduped per-call-site re-walk in `check_no_home_walk`; the `(callee, \
+             handled)` follow-dedup fixes it): width 400→800 grew the visit count {ratio:.1}× (v400={v400}, \
+             v800={v800}); linear is ~2×, the O(N²) re-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
@@ -52474,7 +52539,12 @@ mod cross_component_oracle {
             (def (main (: x Int64)) (host (DB) (host (DC) (+ (DB.bee x) (DC.cee x))))) \
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(d_src)))
-            .unwrap_or_else(|e| panic!("diamond top consumer compiles: {} [{:?}]", e.message, e.code));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "diamond top consumer compiles: {} [{:?}]",
+                    e.message, e.code
+                )
+            });
         for (comp, what) in [(&a, "A"), (&b, "B"), (&c, "C"), (&consumer, "D")] {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(comp)
@@ -52502,9 +52572,7 @@ mod cross_component_oracle {
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a diamond graph runs")
-        {
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("a diamond graph runs") {
             // base(5)=10; bee(5)=10+1=11; cee(5)=10+10=20; main = 11+20 = 31. A shared provider A feeds two
             // middles B and C, whose results the top D combines.
             cdz_run::Outcome::Value(s) => assert_eq!(

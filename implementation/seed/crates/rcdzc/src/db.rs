@@ -50,6 +50,13 @@ thread_local! {
     /// (a wall-clock ratio is diluted by the rest of `check`) — see the lock-in test.
     pub(crate) static COLLECT_REDUCED_CALLABLES_VISITS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total node-visits by `effects::check_no_home_walk` (the CDZ0401 no-home check) since the
+    /// last reset. Following a callee body had NO dedup, so a helper called from N sites re-walked its
+    /// O(N)-body once per site = O(N²); the `(callee, handled-set)` follow-dedup makes it O(N). The
+    /// noise-free regression signal (a wall-clock ratio is diluted by the rest of `check`) — see the
+    /// `check_no_home_follows_a_shared_callee_body_once_per_handler_context` lock-in test.
+    pub(crate) static CHECK_NO_HOME_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
