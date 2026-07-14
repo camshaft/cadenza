@@ -41806,6 +41806,7 @@ mod closure_host_resource {
         let rebuild = TupleArgRebuild {
             field_box_ops: vec![Some("box-int"), Some("box-int")],
             field_extend_signed: vec![None, None],
+            base_param: 1, // the tuple is the sole closure arg → fields at core params 1..1+N
         };
         let core = multi_closure_resource_core_module_with_host_borrow(
             &funcs,

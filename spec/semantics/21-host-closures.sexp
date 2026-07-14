@@ -2814,6 +2814,41 @@
   (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
   (output (: (list 7) (List Int64))))
 
+; A fixed-shape scalar tuple ARGUMENT can now sit AMONG scalar args (single-export, scalar result): the tuple
+; crosses flattened as a native `tuple<…>` at its own arg position, and the `call` pushes the closure's args in
+; ORDER — prefix scalars, the rebuilt tuple cell, suffix scalars — with the tuple's flattened fields starting
+; at core param `1 + prefix-count` (`TupleArgRebuild.base_param`). The tuple may be at any position.
+
+(case "a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)"
+  (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar arg `n` THEN a tuple arg `p`. The
+           `call` receives `[n, p.0, p.1]` flattened; it pushes `n`, rebuilds the tuple from params 2..4
+           (base_param=2), dispatches. `call(handle, 100, (10, 3))` → `n + p.0 + p.1` = 113. The tuple sits
+           after the scalar — a prefix scalar + the rebuilt tuple.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)"
+  (doc    "`(fn (p) (n)) : (-> (Tuple Int64 Int64) Int64 Int64)` — the tuple arg `p` FIRST (base_param=1), then
+           a SUFFIX scalar `n`. The `call` rebuilds the tuple from params 1..3, then pushes `n` (param 3).
+           `call(handle, (10, 3), 100)` → `p.0 + p.1 + n` = 113. Confirms the tuple + a suffix scalar.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) (+ (+ (. p 0) (. p 1)) n)))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: 113 Int64)))
+
+(case "a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)"
+  (doc    "`(fn (a) (p) (b)) : (-> Int64 (Tuple Int64 Int64) Int64 Int64)` — a PREFIX scalar `a`, the tuple `p`
+           (base_param=2), and a SUFFIX scalar `b`. The `call` pushes `a`, rebuilds `p` from params 2..4,
+           pushes `b` (param 4). `call(handle, 1, (10, 3), 100)` → `a + p.0 + p.1 + b` = 114. The tuple at an
+           interior position between prefix + suffix scalars.")
+  (input  (do (def (mk) (fn ((: a Int64) (: p (Tuple Int64 Int64)) (: b Int64))
+                         (+ (+ a (+ (. p 0) (. p 1))) b)))
+              (export mk)))
+  (call   mk (: 1 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: 114 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

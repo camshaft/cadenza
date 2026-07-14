@@ -1315,6 +1315,11 @@ pub struct TupleArgRebuild {
     /// before `box-int` (which takes an i64). Mirrors `emit_box_i32_to_i64_extend`. Same length/order as
     /// `field_box_ops`; ignored for a field whose box op is `None` or a float.
     pub field_extend_signed: Vec<Option<bool>>,
+    /// The CORE-PARAM index the tuple's flattened fields START at. `1` when the tuple is the SOLE closure arg
+    /// (fields at params `1..1+N`, after `self`=0). When the tuple sits AMONG scalar args, the PREFIX scalar
+    /// args occupy params `1..base_param` and the tuple's fields `base_param..base_param+N`; the SUFFIX
+    /// scalars follow. The shared `call` body pushes prefix scalars, the rebuilt tuple, then suffix scalars.
+    pub base_param: u32,
 }
 
 /// Emit the tuple-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape tuple/record
@@ -1340,7 +1345,7 @@ fn emit_tuple_rebuild(
         out.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(i as i64, out); // [arr, i]
         out.push(op::LOCAL_GET);
-        uleb128((1 + i) as u64, out); // the flattened field param → [arr, i, field]
+        uleb128((rebuild.base_param + i as u32) as u64, out); // the flattened field param → [arr, i, field]
         if let Some(bop) = box_op {
             if let Some(signed) = rebuild.field_extend_signed[i] {
                 out.push(if signed {
@@ -3873,58 +3878,25 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         inner.push(op::LOCAL_GET);
         uleb128(cell_local as u64, &mut inner);
         if let Some(rebuild) = tuple_arg {
-            // A FIXED-SHAPE SCALAR tuple/record argument crossed the boundary FLATTENED into its N scalar
-            // fields (core params 1..1+N). The lifted body reads it as ONE i32 cell handle, so REBUILD that
-            // cell here (`arr-alloc N` + per field: index, the flattened param, box, `arr-set`) — the exact
-            // `Core::Tuple` build shape (`select.rs`) — and push the single handle. The rebuilt cell is an
-            // OWNED temporary: the lifted body's projections only BORROW it, so `call` drops it after
-            // `call_indirect` (below), balancing this alloc.
-            //
-            // `arr-set(arr, i, handle) -> arr` RETURNS the array (FBIP in-place), so the array THREADS on the
-            // stack across the fill loop (never reloaded from a local) — the current top-of-stack is `[env,
-            // arr]`, and each field leaves `[env, arr]` again. A `local.tee` at the end stashes the handle for
-            // the post-`call_indirect` drop while leaving it on the stack as the closure's argument.
-            let nfields = rebuild.field_box_ops.len();
-            inner.push(op::I32_CONST);
-            crate::backend::wasm::encode::sleb128(nfields as i64, &mut inner);
-            inner.push(op::CALL);
-            uleb128(
-                *import_index.get("arr-alloc").expect("arr-alloc imported") as u64,
-                &mut inner,
-            ); // [env, arr]
-            for (i, box_op) in rebuild.field_box_ops.iter().enumerate() {
-                inner.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128(i as i64, &mut inner); // [env, arr, i]
+            // ONE fixed-shape scalar tuple/record argument sits among the closure's scalar args. It crossed the
+            // boundary FLATTENED into N scalar fields at core params `base_param..base_param+N`; the PREFIX
+            // scalar args occupy `1..base_param`, the SUFFIX scalars `base_param+N..1+arity`. Push the closure
+            // args in ORDER: prefix scalars, then the rebuilt tuple cell (an owned per-call temporary — the
+            // lifted body's projections only BORROW it, so `call` drops it after `call_indirect`), then suffix
+            // scalars. `emit_tuple_rebuild` reads the fields at `base_param+i` and `local.tee`s the handle for
+            // the post-dispatch drop, leaving it on the stack as the tuple argument in its original position.
+            let nfields = rebuild.field_box_ops.len() as u32;
+            let base = rebuild.base_param;
+            for a in 1..base {
                 inner.push(op::LOCAL_GET);
-                uleb128((1 + i) as u64, &mut inner); // the flattened field param → [env, arr, i, field]
-                if let Some(bop) = box_op {
-                    // A scalar field boxes to a u32 handle: a NARROW int i32→i64 sign/zero extends first
-                    // (box-int takes i64; a 64-bit field is already i64 → no extend, `field_extend_signed`
-                    // None); a float/bool box takes its native width. Mirrors `emit_box_i32_to_i64_extend` +
-                    // `Core::Tuple` element boxing.
-                    if let Some(signed) = rebuild.field_extend_signed[i] {
-                        inner.push(if signed {
-                            op::I64_EXTEND_I32_S
-                        } else {
-                            op::I64_EXTEND_I32_U
-                        });
-                    }
-                    inner.push(op::CALL);
-                    uleb128(
-                        *import_index.get(*bop).expect("field box op imported") as u64,
-                        &mut inner,
-                    );
-                }
-                // (a `None` box op = a nested compound field, already a u32 handle → arr-set as-is)
-                inner.push(op::CALL);
-                uleb128(
-                    *import_index.get("arr-set").expect("arr-set imported") as u64,
-                    &mut inner,
-                ); // → [env, arr]
+                uleb128(a as u64, &mut inner); // a prefix scalar arg
             }
-            // Stash the rebuilt handle for the post-dispatch drop, LEAVING it on the stack as the closure arg.
-            inner.push(op::LOCAL_TEE);
-            uleb128(tuple_local as u64, &mut inner); // [env, arr]
+            let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner); // → the rebuilt tuple handle
+            for a in (base + nfields)..(1 + arg_vts.len() as u32) {
+                inner.push(op::LOCAL_GET);
+                uleb128(a as u64, &mut inner); // a suffix scalar arg
+            }
         } else {
             for a in 0..arg_vts.len() {
                 inner.push(op::LOCAL_GET);

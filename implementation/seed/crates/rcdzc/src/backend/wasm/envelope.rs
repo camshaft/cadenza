@@ -1625,6 +1625,8 @@ pub fn assemble_closure_resource_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -1646,6 +1648,10 @@ pub fn assemble_closure_resource_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    // The scalar boundary bytes BEFORE / AFTER the tuple arg (in the closure's original arg order) when the
+    // tuple sits AMONG scalar args; both empty when the tuple is the SOLE arg (or `tuple_arg_bytes` is None).
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1781,7 +1787,13 @@ pub fn assemble_closure_resource_borrow_tuple(
         let n_items: usize;
         if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 5
-            items.extend_from_slice(&closure_call_tuple_arg_functype(4, 5, result_byte)); // type 6
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                4,
+                tuple_prefix_bytes,
+                5,
+                tuple_suffix_bytes,
+                result_byte,
+            )); // type 6
             call_ft_idx = 6;
             n_items = 3;
         } else {
@@ -1807,6 +1819,8 @@ pub fn assemble_closure_resource_borrow_tuple(
             result_byte,
             call_borrow,
             tuple_arg_bytes,
+            tuple_prefix_bytes,
+            tuple_suffix_bytes,
         ),
     ));
     out.extend_from_slice(&section(
@@ -4231,6 +4245,8 @@ fn resource_inner_component_closure_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -4246,6 +4262,8 @@ fn resource_inner_component_closure_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     // `call`'s self handle type: a `borrow<idx>` (repeatable) or `own<idx>` (single-use) defined-type item.
     let call_handle = |idx: u32| -> Vec<u8> {
@@ -4283,7 +4301,13 @@ fn resource_inner_component_closure_borrow_tuple(
         let n_items: usize;
         if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 4
-            items.extend_from_slice(&closure_call_tuple_arg_functype(3, 4, result_byte)); // type 5
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                3,
+                tuple_prefix_bytes,
+                4,
+                tuple_suffix_bytes,
+                result_byte,
+            )); // type 5
             call_import_ty_idx = 5;
             n_items = 3;
         } else {
@@ -4336,9 +4360,11 @@ fn resource_inner_component_closure_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = call_handle_ty + 1; // 10
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 call_handle_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
             call_export_ty_idx = tup_ty + 1; // 11
@@ -6192,17 +6218,60 @@ fn closure_call_tuple_arg_functype(
     tuple_type_idx: u32,
     result_byte: u8,
 ) -> Vec<u8> {
+    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
+    closure_call_tuple_arg_functype_interleaved(
+        self_handle_type_idx,
+        &[],
+        tuple_type_idx,
+        &[],
+        result_byte,
+    )
+}
+
+/// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args: `(self:
+/// <handle<t>>, <prefix scalars…>, p: tuple<…>, <suffix scalars…>) -> R`. `prefix_bytes`/`suffix_bytes` are
+/// the scalar boundary bytes BEFORE/AFTER the tuple (in the closure's original arg order); `tuple_type_idx`
+/// the `tuple<…>` defined type. The scalar-result compound-arg path with the tuple at any position.
+fn closure_call_tuple_arg_functype_interleaved(
+    self_handle_type_idx: u32,
+    prefix_bytes: &[u8],
+    tuple_type_idx: u32,
+    suffix_bytes: &[u8],
+    result_byte: u8,
+) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
     // `self` — the receiver handle (own/borrow<t>), a defined type referenced by index.
     param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
     param_items.extend_from_slice(b"self");
     param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
-    // the single tuple argument `p`, a defined type referenced by index.
-    param_items.extend_from_slice(&uleb_bytes("p".len() as u64));
-    param_items.extend_from_slice(b"p");
-    param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
-    item.extend_from_slice(&wasm_vec(2, &param_items));
+    let mut pn = 0usize; // positional param name counter (cosmetic)
+    for &vt in prefix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    // the tuple argument, a defined type referenced by index.
+    {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
+        pn += 1;
+    }
+    for &vt in suffix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    item.extend_from_slice(&wasm_vec(
+        1 + prefix_bytes.len() + 1 + suffix_bytes.len(),
+        &param_items,
+    ));
     // One result — the closure's return valtype (a scalar boundary byte).
     item.extend_from_slice(&[0x00, result_byte]);
     item
