@@ -1405,6 +1405,8 @@ pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
+pass	and evaluates the right operand when the left is true
+pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
 pass	applying a float is a type error
@@ -1706,6 +1708,8 @@ pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
+pass	or evaluates the right operand when the left is false
+pass	or short-circuits at run time: a true left operand skips the trapping right operand
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
