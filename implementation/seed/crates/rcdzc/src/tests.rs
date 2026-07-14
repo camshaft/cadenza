@@ -18059,6 +18059,62 @@ mod match_engine {
     }
 
     #[test]
+    fn a_collection_carrying_recursion_with_a_fallible_base_read_emits_valid_wasm() {
+        // ⚠ REGRESSION (the `if`-BRANCH face of the i32/i64 scratch-slot family): a self-recursive function
+        // CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE emitted a
+        // STRUCTURALLY INVALID module ("expected i32, found i64"). The `if`'s two branches are mutually
+        // exclusive, so the emit reused one scratch slot index across them — but the base arm wants it as an
+        // i32 Option handle (`Bytes.at`/`List.at`) while the recursive arm's `(- n 1)` wants it as an i64
+        // temp; a slot's type is recorded ONCE, so the local was declared at one width and used at the
+        // other. Fixed by starting the ELSE branch's scratch above the THEN branch's high-water (disjoint by
+        // width). A single projection / a scalar `Bytes.len` base / the same read WITHOUT recursion all
+        // compiled before the fix; the trigger is a handle-materializing base arm of a collection-carrying
+        // recursion. Both Bytes and List, both `Option.expect` and a raw `match`, must emit valid wasm.
+        for (src, want) in [
+            (
+                "(module m (def (loop (: b Bytes) (: p Int64) (: n Int64)) \
+                   (if (= n 0) (Option.expect (Bytes.at b p) \"v\") (loop b p (- n 1)))) \
+                 (def (main) (loop b\"\\x05\" 0 0)) (export main))",
+                "5",
+            ),
+            (
+                "(module m (def (loop (: xs (List Int64)) (: i Int64) (: n Int64)) \
+                   (if (= n 0) (Option.expect (List.at xs i) \"v\") (loop xs i (- n 1)))) \
+                 (def (main) (loop (list 7 8 9) 1 0)) (export main))",
+                "8",
+            ),
+            (
+                "(module m (def (loop (: b Bytes) (: p Int64) (: n Int64)) \
+                   (if (= n 0) (match (Bytes.at b p) ((Some x) x) ((None) (- 0 1))) (loop b p (- n 1)))) \
+                 (def (main) (loop b\"\\x05\" 0 0)) (export main))",
+                "5",
+            ),
+        ] {
+            let bytes = component(src);
+            wasmparser::validate(&bytes).expect(
+                "a collection-carrying recursion with a fallible base read must emit valid wasm",
+            );
+            let Some(runtime) = super::find_runtime_wasm() else {
+                eprintln!("runtime wasm not found; skipping composed collection-recursion run");
+                continue;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, want, "collection-recursion base read: {src}")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("collection-recursion run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_runtime_if_list_is_length_measured_with_valid_wasm() {
         // A `(List a)` produced by a RUNTIME `if` (neither branch folds away) then measured by `List.len`
         // must emit VALID wasm and the right length. TWO bugs made it emit an invalid module: (1) a list

@@ -1957,6 +1957,44 @@
             (export main)))
   (output (: 1 Int64)))
 
+; A further residual of the SAME i32/i64 slot family, on the `if`-BRANCH axis: a self-recursive function
+; CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE. The two `if`
+; branches are mutually exclusive, so the emit reused one scratch slot index across them — but the base
+; arm wants it as an i32 Option handle (from `Bytes.at`/`List.at`) while the recursive arm's `(- n 1)`
+; wants it as an i64 temp; a slot's type is recorded ONCE, so the local was declared at one width and used
+; at the other (`expected i32, found i64`). The fix starts the ELSE branch's scratch above the THEN
+; branch's high-water (disjoint by width), like the tuple/list examples above. These pin both the Bytes
+; and the List carry, and both the `Option.expect` and the raw `match` fallible read.
+
+(case "a collection-carrying recursion whose base arm does a fallible indexed read compiles"
+  (doc    "A self-recursive `loop` carries a `Bytes` parameter and at its base arm (n=0) performs a FALLIBLE
+           read `(Option.expect (Bytes.at b p) …)` — byte `p` of `b\"\\x05\"` at p=0 = 5. This emitted
+           INVALID WASM (`expected i32, found i64`): the base arm's i32 Option handle and the recursive
+           arm's i64 `(- n 1)` temp collided on one scratch slot (the two mutually-exclusive `if` branches
+           shared a slot index recorded at a single width). The SAME fallible read WITHOUT the recursion
+           compiles and runs to 5, and a scalar `(Bytes.len b)` base (no handle) also compiles — pinning the
+           trigger to a handle-materializing base arm of a collection-carrying recursion. Fix: the else
+           branch's scratch starts above the then branch's high-water, so the i32 handle stays disjoint from
+           the i64 temps. Expected: 5.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
+            (def (main (: p Int64)) (loop b"\x05" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+(case "a list-carrying recursion whose base arm does a fallible indexed read compiles"
+  (doc    "The LIST companion of the Bytes case above — the fault is not Bytes-specific. A self-recursive
+           `loop` carries a `(List Int64)` and its base arm reads `(Option.expect (List.at xs i) …)`. With
+           `xs`=(list 7 8 9) and i=1 the base yields 8. Same slot collision (i32 List-element Option handle
+           vs i64 recursion temp), same fix. Expected: 8.")
+  (input  (do
+            (def (loop (: xs (List Int64)) (: i Int64) (: n Int64))
+              (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
+            (def (main (: i Int64)) (loop (list 7 8 9) i 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 8 Int64)))
+
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
            argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial

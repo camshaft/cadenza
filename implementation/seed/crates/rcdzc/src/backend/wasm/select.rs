@@ -3037,6 +3037,7 @@ fn emit_tail(
             // in tail pos.
             let emit_tail_branch = |db: &mut Db,
                                     b: StructId,
+                                    bbase: u32,
                                     high: &mut u32,
                                     st: &mut HashMap<u32, ValType>,
                                     out: &mut Emit|
@@ -3044,9 +3045,9 @@ fn emit_tail(
                 if matches!(core_of(db, b), Core::ConstInt(_))
                     && let Ty::Int(rit) = &result
                 {
-                    emit_operand(db, b, *rit, slots, branch_base, high, st, layout, out)
+                    emit_operand(db, b, *rit, slots, bbase, high, st, layout, out)
                 } else {
-                    emit_tail(db, b, slots, branch_base, high, st, layout, out, inner_tl)
+                    emit_tail(db, b, slots, bbase, high, st, layout, out, inner_tl)
                 }
             };
             // FLOW-SENSITIVE RANGE REFINEMENT (see the non-tail `Core::If` arm): push the branch's
@@ -3056,13 +3057,24 @@ fn emit_tail(
             let base_frame = db.current_refinements();
             let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
             db.push_range_refinements(then_frame);
-            let then_res = emit_tail_branch(db, then_, high, scratch_ty, out);
+            let then_res = emit_tail_branch(db, then_, branch_base, high, scratch_ty, out);
             db.pop_range_refinements();
             then_res?;
             out.push(Lir::Else);
+            // The else branch starts its scratch ABOVE the then branch's high-water, NOT back at
+            // `branch_base`. The two branches are mutually exclusive, so REUSING slot indices would be sound
+            // for a wasm STACK value — but a scratch slot's TYPE is recorded once in `scratch_ty`, and the
+            // two arms can want the SAME index at DIFFERENT widths: a collection-carrying recursion's base
+            // arm materializes a fallible-read Option HANDLE (i32) while its recursive arm's `(- n 1)` uses
+            // an i64 temp — sharing `branch_base` sets one local at both types → the validator rejects it
+            // (`expected i32, found i64`). Advancing past the then branch's `*high` hands the else branch
+            // fresh, never-typed slots — the same disjoint-by-width discipline call args / tuple elements /
+            // match arms already apply. (When the then branch used no scratch, `*high == branch_base`, so
+            // this is byte-identical for the common scalar-`if`.)
+            let else_base = branch_base.max(*high);
             let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
             db.push_range_refinements(else_frame);
-            let else_res = emit_tail_branch(db, else_, high, scratch_ty, out);
+            let else_res = emit_tail_branch(db, else_, else_base, high, scratch_ty, out);
             db.pop_range_refinements();
             else_res?;
             out.push(Lir::End);
@@ -5412,18 +5424,17 @@ fn emit(
             db.pop_range_refinements();
             then_res?;
             out.push(Lir::Else);
+            // The else branch starts its scratch ABOVE the then branch's high-water (see the TAIL `Core::If`
+            // arm for the full rationale): the two mutually-exclusive branches may want the same slot index
+            // at DIFFERENT widths (a base arm's i32 Option handle vs a recursive arm's i64 temp), and a
+            // slot's type is recorded ONCE — sharing `branch_base` sets one local at both types (invalid
+            // module). Advancing past `*high` gives the else branch fresh slots; byte-identical when the
+            // then branch used no scratch (`*high == branch_base`).
+            let else_base = branch_base.max(*high);
             let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
             db.push_range_refinements(else_frame);
             let else_res = emit_branch(
-                db,
-                else_,
-                &result,
-                slots,
-                branch_base,
-                high,
-                scratch_ty,
-                layout,
-                out,
+                db, else_, &result, slots, else_base, high, scratch_ty, layout, out,
             );
             db.pop_range_refinements();
             else_res?;
