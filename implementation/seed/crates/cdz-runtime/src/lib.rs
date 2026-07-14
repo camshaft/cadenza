@@ -7111,6 +7111,38 @@ mod tests {
         });
     }
 
+    /// FUZZ the Float32 encode (`float32_leaf`) over RANDOM f32 bit patterns — the companion to the f64
+    /// fuzz. `float32_leaf` shares `float_leaf_from_sci` but feeds it the f32's OWN shortest decimal
+    /// (`{f32:e}`, NOT a promoted f64 whose decimal differs), so the digit strings it converts are a
+    /// distinct population. Every finite f32, encoded via the real `op_value_encode_form`, must round-trip
+    /// bit-exactly through its KIND_FLOAT decimal parsed back AS AN f32; a non-finite f32 declines. No leak.
+    #[test]
+    fn prop_float32_leaf_round_trips_bit_exact_under_random_f32() {
+        bolero::check!().with_type::<u32>().for_each(|&bits| {
+            reset();
+            let v = f32::from_bits(bits);
+            let desc: &[u8] = &[0x01, 0x0e, 0x00]; // [0]=Float32(tag 14), root=0
+            let h = op_box_float32(v);
+            let doc = op_value_encode_form(h, desc);
+            if v.is_finite() {
+                let doc = doc.expect("a finite f32 must encode");
+                let decimal = float_doc_to_decimal(&doc);
+                // Parse the decimal back AS AN f32 — the value form is the f32's own shortest decimal, so
+                // it must reconstruct the exact f32 bits (a promoted-f64 decimal would NOT).
+                let reconstructed: f32 = decimal.parse().expect("the KIND_FLOAT decimal must parse as f32");
+                assert_eq!(
+                    reconstructed.to_bits(),
+                    v.to_bits(),
+                    "f32 {v} (bits {bits:#010x}) must round-trip through its decimal {decimal}"
+                );
+            } else {
+                assert!(doc.is_none(), "a non-finite f32 must DECLINE the value-encode");
+            }
+            op_drop(h);
+            assert_eq!(live_nodes(), 0, "no leak for f32 bits {bits:#010x}");
+        });
+    }
+
     /// `op_box_float` normalizes every NaN — of ANY bit pattern — to the ONE canonical quiet NaN
     /// (`f64::NAN.to_bits()`), so a float leaf has a single canonical byte form (deterministic-value-
     /// form.md). Two NaN values that differ ONLY in their (unobservable) payload/sign bits must therefore
