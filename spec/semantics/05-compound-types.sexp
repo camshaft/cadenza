@@ -2213,10 +2213,11 @@
 ; The list-element cases above bind an IRREFUTABLE element (a tuple, always matches once the length holds)
 ; or refine on a LITERAL. A list arm's element MAY also be a refutable sum-CONSTRUCTOR pattern `(A.I x)`,
 ; which adds a runtime DISCRIMINANT test on that element (does it carry the `I` tag?) on top of the length
-; dispatch — the head-plus-typed-args shape a compiler pass destructures. A list arm may carry AT MOST ONE
-; such refutable constructor element today (with the other positions bare binders); two or more decline
-; (a later increment). These pin the ONE-constructor-element form: at the head, at a non-head position, its
-; fall-through when the tag differs, and over a runtime-built list.
+; dispatch — the head-plus-typed-args shape a compiler pass destructures. A list arm may carry SEVERAL such
+; refutable constructor elements (each at any position, the others bare binders): every ctor element gets a
+; fresh binder, all their discriminant tests are ANDed into the arm guard, and the body re-matches nest so
+; each ctor's payload is in scope. These pin the constructor-element form: one at the head, one at a
+; non-head position, its fall-through when the tag differs, over a runtime-built list, and TWO in one arm.
 
 (case "a list arm with one constructor element binds its payload and its bare siblings"
   (doc    "A list arm whose FIRST element is a refutable constructor pattern `(A.I x)` plus bare binders
@@ -2267,6 +2268,30 @@
             (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (A.I (* i 10)))) out))
             (def (main) (f (build 1 3 (list)))) (export main)))
   (output (: 10 Int64)))
+
+(case "a list arm with two constructor elements binds both payloads"
+  (doc    "TWO refutable constructor elements in one arm: `((list (A.I x) (A.N y) .. r) (+ x y))` requires
+           the first element to be an `A.I` AND the second an `A.N`, binding BOTH payloads. Each ctor
+           element gets a fresh binder, both discriminant tests are ANDed into the arm guard, and the body
+           re-matches nest so `x` and `y` are both in scope. `(list (A.I 1) (A.N 2))` → 1+2 = 3. Pins that a
+           list arm dispatches on MORE THAN ONE tagged element at once — the fixed-shape `[Head op, Arg a]`
+           destructure a compiler pass wants.")
+  (input  (do
+            (type A (I Int64) (N Int64))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f (list (A.I 1) (A.N 2)))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a two-constructor-element list arm falls through when the second tag differs"
+  (doc    "The refutability of BOTH ctor elements: the same `((list (A.I x) (A.N y) .. r) …)` arm against a
+           list whose second element is an `A.I` (not `A.N`) does NOT match — the first discriminant holds
+           but the second fails, so the ANDed guard is false and it falls through → -1. Pins that every ctor
+           element in a multi-element arm is genuinely tested, not just the first.")
+  (input  (do
+            (type A (I Int64) (N Int64))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) (A.N y) .. r) (+ x y)) (_ -1)))
+            (def (main) (f (list (A.I 1) (A.I 2)))) (export main)))
+  (output (: -1 Int64)))
 
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a

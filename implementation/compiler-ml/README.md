@@ -350,13 +350,15 @@ are the sharp edges.
   lookup+match; `Set` union/difference/contains/len (String-keyed). ⚠ minor: `Set.len` vs `Map.size`
   (inconsistent op name for the same "count" concept).
 
-- **OPEN (seed `rcdzc` — LIMITATION): a LIST pattern arm allows at most ONE refutable (constructor)
-  element.** `repros/reject-list-arm-multiple-ctor-elements.sexp`: `((list (A.I x) (A.N y) c) …)` →
-  "a list arm with more than one refutable constructor element is not yet supported (match one tagged
-  element per arm)". ONE ctor element + bare binders is fine; TWO+ rejects. This blocks the natural
-  fixed-shape destructure a compiler pass wants (`[Name op, Int x, Int y]`). WORKAROUND (used by
-  `src/fold.cdz`): bind every element as a plain binder, then nested-`match` each. Ask: N refutable
-  elements per list arm. Clean REJECT (not a miscompile) → a Todo, but a common shape.
+- **✅ FIXED (seed `rcdzc` `lower.rs`, 2026-07-14 — landed by THIS loop): a LIST pattern arm may now
+  contain SEVERAL refutable (constructor) elements.** Was: `((list (A.I x) (A.N y) c) …)` declined "more
+  than one refutable constructor element is not yet supported". FIX: the list-refutable-element desugar
+  generalized from ONE ctor position to N — each ctor element gets a fresh binder, all discriminant tests
+  are ANDed into the arm guard, and the body re-matches NEST so every ctor payload is in scope. Corpus
+  `spec/semantics/05-compound-types.sexp` (two-ctor-element case + second-tag fall-through, gate-verified)
+  + updated unit test; witness `repros/fixed-list-arm-multiple-ctor-elements.sexp`. `src/fold.cdz` now
+  uses the natural `[Ast.Name(op), Ast.Int(x), Ast.Int(y)]` arm (three ctor elements) — the
+  bind-all-then-nested-match workaround is gone.
 
 - **OPEN (seed `rcdzc` — DECLINE, now GENERALIZED): a HEAP value read from `Map.lookup`, RETURNED, then
   CONSUMED in the caller.** "borrowing op operand has an ownership this backend cannot yet prove" (`cdz

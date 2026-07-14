@@ -3331,82 +3331,85 @@ fn desugar_refutable_ctor_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         }
-        if ctor_positions.len() > 1 {
-            // ≥2 refutable-ctor elements in one arm — the body-rematch nesting + payload-scope interleaving
-            // is a later increment. Decline honestly (rare shape; the common tree-walk matches ONE tagged
-            // head per arm).
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable constructor element is not yet supported \
-                 (match one tagged element per arm)",
-            )));
-        }
-        let cpos = ctor_positions[0];
-        let ctor_pat = es[cpos]; // the original `(C.V p…)` element pattern
+        // N refutable-ctor elements in one arm (N ≥ 1): give each a fresh binder in the list pattern, AND
+        // all their discriminant-tests into the guard, and NEST one body re-match per ctor binder (the
+        // innermost holds the original body, so every ctor payload sub-pattern is in scope for it). The
+        // single-ctor case (N == 1) is exactly this with one binder — the loop generalizes it uniformly.
         let head = db.ast.get(inner);
         let list_head = match head {
             crate::ast::Struct::List(items) if !items.is_empty() => items[0],
             _ => db.push_name("list"),
         };
-        let name = format!("__lc{ai}");
-        // Rebuild the list pattern with the ctor element replaced by a fresh bare binder.
+        // A fresh binder name per ctor position (`__lc{arm}_{k}`), paired with its original ctor pattern.
+        let ctor_binders: Vec<(String, StructId)> = ctor_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &cpos)| (format!("__lc{ai}_{k}"), es[cpos]))
+            .collect();
+        // Rebuild the list pattern with EACH ctor element replaced by its fresh bare binder.
         let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
         for (p, &e) in es.iter().enumerate() {
-            if p == cpos {
-                new_es.push(db.push_name(&name)); // the inert pattern-position element binder
-            } else {
-                new_es.push(e);
+            match ctor_positions.iter().position(|&cp| cp == p) {
+                Some(k) => new_es.push(db.push_name(&ctor_binders[k].0)),
+                None => new_es.push(e),
             }
         }
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The DISCRIMINANT-TEST guard: `(match __lc (<ctor-with-wildcard-payloads> true) (_ false))`. Build a
-        // wildcard-payload copy of the ctor pattern so it tests ONLY the discriminant (no payload binding in
-        // the guard). The guard scrutinee is a fresh occurrence of `__lc`.
-        let disc_scrut = db.push_name(&name);
-        let disc_pat = ctor_pattern_with_wildcard_payloads(db, ctor_pat);
-        // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
-        // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+        // The DISCRIMINANT-TEST guard, ANDed over every ctor binder: each is
+        // `(match __lc_k (<ctor-with-wildcard-payloads> true) (_ false))` — testing ONLY the discriminant
+        // (no payload binding in the guard). Fold them (plus any author guard) with `and`.
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
-        let wild = db.push_name("_");
-        let disc_false_arm = db.push_list(vec![wild, false_node]);
-        let disc_match_head = db.push_name("match");
-        let disc_test = db.push_list(vec![
-            disc_match_head,
-            disc_scrut,
-            disc_true_arm,
-            disc_false_arm,
-        ]);
-        // Combine with any existing guard (AND): the discriminant must hold AND the author's guard.
-        let guard_cond = match existing_guard {
-            None => disc_test,
-            Some(g) => {
-                let and_head = db.push_name("and");
-                db.push_list(vec![and_head, g, disc_test])
-            }
-        };
+        let mut guard_cond: Option<StructId> = existing_guard;
+        for (bname, ctor_pat) in &ctor_binders {
+            let disc_scrut = db.push_name(bname);
+            let disc_pat = ctor_pattern_with_wildcard_payloads(db, *ctor_pat);
+            // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
+            // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+            let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+            let wild = db.push_name("_");
+            let disc_false_arm = db.push_list(vec![wild, false_node]);
+            let disc_match_head = db.push_name("match");
+            let disc_test = db.push_list(vec![
+                disc_match_head,
+                disc_scrut,
+                disc_true_arm,
+                disc_false_arm,
+            ]);
+            guard_cond = Some(match guard_cond {
+                None => disc_test,
+                Some(g) => {
+                    let and_head = db.push_name("and");
+                    db.push_list(vec![and_head, g, disc_test])
+                }
+            });
+        }
         let guard_head = db.push_name("guard");
-        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
-        // The BODY re-match: `(match __lc (<original ctor pattern> <body>) (_ (trap …)))` — binds the ctor's
-        // payload sub-patterns for the original body; the `_` arm is dead (the guard proved the discriminant)
-        // but keeps the inner match exhaustive. The scrutinee + fall-through are fresh nodes.
-        let body_scrut = db.push_name(&name);
-        let body_true_arm = db.push_list(vec![ctor_pat, body]);
-        let trap_head = db.push_name("trap");
-        let trap_msg =
-            db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
-        let trap = db.push_list(vec![trap_head, trap_msg]);
-        let wild_b = db.push_name("_");
-        let body_false_arm = db.push_list(vec![wild_b, trap]);
-        let body_match_head = db.push_name("match");
-        let new_body = db.push_list(vec![
-            body_match_head,
-            body_scrut,
-            body_true_arm,
-            body_false_arm,
-        ]);
+        // `guard_cond` is `Some` here — `ctor_binders` is non-empty (ctor_positions non-empty).
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond.unwrap()]);
+        // The BODY re-match, NESTED from the INNERMOST ctor binder out: the innermost match holds the
+        // original `body` (all ctor payloads in scope); each enclosing match binds its own ctor's payloads
+        // and its body is the next-inner match. Building inside-out means each step wraps the accumulator.
+        let mut new_body = body;
+        for (bname, ctor_pat) in ctor_binders.iter().rev() {
+            let body_scrut = db.push_name(bname);
+            let body_true_arm = db.push_list(vec![*ctor_pat, new_body]);
+            let trap_head = db.push_name("trap");
+            let trap_msg =
+                db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let wild_b = db.push_name("_");
+            let body_false_arm = db.push_list(vec![wild_b, trap]);
+            let body_match_head = db.push_name("match");
+            new_body = db.push_list(vec![
+                body_match_head,
+                body_scrut,
+                body_true_arm,
+                body_false_arm,
+            ]);
+        }
         new_arms.push(db.push_list(vec![new_pat, new_body]));
     }
     let match_head = db.push_name("match");

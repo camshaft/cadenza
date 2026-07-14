@@ -17702,25 +17702,18 @@ mod match_engine {
             None,
             "a refutable multi-variant-ctor list element now compiles (dispatches by discriminant)"
         );
-        // What STILL declines: MORE THAN ONE refutable-ctor element in a single arm (the body-rematch
-        // nesting + payload-scope interleaving is a later increment; the common tree-walk matches one
-        // tagged head per arm). A codeless decline (nothing ill-formed — the refinement is unbuilt).
-        let decline = reject_full(
-            "(module m (type C (A Int64) (B Int64)) \
-               (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
-               (def (main) (f (list (C.A 1) (C.B 2)))) (export main))",
-        )
-        .expect("two ctor elements in one arm block compilation");
-        assert_eq!(
-            decline.code, None,
-            "two refutable-ctor elements in one arm declines (no code)"
-        );
+        // MORE THAN ONE refutable-ctor element in a single arm now COMPILES too: each ctor element gets a
+        // fresh binder, all their discriminant-tests are ANDed into the arm guard, and the body re-matches
+        // are NESTED (innermost holds the original body, so every ctor payload is in scope). `[A n, B m ..r]`
+        // extracts both payloads (`n + m`).
         assert!(
-            decline
-                .message
-                .contains("more than one refutable constructor element"),
-            "the decline names the multi-ctor-element limit: {}",
-            decline.message
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type C (A Int64) (B Int64)) \
+                   (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
+                   (def (main) (f (list (C.A 1) (C.B 2)))) (export main))"
+            )))
+            .is_ok(),
+            "two refutable-ctor elements in one arm now compile (gate verifies value = 3)"
         );
     }
 

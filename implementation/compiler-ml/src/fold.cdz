@@ -19,16 +19,10 @@ def fold-list(es: List(Ast)) = match es with
   | [h, .. r] => List.concat([fold(h)], fold-list(r))
 
 def fold-app(es: List(Ast)) = match es with
-  | [a, b, c] => (match a with
-    | Ast.Name(op) => (match b with
-      | Ast.Int(x) => (match c with
-        | Ast.Int(y) => (if known-op(op) then Ast.Int(apply-op(op, x, y)) else Ast.List(es))
-        | _ => Ast.List(es)
-      )
-      | _ => Ast.List(es)
-    )
-    | _ => Ast.List(es)
-  )
+  // A fixed-shape `[Name op, Int x, Int y]` destructure — THREE refutable constructor elements in one
+  // list arm, now supported (was a decline; the port used to bind all three then nested-match each).
+  | [Ast.Name(op), Ast.Int(x), Ast.Int(y)] =>
+    (if known-op(op) then Ast.Int(apply-op(op, x, y)) else Ast.List(es))
   | _ => Ast.List(es)
 
 def as-int(node: Ast) = match node with
