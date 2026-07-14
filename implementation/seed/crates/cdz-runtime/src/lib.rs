@@ -9570,10 +9570,11 @@ mod tests {
         );
         op_drop(sm);
 
-        // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
-        // inline `Raw`, the 4-byte disc no longer allocates a heap Vec — a sum node is now the node Box
-        // + its 1-element handles Vec = 2 allocs/op (was 3: + the disc Vec). Guards the inline-raw win
-        // for the sum path (the growing Option/Result usage).
+        // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. A sum node is
+        // JUST the node Box = 1 alloc/op: `op_sum_new` builds its 4-byte disc raw INLINE and its single
+        // payload handle INLINE (`Handles::inline_from(&[payload])`), and an immediate payload boxes to no
+        // node. Was 3/op (heap disc Vec + heap handles Vec + node), then 2/op after the inline-raw, now
+        // 1/op with inline handles. Guards that the Option/Result-heavy sum path stays at the node-Box floor.
         let sum = measure(&mut || {
             for k in 0..N {
                 op_drop(op_sum_new(1, op_box_int(k)));
@@ -9581,8 +9582,8 @@ mod tests {
         });
         println!("ALLOC sum_new x{N}: {sum}");
         assert!(
-            sum <= 1200,
-            "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)"
+            sum <= 1000,
+            "sum_new x{N} allocs {sum} exceeds ceiling 1000 (JUST the node Box = 1/op; disc raw inline, payload handle inline, immediate payload — a regression to an out-of-line disc/handles Vec would be 2-3/op)"
         );
 
         // (J) bytes SLICE x1000 — a rope slice node over a shared leaf: 1 handle (the parent buf) +
@@ -9683,12 +9684,12 @@ mod tests {
         );
 
         // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
-        // constructor shared by tuples, records, and CHAMP `[k,v]` pairs. With scalar (immediate)
-        // elements a tuple node is the node Box + its 2-element handles Vec = 2 allocs/op (empty raw = no
-        // raw alloc, immediate elements = no element boxes). This is the tuple/record/pair construction
-        // FLOOR under the current `Node.handles: Vec` layout — tracked so the pending inline-`handles`
-        // lever (which targets exactly this ≤2-handle node) can be measured against it, and so a
-        // regression in the arr-alloc/set path is visible.
+        // constructor shared by tuples, records, and CHAMP `[k,v]` pairs. With scalar (immediate) elements
+        // a tuple node is JUST the node Box = 1 alloc/op: `op_arr_alloc(2)` carries its ≤2 handles INLINE
+        // (`Handles::inline_nulls`, no heap Vec), its raw is empty (inline), and immediate elements box to
+        // no node. This is the ≤2-handle product-construction FLOOR — the inline-`handles` lever is already
+        // taken here (measured 1/op, NOT the 2/op an out-of-line handles Vec would cost). Tracked so a
+        // regression (e.g. handles spilling to heap on this path) is immediately visible.
         let tbuild = measure(&mut || {
             for k in 0..N {
                 let t = op_arr_alloc(2);
@@ -9698,7 +9699,10 @@ mod tests {
             }
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
-        assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+        assert!(
+            tbuild <= 1000,
+            "tuple2_build x{N} allocs {tbuild} exceeds ceiling 1000 (JUST the node Box = 1/op; handles inline, raw empty, immediate elements — a regression to an out-of-line handles Vec would be ~2/op)"
+        );
 
         // (K4) `bigint-add` — a runtime BigInt op (B3b/B3c emit these for runtime-valued BigInt arithmetic),
         // now on the hot path of any bignum loop. The SMALL-operand FAST PATH reads both operands as `i128`
