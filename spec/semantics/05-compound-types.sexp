@@ -4659,6 +4659,37 @@
   (call   main (: 0 Int64))
   (output (: 30 Int64)))
 
+(case "a sum variant carrying a NARROW-int payload boxes and reads it at its width"
+  (doc    "A sum variant's payload is a NARROW integer `UInt8` — `(type Box8 (V UInt8) (Z))`. A narrow
+           width lives in an i32 slot (not the i64 sum-payload cell a full-width int uses), so the box/read
+           must reconcile the stored UInt8 with the payload cell. The match binds `u : UInt8`, adds 1 AT
+           UInt8 width (the `+` operands share the narrow slot), and the result is width-preserved. `(f (V
+           5))` = 5 + 1 = 6. Pins that a narrow-int payload rides in a sum variant and is read back at its
+           own width — the sum companion of the narrow-int TUPLE-element cases.")
+  (input  (do
+            (type Box8 (V UInt8) (Z))
+            (def (f (: b Box8)) (match b ((Box8.V u) (Int64.wrap (UInt8.wrap (+ u (UInt8.wrap 1))))) ((Box8.Z) 0)))
+            (def (main (: k Int64)) (f (Box8.V (UInt8.wrap k))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a sum variant carrying a Float64 payload boxes it and escapes it as a float"
+  (doc    "A sum variant carries a `Float64` payload — `(type FBox (F Float64) (Z))`. A float occupies the
+           sum-payload cell as an f64 (distinct from an integer's i64), and the match binds it and returns
+           it across the boundary as a float. `(f (F 3.5))` unwraps to `3.5`. Pins that a float rides in a
+           sum payload — boxed, read by the match binder, and rendered as a float at the boundary — the
+           float companion of the integer/compound-payload sum cases.")
+  (input  (do
+            (type FBox (F Float64) (Z))
+            (def (f (: b FBox)) (match b ((FBox.F x) x) ((FBox.Z) 0.0)))
+            (def (main) (f (FBox.F 3.5)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main)
+  (output (: 3.5 Float64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
