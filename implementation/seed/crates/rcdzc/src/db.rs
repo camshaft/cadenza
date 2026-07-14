@@ -476,6 +476,26 @@ pub struct Db {
     /// allocation on the hot resolve path.
     scope_binders: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
 
+    /// Per-LET-BINDINGS-LIST binder index: `(bindings_list_occ, name) → the ASCENDING positions of that
+    /// name's bare bindings + each one's value occurrence`. The `let` analog of [`scope_binders`].
+    ///
+    /// `last_binder_named` answered "the last binding of `name` visible before position `end`?" by a
+    /// REVERSE SCAN of the in-scope pairs. That scan runs to completion for a NEGATIVE lookup (a reference
+    /// to a prelude/outer name — `+`, `Int64` — that the let does not bind) and for a binder's own
+    /// shadow-check, so a `(let ((v0 …) … (vN …)) …)` where each initializer references an earlier binder
+    /// was O(N) per reference × O(N) references = O(N²) (a wide accumulation `let` — realistic code — was
+    /// ~1440 avg scan iters at N=3200). This index makes each lookup O(log N) (a `partition_point` for the
+    /// last position < `end`) and a negative lookup O(1).
+    ///
+    /// Built ONLY for a bindings-list whose every pair is a bare-name (or `(: name T)` annotated-bare)
+    /// binding — the case whose linear branch returns a plain `Ref { value }`. A list containing a
+    /// DESTRUCTURING pattern binding (`((tuple a b) V)`/`((Ctor n) V)`, which resolves to a `SumPayload`
+    /// path) is ABSENT from this map, so `last_binder_named` falls back to the exact linear walk for it —
+    /// the fast path never has to replicate the pattern-binder enumeration, and its verdict is byte-
+    /// identical (last-wins among bare bindings before `end`). See [`build_let_binder_index`].
+    let_binder_index:
+        crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>>,
+
     /// Per-node LEXICAL-SCOPE SKIP pointer: for each `StructId`, the nearest STRICT ANCESTOR that is a
     /// binding-CANDIDATE (a form `resolve::binder_in` could bind a name in — a `let`/`fn`/`def`, a let
     /// bindings-list, or a match arm), paired with that candidate's DIRECT CHILD on the path down to
@@ -887,6 +907,10 @@ impl Db {
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
+        // Index each let bindings-list's bare-name binders by name (ascending positions + value occ), so
+        // `last_binder_named`'s per-reference reverse scan is O(log N) rather than an O(N) prefix walk — a
+        // wide accumulation `let` was O(N²). Destructuring-pattern lists fall back to the linear scan.
+        let let_binder_index = build_let_binder_index(&ast);
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
         // contributes no entry; a body occurrence is unique to one def, so no collision.
@@ -974,6 +998,7 @@ impl Db {
             type_decl_index,
             effect_decl_index,
             scope_binders,
+            let_binder_index,
             prelude,
             unit_families: crate::prelude::unit_families(),
             unit_defines,
@@ -1259,6 +1284,32 @@ impl Db {
     /// [`scope_binders`]: Db::scope_binders
     pub fn binder_in_scope(&self, scope: StructId, name: &str) -> Option<StructId> {
         self.scope_binders.get(&scope)?.get(name).copied()
+    }
+
+    /// The value occurrence of the LAST bare binding of `name` in the let bindings-list `bindings_occ`
+    /// that lies STRICTLY BEFORE child position `end` — the O(log N) index answer to `last_binder_named`'s
+    /// reverse scan, for a bindings-list whose bindings are all bare/annotated-bare names (the only lists
+    /// present in [`let_binder_index`]). `Some(None)` means the list IS indexed but has no such binding
+    /// before `end` (a definitive negative — do NOT fall back to the linear scan). `None` means the list
+    /// is NOT indexed (it has a destructuring binding) — the caller must run the linear walk.
+    ///
+    /// `end` is the exclusive window end (the count of in-scope pairs), matching `last_binder_named`'s
+    /// `end`. The positions are stored ASCENDING, so `partition_point(pos < end)` finds the count of
+    /// candidates in the window and the last of them (the highest position < `end`) is the last-wins
+    /// binder — byte-identical to the reverse scan's "first match walking backward from `end`".
+    pub fn let_binder_before(
+        &self,
+        bindings_occ: StructId,
+        name: &str,
+        end: usize,
+    ) -> Option<Option<StructId>> {
+        let by_name = self.let_binder_index.get(&bindings_occ)?;
+        let Some(positions) = by_name.get(name) else {
+            // The list is indexed but never binds `name` — a definitive negative (O(1)).
+            return Some(None);
+        };
+        let k = positions.partition_point(|&(pos, _)| (pos as usize) < end);
+        Some(k.checked_sub(1).map(|last| positions[last].1))
     }
 
     /// EVERY parameter binder a scope form declares — `(name, name-occurrence)` pairs for a `fn`/`def`'s
@@ -1865,6 +1916,69 @@ fn build_scope_binders(
         }
         if !map.is_empty() {
             out.insert(form, map);
+        }
+    }
+    out
+}
+
+/// Index each let bindings-list's BARE binders by name → their ascending `(child-position, value-occ)`
+/// pairs, so `resolve::last_binder_named` answers a lookup in O(log N) instead of an O(N) reverse prefix
+/// scan (a wide accumulation `let` was O(N²) — see [`Db::let_binder_index`]).
+///
+/// A bindings-list is indexed ONLY when EVERY pair is a bare-name binding `(name V)` or an annotated-bare
+/// `((: name T) V)` — the case whose `last_binder_named` branch returns `Ref { value: V }`. If any pair is
+/// a DESTRUCTURING pattern (`((tuple …) V)`/`((Ctor …) V)`), the whole list is left OUT of the map, so the
+/// resolver falls back to the exact linear walk for it (the fast path never replicates the pattern-binder
+/// enumeration). This mirrors `last_binder_named`'s LHS peel (`(: pat T)` → `pat`, then the `as_name`
+/// test) so an entry appears iff the linear branch would have returned a `Ref` for that pair.
+fn build_let_binder_index(
+    ast: &Arenas,
+) -> crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>> {
+    let mut out: crate::fxhash::FxHashMap<
+        StructId,
+        crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>>,
+    > = crate::fxhash::FxHashMap::default();
+    for i in 0..ast.structure.len() {
+        let form = StructId(i as u32);
+        // A bindings-list is a `let`'s first tail element. Confirm via the parent `let` shape so an
+        // unrelated headless list of 2-element sublists is not mistaken for one.
+        let Some(tail) = ast.as_form(form, "let") else {
+            continue;
+        };
+        let Some(&bindings_occ) = tail.first() else {
+            continue;
+        };
+        let Struct::List(pairs) = ast.get(bindings_occ) else {
+            continue;
+        };
+        let mut map: crate::fxhash::FxHashMap<String, Vec<(u32, StructId)>> =
+            crate::fxhash::FxHashMap::default();
+        let mut all_bare = true;
+        for (pos, &pair) in pairs.iter().enumerate() {
+            let Struct::List(kv) = ast.get(pair) else {
+                // A malformed pair (not a 2-list) binds nothing here; the linear walk skips it too.
+                continue;
+            };
+            if kv.len() != 2 {
+                continue;
+            }
+            // Peel an annotation `(: pat T)` to `pat`, exactly as `last_binder_named` does.
+            let lhs = match ast.as_form(kv[0], ":") {
+                Some(ann) if ann.len() == 2 => ann[0],
+                _ => kv[0],
+            };
+            if let Some(n) = ast.as_name(lhs) {
+                map.entry(n.to_string())
+                    .or_default()
+                    .push((pos as u32, kv[1]));
+            } else {
+                // A destructuring pattern LHS — this list needs the linear (SumPayload) path.
+                all_bare = false;
+                break;
+            }
+        }
+        if all_bare && !map.is_empty() {
+            out.insert(bindings_occ, map);
         }
     }
     out

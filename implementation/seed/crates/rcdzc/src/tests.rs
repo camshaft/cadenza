@@ -18902,6 +18902,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_accumulation_let_resolves_each_binder_correctly() {
+        // A wide `let` where each binding references the immediately-preceding one — realistic accumulation
+        // code — is resolved via the per-bindings-list binder INDEX (was an O(N) reverse prefix scan per
+        // reference → O(N²)). This locks in that the index answer matches the linear walk at width: each
+        // `v{i}` initializer sees `v{i-1}` (the in-order scope), and the body's `v{N-1}` is the running sum
+        // 0+1+…+(N-1). N=64 → 64·63/2 = 2016. Also exercises a SHADOW at width (a repeated final binder must
+        // win for the body).
+        let n = 64;
+        let mut binds = String::from("(v0 0)");
+        for i in 1..n {
+            binds.push_str(&format!(" (v{i} (+ v{} {i}))", i - 1));
+        }
+        let expect: i64 = (0..n as i64).sum();
+        assert_eq!(
+            run_main(&format!("(let ({binds}) v{})", n - 1)),
+            expect,
+            "each binder sees only the earlier ones; body reads the last"
+        );
+        // A repeated binder at the end of a wide list shadows the earlier same-named one for the body: after
+        // the accumulation, rebind `v0` to 999 — the body `v0` must read 999, not the initial 0. This tests
+        // that the index's ascending-positions + `partition_point(pos < end)` picks the LAST occurrence.
+        assert_eq!(
+            run_main(&format!("(let ({binds} (v0 999)) v0)")),
+            999,
+            "the last binding of a repeated name wins for the body"
+        );
+    }
+
+    #[test]
     fn a_do_sequencing_block_yields_its_last_form() {
         // 02-binding-and-control: `(do f1 … fn)` in EXPRESSION position is a sequencing block — its value
         // is the LAST form, the non-final (pure) forms evaluated for their discarded value. `(do 1 2 3)` =

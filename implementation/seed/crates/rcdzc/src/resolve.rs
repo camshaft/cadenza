@@ -1728,6 +1728,15 @@ fn last_binder_named(
             k
         }
     };
+    // FAST PATH: a bindings-list of all bare-name bindings is indexed by name (last-wins positions), so
+    // the answer is O(log N) — a `partition_point` for the last binding before `end`. This is byte-
+    // identical to the reverse scan below for such a list (both return the last bare `Ref { value }` in
+    // the window), and turns a wide accumulation `let` from O(N²) into O(N log N). A list with a
+    // DESTRUCTURING binding is absent from the index (`None`), so it falls through to the linear walk,
+    // which alone handles the `SumPayload` pattern-binder cases.
+    if let Some(hit) = db.let_binder_before(bindings_occ, name, end) {
+        return hit.map(|value| Resolved::Ref { value });
+    }
     // Scan the in-scope pairs in REVERSE and return the first match — the last binder wins, and a
     // reverse walk lets us stop as soon as we find it rather than scanning the whole prefix.
     for &pair in pairs[..end].iter().rev() {
