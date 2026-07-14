@@ -917,7 +917,10 @@ pub fn collect_used_ops(
             // borrowing read — mirror the emit's reclaim condition so the ops are imported. A SCALAR element
             // `drop`s the parent; a NESTED-COMPOUND element `dup`s the returned child then `drop`s the parent.
             // (A borrowed-operand projection reclaims nothing, matching the emit.)
-            if matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned)) {
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
                 out.insert(OP_DROP);
                 if matches!(scalar_elem, Ok(None)) {
                     out.insert(OP_DUP);
@@ -5118,7 +5121,10 @@ fn emit(
             // `heap_operand_ownership` declines an operand whose ownership it cannot prove, so an unhandled
             // shape rejects (Owned only on a proven-fresh producer), never leaks wrongly or double-frees.
             let scalar_elem = get_op(db, id)?;
-            let reclaim = matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned));
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
             if reclaim {
                 let agg_slot = base;
                 if agg_slot + 1 > *high {

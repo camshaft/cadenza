@@ -15511,6 +15511,10 @@ mod match_engine {
     }
 
     #[test]
+    // `3.14` is the test's chosen bare decimal (proving the default-float width at the bits), NOT an
+    // intended approximation of π — clippy's approx_constant would otherwise reject the `3.14f32`/`3.14f64`
+    // oracle values.
+    #[allow(clippy::approx_constant)]
     fn a_default_float_pragma_makes_a_bare_decimal_literal_take_the_declared_width() {
         // THE EFFECT (`numeric-model.md` §A Module May Declare Its Default Float Literal Type): a bare,
         // otherwise-unconstrained DECIMAL literal WRITTEN in a `(pragma default-float Float32)` module takes
@@ -15543,6 +15547,9 @@ mod match_engine {
     }
 
     #[test]
+    // `3.14` is a chosen bare decimal, not an intended π approximation (see the sibling test) — silence
+    // clippy's approx_constant on the `3.14f64` oracle value.
+    #[allow(clippy::approx_constant)]
     fn a_default_float_pragma_leaves_an_annotated_literal_and_an_integer_alone() {
         // (1) AN EXPLICIT ANNOTATION WINS (`numeric-model.md` §"An explicit annotation … takes precedence
         //     over the module's declared default"): `(: 3.14 Float64)` in a `default-float Float32` module
@@ -53072,7 +53079,8 @@ mod cross_component_oracle {
         );
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&a).expect("the nested-tuple provider validates");
+            v.validate_all(&a)
+                .expect("the nested-tuple provider validates");
         }
         // CONSUMER: `(. (. (P.nest x) 0) 1)` — read the OUTER tuple (owned peer result), project element 0
         // (its inner tuple — a NESTED COMPOUND, so dup the inner + drop the outer), then project element 1
@@ -53083,7 +53091,12 @@ mod cross_component_oracle {
             (def (main (: x Int64)) (host (P) (. (. (P.nest x) 0) 1))) \
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| panic!("nested-projection consumer compiles: {} [{:?}]", d.message, d.code));
+            .unwrap_or_else(|d| {
+                panic!(
+                    "nested-projection consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(&consumer)
@@ -53144,7 +53157,8 @@ mod cross_component_oracle {
             });
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&consumer).expect("let-bound consumer validates");
+            v.validate_all(&consumer)
+                .expect("let-bound consumer validates");
         }
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("[U15] runtime wasm not found; skipping");
