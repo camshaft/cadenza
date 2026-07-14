@@ -2540,6 +2540,33 @@ pub fn assemble_multi_closure_bytes_resource(
     arg_bytes: &[u8],
     plain: &[PlainExportAbi],
 ) -> Vec<u8> {
+    assemble_multi_closure_bytes_resource_borrow(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        makes,
+        arg_bytes,
+        plain,
+        false,
+    )
+}
+
+/// [`assemble_multi_closure_bytes_resource`] with a `call_borrow` switch (C-HOST-6, multi-export
+/// `list<u8>`-result — byte-rope/compound/collection). When TRUE the shared `call`'s self is `borrow<t>`
+/// (repeatable — each make's handle survives across calls) on the outer lift + the nested re-export;
+/// `make`s + plain exports unaffected. `false` reproduces the shipped own component byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_multi_closure_bytes_resource_borrow(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    plain: &[PlainExportAbi],
+    call_borrow: bool,
+) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
     let np = plain.len();
@@ -2659,7 +2686,11 @@ pub fn assemble_multi_closure_bytes_resource(
                 &owned_valtype(own_ty),
             ));
         }
-        items.extend_from_slice(&own_item(1));
+        items.extend_from_slice(&if call_borrow {
+            borrow_item(1)
+        } else {
+            own_item(1)
+        });
         let call_own_ty = (2 + 2 * nmk) as u32;
         let list_ty = (3 + 2 * nmk) as u32;
         items.extend_from_slice(&list_u8_defined_type());
@@ -2698,7 +2729,7 @@ pub fn assemble_multi_closure_bytes_resource(
     // sec 4/5/11: nested re-export component (list-result `call`); instantiate; export the closure interface,
     // then each PLAIN export as an ordinary top-level comp func (comp func k+nmk+1+j).
     out.extend_from_slice(&component_section(
-        &resource_inner_component_multi_closure_bytes(makes, arg_bytes),
+        &resource_inner_component_multi_closure_bytes_borrow(makes, arg_bytes, call_borrow),
     ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
@@ -2723,10 +2754,29 @@ pub fn assemble_multi_closure_bytes_resource(
 /// its own `list<u8>` defined type, shifting the export-side type base by 2 vs the scalar version — a make
 /// contributes own<t>+ft = 2 types, the call contributes own<t>+list<u8>+ft = 3). Uses a running type
 /// counter for clarity. Imported funcs: make[i] → func i, `call` → func N.
+#[allow(dead_code)]
 fn resource_inner_component_multi_closure_bytes(
     makes: &[ClosureMakeAbi],
     arg_bytes: &[u8],
 ) -> Vec<u8> {
+    resource_inner_component_multi_closure_bytes_borrow(makes, arg_bytes, false)
+}
+
+/// [`resource_inner_component_multi_closure_bytes`] with a `call_borrow` switch. The shared `call`'s self
+/// handle (the imported `own<0>`/`borrow<0>` + the re-exported `own<R>`/`borrow<R>`) is `borrow<t>` when TRUE
+/// — matching the outer lift in [`assemble_multi_closure_bytes_resource_borrow`]. `make`s stay `own<t>`.
+fn resource_inner_component_multi_closure_bytes_borrow(
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+) -> Vec<u8> {
+    let call_handle = |idx: u32| -> Vec<u8> {
+        if call_borrow {
+            borrow_item(idx)
+        } else {
+            own_item(idx)
+        }
+    };
     let n = makes.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -2759,7 +2809,7 @@ fn resource_inner_component_multi_closure_bytes(
         let list_ty = ty + 1;
         let ft_ty = ty + 2;
         out.extend_from_slice(&{
-            let mut items = own_item(0);
+            let mut items = call_handle(0);
             items.extend_from_slice(&list_u8_defined_type());
             items.extend_from_slice(&closure_call_list_functype(own_ty, arg_bytes, list_ty));
             section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -2797,13 +2847,13 @@ fn resource_inner_component_multi_closure_bytes(
         ));
         ty += 2;
     }
-    // Shared call: own<R> (ty) + list<u8> (ty+1) + call functype re-typed (ty+2); export `call` (func N).
+    // Shared call: own<R>/borrow<R> (ty) + list<u8> (ty+1) + call functype re-typed (ty+2); export `call`.
     {
         let own_ty = ty;
         let list_ty = ty + 1;
         let ft_ty = ty + 2;
         out.extend_from_slice(&{
-            let mut items = own_item(r);
+            let mut items = call_handle(r);
             items.extend_from_slice(&list_u8_defined_type());
             items.extend_from_slice(&closure_call_list_functype(own_ty, arg_bytes, list_ty));
             section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))

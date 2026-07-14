@@ -2410,6 +2410,7 @@ pub fn multi_closure_bytes_resource_core_module(
     arg_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2613,9 +2614,12 @@ pub fn multi_closure_bytes_resource_core_module(
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(v, out);
         };
+        // cell = self (borrow: rep passed directly) or resource.rep(self) (own).
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         get(cell, &mut inner);
         for a in 0..arity {
@@ -2632,9 +2636,13 @@ pub fn multi_closure_bytes_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(bh, &mut inner);
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+        // transient Bytes handle `bh` is separate and dropped after the copy either way.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         get(bh, &mut inner);
         inner.push(op::CALL);
         uleb128(imp("bytes-len"), &mut inner);
@@ -2729,6 +2737,7 @@ pub fn multi_closure_value_encode_resource_core_module(
     lifted_type_idx: u32,
     descriptor: &[u8],
     layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2934,9 +2943,12 @@ pub fn multi_closure_value_encode_resource_core_module(
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(v, out);
         };
+        // cell = self (borrow: rep passed directly) or resource.rep(self) (own).
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         get(cell, &mut inner);
         for a in 0..arity {
@@ -2953,9 +2965,13 @@ pub fn multi_closure_value_encode_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+        // transient collection handle `rep` is separate and released after value-encode.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         // desc = bytes-alloc(len); bytes-set each constant descriptor byte.
         ci32(descriptor.len() as i64, &mut inner);
         inner.push(op::CALL);
@@ -3076,6 +3092,7 @@ pub fn multi_closure_value_resource_core_module(
     lifted_type_idx: u32,
     template: &crate::lower::ValueFormTemplate,
     layout: &Layout,
+    call_borrow: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -3291,9 +3308,12 @@ pub fn multi_closure_value_resource_core_module(
             out.push(op::LOCAL_SET);
             uleb128(l as u64, out);
         };
+        // cell = self (borrow: rep passed directly) or resource.rep(self) (own).
         get(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(f_rrep as u64, &mut inner);
+        if !call_borrow {
+            inner.push(op::CALL);
+            uleb128(f_rrep as u64, &mut inner);
+        }
         set(cell, &mut inner);
         get(cell, &mut inner);
         for a in 0..arity {
@@ -3311,9 +3331,13 @@ pub fn multi_closure_value_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
-        get(cell, &mut inner);
-        inner.push(op::CALL);
-        uleb128(imp("drop"), &mut inner);
+        // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
+        // transient compound handle `rep` is separate and dropped after the walk.
+        if !call_borrow {
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+        }
         for hole in &template.leaves {
             emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
         }

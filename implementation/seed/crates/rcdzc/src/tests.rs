@@ -2003,6 +2003,71 @@ impl ComposedRuntime {
         (out1[0].clone(), out2[0].clone())
     }
 
+    /// Like [`closure_make_call_named_twice`] but for a NAMED make whose shared `call` returns a `list<u8>`
+    /// value form (a multi-export byte-rope/compound/collection closure): mint the named handle, `call` it
+    /// twice via the shared `call`, return both results as raw byte vectors. Proves the multi-export
+    /// VALUE-FORM shared `call` is a repeatable `borrow<t>` method — the same handle yields the same value
+    /// form on repeated calls.
+    fn closure_make_call_named_list_twice(
+        &mut self,
+        make_name: &str,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), make_name)
+            .unwrap_or_else(|| panic!("closure `{make_name}` exported"));
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let bytes = |v: &Val| -> Vec<u8> {
+            match v {
+                Val::List(items) => items
+                    .iter()
+                    .map(|it| match it {
+                        Val::U8(b) => *b,
+                        other => panic!("expected u8 list element, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected a list<u8> call result, got {other:?}"),
+            }
+        };
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut args = vec![handle[0].clone()];
+        args.extend_from_slice(call_args);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out1)
+            .expect("first shared list call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let first = bytes(&out1[0]);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out2)
+            .expect("second shared list call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        let second = bytes(&out2[0]);
+        (first, second)
+    }
+
     /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
     /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
     /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
@@ -39050,6 +39115,38 @@ mod closure_host_resource {
             second,
             Val::S64(41),
             "the SAME make-inc handle, shared call(40) = 41 — borrow<t> keeps it live (repeatable)"
+        );
+    }
+
+    /// C-HOST-6, multi-export VALUE-FORM: the shared LIST-`call` of a multi-export closure program whose
+    /// exports return a value form (here a COMPOUND tuple) is ALSO a repeatable `borrow<t>` method — one
+    /// `make-<name>` handle yields the SAME value-form bytes on repeated shared calls. Two same-signature
+    /// tuple-returning exports share the one list-`call`. `#[ignore]` — needs the runtime wasm in the store.
+    #[test]
+    #[ignore]
+    fn a_multi_export_value_form_shared_borrow_call_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // Two same-signature closure exports returning a COMPOUND (tuple): `lo`/`hi` pair x with a derived
+        // value. Both share the one value-form list-`call`.
+        let src = "(do (def (lo) (fn ((: x Int64)) (tuple x (+ x 1)))) \
+                   (def (hi) (fn ((: x Int64)) (tuple x (* x 10)))) (export lo) (export hi))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // ONE make-lo handle, the shared list-`call` twice on it → the SAME value form of `(tuple 5 6)`.
+        let (first, second) = rt.closure_make_call_named_list_twice("make-lo", &[], &[Val::S64(5)]);
+        assert!(
+            !first.is_empty(),
+            "the first shared value-form call returns a non-empty document"
+        );
+        assert_eq!(
+            first, second,
+            "the SAME make-lo handle yields the SAME value form on a repeated shared call — borrow<t> keeps it live"
         );
     }
 
