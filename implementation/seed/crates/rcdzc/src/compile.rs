@@ -500,7 +500,10 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 /// rational type (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). The
 /// fraction analogue of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its
 /// CDZ0101; a type that does not reduce to a concrete `Ty` returns `None`, no false reject), the domain
-/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303.
+/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303 —
+/// the machine-readable diagnostic for the unsatisfied "the named type must be an exact rational" constraint.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# The type named by a default-fraction-literal directive MUST be an exact rational type the numeric model admits, and a directive naming a type that is not an exact rational type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
 fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
     // note for the bound-unmodeled vs unbound distinction this turns on).

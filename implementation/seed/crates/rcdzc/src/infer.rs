@@ -164,6 +164,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // rational its digits denote (`0.5` → `1/2`) — exact-by-default, checked FIRST (an exact-fraction
         // default is a stronger statement than a float-width default); else a `(pragma default-float <T>)`
         // width; else the deferred float default (`Float64`).
+        //
+        // The final `.unwrap_or_else` here (a decimal → `Ty::float`) and its twin on the integer arm above
+        // (a `Resolved::Int` → `Ty::int`) realize the NO-fraction-default fallthrough: when no default
+        // fraction is in force, a literal takes the numeric model's default for its WRITTEN form — an
+        // integer literal the default integer type, a decimal literal the default floating-point type.
+        //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+        //# When a module declares no default fraction literal type, a numeric literal with no other constraint MUST take the numeric model's default numeric type for its written form (an integer literal the default integer type, a decimal literal the default floating-point type).
         Resolved::Float(_) => module_default_fraction_ty(db, id)
             .or_else(|| module_default_float_ty(db, id))
             .unwrap_or_else(Ty::float),
@@ -1784,6 +1791,13 @@ fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
 //# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), that a numeric literal with no other constraint takes an exact fraction type within that module, so that ordinary arithmetic in that module is exact by default.
 //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
 //# A declared default fraction literal type MUST apply to both an integer-written literal and a decimal-written literal with no other constraint: an integer literal takes the whole value (a denominator of one) and a decimal literal takes the exact fraction its written digits denote, with no rounding.
+// The definition-site, no-conversion, and annotation-precedence rules are the SAME three the default-
+// integer twin obeys: the default in force is the one the literal's OWN module declares (the map is
+// `default_fraction_literals`, keyed per pragma-module by the original literal node — definition-site,
+// not import-site); it fixes a TYPE not a conversion (`matches!(ty, Ty::Rational)`, no-silent-promotion
+// still faults a mix); and an explicit annotation WINS (the `(: <lit> T)` guard below).
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default fraction literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
 fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     // An EXPLICIT ANNOTATION WINS: a literal that is the expression of a `(: <lit> T)` annotation is
     // governed by `T`, not the module default — so DON'T apply the fraction default to it (else the
