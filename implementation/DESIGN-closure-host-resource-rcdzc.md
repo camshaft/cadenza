@@ -965,13 +965,21 @@ the component type. The new work:
   envelope. The `emit_closure_resource` result-shape decline guard is GONE — a single-export tuple arg composes
   with EVERY result shape (scalar / byte-rope / fixed-compound / collection). Corpus: tuple-arg → `(list 10 3)`,
   Map → `(map (1 100) (2 200))`. 🎯 SINGLE-EXPORT: a fixed-shape scalar compound arg × every result shape DONE.
+- **✅ TUPLE ARG × LIST-RESULT on the MULTI-EXPORT path** (`@8f1a08f1`, baseline `@72cb720e`). Extended the
+  tuple-arg × list-result composition to N same-sig closures sharing one list-returning `call`. Threaded
+  `tuple_arg` into all three multi list-result cores (`multi_closure_bytes_/value_/value_encode_resource_core_
+  module`, shared helpers) + `assemble_multi_closure_bytes_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_bytes_borrow_tuple` (running type counter mints the `tuple<…>` before
+  `list<u8>`). The `emit_multi_closure_resource` list-result decline guard is GONE. Corpus: mk-rev → (list 3
+  10), mk-sum → (tuple 13 7). The MIXED path keeps its guard (a trivial follow-on — same envelope + serializers,
+  just thread `tuple_arg` through its 3 branches + relax the guard).
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export across EVERY result shape (scalar/byte-rope/fixed-compound/
-  collection), and for multi-export/mixed/distinct-sig at SCALAR result; still to widen: multi/mixed/
-  distinct-sig with a LIST-result (byte-rope/compound/collection) + tuple arg (their multi list-result
-  cores/envelopes need the same thread — the shared helpers make it mechanical); a compound arg ALONGSIDE
-  other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving
-  flattened-tuple fields with pass-through scalars); a VARIABLE-LENGTH collection arg
+  SCALAR tuple/record is DONE for single-export across EVERY result shape, multi-export across EVERY result
+  shape, and mixed/distinct-sig at SCALAR result; still to widen: MIXED + a LIST-result + tuple arg (trivial —
+  thread through its 3 branches); DISTINCT-SIG + a LIST-result + tuple arg (its per-group list-result `call-g`
+  bodies need the thread); a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the
+  tuple is the SOLE arg — needs interleaving flattened-tuple fields with pass-through scalars); a
+  VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
