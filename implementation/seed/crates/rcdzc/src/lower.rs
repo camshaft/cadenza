@@ -4153,6 +4153,30 @@ fn map_value_is_binder_free(db: &mut Db, v: StructId) -> bool {
     collect_pattern_binders(db, v, &mut seen).is_ok() && seen.is_empty()
 }
 
+/// Whether a map value sub-pattern `v` is LIFTED into the body by `desugar_map_value_subpatterns` (a
+/// `(match __mv (v body) (_ <catch-all>))` that DISPATCHES + binds) rather than handled by Inc-17's
+/// resolve-stage `MapField.value_steps` descent. Two cases are lifted: (a) a BINDER-FREE value (a literal /
+/// all-wildcard compound — lifting reuses the body unchanged, no binder to re-resolve); (b) a REFUTABLE
+/// value that INTRODUCES binders (`(Some n)` — a multi-variant ctor / a literal nested with a binder),
+/// which NEEDS the dispatching `(match __mv …)` (a bare presence read would trap on a non-matching value)
+/// AND whose binders re-resolve against the synthesized `(<v> …)` arm. An IRREFUTABLE binder-introducing
+/// value (`(tuple x y)`, single-variant `(Mk n)`) is NOT lifted — it always matches, so Inc-17's
+/// value_steps read binds it directly (no dispatch needed, and lifting would fight the resolve memo).
+fn map_value_liftable(db: &mut Db, v: StructId) -> bool {
+    if is_bare_map_value(db, v) {
+        return false; // a bare binder needs no lift
+    }
+    if map_value_is_binder_free(db, v) {
+        return true; // (a) literal / all-wildcard — lift (reuses body unchanged)
+    }
+    // (b) a binder-introducing value: lift iff REFUTABLE (a refutable value needs the dispatch; an
+    // irrefutable one is bound by Inc-17's value_steps). Refutable ⇔ `check_binding_pattern` = CDZ0210.
+    matches!(
+        check_binding_pattern(db, v, &crate::ty::Ty::Any),
+        Err(ref r) if r.code == Some(Code::NonExhaustive)
+    )
+}
+
 /// PRE-PASS for `lower_match_map` (the map analogue of the Inc-1 list-element compose + Inc-11/12
 /// refutable-element dispatch): a map-pattern VALUE sub-pattern MAY itself be any pattern — `(map ("k"
 /// (tuple a b)))`, `(map ("k" (Some v)))`, `(map ("k" 0))` — not just a bare binder. Such a value is lifted
@@ -4180,7 +4204,7 @@ fn desugar_map_value_subpatterns(
         };
         if let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) {
             for (_, v) in entries {
-                if !is_bare_map_value(db, v) && map_value_is_binder_free(db, v) {
+                if !is_bare_map_value(db, v) && map_value_liftable(db, v) {
                     any = true;
                 }
             }
@@ -4231,9 +4255,9 @@ fn desugar_map_value_subpatterns(
         let mut new_entry_nodes: Vec<StructId> = Vec::with_capacity(entries.len());
         let mut lifts: Vec<(String, StructId)> = Vec::new();
         for (ei, &(k, v)) in entries.iter().enumerate() {
-            // Lift ONLY a non-bare, binder-free value; a bare binder / a binder-introducing value is left in
-            // place (the latter declines downstream — resolve-descent is a later increment).
-            if !is_bare_map_value(db, v) && map_value_is_binder_free(db, v) {
+            // Lift a non-bare LIFTABLE value (binder-free OR refutable); an irrefutable binder-introducing
+            // value is left in place (Inc-17 resolve-descent binds it via `MapField.value_steps`).
+            if !is_bare_map_value(db, v) && map_value_liftable(db, v) {
                 let name = format!("__mv{ai}_{ei}");
                 let fresh = db.push_name(&name);
                 let entry = db.push_list(vec![k, fresh]);
@@ -4281,8 +4305,14 @@ fn desugar_map_value_subpatterns(
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
+    // A REFUTABLE lifted value's binders (`n` in `(map ("a" (Some n)))`) resolved to a `MapField` at the
+    // FAULT stage (Inc-17 descends value sub-patterns), but the body is now RE-PARENTED under the
+    // synthesized `(match __mv ((Some n) body) …)` — so those binders must RE-RESOLVE against the
+    // destructuring pattern. Drop the stale resolutions first (a binder-free lift has nothing to forget, so
+    // this is a no-op cost there), then walk.
+    crate::resolve::forget_subtree(db, rewritten);
     crate::resolve::resolve_subtree(db, rewritten);
-    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "map match with a binder-free value sub-pattern → fresh-binder + body destructure-match");
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "map match with a lifted value sub-pattern → fresh-binder + body destructure-match");
     Some(core_of(db, rewritten))
 }
 

@@ -1054,6 +1054,7 @@ pass	a recursively-built linked list renders its full runtime spine
 pass	a reference to an unbound name is rejected before running
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
+pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a resume outside any handler arm is rejected
 pass	a returned capturing closure bound with let and applied folds like the inline form
