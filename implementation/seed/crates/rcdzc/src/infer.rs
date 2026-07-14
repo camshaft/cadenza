@@ -3940,25 +3940,36 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
 /// a did-you-mean over the KNOWN unit names (families + user defines), so `5gram` points at a near unit.
 /// Well-formedness independent of reachability — checked over every `(Unit.of #"…")` occurrence.
 pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
-    // The known unit vocabulary: built-in families + every user `Unit.define` name.
-    let mut known: Vec<String> = db.unit_families.keys().cloned().collect();
-    known.extend(db.unit_defines.iter().map(|(n, _, _, _)| n.clone()));
+    // The known unit vocabulary (built-in families + every user `Unit.define` name) is built LAZILY — only
+    // when a first candidate `(Unit.of …)` is actually found — so a program with NO unit applications (the
+    // common case) never allocates it.
+    let mut known: Option<Vec<String>> = None;
     let node_count = db.ast.structure.len();
     for id in (0..node_count as u32).map(StructId) {
-        // A `(Unit.of #"name")` application whose name is a symbol/string literal.
-        let crate::resolved::Resolved::Apply { head, args } = resolved_of(db, id) else {
-            continue;
+        // A `(Unit.of #"name")` application whose name is a symbol/string literal. Dispatch through
+        // `resolved_ref` (a BORROW, not a `resolved_of` clone): this scans EVERY node of every program, and
+        // the vast majority are not `Apply`, so cloning the whole `Resolved` per node just to test the
+        // variant was pure churn (on a large unit-FREE program this whole pass was ~30% of compile). The
+        // `head` is Copy; `args.first()` is read through the borrow (no `args` Arc clone needed here).
+        let (head, name_occ) = match crate::resolve::resolved_ref(db, id) {
+            crate::resolved::Resolved::Apply { head, args } => match args.first() {
+                Some(&name_occ) => (*head, name_occ),
+                None => continue,
+            },
+            _ => continue,
         };
         if crate::eval::meta_apply_of(db, head) != Some(crate::resolved::Prim::UnitOf) {
             continue;
         }
-        let Some(&name_occ) = args.first() else {
-            continue;
-        };
         let name = match resolved_of(db, name_occ) {
             crate::resolved::Resolved::SymbolConst(s) | crate::resolved::Resolved::Str(s) => s,
             _ => continue, // a non-literal unit argument — not a static unknown-unit case
         };
+        let known = known.get_or_insert_with(|| {
+            let mut v: Vec<String> = db.unit_families.keys().cloned().collect();
+            v.extend(db.unit_defines.iter().map(|(n, _, _, _)| n.clone()));
+            v
+        });
         if known.contains(&name) {
             continue; // a known family / user-defined unit
         }
