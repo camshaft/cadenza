@@ -2554,12 +2554,19 @@
   (call   appa (: 5 Int64))
   (output (: 15 Int64)))
 
-(case "a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound"
+(case "a compound closure ARG on the DIRECT-CALL path is declined — an IMPLEMENTATION gap (oracle-proven)"
   (doc    "A single closure export whose closure takes a Tuple, called DIRECTLY by the host (no consumer to
-           apply it in-guest): the host would have to supply the `(Tuple Int64 Int64)` argument OVER the
-           boundary, which needs a host→guest decode of the compound into the guest heap — out of scope. The
-           compiler DECLINES (a `todo`), rather than emit a component that can't accept the argument. Contrast
-           the round-trip cases above, where the argument is built in-guest.")
+           apply it in-guest). The compiler currently DECLINES (a `todo`). NOTE the decline is an
+           IMPLEMENTATION gap, NOT an ABI wall: a FIXED-SHAPE SCALAR tuple `(Tuple Int64 Int64)` does NOT need
+           the nonexistent `value-decode` runtime op — it crosses as a native component `tuple<s64,s64>`
+           type, which the canonical ABI FLATTENS into scalar core params, and the guest `call` wrapper
+           rebuilds the tuple cell in-guest from the flat fields with the ORDINARY `arr-alloc`/`box-int`/
+           `arr-set` ops. The `a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening` ComponentBuilder
+           ORACLE proves this shape validates + RUNS under wasmtime (`call(handle,(3,4))` → 7). The remaining
+           emit vertical (serializer cell-rebuild + envelope tuple defined type + routing + cdz-run
+           `Val::Tuple`) is a later increment; a VARIABLE-LENGTH collection arg genuinely would need runtime
+           decode and stays out of scope. Contrast the round-trip cases above, where the argument is built
+           in-guest.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: 3 Int64))

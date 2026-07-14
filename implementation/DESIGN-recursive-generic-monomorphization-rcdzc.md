@@ -3,7 +3,16 @@
 Status: COMPLETE — a recursive generic function is instantiated once per distinct concrete type, end to
 end, across EVERY recursive-def flavor: top-level, transitive (generic-calls-generic chains), mutual
 recursion, do-local, and module-member. Same-type calls dedup; unbounded polymorphic recursion rejects
-cleanly at type-check. All follow-ons resolved (see the bottom section). 0 fail throughout.
+cleanly at type-check. Works over USER-DEFINED GENERIC RECURSIVE SUM TYPES too — `(type Lst Nil (Cons a
+(Lst a)))` with an unannotated `len` monomorphizes per element type (`Lst Int64` + `Lst String` → 5),
+the recursive-DATA idiom, not just scalar pass-through. All follow-ons resolved. 0 fail throughout.
+
+ONE adjacent gap, a SEPARATE feature (NOT monomorphization): an explicit POLYMORPHIC ANNOTATION
+`(: l (Lst a))` / `(: b (Box a))` is rejected — the type variable `a` is unbound in the annotation's
+scope (there is no form binding a signature's type variables). A CONCRETE generic-type annotation
+`(: b (Box Int64))` works, and the UNANNOTATED polymorphic form works (inference carries the element
+type — the idiomatic spelling). Binding a signature's type variables so a polymorphic annotation resolves
+is its own increment (type-variable-in-signature), orthogonal to the monomorphization engine.
 
 ## Transitive genericity (LANDED after the initial phases) — generic-calls-generic
 

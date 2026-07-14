@@ -289,7 +289,17 @@ pub fn emit(
             }
         } else if matches!(
             result,
-            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+            crate::ty::Ty::List(_)
+                | crate::ty::Ty::Map(_, _)
+                | crate::ty::Ty::Set(_)
+                // A RUNTIME-computed BigInt/Rational result crosses via the SAME `value-encode` walker —
+                // its magnitude is variable-length (no fixed hole-template), and the runtime already
+                // renders `Shape::BigInt`/`Shape::Rational`. Only a NULLARY export reaches here (the
+                // parameterized-heap-return guard above is general); a constant BigInt still takes the
+                // baked-bytes constant path (`constant_value_form`) — this serves the runtime-COMPUTED one
+                // (`(* (BigInt.of a) (BigInt.of b))` at a nullary export).
+                | crate::ty::Ty::BigInt
+                | crate::ty::Ty::Rational
         ) && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
         {
             // A RUNTIME `List`/`Map`/`Set` (a push/insert/recursion-built collection — not constant-

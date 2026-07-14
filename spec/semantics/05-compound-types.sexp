@@ -2462,6 +2462,24 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "a sum whose variants are named after target-language keywords constructs and matches"
+  (doc    "A user sum is free to name its variants whatever the language permits — including words that are
+           KEYWORDS in a compilation target. `(type W (fn Int64) (struct Int64) (enum))` names its variants
+           `fn`/`struct`/`enum` (Rust keywords). Construction `(W.fn 5)` and the match arms resolve by the
+           variant's Cadenza identity, and the value discriminates → 5 (the `fn` arm). Pins that a variant
+           name is a Cadenza identifier decided by the source, NOT constrained by any backend's reserved
+           words — a backend that maps names to its own syntax must ESCAPE a keyword collision (the Rust
+           backend emits `r#fn` for a raw-escapable keyword and a `cdz_kw_`-prefixed identifier for a
+           non-escapable one like `Self`), never reject or miscompile the well-formed program.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (fn Int64) (struct Int64) (enum))
+            (def (f (: w W)) (match w ((W.fn n) n) ((W.struct n) (* n 2)) ((W.enum) 0)))
+            (def (main) (f (W.fn 5)))
+            (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 (case "a nested constructor in a multi-payload position destructures two levels"
   (doc    "A variant pattern in a multi-payload slot — `(Cons h (Cons h2 rest))` — switches TWO levels: the
            inner `Cons` sits in the tail position `[Payload, Elem(1)]`, whose sub-value type is registered
@@ -3952,6 +3970,22 @@
   (call   main)
   (output (: (W 42) (Box Int64))))
 
+(case "a generic sum whose payload NESTS the parameter escapes with the instantiated inner type"
+  (doc    "The nested-parameter companion: `(type Box (E) (W (Option a)))` — the type parameter `a` sits
+           INSIDE the `W` variant's `(Option a)` payload, not as the whole payload. At `(Box Int64)` the
+           value `(Box.W (Option.Some 42))` escapes `(: (W (Some 42)) (Box Int64))` — the inner `Option`'s
+           payload observable, the parameter instantiated to Int64. Pins that the escape-render descriptor
+           carries a NESTED parameter's instantiation (not just a bare-param payload): the wasm value-encode
+           walks the `Option` inside the `W`, and the rust gate substitutes the result frame's arg into the
+           generic descriptor's `T0` placeholder (`(W (Option T0))` → `(W (Option Int64))`).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (E) (W (Option a)))
+            (def (main) (: (Box.W (Option.Some 42)) (Box Int64)))
+            (export main)))
+  (call   main)
+  (output (: (W (Some 42)) (Box Int64))))
+
 (case "an all-nullary enum dispatches its runtime-selected variant and escapes"
   (doc    "An enum whose variants are ALL nullary — `(type Color Red Green Blue)` — each variant is the
            inline-unit CONSTANT (no arr-alloc(0) payload). A function selects one at runtime via nested
@@ -4058,6 +4092,40 @@
             (def (main) (f (T.Int 42)))
             (export main)))
   (output (: 42 Int64)))
+
+(case "a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant"
+  (doc    "A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
+           distinct from a prelude TYPE/MODULE name (`Int`/`List`) — is reachable BARE in BOTH construct
+           and match position, resolving to the LOCAL variant, not the built-in Option/Result ctor. The
+           built-in sums inject their data-ctor names into the prelude AFTER the `variant_ctor_index`
+           snapshot is taken, so a user variant of the same name is indexed (unlike a type/module name,
+           which is deliberately skipped to keep bare `Int` the width constructor). Here `(type T (Some
+           Int64) (Other Int64))` reuses `Some`: `(Some 5)` builds T's `Some` (not the generic Option's),
+           and `(match t ((Some n) (+ n 100)) ((Other n) n))` arms it — the discriminant is T's, so the
+           `Some` arm (not `Other`) fires → 105. Pins that a data-ctor-colliding variant is NOT shadowed
+           by the built-in — the shape a self-hosted AST sum reusing `Some`/`Ok` for its own variants
+           relies on. (Contrast the sibling case above: a TYPE-name collision like `Int` stays qualified
+           in construct position, per the deliberate variant-shadows-prelude design.)")
+  (input  (do
+            (type T (Some Int64) (Other Int64))
+            (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n)))
+            (def (main) (f (Some 5)))
+            (export main)))
+  (output (: 105 Int64)))
+
+(case "a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant"
+  (doc    "The discriminant control for the case above: on the SAME `(type T (Some Int64) (Other Int64))`
+           reusing the prelude `Some`, constructing `(Other 5)` bare and matching must fire the `Other`
+           arm (return 5), NOT the `Some` arm (+ 100). Together the two cases prove the bare `Some`
+           construct+match is genuinely T's own two-variant discriminant, not the built-in Option (which
+           has no `Other`) — a regression in the prelude-data-ctor injection order that re-shadowed the
+           user variant would flip one of these to the wrong value.")
+  (input  (do
+            (type T (Some Int64) (Other Int64))
+            (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n)))
+            (def (main) (f (Other 5)))
+            (export main)))
+  (output (: 5 Int64)))
 
 (case "a bare nullary constructor is the nullary sum value"
   (doc    "A nullary variant used as a VALUE may be written BARE — `NNil`, not `(Node.NNil unit)`. A

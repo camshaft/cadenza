@@ -3080,9 +3080,8 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         }
     }
     // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
-    let mut path_types: std::collections::HashMap<Vec<crate::core::PathStep>, crate::ty::Ty> =
-        std::collections::HashMap::new();
-    path_types.insert(Vec::new(), scrut_ty);
+    let mut path_types: PathTypes = std::collections::HashMap::new();
+    path_types.insert(Vec::new(), std::sync::Arc::new(scrut_ty));
     match build_tree(db, scrutinee, &rows, &path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
@@ -4136,7 +4135,14 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
 /// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
 /// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
 /// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
-type PathTypes = std::collections::HashMap<Vec<crate::core::PathStep>, crate::ty::Ty>;
+// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`: `extend_path_types` clones the whole map at
+// every nesting level (so sibling arms don't share a mutation), and a deeply-NESTED pattern (`(Some (Some
+// … x))`) descends `depth` levels with a map that grows one entry per level. With bare `Ty` values, each
+// per-level clone deep-copied every entry's Ty (itself O(depth) deep for a nested sum) → O(depth³) total
+// (a depth-400 nested match: 7.5s, 52% in `Ty::clone`). `Arc` makes the per-level map clone a cheap
+// pointer-bump per entry, dropping the map-clone factor to O(depth²).
+type PathTypes =
+    std::collections::HashMap<Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>>;
 
 /// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
 /// the FIRST row is a catch-all (no constraints), it matches unconditionally → its body is the leaf (later
@@ -4281,7 +4287,10 @@ fn build_tree(
     // sum-payload descent seeded it. (`path_types` still wins where present — a variant payload's
     // instantiated type is more precise than a raw type-walk.)
     let switch_path = shallowest_path(rows);
-    let sub_ty = match path_types.get(&switch_path) {
+    // The switch sub-value's type, as an `Arc` — the seeded case SHARES the map's `Arc` (a pointer bump,
+    // not a deep clone of an O(depth)-nested `Ty`), so descending a deeply-nested pattern does not re-clone
+    // the growing type at every level. The computed fallback wraps its fresh `Ty` once.
+    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path) {
         Some(t) => t.clone(),
         // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
         // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
@@ -4290,7 +4299,7 @@ fn build_tree(
         None => match type_at_path(db, scrutinee, &switch_path)
             .or_else(|| type_from_seeded_prefix(path_types, &switch_path))
         {
-            Some(t) => t,
+            Some(t) => std::sync::Arc::new(t),
             None => {
                 return Err(Reject::decline(
                     "compound match switch path has no solved type",
@@ -4298,7 +4307,7 @@ fn build_tree(
             }
         },
     };
-    let (decl, variant_count) = match &sub_ty {
+    let (decl, variant_count) = match &*sub_ty {
         crate::ty::Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl) {
             Some(t) => (*decl, t.variants.len()),
             None => return Err(Reject::decline("sum match sub-value has no declaration")),
@@ -4530,7 +4539,7 @@ fn type_from_seeded_prefix(
     // Longest seeded prefix (try the full path down to the empty prefix).
     for cut in (0..path.len()).rev() {
         if let Some(base) = path_types.get(&path[..cut].to_vec()) {
-            let mut cur = base.clone();
+            let mut cur: crate::ty::Ty = (**base).clone();
             for step in &path[cut..] {
                 cur = match step {
                     crate::core::PathStep::Elem(i) => match &cur {
@@ -4591,10 +4600,10 @@ fn extend_path_types(
             for (i, elem_ty) in elems.iter().enumerate() {
                 let mut elem_path = child.clone();
                 elem_path.push(crate::core::PathStep::Elem(i));
-                out.insert(elem_path, elem_ty.clone());
+                out.insert(elem_path, std::sync::Arc::new(elem_ty.clone()));
             }
         }
-        out.insert(child, payload_ty);
+        out.insert(child, std::sync::Arc::new(payload_ty));
     }
     out
 }
@@ -4662,13 +4671,10 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
     let mut cur = scrutinee;
     for step in path {
         // A `Payload` step over a NOMINAL NEWTYPE is a no-op (the box is erased; the underlying value IS
-        // `cur`) — see `fold_sum_path`. Leave `cur` unchanged and continue.
-        if matches!(step, PathStep::Payload)
-            && matches!(
-                crate::infer::type_of(db, cur),
-                crate::ty::Ty::Nominal { .. }
-            )
-        {
+        // `cur`) — see `fold_sum_path`. Leave `cur` unchanged and continue. `type_is_nominal` reads only the
+        // type's KIND (no full `Ty` clone) — `const_at_path` runs once per match-tree level over a path that
+        // grows with depth, so a per-step deep-`Ty` clone here compounded to O(depth³) on a nested pattern.
+        if matches!(step, PathStep::Payload) && crate::infer::type_is_nominal(db, cur) {
             continue;
         }
         cur = match (step, core_of(db, cur)) {
@@ -5863,6 +5869,18 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
         // recurses over nested collections, so the walker renders them; only the type node needed lifting.
         crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
+            let type_node = type_node_of(ty)?;
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
+            Some(builder.encode(framed))
+        }
+        // A RUNTIME-computed `BigInt`/`Rational` result: its value form is VARIABLE-length (a BigInt
+        // magnitude is however many bytes the value needs — the fixed-hole `runtime_value_form_template`
+        // cannot serve it), so it escapes via the SAME runtime `value-encode` walker as a collection. The
+        // runtime already renders `Shape::BigInt` (tag 17) / `Shape::Rational` as a `KIND_INT` leaf / a
+        // `{num,den}` record. Wrap in a `Framed(<type-node>, …)` frame so the value form is `(: N BigInt)`
+        // (the `Named` bare-name frame the constant escape uses), the type node observable.
+        crate::ty::Ty::BigInt | crate::ty::Ty::Rational => {
             let type_node = type_node_of(ty)?;
             let inner = builder.shape_of(db, ty)?;
             let framed = builder.push(ShapeNode::Framed(type_node, inner));

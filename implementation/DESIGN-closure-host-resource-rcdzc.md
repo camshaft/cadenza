@@ -869,10 +869,27 @@ the component type. The new work:
   former "…is declined" anchor is now a working witness; stale narrative rewritten). This was the last
   intra-program reduction-engine blocker under the closures work — the boundary ABI gaps below remain, but the
   guest-side closure mechanics are complete.
-- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
-  (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
-  a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined). **The entire byte-rope
+- **✅ ORACLE `@54396f93` — a FIXED-SHAPE SCALAR tuple closure ARG crosses the DIRECT-CALL boundary by NATIVE
+  component-tuple FLATTENING (attacks the "needs a nonexistent `value-decode` op / out of scope" claim).** The
+  recorded rejection conflated two cases: a VARIABLE-LENGTH collection arg genuinely needs runtime decode, but
+  a FIXED-SHAPE SCALAR tuple/record does NOT. It crosses as a native component `tuple<s64,s64>` type; the
+  canonical ABI FLATTENS a small tuple (≤16 scalar fields) into scalar core params, so the guest `call`
+  receives the fields as plain core i64s (no memory, no realloc, no runtime op) and rebuilds the tuple cell
+  in-guest with the ORDINARY `arr-alloc`/`box-int`/`arr-set` ops. ComponentBuilder oracle
+  (`closure_tuple_arg_call_core` + `inner_reexport_component_tuple_arg` + `oracle_closure_tuple_arg_component`,
+  test `a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening`) that VALIDATES + RUNS under wasmtime:
+  `make()` → handle, `call(handle, (3,4))` supplied as a `Val::Tuple` → 7. So the direct-call compound-ARG
+  decline is an IMPLEMENTATION GAP, not an ABI wall. REMAINING emit vertical (each an independently-landable
+  brick, per the closure-capture cycle's lesson): (B) a serializer whose `call` rebuilds the tuple cell from
+  the flattened field params + dispatches; (C) `assemble_closure_resource` variant emitting the `tuple`
+  defined type in the `call` functype + inner re-export; (D) `emit_closure_resource` routes a fixed-shape
+  scalar compound arg to it; (E) cdz-run supplies the arg as a `Val::Tuple`/`Val::Record`. Then the
+  compound-arg direct-call todo flips to PASS.
+- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — for a
+  FIXED-SHAPE SCALAR tuple/record this is now an IMPLEMENTATION GAP with a proven ABI (oracle `@54396f93`,
+  emit bricks B–E above); a VARIABLE-LENGTH collection arg still needs a `value-decode` runtime op that does
+  not exist. A closure-typed closure ARG on the direct-call path (a closure-resource passed INTO a call); a
+  closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete

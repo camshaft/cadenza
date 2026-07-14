@@ -2885,3 +2885,25 @@
                 (if (idr 1 true) (idr 2 40) 99)))
             (export main)))
   (output (: 40 Int64)))
+
+; The canonical generic-recursion idiom: a recursive function over a USER-DEFINED GENERIC RECURSIVE SUM
+; type (a polymorphic linked list `(type Lst Nil (Cons a (Lst a)))`), called at more than one element
+; type. `len` threads down the list's tail generically — its element type is never fixed by the body —
+; so it is monomorphized once per element type at its call sites (a `Lst Int64` length and a `Lst String`
+; length), exactly as a generic scalar-threading function is. This is recursive-generic monomorphization
+; over the real recursive-data idiom, not just a scalar pass-through. (An explicit polymorphic annotation
+; `(: l (Lst a))` is a SEPARATE not-yet-built feature — binding a type variable in a signature; here `len`
+; is unannotated and inference carries the element type, which is the idiomatic form.)
+
+(case "a recursive function over a generic recursive sum is monomorphized per element type"
+  (doc    "`(type Lst Nil (Cons a (Lst a)))` is a polymorphic linked list; `len` counts its elements,
+           recursing on the tail without ever constraining the element type. Called on a `Lst Int64`
+           (length 2) and a `Lst String` (length 3), `len` is monomorphized into one function per element
+           type — the recursive-data analogue of the scalar `loopn` case. 2 + 3 = 5.")
+  (input  (do
+            (type Lst Nil (Cons a (Lst a)))
+            (def (len l) (match l ((Lst.Nil) 0) ((Lst.Cons h t) (+ 1 (len t)))))
+            (def (main) (+ (len (Lst.Cons 1 (Lst.Cons 2 Lst.Nil)))
+                           (len (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
+            (export main)))
+  (output (: 5 Int64)))

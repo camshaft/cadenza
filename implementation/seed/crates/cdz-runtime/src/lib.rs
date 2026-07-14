@@ -1354,6 +1354,30 @@ fn decode_descriptor(d: &[u8]) -> Option<Descriptor> {
     Some(Descriptor { table, root })
 }
 
+runtime_local! {
+    /// REUSED completed-struct stack for `encode_value`'s walk (the `out` results Vec) — the companion of
+    /// `ENCODE_BUILDER`. `encode_value`'s `out` grew from zero every call (a fresh `Vec<u32>` per encode);
+    /// caching it here + `clear()`ing per call retains capacity, so after the first walk it never
+    /// reallocates. `Vec<u32>` (no borrowed lifetime, unlike the `work` stack which holds descriptor refs
+    /// `&'d …` and stays a fresh local), so a plain `'static` thread-local is sound. Safe: single-threaded,
+    /// the walk is iterative + never re-enters `encode_value`, so the borrow never nests.
+    static ENCODE_OUT: core::cell::RefCell<Vec<u32>> = core::cell::RefCell::new(Vec::new());
+}
+
+runtime_local! {
+    /// REUSED `DocBuilder` for `op_value_encode_form` — the value-form escape (op 62) is the hot
+    /// host-boundary path (every collection/compound result crossing to the host runs one encode), and a
+    /// fresh `DocBuilder::default()` per call grew its `leaves`/`structs`/`child_pool`/`name_index` pools
+    /// FROM ZERO every time (~7 realloc doublings each for a modest value = the bulk of the residual
+    /// ~43-alloc floor). Caching one builder thread-locally + `reset()`ing it (clear, capacity retained)
+    /// makes the pool growth pay ONCE to the high-water mark, then every later encode refills allocation-
+    /// FREE — the same alloc-elision as `HASH_SCRATCH`/`EQ_SCRATCH`. Safe: the runtime is single-threaded
+    /// and `op_value_encode_form` never re-enters itself (the walk is iterative), so the borrow never
+    /// nests. The document bytes are UNCHANGED — reuse only affects allocation, not the emitted output.
+    static ENCODE_BUILDER: core::cell::RefCell<DocBuilder> =
+        core::cell::RefCell::new(DocBuilder::new_const());
+}
+
 /// The document builder — a growing leaf pool + struct table, with leaf DEDUP (a repeated name/int
 /// collapses to one pool entry, matching the canonical arenas the native encoder is handed). Each
 /// `push_*` returns the entry's absolute index; `finish(root)` serializes to the codec document.
@@ -1412,6 +1436,28 @@ fn i64_be_magnitude(v: i64, buf: &mut [u8; 8]) -> (bool, &[u8]) {
 }
 
 impl DocBuilder {
+    /// A const-constructible EMPTY builder — the initializer for the reused `ENCODE_BUILDER` thread-local
+    /// (a `const {}` thread-local body needs a const init; `#[derive(Default)]`'s `default()` is not const).
+    /// Every field's empty form is a const fn (`Vec::new`/`BTreeMap::new`).
+    const fn new_const() -> DocBuilder {
+        DocBuilder {
+            leaves: Vec::new(),
+            structs: Vec::new(),
+            child_pool: Vec::new(),
+            name_index: alloc::collections::BTreeMap::new(),
+        }
+    }
+    /// Clear every pool for REUSE across encodes — retains each buffer's CAPACITY (`Vec::clear` /
+    /// `BTreeMap::clear` free no backing store), so after the first encode grows them to the high-water
+    /// mark, subsequent encodes refill without reallocating. Called by `op_value_encode_form` on the
+    /// reused `ENCODE_BUILDER` before each walk. Dropping the old `DocLeaf` entries frees their owned
+    /// Strings/byte Vecs (a name/str/bytes/float leaf) — only the SPINE Vecs' capacity is retained.
+    fn reset(&mut self) {
+        self.leaves.clear();
+        self.structs.clear();
+        self.child_pool.clear();
+        self.name_index.clear();
+    }
     fn name_leaf(&mut self, name: &str) -> u32 {
         // Dedup names to a single leaf. HYBRID, so the common encode pays ZERO extra allocation:
         //  • SMALL regime (few distinct names — the norm: `Cons`/`Nil`/`tuple`/`record`/`map`/`:`/keys):
@@ -1888,11 +1934,15 @@ enum EncodeWork<'d> {
 fn encode_value(
     desc: &Descriptor,
     b: &mut DocBuilder,
+    out: &mut Vec<u32>,
     root_h: Handle,
     root_shape: u32,
 ) -> Option<u32> {
+    // `out` (completed struct indices, in completion order) is the REUSED `ENCODE_OUT` buffer, passed in
+    // by the caller (cleared there, capacity retained across encodes). `work` holds `EncodeWork<'_>`
+    // borrowing the descriptor, so it stays a fresh local — a `'static` thread-local can't hold the borrow.
+    out.clear();
     let mut work: Vec<EncodeWork> = Vec::new();
-    let mut out: Vec<u32> = Vec::new(); // completed struct indices, in completion order
     work.push(EncodeWork::Visit {
         h: root_h,
         shape_ix: root_shape,
@@ -2252,9 +2302,19 @@ fn encode_value(
 /// (the escape `encode`) owns the release point.
 fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
     let descriptor = decode_descriptor(desc)?;
-    let mut b = DocBuilder::default();
-    let root = encode_value(&descriptor, &mut b, h, descriptor.root)?;
-    Some(b.finish(root))
+    // Reuse the thread-local builder + `out` stack — `reset()`/`clear()` empties them but retains capacity,
+    // so the leaf/struct/child-pool + result-stack growth is paid ONCE (not per encode). The result bytes
+    // are identical either way; the reuse is a pure allocation optimisation (see `ENCODE_BUILDER`/
+    // `ENCODE_OUT`). The two thread-locals are distinct cells, so `b` and `out` never alias.
+    ENCODE_BUILDER.with(|bcell| {
+        ENCODE_OUT.with(|ocell| {
+            let b = &mut *bcell.borrow_mut();
+            let out = &mut *ocell.borrow_mut();
+            b.reset();
+            let root = encode_value(&descriptor, b, out, h, descriptor.root)?;
+            Some(b.finish(root))
+        })
+    })
 }
 
 // ─── Bytes: a packed immutable byte buffer (in `raw`) ───────────────────────────────────
@@ -6999,6 +7059,43 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every boxed int dropped");
     }
 
+    /// The reused thread-local `DocBuilder`/`out` (`ENCODE_BUILDER`/`ENCODE_OUT`) must be a PURE allocation
+    /// optimisation: (1) BYTE-IDENTICAL output across repeated encodes (a stale-state bug from an
+    /// incomplete `reset` would corrupt the 2nd+ encode), (2) encoding a SMALL value right after a LARGE
+    /// one must not leak the large value's data into the small one's document (the `reset` clears the
+    /// pools; retained capacity must not surface as content), (3) no node leak. Guards the reset+reuse
+    /// contract that the alloc-ceiling win rests on. Encodes the SAME value 3× (must be identical), then a
+    /// large value, then a small value again (must equal its first encoding — reused-but-cleared pools).
+    #[test]
+    fn value_encode_reused_builder_is_byte_identical_and_state_free() {
+        reset();
+        let before = live_nodes();
+        let desc = intlist_descriptor();
+
+        // (1) The SAME value encoded repeatedly on the reused builder is byte-identical every time.
+        let small = build_intlist(3);
+        let d1 = op_value_encode_form(small, &desc).expect("encode #1");
+        let d2 = op_value_encode_form(small, &desc).expect("encode #2");
+        let d3 = op_value_encode_form(small, &desc).expect("encode #3");
+        assert_eq!(d1, d2, "repeated encode #2 identical — reused builder carries no state");
+        assert_eq!(d1, d3, "repeated encode #3 identical");
+
+        // (2) A LARGE encode between two SMALL ones must not bleed the large value's leaves/structs into
+        // the small document — `reset` clears the pools, so the small doc equals its standalone encoding.
+        let big = build_intlist(200);
+        let dbig = op_value_encode_form(big, &desc).expect("encode a large list");
+        assert!(dbig.len() > d1.len(), "the large value produces a larger document");
+        let d_after = op_value_encode_form(small, &desc).expect("encode small again after large");
+        assert_eq!(
+            d1, d_after,
+            "a small value after a large one encodes IDENTICALLY — the reused builder was fully reset (no leftover leaves/structs from the large encode)"
+        );
+
+        op_drop(small);
+        op_drop(big);
+        assert_eq!(live_nodes(), before, "no leak: the reused builder retains capacity, not owned nodes");
+    }
+
     /// A malformed descriptor whose Framed TYPE NODE nests absurdly deep DECLINES (`None`), it does not
     /// overflow the stack. `decode_type_node` recurses per nesting level, and a level is only 2 bytes
     /// (`[name_len=0][n_children=1]`), so before the `TYPE_NODE_DEPTH_CAP` a ~200 KB descriptor recursed
@@ -8970,8 +9067,8 @@ mod tests {
         // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
         // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
         assert!(
-            smap_enc <= 10000,
-            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 10000 (was ~10200 → ~7100: the int VALUES stopped malloc'ing magnitude Vecs (`DocLeaf::IntScalar`); string keys remain a leaf each. Grow-once pools + entries Vec + output, linear in entries; the Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
+            smap_enc <= 6000,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 6000 (10200 → 7100 (`DocLeaf::IntScalar` for the int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse — pools grow once, not per encode). The per-encode residual is each string KEY's leaf (a `Vec<u8>` clone) + the entries Vec + the output. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
         );
         op_drop(smap);
 
@@ -8993,13 +9090,16 @@ mod tests {
             core::hint::black_box(&doc);
         });
         println!("ALLOC value_encode_largemap N={LMAP_N}: {lmap_enc}");
-        // MEASURED ~2.08/entry (2078 for N=1000): the entries Vec grows once, each (k v) pair emits
-        // leaf+struct into the grow-once pools, plus the output byte Vec + Bytes leaf — LINEAR, N-bounded.
-        // The int-key `sort_by` allocates nothing. A per-entry transient Vec or an O(N²) CHAMP re-walk
-        // would be orders of magnitude over this ceiling (O(N²) at N=1000 ≈ 10⁶).
+        // MEASURED ~42 for a SINGLE N=1000 encode: with `DocLeaf::IntScalar` (no per-int magnitude Vec)
+        // AND the reused `ENCODE_BUILDER`/`ENCODE_OUT` pools (grown warm by the earlier value_encode reps in
+        // this same test), a 1000-entry encode reallocates almost nothing — just the entries Vec + the
+        // output byte Vec's own growth + the returned Bytes leaf. Was 2065 (per-int Vec) → 67 (IntScalar) →
+        // ~42 (pool reuse). ⚠ this row runs AFTER the value_encode/stringkeymap rows, so the thread-local
+        // pools are already at a high-water mark — the figure measures steady-state reuse, not cold growth.
+        // A per-entry transient Vec or an O(N²) CHAMP re-walk would be orders of magnitude over (O(N²) ≈ 10⁶).
         assert!(
-            lmap_enc <= 400,
-            "value_encode_largemap N={LMAP_N} allocs {lmap_enc} exceeds ceiling 400 (was 2065: an int key+value each malloc'd a magnitude Vec; now `DocLeaf::IntScalar` stores the raw i64 and derives the wire magnitude on the stack at finish → only the grow-once entries+leaf+struct+child pools + output remain, ~0/entry. A per-int-Vec regression would climb back to ~2/entry)"
+            lmap_enc <= 300,
+            "value_encode_largemap N={LMAP_N} allocs {lmap_enc} exceeds ceiling 300 (2065 → 67 (`DocLeaf::IntScalar`) → ~42 (`ENCODE_BUILDER`/`ENCODE_OUT` reuse, warm from earlier rows): only the entries Vec + output byte Vec growth remain. A per-int-Vec or lost-pool-reuse regression would climb back to hundreds/thousands)"
         );
         op_drop(lmap);
 
@@ -9036,16 +9136,18 @@ mod tests {
             drop_allocs <= 40,
             "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
         );
-        // MEASURED 43 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.29 allocs/node — after
+        // MEASURED ~19 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.13 allocs/node — after
         // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`), the output-Vec pre-size
-        // that killed the serialization realloc churn (~100→92, `@84ebc883`), AND the `DocLeaf::IntScalar`
-        // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, the biggest single cut — a
-        // 50-int list has ~50 int leaves). The remaining allocs are the grow-once `leaves`/`structs`/
-        // `child_pool` Vecs (amortized) + the pre-sized output + the returned Bytes leaf — all LINEAR in
-        // node count. Ceiling TIGHTENED 11000→5000 to track the reduced floor; catches an O(N²) re-walk or a
-        // return of per-node Vec / output-realloc churn. `xtask bench`'s baseline (4300) is the tight guard; this
+        // that killed the serialization realloc churn (~100→92, `@84ebc883`), the `DocLeaf::IntScalar`
+        // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, `@6decb84a`), AND the
+        // reused thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: the leaf/struct/child/out Vecs no
+        // longer grow FROM ZERO each call — `reset`+`clear` retains capacity, so the growth is paid once).
+        // The remaining allocs are the output byte Vec's own growth + the per-call `work` stack (borrows the
+        // descriptor, so NOT pooled) + the descriptor table — all LINEAR in node count. Ceiling TIGHTENED
+        // 5000→2400 to track the reduced floor; catches an O(N²) re-walk, a lost pool reuse, or a return of
+        // per-node Vec / output-realloc churn. `xtask bench`'s baseline (1924) is the tight guard; this
         // is the coarse in-suite backstop.
-        assert!(venc <= 5000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 5000 (~43/encode of a 50-node list: was ~92 — each int leaf malloc'd a magnitude Vec; now `DocLeaf::IntScalar` stores the raw i64 and derives the wire magnitude on the stack at finish (zero-alloc), leaving only the grow-once pools + output. A per-int-Vec or output-realloc regression would climb)");
+        assert!(venc <= 2400, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 2400 (~19/encode of a 50-node list: was ~92 (per-int magnitude Vec, `DocLeaf::IntScalar` cut it), then ~43 (a fresh `DocBuilder` + `out` Vec grew from ZERO each call). Now `ENCODE_BUILDER`+`ENCODE_OUT` are reused thread-locals (clear + retain capacity) so the pool growth is paid ONCE — the residual is the output byte Vec + the per-call `work` stack + descriptor table. A per-int-Vec, a lost builder/out reuse, or an output-realloc regression would climb)");
         op_drop(ve_list);
     }
 
