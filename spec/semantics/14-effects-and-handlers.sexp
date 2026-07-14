@@ -50,6 +50,45 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
+; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
+; VALUE flows into the result: the SAME program with a DIFFERENT response produces a DIFFERENT (but
+; deterministic) result, so the run is a function OF the response, not a constant
+; (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And Responses). The third
+; case pins that MULTIPLE responses combine in call order through a NON-commutative operator — swapping the
+; consumption order would give -18, not 18 — so the ordered response fixture feeds the computation as
+; recorded.
+
+(case "the same program with a different response gives a different deterministic result"
+  (doc    "The discriminating companion of the determinism case above: the identical program `(* (ask.ask)
+           10)` with the response fixed at 7 (not 10) deterministically computes 70. Together with the
+           10 → 100 case, this pins that the run genuinely CONSUMES the response value (a compiler that
+           hardcoded 100 would fail here) — the result is a function OF the response, deterministic given it.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (* (ask.ask) 10))) (export main)))
+  (host-responses (respond ask.ask (: 7 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 70 Int64)))
+
+(case "two host responses combine in call order through a non-commutative operator"
+  (doc    "`(- (io.get) (io.get))` performs `io.get` twice; the ordered fixture supplies 30 then 12, so the
+           FIRST call consumes 30 and the second 12, and `30 - 12` = 18. `-` is non-commutative, so a run
+           that consumed the responses in the wrong order would compute `12 - 30` = -18 — the recorded 18
+           pins that the two responses feed the computation in the order the fixture records them
+           (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And Responses; the
+           ordered-consumption companion of the two-calls-in-order observation below).")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (main)
+              (host (io)
+                (- (io.get) (io.get)))) (export main)))
+  (host-responses (respond io.get (: 30 Int64)) (respond io.get (: 12 Int64)))
+  (host-calls (call io.get) (call io.get))
+  (output (: 18 Int64)))
+
 (case "two host calls consume their responses in order"
   (doc    "Witnesses capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
            Responses: two host calls consume two responses in the order made; the sum is a deterministic

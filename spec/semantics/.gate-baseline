@@ -2006,6 +2006,7 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
@@ -2058,6 +2059,7 @@ pass	two equal chars compare equal
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two functions defined by mutual recursion compute a result
 pass	two host calls consume their responses in order
+pass	two host responses combine in call order through a non-commutative operator
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
