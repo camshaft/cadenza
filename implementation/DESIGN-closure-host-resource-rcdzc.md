@@ -1143,15 +1143,22 @@ the component type. The new work:
   `call_arg_tuple_type_count`), reusing `closure_call_functype_slots` + `mint_call_arg_tuple_types`. Both
   `emit_multi_closure_resource` + `emit_mixed_closure_resource` bind `multi_compound_args` and emit through the
   shared core `multi_closure_resource_core_module_with_host_borrow` (already `&[TupleArgRebuild]` since brick 3).
-  A LIST result over ≥2 compound args on these shapes DECLINES honestly (the multi list cores/envelope thread a
-  single tuple only — a scalar-guard added before those routings, else an invalid component). Corpus (all e2e):
-  MULTI-EXPORT 2 tuples→8 (+driving the other→12), 3 tuples→105, capturing→115, scalar-between→35; MIXED 2
-  tuples→15 (+driving the plain export→42), nested+flat alongside plain→47.
-  **REMAINING within this feature:** (a) the DISTINCT-SIG export shape with ≥2 compound args (`emit_distinct_sig_resource`
-  detects one compound per group today — its `GroupCompoundArg` + per-group `call-g<n>` envelope would take the
-  same slot generalization); (b) a LIST result over ≥2 compound args on the MULTI/MIXED shapes (the multi list
-  cores thread a single tuple — the same `&[TupleArgRebuild]`/slot widening brick 5 applied to the single-export
-  list cores).
+  Corpus (all e2e): MULTI-EXPORT 2 tuples→8 (+driving the other→12), 3 tuples→105, capturing→115,
+  scalar-between→35; MIXED 2 tuples→15 (+driving the plain export→42), nested+flat alongside plain→47.
+  brick 7 (THIS increment) — **N compound args × the MULTI-EXPORT + MIXED shapes × the LIST-crossing results.**
+  Generalized the three MULTI list-result cores (`multi_closure_bytes_/value_/value_encode_resource_core_module`)
+  from `Option<&TupleArgRebuild>` to `&[TupleArgRebuild]` (byte-neutral, one rebuilt cell per tuple), threaded
+  `call_arg_slots` through `assemble_multi_closure_bytes_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_bytes_borrow_tuple` (its `call_type_block` gained a slot arm; mint at
+  `3+2*nmk` before the shared `list<u8>`, `n_call_types`/`tuple_shift` via `call_arg_tuple_type_count`), reusing
+  `closure_call_list_functype_slots`. mod.rs's `emit_multi`/`emit_mixed` now build a unified `list_rebuilds` +
+  `list_slots` (like the single-export path) and the ≥2-compound list-decline guards are GONE. Corpus (all
+  e2e): MULTI 2 tuples→List (+driving the other), →Tuple, →Bytes, 3 tuples→List; MIXED 2 tuples→List (+driving
+  the plain export→42).
+  **REMAINING within this feature:** the DISTINCT-SIG export shape with ≥2 compound args
+  (`emit_distinct_sig_resource` detects one compound per group today — its `GroupCompoundArg` + per-group
+  `call-g<n>` envelope would take the same `ArgSlot` slot generalization). ✅ single-export, multi-export, and
+  mixed are all DONE × the full result matrix (scalar + byte-rope + fixed-compound + collection).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of

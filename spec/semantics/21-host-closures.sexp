@@ -3910,6 +3910,90 @@
              (: (tuple 3 40) (Tuple Int64 Int64)))
   (output (: 47 Int64)))
 
+; N-COMPOUND-ARGS × MULTI-EXPORT/MIXED × LIST-CROSSING RESULT: the ≥2-compound-arg path now reaches EVERY
+; `list<u8>`-crossing result shape (byte-rope / value-form compound / value-encode collection) on the
+; MULTI-EXPORT and MIXED shapes too — the three multi list-result cores each rebuild every tuple arg cell (a
+; slice of `TupleArgRebuild`), and the shared multi `list<u8>` envelope mints N `tuple<…>` arg types via the
+; SAME `ArgSlot` slot model before the shared `list<u8>` result type. So ≥2 compound args × the full result
+; matrix is closed on single-export + multi-export + mixed. (The DISTINCT-SIG shape stays a follow-on.)
+
+(case "MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`"
+  (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (List Int64))` — two same-sig closures
+           each taking two tuple args, returning a List, sharing ONE value-encode `call`. Both tuple args are
+           rebuilt in-guest; the returned List is value-encoded out. Driving `mk-a`: `call(handle, (5,5),
+           (5,10))` → `(list p.0 q.1)` = `(list 5 10)`. The N-compound-args path reaches the multi-export
+           collection-result core.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. q 1) (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10) (List Int64))))
+
+(case "MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure"
+  (doc    "The SAME multi-export List component, driving `mk-b` (reversed): `call(handle, (5,5), (5,10))` →
+           `(list q.1 p.0)` = `(list 10 5)`. Confirms both same-sig two-tuple-arg List closures share the one
+           value-encode `call`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. q 1) (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 10 5) (List Int64))))
+
+(case "MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result"
+  (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` sharing one
+           value-form `call`. Both arg tuples are rebuilt; the returned tuple is walked into the value-form
+           template. Driving `mk-a`: `call(handle, (5,5), (5,10))` → `(tuple p.0 q.1)` = `(tuple 5 10)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. q 1) (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (tuple 5 10) (Tuple Int64 Int64))))
+
+(case "MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result"
+  (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Bytes)` sharing one bytes `call`. Both arg
+           tuples are rebuilt; the returned Bytes is copied out as `list<u8>`. Driving `mk-a`: `call(handle,
+           (5,5), (5,10))` → the bytes `(p.0, q.1)` = `(5 10)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (bin (u8 (. p 0)) (u8 (. q 1)))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (bin (u8 (. p 1)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (5 10) Bytes)))
+
+(case "MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`"
+  (doc    "N=3 tuple args reaching the multi-export collection-result core: `mk-a`/`mk-b : (-> (Tuple Int64
+           Int64) (Tuple Int64 Int64) (Tuple Int64 Int64) (List Int64))`. Six flattened core params, three
+           rebuilt cells, one shared value-encode `call`. Driving `mk-a`: `call(handle, (1,2), (3,4),
+           (100,200))` → `(list p.0 q.1 r.0)` = `(list 1 4 100)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
+                (list (. p 0) (. q 1) (. r 0))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
+                (list (. r 1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
+             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (output (: (list 1 4 100) (List Int64))))
+
+(case "MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export"
+  (doc    "The MIXED shape reaches the collection-result core: a two-tuple-arg closure `mk : (-> (Tuple Int64
+           Int64) (Tuple Int64 Int64) (List Int64))` crosses via `make` + a shared value-encode `call` (both
+           arg tuples rebuilt) WHILE a plain `twice` rides alongside. Driving the CLOSURE: `call(handle, (5,5),
+           (5,10))` → `(list 5 10)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10) (List Int64))))
+
+(case "MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure"
+  (doc    "The SAME mixed List component, driving the PLAIN export `twice` — proving it coexists with the
+           two-tuple-arg list-returning closure interface. `twice(21)` → 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

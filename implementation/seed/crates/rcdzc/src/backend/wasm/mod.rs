@@ -3173,14 +3173,23 @@ fn emit_multi_closure_resource(
             make_param_bytes: m.param_bytes.clone(),
         })
         .collect();
-    // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild the arg cell from
-    // the flattened fields, the shared list<u8> envelope mints a flat `tuple<…>` (from `tuple_bytes`) OR a
-    // recursive NESTED one (from `shape`). A flat arg carries `tuple_bytes = Some` + `shape = None`; a nested
-    // one the reverse (its shape is the SOLE arg → no prefix/suffix). `None` on the scalar-arg path.
-    let rebuild = tuple_arg
-        .as_ref()
-        .map(|(_, _, _, _, rb)| rb)
-        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _, _, _)| rb));
+    // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild each arg cell from
+    // the flattened fields, the shared list<u8> envelope mints a flat `tuple<…>` (from `tuple_bytes`), a
+    // recursive NESTED one (from `shape`), OR N tuples (from `list_slots`). `list_rebuilds` = every tuple's
+    // rebuild in arg order; `list_slots` is `Some` only for ≥2 tuple args (the single-tuple cases keep the
+    // byte-identical `tuple_bytes`/`tuple_shape` mint). `None`/empty on the scalar-arg path.
+    let list_rebuilds: Vec<serialize::TupleArgRebuild> = if let Some((_, _, rebuilds)) = &multi_args
+    {
+        rebuilds.clone()
+    } else if let Some((_, _, _, _, rb)) = &tuple_arg {
+        vec![rb.clone()]
+    } else if let Some((_, _, rb, _, _, _)) = &nested_tuple {
+        vec![rb.clone()]
+    } else {
+        Vec::new()
+    };
+    let list_slots: Option<&[crate::backend::wasm::envelope::ArgSlot]> =
+        multi_args.as_ref().map(|(slots, _, _)| slots.as_slice());
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
     let tuple_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
         .as_ref()
@@ -3207,17 +3216,6 @@ fn emit_multi_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
-    // N-COMPOUND-ARGS (≥2 tuple args) on the MULTI-EXPORT path scopes a SCALAR result this increment: the
-    // multi list-result cores/envelope thread a SINGLE tuple only (they take `Option<&TupleArgRebuild>` +
-    // `tuple_bytes`/`tuple_shape`, not the slot list). Decline a list result over ≥2 tuples HERE so it doesn't
-    // fall into those single-tuple list routings (which would emit an invalid component). Clean later widening.
-    if multi_args.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a multi-export closure taking two or more fixed-shape compound args AND returning a \
-             byte-rope/compound/collection is not yet emitted (the multi list-result path threads a single \
-             tuple only; the scalar-result multi path handles ≥2 compound args)",
-        ));
-    }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -3233,7 +3231,7 @@ fn emit_multi_closure_resource(
             template,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3250,6 +3248,7 @@ fn emit_multi_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
@@ -3267,7 +3266,7 @@ fn emit_multi_closure_resource(
             descriptor,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3284,6 +3283,7 @@ fn emit_multi_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
@@ -3300,7 +3300,7 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3317,6 +3317,7 @@ fn emit_multi_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
@@ -3842,10 +3843,21 @@ fn emit_mixed_closure_resource(
     // path. Prefix/suffix scalar bytes are empty for a sole tuple, non-empty when it sits among scalars.
     // Flat OR nested: a flat arg carries `tuple_bytes = Some` + `tuple_shape = None`; a nested one the reverse
     // (its shape is the SOLE arg → no prefix/suffix). `rebuild` falls back from flat → nested.
-    let rebuild = tuple_arg
-        .as_ref()
-        .map(|(_, _, _, _, rb)| rb)
-        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _, _, _)| rb));
+    // `list_rebuilds` = every tuple's rebuild in arg order (single-tuple / nested / ≥2 tuples); `list_slots`
+    // is `Some` only for ≥2 tuple args (the single-tuple cases keep the byte-identical `tuple_bytes`/
+    // `tuple_shape` mint). `None`/empty on the scalar-arg path.
+    let list_rebuilds: Vec<serialize::TupleArgRebuild> = if let Some((_, _, rebuilds)) = &multi_args
+    {
+        rebuilds.clone()
+    } else if let Some((_, _, _, _, rb)) = &tuple_arg {
+        vec![rb.clone()]
+    } else if let Some((_, _, rb, _, _, _)) = &nested_tuple {
+        vec![rb.clone()]
+    } else {
+        Vec::new()
+    };
+    let list_slots: Option<&[crate::backend::wasm::envelope::ArgSlot]> =
+        multi_args.as_ref().map(|(slots, _, _)| slots.as_slice());
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
     let tuple_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
         .as_ref()
@@ -3868,16 +3880,6 @@ fn emit_mixed_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
-    // N-COMPOUND-ARGS (≥2 tuple args) on the MIXED path scopes a SCALAR result this increment (the mixed
-    // list-result cores/envelope thread a single tuple only). Decline a list result over ≥2 tuples HERE so it
-    // doesn't fall into the single-tuple list routings below (which would emit an invalid component).
-    if multi_args.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a mixed closure taking two or more fixed-shape compound args AND returning a \
-             byte-rope/compound/collection is not yet emitted (the mixed list-result path threads a single \
-             tuple only; the scalar-result mixed path handles ≥2 compound args)",
-        ));
-    }
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
@@ -3893,7 +3895,7 @@ fn emit_mixed_closure_resource(
             template,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3910,6 +3912,7 @@ fn emit_mixed_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
@@ -3927,7 +3930,7 @@ fn emit_mixed_closure_resource(
             descriptor,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3944,6 +3947,7 @@ fn emit_mixed_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
@@ -3960,7 +3964,7 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             &layout,
             true,
-            rebuild,
+            &list_rebuilds,
         )
         .map_err(Reject::decline)?;
         return Ok(
@@ -3977,6 +3981,7 @@ fn emit_mixed_closure_resource(
                 tpre,
                 tsuf,
                 tuple_shape,
+                list_slots,
             ),
         );
     }
