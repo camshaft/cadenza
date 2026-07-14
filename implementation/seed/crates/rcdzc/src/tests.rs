@@ -53652,7 +53652,10 @@ mod cross_component_oracle {
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|d| {
-                panic!("pass-through consumer compiles: {} [{:?}]", d.message, d.code)
+                panic!(
+                    "pass-through consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
             });
         for (comp, what) in [(&a, "A"), (&b, "B"), (&consumer, "consumer")] {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
