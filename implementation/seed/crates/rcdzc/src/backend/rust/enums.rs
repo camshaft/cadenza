@@ -192,7 +192,9 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     // both would be a duplicate `enum Sign` (rustc E0428). The user decl emits the one `enum Sign`. (The
     // prelude sums are emitted unconditionally otherwise; only a same-name user decl suppresses one.)
     if !db.is_user_node(decl.occ) && user_decl_shadows_name(db, &decl) {
-        return Err(Reject::decline("a user declaration shadows this prelude sum's name"));
+        return Err(Reject::decline(
+            "a user declaration shadows this prelude sum's name",
+        ));
     }
     // An erasable NEWTYPE emits NO enum — its runtime value IS the underlying payload (the tag adds
     // nothing), so `types::rust_type` maps a `Ty::Nominal` THROUGH to its `inner` Rust type and no boxed
