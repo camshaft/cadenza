@@ -1662,6 +1662,10 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // conversion conflicting with the built-in family table or an earlier declaration is CDZ0502
     // (`units-of-measure.md` §A Named Unit's Conversion Is Unique). An agreeing redeclaration is fine.
     crate::infer::check_unit_defines(db, &mut faults);
+    // UNKNOWN UNITS. A quantity literal / `(Unit.of #"name")` naming a unit that is neither a built-in
+    // family nor a user `Unit.define` (`5zorks`, `5gram`) fails to reduce and otherwise surfaces only as a
+    // generic "no machine representation" decline — name the unknown unit (CDZ0201) with a did-you-mean.
+    crate::infer::check_unknown_units(db, &mut faults);
     dedup_faults(db, faults)
 }
 

@@ -21073,6 +21073,58 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unknown_unit_in_a_quantity_literal_is_named_with_a_suggestion() {
+        // A `(Qty.of n (Unit.of #"name"))` naming a unit that is neither a built-in family nor a user
+        // `Unit.define` (`zorks`, the British `metre`, a typo `secnd`) fails to reduce and otherwise
+        // surfaced only as a generic "no machine representation" decline that never mentions the unit. It
+        // is now a CDZ0201 naming the unknown unit, with a did-you-mean over the known unit vocabulary.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("unknown unit"))
+                .unwrap_or_else(|| panic!("no unknown-unit fault for {src}"))
+        };
+        let d = find("(module m (def (main) (Qty.of 5 (Unit.of #\"zorks\"))) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`zorks`"),
+            "names the unit: {}",
+            d.message
+        );
+        // A near-miss of a real unit gets a confident suggestion (British spelling / typo).
+        assert!(
+            find("(module m (def (main) (Qty.of 5 (Unit.of #\"metre\"))) (export main))")
+                .message
+                .contains("did you mean `meter`?"),
+        );
+        assert!(
+            find("(module m (def (main) (Qty.of 5 (Unit.of #\"secnd\"))) (export main))")
+                .message
+                .contains("did you mean `second`?"),
+        );
+        // An unknown BASE unit inside a `Unit.define` is caught too.
+        assert!(
+            find("(module m (Unit.define #\"furlong\" (Unit.of #\"zorks\") 660 1) (def (main) 1) (export main))")
+                .message
+                .contains("`zorks`"),
+        );
+        // NO false positive: built-in units and a user-declared unit + its use are clean.
+        for ok in [
+            "(module m (def (main) (Qty.of 5 (Unit.of #\"meter\"))) (export main))",
+            "(module m (def (main) (Qty.of 5 (Unit.of #\"mbps\"))) (export main))",
+            "(module m (Unit.define #\"furlong\" (Unit.of #\"foot\") 660 1) \
+             (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("unknown unit")),
+                "a known/declared unit is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
         // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with
         // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
