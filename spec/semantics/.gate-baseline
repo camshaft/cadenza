@@ -708,6 +708,7 @@ pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
+pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
