@@ -1917,17 +1917,48 @@ pub fn select_function_of(
             scratch_ty.insert(slot, vt);
             // Emit the representative's computation ONCE (transient scratch above the reserved slots). A
             // nested class was slotted earlier (inner-first), so this emit reads ITS slot — no recompute.
-            emit(
-                db,
-                rep,
-                &slot_of,
-                body_base,
-                &mut high,
-                &mut scratch_ty,
-                layout,
-                &mut code,
-            )?;
-            code.push(Lir::LocalSet(slot));
+            // A CHECKED-ARITH rep writes into ITS OWN `$r` then needs a `local.get $r ; local.set slot`
+            // move; route it through `emit_operand_into` (result dest = `slot`) so `$r` IS the slot and the
+            // store is direct — no temp/copy (the same win as the arith-operand and let-binding paths).
+            // Every other rep keeps `emit ; LocalSet` (byte-identical).
+            let rep_int = match type_of(db, rep).strip_nominal() {
+                Ty::Int(it) if it.width_is_fixed() => Some(*it),
+                _ => None,
+            };
+            let arith_rep = rep_int.is_some()
+                && matches!(
+                    core_of(db, rep),
+                    Core::Arith {
+                        op: Prim::Add | Prim::Sub | Prim::Mul,
+                        ..
+                    }
+                );
+            if let Some(it) = rep_int.filter(|_| arith_rep) {
+                emit_operand_into(
+                    db,
+                    rep,
+                    it,
+                    slot,
+                    &slot_of,
+                    body_base,
+                    &mut high,
+                    &mut scratch_ty,
+                    layout,
+                    &mut code,
+                )?;
+            } else {
+                emit(
+                    db,
+                    rep,
+                    &slot_of,
+                    body_base,
+                    &mut high,
+                    &mut scratch_ty,
+                    layout,
+                    &mut code,
+                )?;
+                code.push(Lir::LocalSet(slot));
+            }
             // Point EVERY member of the class at this one slot — each occurrence, wherever it is in the
             // body, now reads the slot via `emit`'s node-keyed `slots.get(&id)` fast path instead of
             // recomputing. (Members already slotted keep their own slot — harmless; they are `core_eq` so
@@ -11609,6 +11640,34 @@ mod tests {
             2,
             "the inlined multi-use argument `(* a b)` is computed once (2 muls: shared arg + `* s 3`), \
              got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_cse_slotted_checked_arith_rep_writes_directly_to_its_slot() {
+        // When the CSE representative is a CHECKED arithmetic op (`+`/`-`/`*`), it is emitted with its
+        // result DEST = the CSE slot (via `emit_operand_into`'s `ResultDest::Slot`), so its `$r` IS the
+        // slot — the store is direct, with NO `local.get $r ; local.set $cse` register-move. Before this,
+        // the checked op wrote its own `$r` scratch, then the CSE pass copied `$r → slot` (a wasted temp +
+        // move). `(f x (+ x 1))` inlines `f(a,b)=(+ (* a b) (- a b))`; `b = (+ x 1)` is used twice → CSE'd.
+        // Assert there is NO `LocalGet(t) ; LocalSet(s)` pair where `t != s` (a pure register-to-register
+        // move) among the emitted code — the CSE arith stores straight into its slot.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ (* a b) (- a b))) \
+               (def (g (: x Int64)) (f x (+ x 1))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "g");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let reg_move = f
+            .code
+            .windows(2)
+            .any(|w| matches!((&w[0], &w[1]), (Lir::LocalGet(t), Lir::LocalSet(s)) if t != s));
+        assert!(
+            !reg_move,
+            "the CSE'd `(+ x 1)` writes directly to its slot — no `get t ; set s` register move, got: {:?}",
             f.code
         );
     }

@@ -2636,6 +2636,17 @@
   (call   main (: 9223372036 Int64))
   (trap   "integer overflow"))
 
+(case "an inlined multi-use checked-arith argument is shared and computed directly into its slot"
+  (doc    "`(def (f (: a Int64) (: b Int64)) (+ (* a b) (- a b)))` applied as `(f x (+ x 1))` — the
+           argument `(+ x 1)` binds `b`, which `f` uses TWICE (in `(* a b)` and `(- a b)`), so it is
+           computed ONCE (shared) rather than re-evaluated. The shared checked add writes its result
+           directly into its slot (its overflow-guard scratch IS the shared slot — no temp-then-copy).
+           Called with x = 5: b = 6, so `(5*6) + (5-6) = 30 + -1 = 29`. Pins that a shared checked-arith
+           argument computes correctly when its result is stored directly into the shared slot.")
+  (input  (do (def (f (: a Int64) (: b Int64)) (+ (* a b) (- a b))) (def (main (: x Int64)) (f x (+ x 1))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 29 Int64)))
+
 (case "the entrypoint sums its two runtime arguments"
   (doc    "A two-parameter entry `(def (main (: a Int64) (: b Int64)) (+ a b))` called with 20 and 22.
            BOTH operands are runtime arguments, so the `+` is a runtime `i64.add` over two parameter
