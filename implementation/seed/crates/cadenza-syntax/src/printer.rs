@@ -1714,10 +1714,28 @@ impl<'a> Printer<'a> {
         self.bracketed("{", "}", true, names, |p, name| p.expr(name, 0));
     }
 
-    /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg a bare
-    /// name. A malformed export (a non-name arg) falls back to the generic call form so it round-trips.
+    /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg either a
+    /// bare name (`main`, a value or a type HANDLE) or a constructor-export member access — `(. T A)`
+    /// (one constructor) or `(. T *)` (the wildcard, the whole constructor set). Each renders through
+    /// `print_name_group`'s `expr` as `main` / `Color.Red` / `Color.*`, and the parser reads those back
+    /// to the same forms (a member-access element inside `{ … }`), so the surface round-trips. A
+    /// malformed export element falls back to the generic call form.
     fn is_export_shape(&self, args: &[StructId]) -> bool {
-        !args.is_empty() && args.iter().all(|&a| self.a.as_name(a).is_some())
+        !args.is_empty()
+            && args
+                .iter()
+                .all(|&a| self.a.as_name(a).is_some() || self.is_export_member(a))
+    }
+
+    /// A constructor-export member-access element of an `(export …)` clause: `(. T A)` or `(. T *)`
+    /// where `T` is a bare name and the key is a plain field name or the wildcard `*` — the forms
+    /// `print_name_group` renders as `T.A` / `T.*` and the parser reads back inside `{ … }`.
+    fn is_export_member(&self, id: StructId) -> bool {
+        matches!(self.a.get(id), Struct::List(items)
+            if items.len() == 3
+                && self.head_name(items[0]).as_deref() == Some(".")
+                && self.a.as_name(items[1]).is_some()
+                && self.plain_key(items[2]).is_some())
     }
 
     /// An `(import "path" (name…))` the `import { … } from "path"` surface handles: a string path, a
@@ -2102,6 +2120,12 @@ impl<'a> Printer<'a> {
     /// name — so `(. a b)` prints as `a.b` but a dotted/odd key falls back to the call form.
     fn plain_key(&self, id: StructId) -> Option<String> {
         let n = self.head_name(id)?;
+        // The wildcard member `*` (`obj.*` — the whole-constructor-set key the export surface uses).
+        // A reserved final member segment: the parser reads `.` + `*` as this key (`dot_is_member`), so
+        // rendering it bare round-trips. `*` alone is never a plain field name outside member position.
+        if n == "*" {
+            return Some(n);
+        }
         let mut chars = n.chars();
         match chars.next() {
             Some(c) if c.is_alphabetic() || c == '_' => {}
@@ -3117,6 +3141,52 @@ mod tests {
             assert_roundtrip("export { main, helper }", 80),
             "export { main, helper }"
         );
+    }
+
+    #[test]
+    fn export_constructor_and_wildcard_surface() {
+        // Opaque/abstract types: an export element may be a type's CONSTRUCTOR `(. T A)` or the
+        // WILDCARD `(. T *)` (the whole constructor set), alongside bare names. Each renders inside the
+        // `export { … }` brace group as `T.A` / `T.*`, and parses back to the same member-access form.
+        assert_eq!(
+            print(&sexpr::read("(export (. Color *))").unwrap(), 80),
+            "export { Color.* }"
+        );
+        assert_eq!(
+            print(&sexpr::read("(export (. Color Red) main)").unwrap(), 80),
+            "export { Color.Red, main }"
+        );
+        // Round-trip both directions: `Color.*` reads back to `(. Color *)`.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("export { Color.* }").arenas),
+            "(export (. Color *))"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("export { Color.Red, main }").arenas),
+            "(export (. Color Red) main)"
+        );
+        assert_eq!(
+            assert_roundtrip("export { Color.* }", 80),
+            "export { Color.* }"
+        );
+        assert_eq!(
+            assert_roundtrip("export { Color.Red, main }", 80),
+            "export { Color.Red, main }"
+        );
+    }
+
+    #[test]
+    fn member_wildcard_reads_and_prints() {
+        // `T.*` as a bare member access (the segment the export surface reuses) parses to `(. T *)`
+        // and prints back — `*` is a reserved final member segment, distinct from the `*` multiply op
+        // (which needs an operand before it).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("Color.*").arenas),
+            "(. Color *)"
+        );
+        assert_eq!(print(&sexpr::read("(. Color *)").unwrap(), 80), "Color.*");
+        // Multiply is untouched — `a * b` stays the `*` operator, not a member access.
+        assert_eq!(sexpr::print(&parser::read_ml("a * b").arenas), "(* a b)");
     }
 
     #[test]

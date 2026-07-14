@@ -938,6 +938,16 @@ impl<'a> Parser<'a> {
                             let t = self.bump().unwrap();
                             self.atom(literal::classify_word(self.text(t)), key_span)
                         }
+                        // The WILDCARD member `obj.*` — the `(. obj *)` form the export surface uses to
+                        // name a type's WHOLE constructor set (`export { Color.* }`). `*` is a reserved
+                        // final member segment here (recognized only as a member key, so it never
+                        // collides with the multiply operator, which needs an operand before it). The key
+                        // is the bare `*` name atom the s-expr `(. Color *)` carries, so both surfaces
+                        // agree and it round-trips.
+                        Kind::Star => {
+                            self.bump();
+                            self.name("*", key_span)
+                        }
                         _ => {
                             self.error("expected a member name or index after `.`");
                             self.error_node(key_span)
@@ -962,11 +972,12 @@ impl<'a> Parser<'a> {
     }
 
     /// A `.` begins member access only when followed by a member key — a field name, an escaped name,
-    /// or a numeric index (`obj.0`, positional tuple access).
+    /// a numeric index (`obj.0`, positional tuple access), or the wildcard `*` (`obj.*` — the
+    /// whole-constructor-set member the export surface uses).
     fn dot_is_member(&self) -> bool {
         matches!(
             self.nth_kind(1),
-            Kind::Ident | Kind::BacktickName | Kind::Int
+            Kind::Ident | Kind::BacktickName | Kind::Int | Kind::Star
         )
     }
 
@@ -1311,7 +1322,7 @@ impl<'a> Parser<'a> {
         let head = self.keyword_head("export", start);
         self.bump(); // `export`
         let mut items = vec![head];
-        items.extend(self.brace_name_list());
+        items.extend(self.brace_export_list());
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
@@ -1517,15 +1528,35 @@ impl<'a> Parser<'a> {
     }
 
     /// A brace-delimited comma-separated name list `{ a, b, … }` -> the vector of name occurrences.
-    /// Shared by `export`/`import`. Each element is a bare (or backtick-escaped) name; a non-name
-    /// element records an error and is skipped, so a malformed list still terminates.
+    /// Used by `import`. Each element is a bare (or backtick-escaped) name; a non-name element records
+    /// an error and is skipped, so a malformed list still terminates.
     fn brace_name_list(&mut self) -> Vec<StructId> {
+        self.brace_list_of(false)
+    }
+
+    /// The `export { … }` list — a name list where each element MAY carry a member-access postfix
+    /// `.A` / `.*` (a constructor-export element `(. T A)` / the wildcard `(. T *)`), since an export
+    /// publishes a value/handle name OR a type's constructor(s). Import stays name-only (a member has
+    /// no meaning there).
+    fn brace_export_list(&mut self) -> Vec<StructId> {
+        self.brace_list_of(true)
+    }
+
+    /// The shared brace-list machinery. `members` = whether an element may carry a `.member` postfix
+    /// (`export` yes, `import` no) — when set, each binder runs through `postfix` so `Color.*` /
+    /// `Color.Red` parse to the `(. Color …)` member form.
+    fn brace_list_of(&mut self, members: bool) -> Vec<StructId> {
         self.expect(Kind::LBrace, "`{`");
         let mut names = Vec::new();
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
-                names.push(self.binder());
+                let elem_span = self.cur_span();
+                let mut elem = self.binder();
+                if members && self.at(Kind::Dot) && self.dot_is_member() {
+                    elem = self.postfix(elem, elem_span);
+                }
+                names.push(elem);
                 if !self.sep_continue(Kind::RBrace) {
                     break;
                 }
