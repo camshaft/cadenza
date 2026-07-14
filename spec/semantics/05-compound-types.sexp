@@ -5848,6 +5848,39 @@
             (def (main) (count (Map.insert (Map.insert Map.empty 1 10) 2 20))) (export main)))
   (output (: 2 Int64)))
 
+; The case above threads a map through a SINGLE call. A map is more usefully threaded as a RECURSIVE-LOOP
+; ACCUMULATOR — an environment / symbol table grown across a recursion (a `Map.insert` per step over a map
+; parameter that carries from one call to the next), then queried. This is the map analogue of the list
+; accumulator (§"a list built by a runtime-length loop") and a self-hosted compiler's core idiom (a scope
+; of bindings accumulated while walking a program, then looked up). These drive the loop to a runtime count
+; so it cannot fold — the map parameter genuinely carries the growing CHAMP handle across the recursion.
+
+(case "a map threaded as a recursive accumulator is grown then measured"
+  (doc    "`build` inserts `n ↦ n*10` for n, n-1, …, 1 into a map that is THREADED as its own parameter from
+           each call to the next, then `Map.size` measures the result. The count is decided at run time —
+           `build 0 = Map.empty` → size 0 (the degenerate accumulator), `build 5` → 5 distinct keys → size
+           5. Pins that a map carried as a recursive-loop accumulator (a `Map.*` on a parameter map, per
+           step) accumulates correctly and is measurable — the map companion of the runtime-length list
+           builder.")
+  (input  (do
+            (def (build (: n Int64) (: m (Map Int64 Int64))) (if (= n 0) m (build (- n 1) (Map.insert m n (* n 10)))))
+            (def (main (: n Int64)) (Map.size (build n Map.empty))) (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a map grown by a recursive accumulator is looked up by a runtime key"
+  (doc    "The query companion: after `build 5` accumulates `{1↦10, 2↦20, 3↦30, 4↦40, 5↦50}` through the
+           threaded map parameter, a runtime key is looked up — k=3 → 30, k=5 → 50 (present), k=9 → absent
+           (→ -1). Pins that a map grown across a recursion answers a lookup correctly, the environment/
+           symbol-table idiom a self-hosted compiler is written in (accumulate bindings while walking, then
+           resolve a name).")
+  (input  (do
+            (def (build (: n Int64) (: m (Map Int64 Int64))) (if (= n 0) m (build (- n 1) (Map.insert m n (* n 10)))))
+            (def (main (: k Int64)) (match (Map.lookup (build 5 Map.empty) k) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 3 Int64)) (output (: 30 Int64))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
            deterministic canonical key order (collections-and-text.md §A Map Renders As Its Entries In

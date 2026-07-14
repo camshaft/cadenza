@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -44,6 +44,13 @@ export function references_at(text: string, from: Surface, byteOffset: number): 
 /// role. Empty when the buffer doesn't parse (the editor keeps its lexical colours).
 export function semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
   return client().semanticTokens(text, from);
+}
+
+/// How the compiler compiled the definition whose name is at a byte offset (inlined / specialized /
+/// emitted / transformed / unreferenced) + its concrete monomorphizations — for a "what did the
+/// compiler do?" hover. Null when the offset isn't on a definition name.
+export function disposition(text: string, from: Surface, byteOffset: number): Promise<DispositionInfo | null> {
+  return client().disposition(text, from, byteOffset);
 }
 
 /// `to` may be a surface (`ml`/`sexpr`) or an output-only view (`debug`/`flat`) for "show the raw AST".
@@ -90,4 +97,4 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
-export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok };
+export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };

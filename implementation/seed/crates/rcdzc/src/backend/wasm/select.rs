@@ -1013,6 +1013,9 @@ pub fn collect_used_ops(
                 }
             }
             for (k, v) in &entries {
+                if key_needs_compaction(db, *k) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops(db, *k, out);
                 collect_used_ops(db, *v, out);
             }
@@ -1031,6 +1034,9 @@ pub fn collect_used_ops(
             }
             if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
@@ -1052,6 +1058,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
         }
@@ -1060,6 +1069,9 @@ pub fn collect_used_ops(
             out.insert(OP_MAP_REMOVE);
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
@@ -1079,6 +1091,9 @@ pub fn collect_used_ops(
                 }
             }
             for &e in &elems {
+                if key_needs_compaction(db, e) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops(db, e, out);
             }
         }
@@ -1089,6 +1104,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
         }
@@ -1098,6 +1116,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
         }
@@ -1105,6 +1126,9 @@ pub fn collect_used_ops(
             out.insert(OP_SET_REMOVE);
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
@@ -1790,6 +1814,44 @@ pub fn select_function_of(
         };
         code.push(Lir::Loop(block_ty));
     }
+    // STRAIGHT-LINE CSE: for a NON-looping, NON-mutual, straight-line body, compute each shared trap-free
+    // scalar subexpression (a node referenced ≥2× — the residue of β-substituting a multiply-used param's
+    // argument at each use) ONCE into a slot up-front, so `emit`'s node-keyed `slots.get(&id)` fast path
+    // reads the slot at each use instead of re-emitting the whole computation. Gated to straight-line +
+    // trap-free + scalar (see the pass docs) so hoisting to the top is unconditionally sound. Skipped for a
+    // looping body (its control flow makes it non-straight-line anyway) and the mutual dispatch.
+    if !loops && !mutual && body_is_straight_line(db, body) {
+        for node in collect_cse_candidates(db, body) {
+            // Already assigned a slot (a nested candidate emitted as part of an earlier, larger one that
+            // got its slot first)? Skip — its uses already read that slot. (Inner-first ordering makes this
+            // rare, but a node reachable through two candidate parents could be seen after one claimed it.)
+            if slot_of.contains_key(&node) {
+                continue;
+            }
+            let Some(vt) = valtype_of(&type_of(db, node)) else {
+                continue;
+            };
+            let slot = body_base;
+            body_base += 1;
+            high = high.max(body_base);
+            scratch_ty.insert(slot, vt);
+            // Emit the shared computation ONCE (transient scratch above the reserved slots), store it, and
+            // register `(node → slot)` so every occurrence in the body reads the slot. A nested shared node
+            // was registered earlier (inner-first), so this emit already reads ITS slot — no double-compute.
+            emit(
+                db,
+                node,
+                &slot_of,
+                body_base,
+                &mut high,
+                &mut scratch_ty,
+                layout,
+                &mut code,
+            )?;
+            code.push(Lir::LocalSet(slot));
+            slot_of.insert(node, slot);
+        }
+    }
     // The body is emitted in TAIL position: a `Core::Call` in the body's result position becomes a
     // `return_call` (or, in a looped function, a member call becomes a loop iteration). `emit_tail`
     // propagates tail-ness through `if`/`match`/`let` result positions and delegates every non-tail
@@ -2293,6 +2355,137 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         Core::ListAt { list, index, .. } => vec![list, index],
         // A variant with binders/patterns or an unanalyzed shape yields no searchable children.
         _ => vec![],
+    }
+}
+
+// ── STRAIGHT-LINE COMMON-SUBEXPRESSION ELIMINATION (CSE) ──────────────────────────────────────────
+//
+// β-reduction SHARES an argument occurrence at every parameter use site (`beta_reduce` returns the SAME
+// `StructId`), so an inlined helper `(def (g s) (+ (+ s s) s))` applied to a non-trivial argument leaves
+// the ONE argument node referenced multiple times in the reduced body. `emit` is then called once PER
+// reference and re-emits the whole computation each time — `g (* a b)` emits `(* a b)` twice; a heap-
+// building argument (`(len xs)` twice over `xs = (build …)`) rebuilds the list at each use. The intra-op
+// arith-CSE (`core_eq` in `emit_checked_arith`) only shares the two operands of ONE op, so a node used
+// across DIFFERENT ops (or ≥3 times) still duplicates.
+//
+// This pass computes such a shared node ONCE into a slot and reads the slot at each use (via `emit`'s
+// node-keyed `slots.get(&id)` fast path — the same mechanism LICM / the match-scrutinee materialization
+// use). It is deliberately SCOPED to the provably-sound subset:
+//  • STRAIGHT-LINE body only (no `if`/`match` anywhere) — so every use of a shared node is unconditionally
+//    executed; computing it up-front never speculates past a branch (no added trap, no branch-only heap
+//    build hoisted, no refcount imbalance from a value live on only one path).
+//  • TRAP-FREE shared node (`is_trap_free`) — computing it before the rest can add no trap.
+//  • SCALAR result (a non-heap machine value) — a scalar has no refcount, so compute-once-read-N is
+//    unconditionally sound; a heap handle would need dup/drop accounting per use (deferred).
+//  • NON-TRIVIAL (`!licm_trivial`) — a bare param/const is already a free `local.get`/immediate.
+// Emitted INNER-FIRST (smaller subtrees first) so a nested shared node's slot is registered before an
+// enclosing shared node reads it.
+
+/// Whether the body at `id` is STRAIGHT-LINE — contains no control-flow construct (`If`/`Match`/
+/// `MatchList`/`MatchSum`) anywhere in the value positions CSE would hoist across. A `let` is fine (its
+/// bindings/body are straight-line value positions). Conservative: any unanalyzed compound is walked via
+/// `licm_children`; a construct that introduces conditional evaluation returns false so CSE stays off.
+fn body_is_straight_line(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::If { .. } | Core::Match { .. } | Core::MatchList { .. } | Core::MatchSum { .. } => {
+            false
+        }
+        _ => licm_children(db, id)
+            .into_iter()
+            .all(|c| body_is_straight_line(db, c)),
+    }
+}
+
+/// Count, per node `StructId`, how many times it is REFERENCED in the tree at `id` (a shared occurrence —
+/// same `StructId` reached through multiple parents — is counted once per parent edge). Walks the same
+/// value-position children `licm_children` enumerates. Used to find the ≥2-reference nodes CSE names.
+fn count_node_refs(db: &mut Db, id: StructId, counts: &mut HashMap<StructId, u32>) {
+    *counts.entry(id).or_insert(0) += 1;
+    // Only descend the FIRST time a node is seen — a shared subtree's interior is identical, so counting
+    // its children once per visit would over-count nested nodes and (for a deep DAG) blow up. We want the
+    // reference count of the node ITSELF (how many parents point at it), which the entry-increment above
+    // captures; its children are walked once.
+    if counts[&id] == 1 {
+        for child in licm_children(db, id) {
+            count_node_refs(db, child, counts);
+        }
+    }
+}
+
+/// Collect the CSE candidates in the straight-line body `id`: nodes referenced ≥2×, trap-free, non-
+/// trivial, with a SCALAR (non-heap) machine result. Returned INNER-FIRST (by ascending subtree size) so
+/// emitting them in order registers a nested shared node's slot before an enclosing one reads it.
+fn collect_cse_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
+    let mut counts: HashMap<StructId, u32> = HashMap::new();
+    count_node_refs(db, body, &mut counts);
+    // The ≥2-referenced nodes, then filter to trap-free / non-trivial / scalar-result. Collect the ids
+    // first (releasing the `counts` borrow) so each predicate can take `&mut db` in a plain loop.
+    let multi: Vec<StructId> = counts
+        .iter()
+        .filter(|&(_, &n)| n >= 2)
+        .map(|(&id, _)| id)
+        .collect();
+    let mut cands: Vec<StructId> = Vec::new();
+    for id in multi {
+        // Shareable = a pure deterministic SCALAR computation (the `core_eq` pure set, incl. checked
+        // arith — sound here since the straight-line body has no branch to speculate a trap past), and
+        // non-trivial (a bare param/const is already free). A heap result is excluded (needs dup/drop).
+        if licm_trivial(db, id) || !is_cse_shareable(db, id) {
+            continue;
+        }
+        let ty = type_of(db, id);
+        if is_heap_type(&ty) || valtype_of(&ty).is_none() {
+            continue;
+        }
+        cands.push(id);
+    }
+    // INNER-FIRST: a smaller subtree is nested inside (or independent of) a larger one, never encloses it,
+    // so ordering by subtree node-count puts a shared inner node before any shared node that contains it.
+    cands.sort_by_key(|&id| subtree_size(db, id));
+    cands
+}
+
+/// The number of nodes in the value-position subtree at `id` (via `licm_children`) — the CSE ordering key
+/// (inner-first). A shared node is counted structurally; the absolute value only needs to be MONOTONE in
+/// containment (a subtree is strictly larger than any subtree it contains), which this is.
+fn subtree_size(db: &mut Db, id: StructId) -> u32 {
+    1 + licm_children(db, id)
+        .into_iter()
+        .map(|c| subtree_size(db, c))
+        .sum::<u32>()
+}
+
+/// Whether the node at `id` is a PURE, DETERMINISTIC SCALAR computation whose sharing is observably
+/// identical to recomputing it — the UNARY analogue of the pairwise [`core_eq`] pure set (arith incl.
+/// CHECKED `+`/`-`/`*`, compare, convert, not, proj, sum-payload, a nested pure `if`, or a leaf). A CALL,
+/// a heap CONSTRUCT, control flow with an impure sub-part, an effect — anything else — is NOT shareable
+/// (returns false). Used by straight-line CSE: sharing such a node computes it ONCE at the point that
+/// dominates all its uses (the body is straight-line, so the first use dominates the rest), which
+/// preserves its value AND its trap behavior — a trapping subexpression traps at the same first-occurrence
+/// point whether shared or duplicated (the exact `core_eq` rationale). Distinct from `is_trap_free` (which
+/// EXCLUDES a checked op because hoisting it past a BRANCH could add a trap): here there is no branch, so a
+/// checked op is shareable too. NOTE: not restricted to scalar HERE — the caller applies the scalar filter
+/// (`is_heap_type`); this predicate is purely about determinism/effect-freedom.
+fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::Unit
+        | Core::Param { .. }
+        | Core::LocalRef { .. } => true,
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+            is_cse_shareable(db, lhs) && is_cse_shareable(db, rhs)
+        }
+        Core::Convert { operand, .. } | Core::Not { operand } | Core::Proj { operand, .. } => {
+            is_cse_shareable(db, operand)
+        }
+        Core::SumPayload { scrutinee, .. } => is_cse_shareable(db, scrutinee),
+        Core::If {
+            cond, then_, else_, ..
+        } => {
+            is_cse_shareable(db, cond) && is_cse_shareable(db, then_) && is_cse_shareable(db, else_)
+        }
+        _ => false,
     }
 }
 
@@ -4122,6 +4315,9 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, k, out);
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
+                if key_needs_compaction(db, k) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+                }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
                 if let Some(op) = box_op_ty(db, &val_ty)? {
                     emit_box_i32_to_i64_extend(db, v, out);
@@ -4147,6 +4343,9 @@ fn emit(
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
+            if key_needs_compaction(db, key) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
+            }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
             if let Some(op) = box_op_ty(db, &val_ty)? {
                 emit_box_i32_to_i64_extend(db, val, out);
@@ -4164,6 +4363,9 @@ fn emit(
             if let Some(op) = box_op_ty(db, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            if key_needs_compaction(db, key) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
             out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
             Ok(())
@@ -4188,6 +4390,9 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, e, out);
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
+                if key_needs_compaction(db, e) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+                }
                 out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
             }
             Ok(()) // leaves [set] — the set handle
@@ -4201,6 +4406,9 @@ fn emit(
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
+            if key_needs_compaction(db, elem) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+            }
             out.push(Lir::CallImport(OP_SET_INSERT)); // → [set']
             Ok(())
         }
@@ -4213,6 +4421,9 @@ fn emit(
             if let Some(op) = box_op_ty(db, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            if key_needs_compaction(db, elem) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
             out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set']
             Ok(())
@@ -4239,6 +4450,10 @@ fn emit(
             if let Some(op) = box_op_ty(db, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            if key_needs_compaction(db, elem) {
+                // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
             out.push(Lir::CallImport(OP_SET_CONTAINS)); // [bool] (borrows set + elem)
@@ -4285,6 +4500,10 @@ fn emit(
             if let Some(op) = box_op_ty(db, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            if key_needs_compaction(db, key) {
+                // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
             out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
@@ -6252,6 +6471,21 @@ fn operand_is_string(db: &mut Db, id: StructId) -> bool {
         }
     }
     matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol)
+}
+
+/// Whether a Map/Set KEY operand needs `bytes-compact` before the CHAMP `champ_hash`/`champ_eq` — an
+/// OWNED runtime String (a `String.concat` rope, whose physical bytes differ from a flat twin's of equal
+/// content, so it would hash into a different slot and never match its flat twin). This is the KEY-path
+/// companion of the `Core::ValueEq` compaction (`731dbf09`): both `value-eq` and the map/set key path use
+/// `champ_eq` over physical bytes, so a rope must be canonicalized at BOTH. Only a DIRECT, OWNED String
+/// key is compacted — a BORROWED String key (a param / a kept-local reference) is a FLAT leaf in practice
+/// and `bytes-compact` would consume it under its owner (mirrors the value-eq ownership gate); a String
+/// NESTED inside a compound key is the same rarer deferred case value-eq leaves. A compacted owned key is
+/// stack- and ownership-NEUTRAL: an owned rope in, an owned flat leaf out, so each site's existing key
+/// accounting (consumed by insert, or the dropped borrow-temporary at lookup/remove/contains) is unchanged.
+fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
+    operand_is_string(db, key)
+        && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
@@ -8699,6 +8933,16 @@ fn emit_operand_into(
     layout: &Layout,
     out: &mut Emit,
 ) -> Result<(), Reject> {
+    // A node MATERIALIZED into a slot (CSE / LICM / a match-scrutinee) reads back as a `local.get`, not a
+    // recomputation — honor it BEFORE the nested-arith re-emit below (which would rebuild the checked op,
+    // defeating the sharing). Read the slot, store into the destination. (The top-level `emit` has the same
+    // fast path, but this operand-into-slot path bypasses `emit` for a nested checked op, so it needs its
+    // own check.)
+    if let Some(&src) = slots.get(&id) {
+        out.push(Lir::LocalGet(src));
+        out.push(Lir::LocalSet(slot));
+        return Ok(());
+    }
     if let Core::Arith { op, lhs, rhs } = core_of(db, id)
         && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
     {
@@ -10588,6 +10832,55 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Add).count(),
             1,
             "one add over the shared product"
+        );
+    }
+
+    #[test]
+    fn a_multi_use_inlined_param_arg_is_computed_once_by_straight_line_cse() {
+        // β-reduction SHARES a param's argument occurrence at every use. `(def (g s) (+ s (* s 3)))`
+        // inlined with `s = (* a b)` leaves the ONE `(* a b)` node referenced twice — but across DIFFERENT
+        // ops (`+` and `*`), so the intra-op arith-CSE (which shares only the two operands of ONE op) does
+        // NOT catch it, and `(* a b)` emitted TWICE. Straight-line CSE now computes the shared `(* a b)`
+        // ONCE into a slot up-front and reads it at both uses → exactly ONE `i64.mul` for the argument
+        // (plus the `(* s 3)` = 2 total muls). Pins the count + relies on the corpus/run for value parity.
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: s Int64)) (+ s (* s 3))) \
+               (def (f (: a Int64) (: b Int64)) (g (* a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // Two muls: the SHARED `(* a b)` computed once + the `(* s 3)`. Before straight-line CSE this was
+        // THREE (the `(* a b)` argument duplicated at each of its two uses).
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "the inlined multi-use argument `(* a b)` is computed once (2 muls: shared arg + `* s 3`), \
+             got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_single_use_inlined_param_arg_is_not_cse_slotted() {
+        // A param used ONCE needs no CSE — the argument is inlined at its single site, same as before.
+        // `(def (g s) (* s 5))` given `s = (* a b)` → exactly ONE `(* a b)` for the arg, plus the `(* s 5)`
+        // = 2 muls (5 is not a power of two, so it stays a real mul, not a strength-reduced shift). No CSE
+        // slot is introduced — straight-line CSE only fires at ≥2 references.
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: s Int64)) (* s 5)) \
+               (def (f (: a Int64) (: b Int64)) (g (* a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "single-use arg inlines (2 muls: the arg + `* s 5`), got: {:?}",
+            f.code
         );
     }
 

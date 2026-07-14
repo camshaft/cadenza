@@ -52,7 +52,8 @@ pub const KIND_ENTRY: &str = "entry";
 
 /// The input-artifact kind that names the INTERFACE a PROVIDER component publishes its exports under
 /// (X4b, `DESIGN-cross-component-interop-rcdzc.md`). Its bytes are the interface name (`cadenza:pkg/iface`)
-/// a peer consumer's `(extern "cadenza:pkg/iface" …)` binds to. Rides the artifact stream like
+/// a peer consumer's `(effect …)` `(bind "cadenza:pkg/iface")` binds to (the effects-unified surface, U2).
+/// Rides the artifact stream like
 /// `KIND_ENTRY`. Absent (the common case) → the component exports its boundary funcs at top level
 /// (byte-identical to before); present → `emit` wraps them as that named interface instance so a peer can
 /// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).

@@ -50,6 +50,40 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a runtime string rope map key is found by its flat twin"
+  (doc    "The MAP-KEY companion of the rope-eq cases above: a map keyed by a runtime String ROPE
+           `(rep \"hi\" 3)` = \"hixxx\" looked up with the flat literal \"hixxx\" MUST find 42. The map-key
+           path hashes+compares with `champ_hash`/`champ_eq` — a PHYSICAL-byte compare, the SAME contract
+           `value-eq` uses — so a rope key (different bytes than its flat twin) landed in a different slot
+           and `Map.lookup` returned `None` (→ -1), a silent MISCOMPILE. The value-eq rope fix compacted
+           only the `=`/match operand; this pins the twin KEY path: the compiler now `bytes-compact`s an
+           owned String key at every Map/Set champ site (insert/lookup/remove, set-of/insert/contains/
+           remove), so a rope key and its flat twin hash+compare equal. Expected: 42.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert (Map.empty) (rep "hi" 3) 42) "hixxx")
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a flat string map key is found by a runtime rope twin"
+  (doc    "The symmetric direction: insert under the FLAT literal key \"hixxx\", look up with the runtime
+           ROPE `(rep \"hi\" 3)` = \"hixxx\" → 42. Compaction canonicalizes the LOOKUP key too (not only the
+           inserted key), so the rope lookup key hashes into the flat key's slot. Confirms the fix covers
+           both champ sites — the inserted key AND the lookup/borrow key — not just one direction.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert (Map.empty) "hixxx" 42) (rep "hi" 3))
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "string length"
   (input  (String.scalar-len "hello"))
   (output (: 5 Int64)))

@@ -604,6 +604,46 @@
               (def (main) (+ (helper 5) (helper 3))) (export main)))
   (output (: 126 Int64)))
 
+; The recursive cases above run at a small CONSTANT depth (fac(5)), which the compiler may fold. A
+; self-hosted compiler instead recurses over the SIZE of the program it compiles — a depth decided at run
+; time and often large. These drive a recursion to a LARGE N supplied as a boundary argument (so it cannot
+; fold), pinning that the compiled recursion runs at scale in CONSTANT STACK: the wasm-backend loop
+; transform turns a tail-recursive (and an accumulable non-tail) self-call into a loop, so 100000–1000000
+; iterations complete without exhausting the wasm stack. A generation that lowered the self-call as a plain
+; recursive wasm CALL would overflow the stack at these depths; the recorded value is the exact accumulation.
+
+(case "a tail-recursive accumulator loop runs to a large runtime N in constant stack"
+  (doc    "`(go i n acc) = (if (< i n) (go (+ i 1) n (+ acc i)) acc)` summed over 0..n-1, driven to n =
+           100000 by a boundary argument — so it cannot fold and runs as an emitted loop. The sum
+           0+1+…+99999 = 4999950000 (which exceeds Int32, so it also pins the Int64 accumulator). Completing
+           without a stack overflow pins that the tail-recursive self-call became a CONSTANT-STACK loop (a
+           plain recursive call would blow the wasm stack at 100000 deep). n=0 and n=1 pin the empty and
+           single-step boundaries (both 0, since the last index summed is n-1).")
+  (input  (do (def (go i n acc) (if (< i n) (go (+ i 1) n (+ acc i)) acc))
+              (def (main (: n Int64)) (go 0 n 0)) (export main)))
+  (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
+(case "a tail-recursive countdown loop runs to a very large runtime N"
+  (doc    "`(go n acc) = (if (= n 0) acc (go (- n 1) (+ acc 1)))` counts down from n = 1000000, incrementing
+           the accumulator each step → 1000000. A million-deep tail recursion completing pins the constant-
+           stack loop at an order of magnitude beyond the sum case — the self-hosting scale where a
+           per-call stack frame would certainly overflow.")
+  (input  (do (def (go n acc) (if (= n 0) acc (go (- n 1) (+ acc 1))))
+              (def (main (: n Int64)) (go n 0)) (export main)))
+  (call   main (: 1000000 Int64)) (output (: 1000000 Int64)))
+
+(case "a non-tail accumulable recursion runs to a large runtime N in constant stack"
+  (doc    "`(go n) = (if (= n 0) 0 (+ 1 (go (- n 1))))` — the self-call is NOT in tail position (its result
+           is fed to `(+ 1 …)`), but the accumulation is associative, so the backend's accumulator
+           introduction turns it into a constant-stack loop too. Driven to n = 100000 it returns 100000
+           without a stack overflow. Pins that the loop transform covers the accumulable non-tail shape (not
+           only strict tail calls) at scale — the shape a naive `1 + recurse` count/length takes.")
+  (input  (do (def (go n) (if (= n 0) 0 (+ 1 (go (- n 1)))))
+              (def (main (: n Int64)) (go n)) (export main)))
+  (call   main (: 100000 Int64)) (output (: 100000 Int64)))
+
 (case "a nullary do-local def followed by a use of it computes over its result"
   (doc    "The `def helper … then use it` idiom: `main`'s body is a do-block with a nullary do-local
            `(def (a) 10)` followed by `(+ (a) 5)` = 15. Pins the intended semantics of a def-body sequence

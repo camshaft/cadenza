@@ -111,8 +111,9 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
 
     let mut db = Db::load_linked(arenas, linkage);
     // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
-    // `component-name` request artifact. A peer consumer's `(extern "cadenza:pkg/iface" …)` binds to
-    // this name. Absent (the common case) → exports cross as top-level funcs (byte-identical).
+    // `component-name` request artifact. A peer consumer binds to this name with an `(effect …)`
+    // `(bind "cadenza:pkg/iface")` (the effects-unified surface, U2). Absent (the common case) → exports
+    // cross as top-level funcs (byte-identical).
     db.component_name = inputs
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
@@ -578,7 +579,7 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
 /// position validated whole — its inner unknown names surface via the ordinary resolver descent. This is
 /// the validation-position twin of `db::collect_type_params`'s record-aware descent (which collects the
 /// PARAMS from the same positions), so records are handled WITHOUT the field-name false positive.
-fn push_payload_type_positions(
+pub(crate) fn push_payload_type_positions(
     db: &Db,
     occ: StructId,
     params: &[String],
@@ -621,7 +622,7 @@ fn push_payload_type_positions(
 
 /// Whether the type-expression subtree at `id` contains a `(Record …)` form at any depth — the guard the
 /// payload-position collector uses to decide whether a container element needs record-splitting descent.
-fn is_record_bearing(db: &Db, id: StructId) -> bool {
+pub(crate) fn is_record_bearing(db: &Db, id: StructId) -> bool {
     if db.ast.head_name(id) == Some("Record") {
         return true;
     }
@@ -640,7 +641,7 @@ fn is_record_bearing(db: &Db, id: StructId) -> bool {
 /// (`(Option a)`) fails `typeval_of` out-of-context but is valid, so ONLY a real unknown Capitalized name
 /// (not a param) survives the filter — every other artifact of out-of-context resolution (`cannot apply`,
 /// a nested-param `unbound name`) is dropped. `what` names the position for the non-type message.
-fn validate_type_position(
+pub(crate) fn validate_type_position(
     db: &mut Db,
     pos: StructId,
     params: &[String],

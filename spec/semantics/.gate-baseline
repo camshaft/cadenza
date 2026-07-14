@@ -23,27 +23,42 @@ pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALO
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
 pass	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
 pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
+pass	MIXED: a NESTED tuple + flat tuple arg closure ALONGSIDE a plain export
+pass	MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
 pass	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export
+pass	MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
+pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
+pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
+pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
 pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
+pass	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
+pass	MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure
 pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)
 pass	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
+pass	MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
+pass	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
+pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
+pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
+pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
+pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
@@ -176,6 +191,7 @@ pass	a String-returning closure alongside a parameterized plain export — the p
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
+pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
@@ -464,6 +480,7 @@ pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width outside the admitted set is rejected
@@ -634,12 +651,14 @@ pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
+pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
@@ -789,6 +808,7 @@ pass	a non-first field is projected from a record returned across a call boundar
 pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
+pass	a non-tail accumulable recursion runs to a large runtime N in constant stack
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a nullary Sign variant applied to a non-unit payload is a type error
@@ -946,6 +966,7 @@ pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -1044,6 +1065,7 @@ pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string rope compares equal to its flat twin
+pass	a runtime string rope map key is found by its flat twin
 pass	a runtime string rope matches a string-literal arm
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
@@ -1168,7 +1190,9 @@ pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
+pass	a tail-recursive accumulator loop runs to a large runtime N in constant stack
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
+pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tautology comparison against a masked value's derived range still traps on the operand
@@ -1299,6 +1323,7 @@ pass	an abortive perform in a short-circuit connective's right operand abandons 
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
@@ -1324,6 +1349,7 @@ pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
+pass	an arm chooses its resume value by an if on the handler state
 pass	an arm that binds its resume in a lambda and applies it immediately folds
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
@@ -1382,6 +1408,7 @@ pass	an in-range constant argument to a narrow parameter computes at the paramet
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inner binding shadows an outer one only within its scope
+pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm

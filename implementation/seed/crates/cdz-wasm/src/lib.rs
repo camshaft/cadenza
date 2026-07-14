@@ -940,6 +940,122 @@ pub fn semantic_tokens(text: &str, from: &str) -> Result<Vec<SemanticToken>, JsE
     Ok(out)
 }
 
+/// The compilation DISPOSITION of the definition under the cursor — what the compiler DID with it — for
+/// a hover tooltip. `disposition` is one of `inlined` / `specialized` / `emitted` / `transformed→COPY` /
+/// `unreferenced` (a `+`-joined set when more than one applies); `name` is the definition's name;
+/// `instances` lists each concrete monomorphization (only for `specialized`), each an `arg, arg, …`
+/// string (a runtime param `name: TYPE`, an erased compile-time param `const name = VALUE`). `from`/`to`
+/// are the def-name's byte range, so the caller can anchor the tooltip to the name. The reverse of "one
+/// source def, one function": the browser shows how each definition is actually compiled.
+#[wasm_bindgen(getter_with_clone)]
+pub struct Disposition {
+    pub name: String,
+    pub disposition: String,
+    pub instances: Vec<String>,
+    pub from: u32,
+    pub to: u32,
+}
+
+/// The compilation disposition of the definition whose NAME is at a source byte offset — the "how was
+/// this compiled?" hover companion of `type_at`. Resolves the offset to the innermost user node, reads
+/// that node's source text as a definition NAME, and rides the `Instantiations` sidecar query (the same
+/// one `cdz instantiations` runs): it forces whole-program monomorphization, then reports the def's
+/// disposition plus, if it is specialized, every concrete instantiation. `None` when the offset is not on
+/// a name that denotes a definition (an operator, a literal, whitespace) — the tooltip simply doesn't
+/// show. Total on a well-parsed buffer.
+#[wasm_bindgen]
+pub fn disposition(
+    text: &str,
+    from: &str,
+    byte_offset: u32,
+) -> Result<Option<Disposition>, JsError> {
+    let from = parse_format(from)?;
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None), // a buffer that won't parse has no disposition
+    };
+    let Some(spans) = spans else { return Ok(None) };
+    // The innermost user node at the cursor, and its source text — the candidate definition NAME. The
+    // query is BY NAME (unlike `type_at`, which is by node id), so we read the hovered name off the source
+    // through its span rather than passing the node id.
+    let off = byte_offset as usize;
+    let Some(node) = spans.node_at_offset(off) else {
+        return Ok(None);
+    };
+    let span = spans
+        .get(node)
+        .expect("node_at_offset returned a spanned node");
+    let name = &text[span.start..span.end];
+    // Only a bare identifier can name a definition — skip a token that is obviously not a name (a paren,
+    // an operator, a literal), so a hover in dead space yields no tooltip rather than an empty query.
+    if name.is_empty()
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+    {
+        return Ok(None);
+    }
+    // Ride the `Instantiations` query — TAB-tagged lines: one `disp<TAB>name-node<TAB>DISPOSITION`, then
+    // (for a specialized def) `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` per instance. An UNKNOWN
+    // name (the hovered token names no definition) yields the empty string → no tooltip.
+    let text_out = run_query_text(
+        &ast_bytes,
+        &rcdzc::Query::Instantiations {
+            name: name.to_string(),
+        },
+    )?;
+    let mut disposition = String::new();
+    let mut def_span = span;
+    let mut instances: Vec<String> = Vec::new();
+    for line in text_out.lines() {
+        let mut cols = line.split('\t');
+        match cols.next() {
+            Some("disp") => {
+                let (Some(node_str), Some(disp)) = (cols.next(), cols.next()) else {
+                    continue;
+                };
+                disposition = disp.to_string();
+                // Anchor the tooltip to the DEFINITION's name occurrence (which may differ from the
+                // hovered use), so the range is stable whether the reader hovers the def or a call site.
+                if let Some(s) = node_str
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
+                {
+                    def_span = s;
+                }
+            }
+            Some("inst") => {
+                // `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` — render the `;`-joined args as a
+                // readable `a, b, c`, dropping the unstable synthesized spec name + the node id.
+                let (_spec, _node, arglist) = match (cols.next(), cols.next(), cols.next()) {
+                    (Some(s), Some(n), Some(a)) => (s, n, a),
+                    _ => continue,
+                };
+                let pretty = arglist
+                    .split(';')
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                instances.push(pretty);
+            }
+            _ => continue,
+        }
+    }
+    // No `disp` line ⇒ the hovered token names no definition (an unknown name) ⇒ no tooltip.
+    if disposition.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Disposition {
+        name: name.to_string(),
+        disposition,
+        instances,
+        from: def_span.start as u32,
+        to: def_span.end as u32,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,6 +1088,49 @@ mod tests {
         assert!(
             saw_helper_name,
             "a node's span must cover exactly `helper` — the canonical span mapping holds"
+        );
+    }
+
+    /// The byte offset of the FIRST occurrence of `needle` in `src` — a hover target for `disposition`.
+    fn offset_of(src: &str, needle: &str) -> u32 {
+        src.find(needle).expect("needle present") as u32
+    }
+
+    #[test]
+    fn disposition_reports_how_a_definition_was_compiled() {
+        // A non-recursive fn is INLINED; a recursive generic is SPECIALIZED (its instances listed); an
+        // exported entry is EMITTED. Hovering each def name reports its disposition — the browser IDE
+        // answering the same "what did the compiler do" question `cdz instantiations` does on the CLI.
+        let src = "(def (ident v) v) \
+                   (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (ident a) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\"))))) \
+                   (export main)";
+        // `ident` — inlined, no instances.
+        let d = disposition(src, "sexpr", offset_of(src, "ident"))
+            .expect("query ok")
+            .expect("ident is a definition");
+        assert_eq!(d.name, "ident");
+        assert_eq!(d.disposition, "inlined");
+        assert!(d.instances.is_empty(), "an inlined def has no instances");
+        // `loopn` — specialized at Int64 and String; two instances.
+        let d = disposition(src, "sexpr", offset_of(src, "loopn"))
+            .expect("query ok")
+            .expect("loopn is a definition");
+        assert_eq!(d.disposition, "specialized");
+        let mut inst = d.instances.clone();
+        inst.sort();
+        assert_eq!(inst, vec!["n: Int64, x: Int64", "n: Int64, x: String"]);
+        // `main` — emitted (an export).
+        let d = disposition(src, "sexpr", offset_of(src, "main"))
+            .expect("query ok")
+            .expect("main is a definition");
+        assert_eq!(d.disposition, "emitted");
+        // A hover that is NOT on a definition name (a literal) yields no tooltip.
+        assert!(
+            disposition(src, "sexpr", offset_of(src, "3"))
+                .expect("query ok")
+                .is_none(),
+            "a literal is not a definition"
         );
     }
 }

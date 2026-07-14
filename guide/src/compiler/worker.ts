@@ -13,6 +13,7 @@ import init, {
   define_at as wasmDefineAt,
   references_at as wasmReferencesAt,
   semantic_tokens as wasmSemanticTokens,
+  disposition as wasmDisposition,
   emit_rust as wasmEmitRust,
   core_module as wasmCoreModule,
   repl_eval as wasmReplEval,
@@ -95,6 +96,20 @@ export interface SemanticTok {
   from: number;
   to: number;
   kind: string;
+}
+
+/**
+ * How the compiler compiled the definition under the cursor — for a "what did the compiler do?" hover.
+ * `disposition` is `inlined` / `specialized` / `emitted` / `transformed→COPY` / `unreferenced` (a
+ * `+`-joined set when several apply); `instances` lists each concrete monomorphization (only for
+ * `specialized`), each an `arg, arg, …` string. `from`/`to` are the definition name's byte range.
+ */
+export interface DispositionInfo {
+  name: string;
+  disposition: string;
+  instances: string[];
+  from: number;
+  to: number;
 }
 
 let ready: Promise<void> | null = null;
@@ -189,6 +204,16 @@ const api = {
   async semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
     await ensureReady();
     return wasmSemanticTokens(text, from).map((t) => ({ from: t.from, to: t.to, kind: t.kind }));
+  },
+
+  /// The compilation disposition of the definition whose name is at a UTF-8 byte offset (for a hover),
+  /// or null when the offset isn't on a definition name. Rides the `Instantiations` sidecar query.
+  async disposition(text: string, from: Surface, byteOffset: number): Promise<DispositionInfo | null> {
+    await ensureReady();
+    const d = wasmDisposition(text, from, byteOffset);
+    return d
+      ? { name: d.name, disposition: d.disposition, instances: [...d.instances], from: d.from, to: d.to }
+      : null;
   },
 
   // `to` may be a surface or an output-only view ("debug"/"flat"); the wasm accepts the wider set.

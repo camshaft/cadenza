@@ -1372,6 +1372,7 @@ todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a fixpoint loop that threads a growing list accumulator returns that list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+todo	a flat string map key is found by a runtime rope twin
 todo	a float in integer-width position is rejected
 todo	a function argument is applied through a recursive higher-order function
 todo	a function deriving a velocity from a distance and a time
@@ -1503,6 +1504,7 @@ todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime-built string crosses the boundary as its value form
 todo	a runtime string rope compares equal to its flat twin
+todo	a runtime string rope map key is found by its flat twin
 todo	a runtime string rope matches a string-literal arm
 todo	a runtime-computed BigInt result crosses the host boundary
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)

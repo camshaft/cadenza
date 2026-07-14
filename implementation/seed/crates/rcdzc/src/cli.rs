@@ -61,8 +61,9 @@ pub struct CompileArgs {
 
     /// The INTERFACE this component publishes its exports under, when compiled as a cross-component
     /// PROVIDER (`DESIGN-cross-component-interop-rcdzc.md` X4b) — e.g. `--component-name cadenza:math/api`.
-    /// A peer consumer's `(extern "cadenza:math/api" …)` binds to it. Injected as a `KIND_COMPONENT_NAME`
-    /// artifact. Absent (the common case) → the component exports its boundary funcs at top level.
+    /// A peer consumer binds to it with an `(effect …)` `(bind "cadenza:math/api")`-ed to this name (the
+    /// effects-unified surface, U2). Injected as a `KIND_COMPONENT_NAME` artifact. Absent (the common
+    /// case) → the component exports its boundary funcs at top level.
     #[arg(long, value_name = "INTERFACE")]
     component_name: Option<String>,
 }
