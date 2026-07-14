@@ -911,12 +911,21 @@ the component type. The new work:
   `own<self>` self-reference → "type index out of bounds"); and `R = 2N+1+import_call_types` (NOT +2 — the
   re-exported `t` is the next index after all import types). Corpus: mk-sum/mk-diff share one `call`,
   `make-diff()` → handle, `call(handle, (10,3))` → 7 e2e under wasmtime. gate 1727p/0f.
+- **✅✅ DIRECT-CALL FIXED-SHAPE COMPOUND ARG on the MIXED (closure+plain) path** (`@28dbfb5e`, baseline
+  `@2b87d0e7`). A tuple-arg closure factory crossing via make+shared `call` ALONGSIDE a plain (non-closure)
+  top-level export. Pure ROUTING — the shared core serializer (`multi_closure_resource_core_module_with_host_
+  borrow` takes both `plain` + `tuple_arg`) AND the mixed envelope (`assemble_mixed_closure_resource_borrow_
+  tuple` takes both `plain` + `tuple_arg_bytes`, built last tick) were already capable; `emit_mixed_closure_
+  resource` detects the tuple arg, feeds flattened field vts, routes the scalar tail to the tuple serializer +
+  mixed-tuple envelope with plain exports alongside. Corpus: `mk` (tuple-arg closure) + `twice` (plain) in one
+  component — closure `call(handle,(3,4))`→7 AND plain `twice(21)`→42, both e2e. gate 1734p/0f.
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export AND multi-export (above); still to widen: MIXED (closure+plain)
-  / DISTINCT-SIG / ROUND-TRIP variants of the compound arg, a compound arg ALONGSIDE other args, a
-  VARIABLE-LENGTH collection arg (needs a `value-decode` runtime op that does not exist). A closure-typed
-  closure ARG on the direct-call path (a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>`
-  both directions — cleanly declined). **The entire byte-rope
+  SCALAR tuple/record is DONE for single-export, multi-export, AND mixed (above); still to widen: DISTINCT-SIG
+  / ROUND-TRIP variants of the compound arg (⚠ NOTE the round-trip path where the CONSUMER builds the arg
+  in-guest ALREADY works — this is the DIRECT-CALL-side distinct-sig only), a compound arg ALONGSIDE other
+  args, a VARIABLE-LENGTH collection arg (needs a `value-decode` runtime op that does not exist). A
+  closure-typed closure ARG on the direct-call path (a closure-resource passed INTO a call); a closure
+  TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
