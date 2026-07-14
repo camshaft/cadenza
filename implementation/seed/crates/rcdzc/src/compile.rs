@@ -400,9 +400,9 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// The FIXED registry of module-directive keys the specification defines (`modules-and-namespaces.md` §A
 /// Module Directive Is Drawn From A Fixed Set). The single source of truth for BOTH the `(pragma …)`
 /// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
-/// suggestion can never drift from the accepted set. Small and closed today (`default-integer`); a new
-/// spec directive adds its key here.
-const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
+/// suggestion can never drift from the accepted set. Small and closed today (`default-integer`,
+/// `default-fraction`); a new spec directive adds its key here.
+const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction"];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
 /// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
@@ -450,6 +450,37 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
             format!(
                 "`default-integer` must name an integer type, but `{}` is not an integer type \
                  (the default fixes the type otherwise-unconstrained integer literals take)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
+/// The numeric-domain check for a well-formed `(pragma default-fraction <T>)`: `<T>` MUST be an exact
+/// rational type (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). The
+/// fraction analogue of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its
+/// CDZ0101; a type that does not reduce to a concrete `Ty` returns `None`, no false reject), the domain
+/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303.
+fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
+    // note for the bound-unmodeled vs unbound distinction this turns on).
+    if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, ty_expr)
+        && reject.code == Some(Code::Unbound)
+    {
+        return Some(reject);
+    }
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    // The exact-fraction domain is `Ty::Rational` — the one exact rational type the numeric model admits.
+    if matches!(ty, crate::ty::Ty::Rational) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-fraction` must name an exact rational type (Rational), but `{}` is not \
+                 (the default grounds otherwise-unconstrained numeric literals to an exact fraction)",
                 ty.render_name()
             ),
         )
@@ -648,6 +679,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // INLINE-POLICY CONFLICTS (Addendum 4). `inline-always` on a RECURSIVE def is a contradiction — a
+    // recursive def CANNOT inline (it would inline without end; it is always emitted once), so the marker
+    // is meaningless and almost certainly an author error. Reject it (CDZ0201) rather than silently ignore.
+    // (`inline-never` on a recursive def is a harmless no-op — recursion already emits once — so it is NOT
+    // a conflict.) The compile-time-DEMANDED `inline-never` conflict is caught at the call site in `lower`
+    // (a `const`-arg / type-position demand), not here, since it is a property of the USE, not the decl.
+    if !db.inline_always.is_empty() {
+        for di in 0..db.defs.len() {
+            let Some(body) = db.defs[di].body else {
+                continue;
+            };
+            if db.inline_always.contains(&body) && crate::eval::is_recursive(db, body) {
+                let name = db.defs[di].name.clone();
+                faults.push(
+                    Reject::coded(
+                        crate::diag::Code::Malformed,
+                        format!(
+                            "`{name}` is recursive, so it cannot be `inline-always` — a recursive \
+                             definition is always emitted as one function (drop the `inline-always`, or \
+                             use `inline-never` which is its default)"
+                        ),
+                    )
+                    .at(db.defs[di].sig_occ),
+                );
+            }
+        }
+    }
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
     // recognized declaration (`def`/`export`/`type`/`effect`) nor a grammar head nor a bound name. Two
     // real cases reach here, and they are STRUCTURALLY INDISTINGUISHABLE (both a list led by an unbound
@@ -794,6 +852,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         .at(form),
                     );
                 } else if let Some(reject) = non_integer_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
+                }
+            }
+            // `default-fraction <T>` — exactly one argument; a well-formed one whose type is not an exact
+            // rational type → the numeric-domain CDZ0303 (the fraction twin of `default-integer`).
+            Some("default-fraction") => {
+                if ptail.len() != 2 {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`default-fraction` takes exactly one type argument (e.g. `(pragma default-fraction Rational)`)",
+                        )
+                        .at(form),
+                    );
+                } else if let Some(reject) = non_rational_default_fault(db, form, ptail[1]) {
                     faults.push(reject);
                 }
             }
@@ -1407,42 +1480,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     }
     let param_lists: Vec<Vec<StructId>> = db.defs.iter().map(|d| d.params.clone()).collect();
     for params in &param_lists {
-        // All param names of this list — the set the rename fix must avoid so a fresh name collides with
-        // neither an earlier NOR a later parameter (renaming `x` in `(f x x)` to `x2` must dodge a real `x2`).
-        let all_names: std::collections::HashSet<String> = params
-            .iter()
-            .filter_map(|&p| {
-                db.ast
-                    .as_name(crate::eval::param_name_occ(db, p))
-                    .map(str::to_string)
-            })
-            .collect();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for &p in params {
-            let name_occ = crate::eval::param_name_occ(db, p);
-            let Some(name) = db.ast.as_name(name_occ).map(|s| s.to_string()) else {
-                continue; // a param with no extractable name (a malformed binder) — not a dup check
-            };
-            if !seen.insert(name.clone()) {
-                // RENAME the repeated occurrence to a fresh non-colliding name (`x` → `x2`), making the
-                // parameter list linear (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
-                // To A Fix). Heuristic: the rename clears the hard error, but the fresh binder is then
-                // unused (a CDZ0306 warning) until the author wires it up — renaming vs. dropping the
-                // duplicate (which changes arity) is the author's call. Anchored at the repeated binder.
-                let fresh = crate::diag::suggest::fresh_suffixed_name(&name, &all_names);
-                faults.push(
-                    Reject::coded(
-                        Code::NonLinearBinder,
-                        format!(
-                            "parameter `{name}` is bound more than once (a parameter list must be \
-                             linear, like a pattern)"
-                        ),
-                    )
-                    .at(name_occ)
-                    .with_fix(crate::diag::Fix::replace_heuristic(name_occ, fresh)),
-                );
-            }
-        }
+        crate::infer::param_list_linearity_faults(db, params, &mut faults);
     }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
@@ -1982,6 +2020,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                 || r.message
                     .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER))
     });
+    // A NAMED-MEMBER-OP over-application specifically (`Int64.of`/`List.push` — the `… were given` phrasing,
+    // NOT the bare-operator `arguments to a function of arity`). A member-op's over-application ALSO makes
+    // the emit path return a coded arity reject (`of takes exactly 1 operand`), which is redundant with the
+    // op-naming CDZ0203 — drop it only for a MEMBER over-application. A bare OPERATOR (`+`) instead has a
+    // resolve-path CDZ0201 (`+ takes exactly 2 operands`) that IS the primary (kept), so it must NOT match
+    // this flag — hence keying on the member marker, not the general over-application flag.
+    let has_member_over_application_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && r.message
+                .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER)
+    });
     // Likewise: a MALFORMED handler (an arm naming an undeclared op — CDZ0403 — or one not discharging
     // every operation — CDZ0405) cannot fold, so `lower` returns the uncoded "not yet reducible by the
     // tail-resumptive fold" DECLINE alongside the coded reject. The decline is a CONSEQUENCE of the very
@@ -2233,6 +2282,21 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if has_over_application_reject
                 && r.is_decline()
                 && r.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)
+            {
+                return false;
+            }
+            // The emit-path CONVERSION arity reject (`of takes exactly 1 operand`, from `lower`'s
+            // `lower_conversion`/`lower_float_of`/…) is a CODED CDZ0201 that fires alongside `infer`'s
+            // MEMBER-op over-application CDZ0203 (`Int64.of takes 1 argument, but 2 were given`, with a
+            // delete fix). The CDZ0203 names the op and carries the fix, so it is the primary; drop the
+            // bare emit-path arity reject. Gated on the MEMBER over-application flag (not the general one):
+            // a bare OPERATOR `(+ 1 2 3)` has a resolve-path CDZ0201 `+ takes exactly 2 operands` that IS
+            // its primary (kept — its CDZ0203 sibling is dropped by the operator-arity path below), so it
+            // must not match here; only a `Module.op` over-application (the `were given` phrasing) does.
+            if has_member_over_application_reject
+                && r.code == Some(Code::Malformed)
+                && r.message.contains(crate::diag::EMIT_OPERAND_ARITY_MARKER)
+                && r.message.contains("operand")
             {
                 return false;
             }

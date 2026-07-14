@@ -88,6 +88,32 @@
   (input  (Record.merge (record (a 1)) (record (b 2))))
   (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
 
+; The merge above builds both operand records from CONSTANT literals, so the union folds to a constant
+; record. A record carrying a RUNTIME field value cannot fold — the merge runs on the value heap. These
+; read the merged record's fields back down to a scalar (so a parameterized export returns), pinning that
+; a runtime `Record.merge` carries EACH operand's field into the result at its own value.
+
+(case "merging records with a runtime field value carries both operands' fields"
+  (doc    "`(Record.merge (record (a n)) (record (b 2)))` with `n` a boundary parameter builds the left
+           record from a runtime value, so the merge runs on the value heap. Reading field `a` (the runtime
+           `n`, from the left operand) plus field `b` (2, from the right) yields `n + 2`: 7+2 = 9, 100+2 =
+           102. Pins that a runtime merge unions BOTH operands' fields, each bound to its source's value,
+           read back by member access.")
+  (input  (do (def (main (: n Int64))
+                (+ (. (Record.merge (record (a n)) (record (b 2))) a) (. (Record.merge (record (a n)) (record (b 2))) b))) (export main)))
+  (call   main (: 7 Int64)) (output (: 9 Int64))
+  (call   main (: 100 Int64)) (output (: 102 Int64)))
+
+(case "merging records with runtime values on both sides binds each field to its own value"
+  (doc    "Both operands carry a runtime field: `(Record.merge (record (a x)) (record (b y)))`. Reading `b`
+           minus `a` yields `y - x` (10-3 = 7), so each field holds its OWN operand's runtime value — the
+           merge does not confuse or alias the two runtime slots. Pins per-field value fidelity on the
+           runtime path when neither operand is constant.")
+  (input  (do (def (main (: x Int64) (: y Int64))
+                (- (. (Record.merge (record (a x)) (record (b y))) b) (. (Record.merge (record (a x)) (record (b y))) a))) (export main)))
+  (call   main (: 3 Int64) (: 10 Int64)) (output (: 7 Int64))
+  (call   main (: 50 Int64) (: 8 Int64)) (output (: -42 Int64)))
+
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
            sentence): merging two records that share a field name is a compile-time rejection (CDZ0211), so
@@ -192,6 +218,33 @@
   (input  (Tuple.cat (tuple 1 true) (tuple "x")))
   (output (: (tuple 1 true "x") (Tuple Int64 Bool String))))
 
+; The concatenation cases above build both operand tuples from CONSTANT literals, so the result folds to a
+; constant tuple at compile time. A tuple carrying a RUNTIME element — a boundary parameter — cannot fold:
+; the concatenation runs on the value heap, and reading an element back exercises the emitted machinery. A
+; case reads the result down to a SCALAR (a projection then arithmetic) so it returns from a parameterized
+; export. These pin `Tuple.cat` on a runtime operand — the value companion of the constant cases.
+
+(case "concatenating tuples with a runtime element reads elements from both operands"
+  (doc    "`(Tuple.cat (tuple n 2) (tuple 3 4))` with `n` a boundary parameter cannot fold — the first
+           element is decided at run time, so the concatenation runs on the value heap. Reading element 0
+           (the runtime `n`, from the first operand) and element 3 (4, from the second) and summing them
+           yields `n + 4`: 7+4 = 11. Pins that a runtime `Tuple.cat` places BOTH operands' elements into
+           the result at their combined positions, read back correctly by projection.")
+  (input  (do (def (main (: n Int64))
+                (+ (. (Tuple.cat (tuple n 2) (tuple 3 4)) 0) (. (Tuple.cat (tuple n 2) (tuple 3 4)) 3))) (export main)))
+  (call   main (: 7 Int64)) (output (: 11 Int64))
+  (call   main (: 100 Int64)) (output (: 104 Int64)))
+
+(case "runtime tuple concatenation preserves element order across the seam"
+  (doc    "`(. (Tuple.cat (tuple 1 2) (tuple n 4)) 2)` reads position 2 of the concatenation — the FIRST
+           element of the second operand (`n`) — which lands just past the first operand's two elements. It
+           is `n` for every `n` (99 → 99). Pins that the second operand's elements are appended AFTER the
+           first's on the runtime path, so position 2 is the second tuple's element 0, not a first-operand
+           element or a shifted slot.")
+  (input  (do (def (main (: n Int64)) (. (Tuple.cat (tuple 1 2) (tuple n 4)) 2)) (export main)))
+  (call   main (: 99 Int64)) (output (: 99 Int64))
+  (call   main (: -7 Int64)) (output (: -7 Int64)))
+
 (case "splitting a tuple at a position yields a prefix and a suffix"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix:
            `(Tuple.split-at (tuple 1 2 3) 1)` splits at position 1 into a pair — the first element as a
@@ -231,6 +284,18 @@
             (def (main) (. (. (Tuple.split-at (tuple 10 20) 0) 1) 0))
             (export main)))
   (output (: 10 Int64)))
+
+(case "splitting a tuple with a runtime element addresses the prefix and suffix"
+  (doc    "`(Tuple.split-at (tuple n 20 30) 1)` with `n` a boundary parameter splits at position 1 (a
+           compile-time literal) into a 1-tuple prefix `(tuple n)` and a 2-tuple suffix `(tuple 20 30)`,
+           built on the value heap because `n` is runtime. Reading the prefix's element 0 (`n`) plus the
+           suffix's element 1 (30) gives `n + 30`: 5+30 = 35. Pins that a runtime `Tuple.split-at` places
+           the operand's runtime element into the correct side and position, read back by nested
+           projection — the split boundary is the static `k` regardless of the element values.")
+  (input  (do (def (main (: n Int64))
+                (+ (. (. (Tuple.split-at (tuple n 20 30) 1) 0) 0) (. (. (Tuple.split-at (tuple n 20 30) 1) 1) 1))) (export main)))
+  (call   main (: 5 Int64)) (output (: 35 Int64))
+  (call   main (: 0 Int64)) (output (: 30 Int64)))
 
 (case "popping a tuple yields element zero and the remaining tuple"
   (doc    "Witnesses type-system.md #A Tuple Is Reshaped Positionally: `Tuple.pop` takes element 0 off,

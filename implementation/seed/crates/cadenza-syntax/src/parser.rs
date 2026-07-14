@@ -717,6 +717,22 @@ impl<'a> Parser<'a> {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
             }
+            Kind::Ident
+                if matches!(self.cur_text(), "inline-never" | "inline-always")
+                    && self.nth_kind(1) == Kind::Ident
+                    && keyword(self.nth_text(1)) == Some(Keyword::Def) =>
+            {
+                // An INLINE-POLICY marker on a def: `inline-never def f(x) = …` → `(inline-never (def …))`
+                // (Addendum 4). `inline-never`/`inline-always` are not lexer keywords (hyphenated idents),
+                // so recognized here by text ONLY when immediately followed by `def`; a bare identifier
+                // `inline-never` used as a value stays an ordinary name (the `None` arm below).
+                let kw_text = self.cur_text().to_string();
+                self.bump(); // the marker
+                let kw = self.name(kw_text, span);
+                let def = self.def_expr();
+                let dspan = span.merge(self.prev_span());
+                self.list(vec![kw, def], dspan)
+            }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
                 Some(Keyword::If) => self.if_expr(),
@@ -959,6 +975,15 @@ impl<'a> Parser<'a> {
             .get(self.pos + n)
             .map(|t| t.kind)
             .unwrap_or(Kind::Error)
+    }
+
+    /// The source text of the token `n` ahead of the cursor (`""` past the end). The look-ahead
+    /// companion of `cur_text`, used to peek a hyphenated keyword-ident (`inline-never def …`).
+    fn nth_text(&self, n: usize) -> &'a str {
+        self.tokens
+            .get(self.pos + n)
+            .map(|&t| self.text(t))
+            .unwrap_or("")
     }
 
     /// Parse `( e, … )` and return the argument occurrences.

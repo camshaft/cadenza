@@ -647,6 +647,18 @@ pub const MEMBER_OVER_APPLICATION_MARKER: &str = "were given";
 /// `dedup_faults` matches this to drop the decline ONLY when that coded over-application reject is present.
 pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be applied to exactly";
 
+/// A stable SUBSTRING of the emit-path (`lower`) CONVERSION/arith arity reject `<op> takes exactly N
+/// operand(s)` — the coded CDZ0201 a conversion op (`Int64.of`, `Float64.of`, `of-int`, …) or a binary op
+/// returns when applied to the wrong operand count. On an OVER-application `infer` already reports the
+/// coded CDZ0203 "`Int64.of` takes 1 argument, but 2 were given" (naming the op + carrying a
+/// delete-surplus fix) — MORE actionable than the bare "of takes exactly 1 operand". So `dedup_faults`
+/// drops this emit-path arity reject when the over-application CDZ0203 is present (both anchor near the
+/// same call), keeping the coded, fixable one as the ONE primary. The resolve-path arity rejects for the
+/// grammar forms (`if`/`and`/`not`) share the "takes exactly … operand" wording but are the PRIMARY for
+/// those forms (no over-application CDZ0203 accompanies them), so the `has_over_application_reject` gate
+/// leaves them untouched.
+pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
+
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

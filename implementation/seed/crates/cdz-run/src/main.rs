@@ -140,6 +140,10 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
 /// Required Runtime); the host locates `<store>/<hash>.wasm` and REFUSES to run if that exact hash is
 /// absent — never substituting a different runtime (§The Host Resolves The Runtime By Content
 /// Address). `--runtime <path>` is a debugging escape hatch that bypasses the store lookup.
+//= spec/contracts/component-abi.md#the-host-resolves-the-runtime-by-content-address
+//# A host MUST resolve a program's runtime import by reading the required runtime content address the component records and locating the runtime component of that content address in a content-addressed store, rather than by assuming a single ambient runtime, so that programs pinned to different runtime versions coexist and each resolves the exact runtime it was emitted against.
+//= spec/contracts/component-abi.md#the-host-resolves-the-runtime-by-content-address
+//# A host that cannot locate a runtime of the content address a component requires MUST refuse to run the component rather than substitute a different runtime, so that a mismatched runtime is a detected error rather than a silent change in observable behavior.
 fn resolve_runtime(cli: &Cli, req: &cdz_run::RuntimeReq) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = &cli.runtime {
         return std::fs::read(path)

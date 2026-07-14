@@ -202,6 +202,30 @@
   (input  (+ 100N 1N))
   (output (: 101 BigInt)))
 
+(case "a RADIX literal carries the N type suffix"
+  (doc    "The `N` (BigInt) / `R` (Rational) type suffix applies to a RADIX body (`0x…`/`0b…`) exactly as
+           to a decimal one — `0xFFN` is the BigInt 255, `0b1010N` the BigInt 10 — matching the documented
+           `f91a9001` example (`100N`, `0xFFN`, `1_000N`). The suffix peel reads the radix body then the
+           glued suffix letter, so a hex/binary literal opts into BigInt with the same terse spelling as a
+           decimal one. (This was an ML-surface lexer gap: `0xFFN` there mis-lexed as a quantity `(Qty.of
+           0xFF (Unit.of \"N\"))` → CDZ0201 'unknown unit N', while the s-expr reader — and now the ML
+           lexer too — reads it as the suffixed BigInt. These s-expr cases guard the VALUE on both surfaces.)")
+  (input  0xFFN)
+  (output (: 255 BigInt)))
+
+(case "a binary-radix literal carries the N suffix and an underscore group"
+  (doc    "`0b1010N` is the BigInt 10; a hex literal with an underscore group + suffix `0xFF_FFN` is the
+           BigInt 65535 — the radix suffix peel composes with `_` digit separators, as the decimal path
+           does. Pins that the whole `<radix-body-with-underscores><suffix>` is one suffixed literal.")
+  (input  (+ 0b1010N 0xFF_FFN))
+  (output (: 65545 BigInt)))
+
+(case "a radix literal carries the R (Rational) suffix"
+  (doc    "The `R` suffix over a radix body: `0xFFR` is the Rational 255/1 (an integer body grounds to
+           `n/1`), the radix twin of `5R`. Confirms both suffix kinds reach the radix path.")
+  (input  0xFFR)
+  (output (: 255/1 Rational)))
+
 (case "an R-suffixed integer literal is that integer over one"
   (doc    "The `R` type suffix (`5R`) selects `Rational`: an integer body grounds to `5/1`, the terse
            form of `(: 5 Rational)`.")
@@ -671,6 +695,77 @@
 ; (The general pragma mechanism — an unrecognized key rejected CDZ0601, malformed args CDZ0602 — is
 ;  witnessed by the module-pragma cases in 11-modules.sexp; here we pin only the numeric-domain
 ;  behavior of the `default-integer` key.)
+
+; --- Module pragma `default-fraction`: exact-by-default ------------------------------------
+; The exactness sibling of `default-integer`. A module MAY declare `(pragma default-fraction Rational)`
+; so a bare NUMERIC literal (integer OR decimal) with no other constraint grounds to the exact rational
+; it denotes within that module (numeric-model.md #A Module May Declare Its Default Fraction Literal
+; Type) — making ordinary arithmetic exact by default: `(/ 1 3)` is 1/3, not integer-truncated 0. Same
+; discipline as default-integer: definition-site scoped, fixes a TYPE not a conversion (no-promotion
+; holds), an explicit annotation wins, and the directive MUST name an exact rational type (a non-rational
+; is the numeric-domain CDZ0303).
+
+(case "a default-fraction pragma makes a bare literal exact — 1/3 not 0"
+  (doc    "`m` declares `(pragma default-fraction Rational)`, so the bare literals 1 and 3 in `third`'s
+           body are Rationals — `(/ 1 3)` is EXACT rational division = 1/3, not the integer-truncated 0 a
+           default-Int64 module gives. THE load-bearing effect: exact-by-default, the calculator's reason
+           for the directive (numeric-model.md #A Module May Declare Its Default Fraction Literal Type).")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (third) (/ 1 3)))
+            ((. m third) unit)))
+  (output (: 1/3 Rational)))
+
+(case "a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction"
+  (doc    "The default applies to a decimal-written literal too: bare `0.5` in a `(pragma default-fraction
+           Rational)` module is the EXACT fraction its digits denote, 1/2 — no float rounding
+           (numeric-model.md #A declared default fraction literal type MUST apply to both an integer- and a
+           decimal-written literal). So `0.5` is 1/2 : Rational, not 0.5 : Float64.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (half) 0.5))
+            ((. m half) unit)))
+  (output (: 1/2 Rational)))
+
+(case "a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds"
+  (doc    "In a `(pragma default-fraction Rational)` module, `(mix)` writes `(+ 1 (Int64.of 1))`: the bare
+           1 is a Rational (the module default), `(Int64.of 1)` is an Int64, so the mix is rejected
+           (CDZ0301) exactly as any Rational/Int64 mix is (numeric-model.md #A declared default fraction …
+           introduces no implicit conversion). The default changed what type the literal STARTS as, it did
+           NOT add a coercion — exactness ergonomics without weakening no-promotion.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (mix) (+ 1 (Int64.of 1))))
+            ((. m mix) unit)))
+  (error  CDZ0301))
+
+(case "an explicit annotation overrides the default-fraction pragma"
+  (doc    "In a `(pragma default-fraction Rational)` module, `(: 5 Int64)` is still Int64 — an explicit
+           annotation takes precedence over the module default (numeric-model.md, the fraction default
+           inherits the integer default's override rule). Pins that the default only decides the
+           OTHERWISE-UNCONSTRAINED case; a constrained literal keeps its constrained type.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (pinned) (: 5 Int64)))
+            ((. m pinned) unit)))
+  (output (: 5 Int64)))
+
+(case "a default-fraction pragma naming a non-rational type is rejected"
+  (doc    "`(pragma default-fraction Int64)` names a type that is not an exact rational, so the module is
+           rejected (CDZ0303, numeric-model.md #A Module May Declare Its Default Fraction Literal Type).
+           The KEY is recognized and the argument is a valid type — it just fails the rational-domain
+           predicate — so this is the numeric CDZ0303, the fraction twin of the default-integer domain
+           reject, distinct from the structural CDZ0602/CDZ0601.")
+  (input  (do
+            (module m
+              (pragma default-fraction Int64)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0303))
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
@@ -1411,6 +1506,57 @@
             (def (w a b) (Int64.wrapping-add a b))
             (def (main) (w Int64.max 1)) (export main)))
   (output (: -9223372036854775808 Int64)))
+
+; The runtime case above passes a CONSTANT `Int64.max` into the wrapping op, so the boundary operand still
+; folds before reaching the raw i64 op. These pin the wrapping ops on an operand that CROSSES the boundary
+; as a `(call …)` argument — the value cannot be constant-folded, so the emitted raw machine op (no
+; overflow guard) is exercised directly — across Int64, and the NARROW widths whose wraparound modulus is
+; NOT 2^64 (a UInt8 wraps mod 256, an Int8 at ±128): a narrow wrap that reused the i64 op without masking
+; to the type's width would give the un-wrapped value, so these witness the per-width wraparound.
+
+(case "wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary"
+  (doc    "`(Int64.wrapping-add x 1)` with `x` a boundary parameter cannot fold; called with Int64.max it
+           wraps to Int64.min on the raw i64.add path (wasm's add wraps, no overflow guard), and called with
+           5 it is the ordinary 6. Pins wrapping-add on a genuinely runtime operand — the const-fold and the
+           earlier constant-arg runtime case never cross the boundary with the max value itself.")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-add x 1)) (export main)))
+  (call   main (: 9223372036854775807 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "wrapping-mul wraps a boundary-crossing runtime Int64"
+  (doc    "`(Int64.wrapping-mul x 2)` over a boundary parameter: 2^62 · 2 = 2^63 ≡ Int64.min (mod 2^64) →
+           -9223372036854775808, and 3 · 2 = 6. Pins wrapping MULTIPLICATION on a runtime operand (the raw
+           i64.mul, no overflow guard) — the multiply's overflow is more than a carry bit, so a runtime
+           wrapping-mul is a distinct emit from wrapping-add.")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-mul x 2)) (export main)))
+  (call   main (: 4611686018427387904 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: 3 Int64)) (output (: 6 Int64)))
+
+(case "wrapping-add on a runtime UInt8 wraps modulo 256"
+  (doc    "`(UInt8.wrapping-add x 1)` on a runtime UInt8: 255 + 1 wraps to 0 (mod 256), 10 + 1 = 11. The
+           wraparound modulus is the TYPE's width (2^8), not 2^64 — a narrow wrap that reused the i64 op
+           without masking to 8 bits would give 256, which is not even a UInt8. Pins per-width wraparound
+           on the unsigned narrow type.")
+  (input  (do (def (main (: x UInt8)) (UInt8.wrapping-add x 1)) (export main)))
+  (call   main (: 255 UInt8)) (output (: 0 UInt8))
+  (call   main (: 10 UInt8)) (output (: 11 UInt8)))
+
+(case "wrapping-mul on a runtime UInt8 wraps modulo 256"
+  (doc    "`(UInt8.wrapping-mul x 2)` on a runtime UInt8: 200 · 2 = 400 ≡ 144 (mod 256), 3 · 2 = 6. The
+           multiply companion of the narrow wrapping-add — the product is masked to the UInt8 width, so a
+           value exceeding 255 wraps into range rather than widening. Pins narrow wrapping multiplication.")
+  (input  (do (def (main (: x UInt8)) (UInt8.wrapping-mul x 2)) (export main)))
+  (call   main (: 200 UInt8)) (output (: 144 UInt8))
+  (call   main (: 3 UInt8)) (output (: 6 UInt8)))
+
+(case "wrapping-add on a runtime Int8 wraps at its signed boundary"
+  (doc    "`(Int8.wrapping-add x 1)` on a SIGNED narrow type: 127 (Int8.max) + 1 wraps to -128 (Int8.min),
+           -5 + 1 = -4. The signed narrow wraparound folds at the type's ±128 boundary, distinct from the
+           unsigned mod-256 wrap above — a signed narrow wrap must sign-extend the wrapped low 8 bits, so
+           127+1 is -128, not 128. Pins per-width wraparound on the SIGNED narrow type.")
+  (input  (do (def (main (: x Int8)) (Int8.wrapping-add x 1)) (export main)))
+  (call   main (: 127 Int8)) (output (: -128 Int8))
+  (call   main (: -5 Int8)) (output (: -4 Int8)))
 
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")

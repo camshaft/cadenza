@@ -76,6 +76,29 @@ pub struct Def {
     pub internal: bool,
 }
 
+/// One CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition — a record monomorphization
+/// appends every time it synthesizes a specialized copy (`crate::lower::type_specialize`), so the
+/// compiler can ENUMERATE the concrete instances of a source definition after a lower pass (the
+/// `Instantiations` sidecar query, `cdz instantiations`). The `type_specializations` memo already keys a
+/// specialization by `(orig-body, instantiation-key)`, but that key renders a `const`-dictionary
+/// argument as an opaque fingerprint; this record instead carries a HUMAN-READABLE per-argument
+/// description, so a report can SHOW which concrete dictionary an ad-hoc-polymorphic call baked in — the
+/// distinguishing data of an instantiation. One record per DISTINCT specialization (appended at the memo
+/// MISS, alongside the memo insert), so it never double-counts a call site that reuses an instance.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Instantiation {
+    /// The GENERIC definition's body occurrence — the identity `type_specialize` keyed the copy on, which
+    /// `def_index_by_body` maps back to the source definition (so a query by NAME finds its instances).
+    pub orig_body: StructId,
+    /// The synthesized specialization's `db.defs` index (its emitted monomorphic function).
+    pub spec_index: usize,
+    /// The concrete instantiation, one entry per parameter in signature order: a kept RUNTIME parameter
+    /// as `name: TYPE`, an ERASED compile-time parameter (a type-valued or `const` argument) as
+    /// `const name = VALUE` — the type-value for a type argument, the inlined SOURCE text for a `const`
+    /// dictionary/constant.
+    pub args: Vec<String>,
+}
+
 /// The file-scoped name-resolution table for a multi-file PACKAGE (`DESIGN-package-linking.md` §4),
 /// derived once at load from the [`crate::link::Linkage`]. It answers the two file-scoped questions
 /// `resolve_name` asks when a package is linked:
@@ -90,6 +113,18 @@ pub(crate) struct FileScopeTable {
     /// file's imports (an import maps the local name to the exporting file's def). A name absent here
     /// is not a package-level def in that file — resolution falls through to the prelude, then unbound.
     visible: Vec<crate::fxhash::FxHashMap<String, usize>>,
+    /// Per file, the visible TYPE names → the synthesized record occurrence the type name resolves to
+    /// (`TypeDecl::synth`). Own `(type …)` declarations plus the types the file imports. A type name
+    /// absent here is NOT visible in that file — a sibling file's type is invisible unless imported
+    /// (`DESIGN-package-linking.md` §8.3 residual (a), closed here). This is the type-name analogue of
+    /// `visible`, and is what makes cross-file type privacy real: without it, `type_decl_by_name`'s flat
+    /// global index let any file name any sibling's type + construct its variants with no import.
+    visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>>,
+    /// Per file, the visible bare VARIANT-CONSTRUCTOR names → the ctor record occurrence
+    /// (`Variant::ctor`). Populated from the SAME set of type declarations as `visible_types` (a file
+    /// that can name a type can construct/match its variants) — so importing a type brings its handle
+    /// AND its constructors. A ctor name absent here is not a visible bare variant in that file.
+    visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>>,
 }
 
 impl FileScopeTable {
@@ -112,9 +147,15 @@ fn build_file_scope(
     linkage: &crate::link::Linkage,
     defs: &[Def],
     def_by_name: &crate::fxhash::FxHashMap<String, usize>,
+    type_decls: &[TypeDecl],
+    prelude_type_module_names: &crate::fxhash::FxHashSet<String>,
 ) -> FileScopeTable {
     let files = linkage.files.clone();
     let mut visible: Vec<crate::fxhash::FxHashMap<String, usize>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
+    let mut visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
+    let mut visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>> =
         vec![crate::fxhash::FxHashMap::default(); files.len()];
 
     // Own defs: assign each def to the file whose range contains its signature occurrence. First-wins
@@ -126,13 +167,60 @@ fn build_file_scope(
         }
     }
 
+    // Own TYPES: assign each `(type …)` declaration to the file whose range contains its declaration
+    // occurrence, binding the type NAME → its synth record and each of its variant CONSTRUCTOR names →
+    // the ctor node. A file that declares a type may name it and construct/match its variants; a sibling
+    // that did NOT declare it and did NOT import it cannot (the privacy this closes). The
+    // prelude-collision skip on bare ctors mirrors `variant_ctor_index` (a variant named `Int`/`List`/
+    // `Name` is reached only qualified, never via the bare-name map). `add_type_to_file` (below) is the
+    // shared helper the import phase reuses so an imported type is registered EXACTLY as an own one.
+    let add_type_to_file =
+        |fi: usize,
+         decl: &TypeDecl,
+         local_name: &str,
+         visible_types: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
+         visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
+            if let Some(synth) = decl.synth {
+                visible_types[fi]
+                    .entry(local_name.to_string())
+                    .or_insert(synth);
+            }
+            for v in &decl.variants {
+                if prelude_type_module_names.contains(&v.name) {
+                    continue;
+                }
+                if let Some(ctor) = v.ctor {
+                    visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
+                }
+            }
+        };
+    for decl in type_decls {
+        if let Some(fi) = files.iter().position(|f| f.contains(decl.occ)) {
+            add_type_to_file(fi, decl, &decl.name, &mut visible_types, &mut visible_ctors);
+        }
+    }
+
     // Imports: bind each imported local name to the def the exporting file defines under the exported
     // name. Resolved via the exporting file's OWN visible map (built above), so an import re-exports
     // exactly the sibling's def — no global scan. (`def_by_name` is the package-wide first-wins index,
     // used only as a last resort if the exporting file's own map somehow lacks it — it will not for a
     // well-formed export, since the link step validated visibility.)
+    //
+    // An import name may name a VALUE def OR a TYPE (the export list is one namespace-agnostic surface —
+    // `modules-and-namespaces.md` §Visibility Is Explicit). So each imported name is tried BOTH ways: if
+    // the exporting file declares a type under the exported name, bring its handle + constructors into
+    // the importing file (via `add_type_to_file`); if it defines a value def, bind that. A name may be
+    // both (rare); both bindings are made and the resolver's ordered steps disambiguate by position.
     for (fi, scope) in linkage.scopes.iter().enumerate() {
         for imp in &scope.imports {
+            // Type import: the exporting file's own `(type …)` under the exported name.
+            if let Some(decl) = type_decls.iter().find(|d| {
+                d.name == imp.exported
+                    && files.get(imp.from_file).is_some_and(|f| f.contains(d.occ))
+            }) {
+                add_type_to_file(fi, decl, &imp.local, &mut visible_types, &mut visible_ctors);
+            }
+            // Value import: the exporting file's def under the exported name.
             let idx = visible
                 .get(imp.from_file)
                 .and_then(|m| m.get(&imp.exported).copied())
@@ -143,7 +231,12 @@ fn build_file_scope(
         }
     }
 
-    FileScopeTable { files, visible }
+    FileScopeTable {
+        files,
+        visible,
+        visible_types,
+        visible_ctors,
+    }
 }
 
 /// A requested export: the name to emit (verbatim) and the definition it names, resolved against the
@@ -311,6 +404,13 @@ pub struct ModuleDecl {
     /// before the evaluator exists); the load-time `default_int_literals` map records which literals it
     /// applies to (a per-node map, robust to the β-copy reparenting a parent-walk cannot follow).
     pub default_int: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-fraction <T>)` member, if the module declares
+    /// one — the exact-rational type an otherwise-unconstrained NUMERIC literal (integer OR decimal)
+    /// WRITTEN in this module grounds to, so arithmetic in the module is exact by default
+    /// (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). `None` for a module
+    /// with no such pragma. Like `default_int`, kept as the un-reduced occurrence; the load-time
+    /// `default_fraction_literals` map records which literals it applies to.
+    pub default_fraction: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -455,6 +555,18 @@ pub struct Db {
     /// compute` consults it to give the literal its starting type; an explicit annotation still wins (the
     /// `Annot` node fixes its own type) and no-promotion still holds (the default is a type, not a coercion).
     pub default_int_literals: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// Each bare NUMERIC-LITERAL node (integer OR decimal) WRITTEN inside a `(module … (pragma
+    /// default-fraction <T>) …)` → the pragma's `<T>` type-expression occurrence. A literal in this map
+    /// grounds to the exact rational `<T>` instead of Int64/Float64 (`numeric-model.md` §A Module May
+    /// Declare Its Default Fraction Literal Type). Built ONCE at load by an ARENA walk
+    /// (`collect_default_fraction_literals`), keyed by the ORIGINAL source-literal node so it survives the
+    /// β-copy an inlined body performs. DEFINITION-SITE scoped. Unlike `default_int_literals` (integer
+    /// literals only), this marks DECIMAL literals too — an exact default applies to `0.5` as `1/2`.
+    /// `infer::compute` consults it to type the literal `Ty::Rational`; `lower` folds it to a
+    /// `Core::ConstRational` (via `rational_from_literal`); an explicit annotation still wins, and
+    /// no-promotion still holds (the default fixes a type, not a coercion).
+    pub default_fraction_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -991,6 +1103,15 @@ pub struct Db {
     /// function of the sum declaration + the mistyped key. The variant-suggest twin of `suggest_pool_winner`.
     pub(crate) variant_suggest_winner: crate::fxhash::FxHashMap<(StructId, String), Option<String>>,
 
+    /// Memo of the TIER-2 "closest matches" LIST for a mistyped match-pattern head — the far-miss companion
+    /// of `variant_suggest_winner`, keyed the same `(sum-decl occ, mistyped-key)`. When the mistyped head is
+    /// too far for a confident single suggestion (a WRONG-SUM ctor — a valid variant of a DIFFERENT sum — is
+    /// always a far miss), `enrich_pattern_head_suggestion` lists the scrutinee sum's closest variants via
+    /// `suggest::closest_matches`, which SORTS all N variants by edit distance (O(N log N)). N wrong-sum
+    /// match arms against a wide sum re-ran that per site → O(N² log N). Keyed by `(decl, key)`, the list is
+    /// computed once per distinct query. A pure function of the sum declaration + the mistyped key.
+    pub(crate) variant_closest_matches: crate::fxhash::FxHashMap<(StructId, String), Vec<String>>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1072,6 +1193,16 @@ pub struct Db {
     /// with no recursive-generic call — byte-identical to before.
     pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// A HUMAN-READABLE record of each concrete instantiation `type_specialize` synthesized, in
+    /// synthesis order — one [`Instantiation`] per DISTINCT specialization (appended at the memo miss,
+    /// beside the `type_specializations` insert). The memo answers "have I already built this instance?";
+    /// this list answers "what are ALL the instances of definition X, and at what concrete arguments?" —
+    /// the data the `Instantiations` query reports. Its per-argument descriptions render a `const`
+    /// dictionary argument as readable source (not the memo's opaque fingerprint), so a report can show
+    /// which concrete dictionary an ad-hoc-polymorphic call baked in. Empty for a program with no
+    /// recursive-generic / type-valued / `const` instantiation — no cost to a monomorphic program.
+    pub(crate) instantiations: Vec<Instantiation>,
+
     /// The NAME OCCURRENCES of parameters declared `const` — an EXPLICIT compile-time parameter (`(def (f
     /// (const (: d T)) …) …)`, `DESIGN-…-monomorphization-rcdzc.md` Addendum 3). A `const` param MUST be
     /// compile-time-known at each call: it is folded + inlined into a specialized copy and ERASED from the
@@ -1082,6 +1213,22 @@ pub struct Db {
     /// (byte-identical to before). This replaces the implicit dict-sniffing heuristic: the AUTHOR declares
     /// what is compile-time, the compiler obeys.
     pub(crate) const_params: crate::fxhash::FxHashSet<StructId>,
+
+    /// The BODY occurrences of definitions marked `inline-never` — an INLINE-POLICY marker
+    /// (`DESIGN-…-monomorphization-rcdzc.md` Addendum 4). The default is always-inline (every
+    /// non-recursive call β-reduces); `inline-never` forces the def to be EMITTED as ONE real wasm
+    /// function, every call a `Core::Call` (routed through `emit_call_or_specialize`, so a generic /
+    /// `const`-param `inline-never` def still SPECIALIZES — "avoid the inline but keep polymorphism").
+    /// Populated ONCE by `strip_inline_policy` at load (which unwraps the `(inline-never (def …))` wrapper
+    /// in place, so every downstream reader sees a plain `(def …)`), keyed by the def's BODY occ — the
+    /// identity `lower`/`layout` (`def_index_by_body`) already use. Empty for a program with none.
+    pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
+
+    /// The BODY occurrences of definitions marked `inline-always`. Today a NO-OP (the default already
+    /// always-inlines), recorded so the forthcoming cost heuristic (deferred) can treat it as the override
+    /// "ignore the cost model, always fold". Populated by `strip_inline_policy` alongside `inline_never`.
+    /// An `inline-always` on a RECURSIVE def is a conflict (it cannot inline) — a coded reject.
+    pub(crate) inline_always: crate::fxhash::FxHashSet<StructId>,
 
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
@@ -1128,6 +1275,12 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
+        // Normalize away an `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper on
+        // a definition BEFORE `scan_top_level`: the policy is a declaration the emitter consumes, not part
+        // of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
+        // the `inline_never` / `inline_always` set (Addendum 4). Done here like `strip_def_docs`, so every
+        // downstream reader sees a plain `(def …)` and the policy lives only in the sets.
+        let (inline_never, inline_always) = strip_inline_policy(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1337,7 +1490,15 @@ impl Db {
         // in that file's `StructId` range), plus its imports (each local name → the exporting file's
         // def of that name). A single-file compile carries no linkage, so this stays `None` and every
         // lookup falls through to the flat `def_name_index` — byte-identical to before.
-        let file_scope = linkage.map(|lk| build_file_scope(&lk, &defs, &def_by_name));
+        let file_scope = linkage.map(|lk| {
+            build_file_scope(
+                &lk,
+                &defs,
+                &def_by_name,
+                &type_decls,
+                &prelude_type_module_names,
+            )
+        });
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
@@ -1351,6 +1512,19 @@ impl Db {
                 collect_default_int_literals(&ast, m.occ, ty_expr, &mut default_int_literals);
             }
         }
+        // Map each bare NUMERIC literal (integer OR decimal) written inside a `(pragma default-fraction
+        // <T>)` module to its rational default type-expr — the exactness analogue of the integer map.
+        let mut default_fraction_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_fraction {
+                collect_default_fraction_literals(
+                    &ast,
+                    m.occ,
+                    ty_expr,
+                    &mut default_fraction_literals,
+                );
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1362,6 +1536,7 @@ impl Db {
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
+            default_fraction_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -1410,6 +1585,7 @@ impl Db {
             suggest_pool: [None, None, None],
             suggest_pool_winner: crate::fxhash::FxHashMap::default(),
             variant_suggest_winner: crate::fxhash::FxHashMap::default(),
+            variant_closest_matches: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
@@ -1425,7 +1601,10 @@ impl Db {
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
+            instantiations: Vec::new(),
             const_params,
+            inline_never,
+            inline_always,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -1922,6 +2101,38 @@ impl Db {
         let fs = self.file_scope.as_ref()?;
         let file = fs.file_of(at)?;
         Some(fs.visible[file].get(name).copied().ok_or(()))
+    }
+
+    /// File-scoped TYPE-name lookup for a multi-file package — the type analogue of `file_scoped_def`.
+    /// Resolves the type NAME `name`, referenced from node `at`, to the synth-record occurrence it names,
+    /// but ONLY the types visible in `at`'s own file (its own `(type …)` declarations + the types it
+    /// imports), never a sibling file's type. Returns:
+    ///  - `Some(Ok(occ))` — `name` resolves to the type whose synth record is `occ` in `at`'s file scope;
+    ///  - `Some(Err(()))` — a package is linked and `at`'s file is KNOWN, but `name` is not a visible type there (fall through; do NOT leak a sibling's type — this is the privacy);
+    ///  - `None` — no linkage, OR `at` is synthesized / β-copied / prelude (indeterminate file); caller uses the flat `type_decl_by_name`.
+    pub(crate) fn file_scoped_type(
+        &self,
+        at: StructId,
+        name: &str,
+    ) -> Option<Result<StructId, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(fs.visible_types[file].get(name).copied().ok_or(()))
+    }
+
+    /// File-scoped bare-VARIANT-CONSTRUCTOR lookup for a multi-file package — the ctor analogue of
+    /// `file_scoped_def`. Resolves a bare variant name (`Red` for `(type Color (Red) …)`) to its ctor
+    /// node, but ONLY the constructors visible in `at`'s own file (own type decls + imported types).
+    /// Same tri-state as `file_scoped_type`; `Some(Err(()))` means the file is known and the ctor is not
+    /// visible there (fall through — a same-named prelude ctor like `Some` may still apply).
+    pub(crate) fn file_scoped_variant_ctor(
+        &self,
+        at: StructId,
+        name: &str,
+    ) -> Option<Result<StructId, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
     /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.
@@ -2871,6 +3082,59 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
+/// Unwrap every `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper in place, and
+/// return `(inline_never, inline_always)` — the sets of the wrapped defs' BODY occurrences
+/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). The policy is a declaration the
+/// emitter consumes (not part of the def shape every reader walks), so it is removed here BEFORE
+/// `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers — leaving every
+/// downstream reader a plain `(def …)`.
+///
+/// The wrapper NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's children),
+/// so its `StructId` now identifies the def and every parent that already pointed at the wrapper needs no
+/// update — the inner def node is left orphaned (harmless; unreferenced). The recorded key is the def's
+/// BODY occurrence (`def` tail index 1 = child index 2), the identity `lower`/`layout` key on
+/// (`def_index_by_body`). A wrapper around a NON-def (or a malformed def) is left untouched.
+fn strip_inline_policy(
+    ast: &mut Arenas,
+) -> (
+    crate::fxhash::FxHashSet<StructId>,
+    crate::fxhash::FxHashSet<StructId>,
+) {
+    let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        // `(inline-never INNER)` / `(inline-always INNER)` — exactly one operand, an inner `(def …)`.
+        let (never, inner) = if let Some(tail) = ast.as_form(id, "inline-never") {
+            (true, tail.first().copied())
+        } else if let Some(tail) = ast.as_form(id, "inline-always") {
+            (false, tail.first().copied())
+        } else {
+            continue;
+        };
+        let Some(inner) = inner else { continue };
+        // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
+        let Some(def_tail) = ast.as_form(inner, "def") else {
+            continue; // a wrapper around a non-def — leave untouched (a well-formedness concern elsewhere)
+        };
+        // The def's BODY occurrence: `def_tail = [SIG, BODY, …]`, so index 1 (a well-formed def has ≥2).
+        let Some(&body) = def_tail.get(1) else {
+            continue;
+        };
+        // Rewrite the WRAPPER node to BE the inner def (adopt its full child list `[def-head, SIG, BODY…]`).
+        let Struct::List(inner_children) = ast.get(inner).clone() else {
+            continue;
+        };
+        ast.structure[i] = Struct::List(inner_children);
+        if never {
+            inline_never.insert(body);
+        } else {
+            inline_always.insert(body);
+        }
+    }
+    (inline_never, inline_always)
+}
+
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
 /// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
 /// `(do item…)`, or a lone item.
@@ -3264,26 +3528,37 @@ fn collect_module_decl(
     // realized via `ModuleDecl::default_int` + the load-time literal map, so it is not an unmodeled
     // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
     // the modeled set is exactly the keys whose meaning the compiler realizes.
-    let is_default_int_pragma = |member: StructId| {
-        ast.as_form(member, "pragma")
-            .is_some_and(|t| t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+    // A `(pragma <key> …)` member is MODELED for a key whose EFFECT the compiler realizes: `default-integer`
+    // (a bare literal defaults to `<T>`) and `default-fraction` (a bare numeric literal grounds to the
+    // exact rational `<T>`). Both are realized via a `ModuleDecl` field + a load-time literal map, so they
+    // don't block registration; any OTHER pragma key stays unmodeled (blocks).
+    let is_modeled_pragma = |member: StructId| {
+        ast.as_form(member, "pragma").is_some_and(|t| {
+            matches!(
+                t.first().and_then(|&k| ast.as_name(k)),
+                Some("default-integer" | "default-fraction")
+            )
+        })
     };
     let modeled = |member: StructId| {
         matches!(
             ast.head_name(member),
             Some("def" | "effect" | "op" | "type" | "module" | "doc")
-        ) || is_default_int_pragma(member)
+        ) || is_modeled_pragma(member)
     };
     let all_modeled = members.iter().all(|&m| modeled(m));
-    // The type-expression of a well-formed `(pragma default-integer <T>)` member (the 2nd operand after
-    // the key). A malformed pragma (wrong arity) is caught by the CDZ0602 validation; here take the type
-    // occ when present.
-    let default_int = members.iter().find_map(|&m| {
-        let t = ast.as_form(m, "pragma")?;
-        (t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
-            .then(|| t.get(1).copied())
-            .flatten()
-    });
+    // The type-expression (2nd operand) of a well-formed `(pragma <key> <T>)` member for `key`. A malformed
+    // pragma (wrong arity) is caught by the CDZ0602 validation; here take the type occ when present.
+    let pragma_ty = |key: &str| {
+        members.iter().find_map(|&m| {
+            let t = ast.as_form(m, "pragma")?;
+            (t.first().and_then(|&k| ast.as_name(k)) == Some(key))
+                .then(|| t.get(1).copied())
+                .flatten()
+        })
+    };
+    let default_int = pragma_ty("default-integer");
+    let default_fraction = pragma_ty("default-fraction");
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -3293,6 +3568,7 @@ fn collect_module_decl(
             occ: form,
             synth: None,
             default_int,
+            default_fraction,
         });
     }
     for &member in &members {
@@ -3355,6 +3631,52 @@ fn mark_int_literals(
     if let Struct::List(children) = ast.get(node) {
         for &c in children {
             mark_int_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
+/// The `default-fraction` analogue of [`collect_default_int_literals`]: record every bare NUMERIC literal
+/// (integer OR decimal) in the DEF-BODY subtrees of a `(pragma default-fraction <T>)` module → the
+/// pragma's `<T>` occurrence. DEFINITION-SITE scoped (own `(def …)` bodies only; a nested module has its
+/// own scope). Keyed by the ORIGINAL literal node (β-copy-robust).
+fn collect_default_fraction_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_numeric_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every NUMERIC-literal node (integer via `as_int` OR decimal via `as_float`) reachable from `node`
+/// (recursively) with `ty_expr`, WITHOUT descending into a nested `(module …)`. The fraction analogue of
+/// [`mark_int_literals`] — an exact default applies to a decimal `0.5` (grounding to `1/2`) as well as an
+/// integer, so both leaf kinds are marked. A literal already recorded is left as-is.
+fn mark_numeric_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_int(node).is_some() || ast.as_float(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_numeric_literals(ast, c, ty_expr, out);
         }
     }
 }

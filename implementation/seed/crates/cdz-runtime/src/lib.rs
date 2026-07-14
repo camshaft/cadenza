@@ -14108,6 +14108,41 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-
+    /// byte compare, BY CONTRACT (fast, shared with the map-key path). So a ROPE Bytes/String value is
+    /// value-eq-DISTINCT from its flat twin even with equal CONTENT — the COMPILER must canonicalize
+    /// (`bytes-compact`) an operand before `value-eq`, exactly as for a map key. ⚠⚠ This documents a KNOWN
+    /// LATENT COMPILER MISCOMPILE (`spec@b4700bb9`): `ty_heap_walkable::Ty::String => true` admits a runtime
+    /// String to `value-eq` on a stale premise ("String.concat never makes a rope"), but runtime
+    /// `String.concat` now emits `bytes-concat` (a rope), so `(= (String.concat rt_a rt_b) other)` compares
+    /// rope-vs-flat and returns the WRONG answer. NOT a runtime bug — the runtime is physical-bytes by
+    /// design; the compiler owes the compact. When the compiler fix lands (compact-before-value-eq, OR
+    /// re-decline `Ty::String`), a `(String.concat rt rt)` `=` becomes correct and a rope-operand value-eq
+    /// no longer reaches the runtime uncompacted — this test pins the runtime side stays physical-bytes
+    /// (a flatten inside `champ_eq` would slow the hot key path); flip/extend it only with that design call.
+    #[test]
+    fn value_eq_is_physical_bytes_a_rope_operand_needs_compiler_compaction() {
+        reset();
+        let before = live_nodes();
+        let content = b"map-insert"; // > INLINE_RAW_CAP so the flat twin is a Heap leaf too
+        let flat = op_str_new(String::from_utf8(content.to_vec()).unwrap());
+        let rope = op_bytes_concat(bytes_leaf(&content[..4]), bytes_leaf(&content[4..])); // "map-" + "insert"
+        // value-eq (op 61) = champ_eq: a rope vs its flat twin is DISTINCT (physical-byte compare) — this is
+        // exactly the compiler contract boundary. A COMPACTED rope, however, IS value-eq to the flat twin.
+        assert!(
+            !champ_eq(rope, flat),
+            "value-eq is physical-byte (champ_eq): an UNcompacted rope ≠ its flat twin — the compiler must compact before value-eq"
+        );
+        let compacted = op_bytes_compact(rope);
+        assert!(
+            champ_eq(compacted, flat),
+            "a COMPACTED rope IS value-eq to its flat twin — canonicalization makes the physical-byte compare correct"
+        );
+        op_drop(compacted);
+        op_drop(flat);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn rope_slice_content_matches_copy_over_many_offsets() {
         reset();

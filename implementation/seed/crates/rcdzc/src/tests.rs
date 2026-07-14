@@ -657,6 +657,25 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     run_returns_with(component_bytes, name, &[])
 }
 
+/// Count the core-module instructions in `component_bytes` matching `pred` — an emission-strategy probe
+/// (e.g. `i64.mul` count for inline-vs-emit-once, `call_indirect` count for dict erasure). Walks every
+/// code-section entry with `wasmparser`; `pred` classifies each operator.
+fn count_opcode(component_bytes: &[u8], pred: impl Fn(&wasmparser::Operator) -> bool) -> usize {
+    use wasmparser::{Parser, Payload};
+    let mut n = 0;
+    for payload in Parser::new(0).parse_all(component_bytes) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload {
+            let mut ops = body.get_operators_reader().expect("ops");
+            while let Ok(op) = ops.read() {
+                if pred(&op) {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
 /// Instantiate `component_bytes` and call export `name` WITH the given argument values, decoding the
 /// single result to `T` — the behavior check for a parameterized exported function.
 fn run_returns_with<T: FromVal>(
@@ -10966,6 +10985,148 @@ mod recursion {
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
     }
+
+    #[test]
+    fn a_loop_invariant_length_is_hoisted_out_of_the_loop() {
+        // LOOP-INVARIANT CODE MOTION: the classic index loop `(if (< i (List.len xs)) …)` recomputed
+        // `(List.len xs)` — a `vec-len` runtime import CALL — every iteration, though `xs` is a
+        // pass-through param (threaded unchanged on every back-edge). LICM now computes it ONCE before the
+        // loop into a slot and reads the slot inside. Pins the `vec-len` (`Lir::CallImport(OP_VEC_LEN)`)
+        // OUT of the loop at the Lir level (exactly one such call, and it PRECEDES the `Lir::Loop`) + value
+        // parity. NOTE the inner `(List.at xs i)` has its OWN internal bounds `vec-len` (a different node,
+        // over the varying `i`), so total `vec-len` count is 2 — but the LOOP-GUARD one is hoisted.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (sumidx (: xs (List Int64)) (: i Int64) (: acc Int64)) \
+                       (if (< i ((. List len) xs)) \
+                           (sumidx xs (+ i 1) (+ acc (match ((. List at) xs i) ((Some x) x) ((None _) 0)))) \
+                           acc)) \
+                     (def (f (: xs (List Int64))) (sumidx xs 0 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("sumidx").expect("sumidx");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        // Find the loop; the loop-guard `vec-len` must be emitted BEFORE it (hoisted), not only inside.
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("sumidx compiles to a loop");
+        let vec_len_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::CallImport("vec-len")))
+            .count();
+        assert_eq!(
+            vec_len_before, 1,
+            "the loop-invariant `(List.len xs)` is hoisted to a single `vec-len` BEFORE the loop, got \
+             {vec_len_before}: {code:?}"
+        );
+
+        // VALUE PARITY: sum [0,1000) via the index loop still computes correctly with the hoisted length.
+        // Build the list inside a nullary `main` and run through the value-heap runtime (as the sibling
+        // heap tests do — `run_heap_value` lives in another mod, so use the `cdz_run` path directly).
+        let prog = "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sumidx (: xs (List Int64)) (: i Int64) (: acc Int64)) \
+                     (if (< i ((. List len) xs)) \
+                         (sumidx xs (+ i 1) \
+                            (+ acc (match ((. List at) xs i) ((Some x) x) ((None _) 0)))) \
+                         acc)) \
+                   (def (main) (let ((xs (build 0 1000 (list)))) (sumidx xs 0 0))) (export main))";
+        let bytes = component(prog);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping hoisted-length index-loop run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "499500",
+                    "index loop with a hoisted length sums [0,1000)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_loop_invariant_bitwise_op_is_hoisted() {
+        // A trap-free, loop-invariant SCALAR op — `(& k 255)` over the pass-through param `k` — is hoisted
+        // out of the loop (computed once) instead of recomputed each iteration. Pins the `i64.and` count
+        // BEFORE the loop and value parity. (The in-loop `i64.and` of the `(+ acc …)` overflow guard is a
+        // DIFFERENT computation, so it stays; we assert the invariant `& 255` moved out.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (go (: n Int64) (: k Int64) (: acc Int64)) \
+                       (if (= n 0) acc (go (- n 1) k (+ acc (& k 255))))) \
+                     (def (f (: k Int64)) (go 10 k 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("go").expect("go");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("go compiles to a loop");
+        let and_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64And))
+            .count();
+        assert_eq!(
+            and_before, 1,
+            "the invariant `(& k 255)` is hoisted to a single `i64.and` before the loop: {code:?}"
+        );
+
+        // VALUE PARITY: go(1000000, 999, 0) = 1000000 * (999 & 255 = 231) = 231000000.
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(999)]),
+            10 * 231,
+            "go(10, 999, 0) = 10 * (999 & 255)"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
@@ -14600,6 +14761,90 @@ mod match_engine {
             reject_code("(module m (def (main) (+ 2 3)) (export main))"),
             None,
             "a literal outside a default-integer module keeps the ordinary Int64 default"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_naming_a_non_rational_type_is_cdz0303() {
+        // `numeric-model.md` §A Module May Declare Its Default Fraction Literal Type: the directive names
+        // the EXACT RATIONAL type an otherwise-unconstrained numeric literal grounds to, so it MUST name a
+        // rational type. A well-formed directive whose argument reduces to a non-rational type-value
+        // (`Int64`/`Float64`) fails the rational-domain predicate → CDZ0303 (the fraction twin of the
+        // integer domain reject).
+        for bad in ["Int64", "Float64"] {
+            assert_eq!(
+                reject_code(&format!(
+                    "(module top (def (main) (do (module m (pragma default-fraction {bad}) (def (x) 5)) ((. m x) unit))) (export main))"
+                ))
+                .as_deref(),
+                Some("CDZ0303"),
+                "default-fraction {bad} must be the rational-domain reject"
+            );
+        }
+        // `Rational` names the exact rational type — ACCEPTED (the module registers, `x` returns 5/1 via
+        // the fraction default, the projection resolves, the whole program compiles clean).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (x) 5)) ((. m x) unit))) (export main))"
+            ),
+            None,
+            "default-fraction Rational is accepted"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational() {
+        // THE EFFECT: a bare, otherwise-unconstrained numeric literal in a `(pragma default-fraction
+        // Rational)` module is a `Rational` — so `(/ 1 3)` is EXACT rational division (not integer
+        // truncation), and a bare `1` mixed with an explicit `(: 5 Int64)` is a CDZ0301 numeric-mismatch
+        // (proving the bare literal's type CHANGED to Rational — no silent promotion). An explicit
+        // annotation still wins.
+        // (1) `(/ 1 3)` type-checks clean as rational division (both operands defaulted Rational).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (third) (/ 1 3))) ((. m third) unit))) (export main))"
+            ),
+            None,
+            "bare 1 and 3 default to Rational, so (/ 1 3) is homogeneous rational division"
+        );
+        // (2) A bare literal (now Rational) mixed with an explicit Int64 is CDZ0301 — the no-promotion
+        //     proof that the default fixed the literal's TYPE, not merely a width.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (mix) (+ 1 (: 5 Int64)))) ((. m mix) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0301"),
+            "a Rational-defaulted literal + an explicit Int64 is a numeric-type mismatch"
+        );
+        // (3) An explicit annotation OVERRIDES the fraction default: `(: 5 Int64)` is Int64, so `(+ x 2)`
+        //     with both Int64 is clean (the `Annot` fixes its type; the bare `2` also defaults Rational —
+        //     wait, that WOULD mix; so annotate both to keep it a pure-Int64 check of override precedence).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (pinned) (+ (: 5 Int64) (: 2 Int64)))) ((. m pinned) unit))) (export main))"
+            ),
+            None,
+            "explicit Int64 annotations override the fraction default without a mismatch"
+        );
+        // (4) A literal OUTSIDE any pragma module is unaffected — `(/ 1 3)` is ordinary integer division.
+        assert_eq!(
+            reject_code("(module m (def (main) (/ 1 3)) (export main))"),
+            None,
+            "a literal outside a default-fraction module keeps the ordinary integer default"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_with_wrong_arity_is_cdz0602() {
+        // A recognized key with its required type argument OMITTED → the structural CDZ0602 (malformed),
+        // distinct from the numeric-domain CDZ0303 — the fraction twin of the default-integer arity check.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602")
         );
     }
 
@@ -19514,6 +19759,123 @@ mod match_engine {
             "2",
             "a runtime list-payload match dispatches by exact length (2-child → arity-2 arm)"
         );
+    }
+
+    #[test]
+    fn a_runtime_string_scrutinee_matches_string_literals() {
+        // THE COMPILER HEAD-DISPATCH SHAPE: a `match` over a RUNTIME String against string literals —
+        // `(match head ("add" …) ("sub" …) (_ …))` — the idiom a compiler uses to dispatch on a keyword /
+        // opcode / identifier name. A String is a heap value (not `is_scalar`), so this declined "matching a
+        // compound value needs a heap walk"; now `lower_match` DESUGARS it to a nested `if`-chain of
+        // `(= scrutinee literal)` — runtime string equality already lowers to `value-eq` — so no new IR /
+        // backend path. The scrutinee here is a runtime value (chosen by a Bool param, so it cannot fold).
+
+        // Each literal selects its arm; the wildcard is the tail. b=true → "add" → 1; b=false → "sub" → 2.
+        let Some(v) = run_heap_value(
+            "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+               (def (main) (op (if true \"add\" \"sub\"))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime string-match run");
+            return;
+        };
+        assert_eq!(v, "1", "a runtime string matches the \"add\" arm");
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+                   (def (main) (op (if false \"add\" \"sub\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "a runtime string matches the \"sub\" arm"
+        );
+
+        // A string matching NO literal takes the wildcard → 0.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+                   (def (main) (op (if true \"mul\" \"div\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a runtime string matching no literal takes the wildcard"
+        );
+
+        // A BINDER wildcard reads the whole scrutinee in its body: `(z (String.byte-len z))` — the binder
+        // must resolve to the scrutinee (Case 5) even though the arm became an if-chain `else`. "abcd" has
+        // 4 bytes → the non-matching literal falls through to the binder arm → 4.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"x\" 0) (z ((. String byte-len) z)))) \
+                   (def (main) (op (if true \"abcd\" \"x\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "4",
+            "a binder wildcard's body reads the whole scrutinee via Case 5"
+        );
+
+        // A GUARDED string arm: the literal must match AND the guard hold, else fall through. Here the
+        // guard reads an outer param `n`; "add" with n>0 → 10, else the wildcard → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String) (: n Int64)) \
+                     (match s ((guard \"add\" (> n 0)) 10) (_ -1))) \
+                   (def (main) (op (if true \"add\" \"x\") 5)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "10",
+            "a guarded string arm fires when literal matches AND guard holds"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String) (: n Int64)) \
+                     (match s ((guard \"add\" (> n 0)) 10) (_ -1))) \
+                   (def (main) (op (if true \"add\" \"x\") 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a guarded string arm falls through when its guard fails"
+        );
+    }
+
+    #[test]
+    fn a_runtime_string_match_without_a_wildcard_is_non_exhaustive() {
+        // A String is OPEN (like Int) — no finite literal set exhausts it — so a string match MUST end in a
+        // wildcard, else CDZ0210 (the same rule an open-Int match follows). This holds for a runtime string
+        // too (the desugar-to-if-chain does not relax exhaustiveness).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (op (: s String)) {body}) (export op))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        assert_eq!(
+            code("(match s (\"add\" 1) (\"sub\" 2))").as_deref(),
+            Some("CDZ0210"),
+            "a wildcard-less string match is non-exhaustive"
+        );
+        // With a wildcard it compiles.
+        assert_eq!(code("(match s (\"add\" 1) (\"sub\" 2) (_ 0))"), None);
     }
 
     #[test]
@@ -25466,6 +25828,42 @@ mod diagnostics {
                 "the surviving reject carries the delete fix for {src}"
             );
         }
+        // A NAMED-MEMBER CONVERSION op over-applied — `(Int64.of 5 6)` / `(Float64.of 1.0 2.0)` — routes
+        // through `lower`'s `lower_conversion`/`lower_float_of`, which emit a coded CDZ0201 "of takes
+        // exactly 1 operand" ALONGSIDE `infer`'s member over-application CDZ0203 "`Int64.of` takes 1
+        // argument, but 2 were given" (with the delete fix). They are the same defect — dedup keeps ONE,
+        // the op-NAMING CDZ0203 with its fix, dropping the bare emit-path arity reject.
+        for (src, op) in [
+            (
+                "(module m (def (main) (Int64.of 5 6)) (export main))",
+                "Int64.of",
+            ),
+            (
+                "(module m (def (main) (Float64.of 1.0 2.0)) (export main))",
+                "Float64.of",
+            ),
+        ] {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errs.len(),
+                1,
+                "a member-op conversion over-application reports ONCE (emit arity reject deduped): {errs:?} for {src}"
+            );
+            assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "for {src}");
+            assert!(
+                errs[0].message.contains(op) && errs[0].message.contains("were given"),
+                "the surviving reject NAMES the op `{op}`: {}",
+                errs[0].message
+            );
+            assert_eq!(
+                errs[0].fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "the surviving CDZ0203 carries the delete fix for {src}"
+            );
+        }
     }
 
     #[test]
@@ -26018,6 +26416,69 @@ mod diagnostics {
         assert!(
             sugg.iter().all(|s| s == "V0"),
             "every surfaced suggestion is the memoized winner `V0`: {sugg:?}"
+        );
+    }
+
+    #[test]
+    fn many_wrong_sum_ctor_arms_list_the_matched_variants_in_bounded_time() {
+        // REGRESSION (perf): a match-arm ctor that is a valid variant of a DIFFERENT sum (`(B.Wrong)`
+        // against an `A` scrutinee) is a FAR miss, so `lower::enrich_pattern_head_suggestion` lists the
+        // scrutinee sum's closest variants via `suggest::closest_matches` — which SORTS all N variants by
+        // edit distance (O(N log N)). fix-26 memoized only the TIER-1 nearest WINNER; the TIER-2 far-miss
+        // LIST re-ran per site, so N wrong-sum arms against a wide N-variant sum were O(N² log N) (cdz
+        // check 400/800/1600 = 264/944/3780ms, ~3.5×/doubling). FIX: memoize the closest-matches list per
+        // `(decl, key)` in `db.variant_closest_matches` (the far-miss twin of `variant_suggest_winner`) +
+        // build the variant-names list only on a memo MISS.
+        //
+        // Correctness: the far-miss enrichment still LISTS the matched type's variants (the diagnostic the
+        // author needs), just computed once per distinct query.
+        fn wrong_sum_src(n: usize) -> String {
+            let variants: String = (0..n)
+                .map(|i| format!("(V{i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let defs: String = (0..n)
+                .map(|i| format!("(def (f{i} (: a A)) (match a ((B.Wrong) {i}) (_ 0)))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let binds: String = (0..n)
+                .map(|i| format!("(r{i} (f{i} (V0)))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (type A {variants}) (type B (Wrong)) {defs} \
+                   (def (main) (let ({binds}) r0)) (export main))"
+            )
+        }
+        // The far-miss enrichment still lists the matched type's variants (a `— closest matches:` message).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wrong_sum_src(8))));
+        assert!(
+            diags.iter().any(|d| {
+                d.code.as_deref() == Some("CDZ0203") && d.message.contains("closest matches:")
+            }),
+            "a wrong-sum ctor arm lists the matched type's variants: {diags:?}"
+        );
+        // Growth guard: `cdz check` at N vs 2N wrong-sum arms against an N-variant sum. The per-site
+        // closest-matches sort drove a 400→800 ratio of ~3.2× (O(N² log N)); the memo makes it ~1.8×
+        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wrong_sum_src(400), wrong_sum_src(800));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t400 = check_ms(&narrow);
+            let t800 = check_ms(&wide);
+            best = best.min(t800 / t400.max(0.1));
+        }
+        assert!(
+            best < 2.5,
+            "N wrong-sum-ctor arms against a wide sum must scale linearly (was O(N² log N) via a per-site \
+             `closest_matches` sort; now memoized per (decl, key)): width 400→800 grew {best:.1}× (min \
+             paired ratio); linear is ~2×, the per-site sort was ~3.2×"
         );
     }
 
@@ -26919,7 +27380,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, find_runtime_wasm, run_returns, run_returns_with};
+    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -30871,6 +31332,47 @@ mod stage1 {
             ),
             None
         );
+        // An anonymous LAMBDA's parameter list is checked identically — `(fn (x x) …)` is the same
+        // linearity violation as `(def (f x x) …)`, so it rejects CDZ0102 (it previously compiled clean;
+        // the second `x` silently shadowed the first). Bare + annotated.
+        assert_eq!(
+            code("(module m (def (main) ((fn (x x) (+ x x)) 1 2)) (export main))").as_deref(),
+            Some("CDZ0102"),
+            "a lambda's duplicate parameter is non-linear too"
+        );
+        assert_eq!(
+            code("(module m (def (main) ((fn ((: x Int64) (: x Int64)) x) 1 2)) (export main))")
+                .as_deref(),
+            Some("CDZ0102"),
+            "an annotated lambda duplicate parameter is non-linear"
+        );
+        // NO over-rejection: a lambda with distinct params compiles.
+        assert_eq!(
+            code("(module m (def (main) ((fn (x y) (+ x y)) 1 2)) (export main))"),
+            None
+        );
+        // The lambda dup carries the same rename-to-fresh fix as the def case.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((fn (x x) (+ x x)) 1 2)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let lam = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0102"))
+            .expect("a lambda dup param rejects CDZ0102");
+        assert_eq!(
+            lam.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x2"),
+            "the lambda dup param carries the rename fix: {}",
+            lam.message
+        );
     }
 
     #[test]
@@ -34580,6 +35082,88 @@ mod stage1 {
             ),
             None,
             "a const-scalar recursion compiles (only a const collection folded recursively rejects)"
+        );
+    }
+
+    #[test]
+    fn an_inline_never_def_is_emitted_once_not_inlined_per_call() {
+        // 09-functions "an inline-never definition is emitted once and called" (Addendum 4). The default
+        // is always-inline (every non-recursive call β-reduces); `inline-never` forces `big` to be emitted
+        // as ONE real function and CALLED. `big`'s body has 3 `i64.mul`s. `main` takes RUNTIME params (so
+        // the calls do NOT constant-fold away): called twice, INLINED it emits 6 muls, EMITTED-ONCE it
+        // emits 3. Assert the module has exactly 3 muls (emit-once); the un-marked control emits 6.
+        let src = "(module m \
+             (inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mul_count = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Mul));
+        assert_eq!(
+            mul_count, 3,
+            "inline-never `big` must be emitted ONCE (3 muls), not inlined per call (would be 6)"
+        );
+        // Control: WITHOUT the marker, the same program inlines `big` at both runtime call sites → 6 muls.
+        let inlined = "(module m \
+             (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13)))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let ib = compile_component(&crate::codec::encode(&parse(inlined))).expect("compile");
+        assert_eq!(
+            count_opcode(&ib, |op| matches!(op, wasmparser::Operator::I64Mul)),
+            6,
+            "the un-marked control must inline (6 muls) — the differential is the feature"
+        );
+    }
+
+    #[test]
+    fn an_inline_never_def_with_a_const_dict_still_erases_the_dict() {
+        // 09-functions "an inline-never definition with a const dictionary still monomorphizes the
+        // dictionary" — the HEADLINE composition (Addendum 4): "avoid the inline but keep polymorphism".
+        // `apply2` is `inline-never` (emit once + call) AND has a `const` dict param (monomorphize +
+        // erase). Both hold: the dict's `op` is INLINED into the specialized copy (NO `call_indirect`, no
+        // runtime record) and that copy is emitted once + called. Runs to 145; asserts 0 `call_indirect`.
+        let src = "(module m \
+             (inline-never \
+               (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
+                 ((. d op) ((. d op) x)))) \
+             (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
+                            (apply2 (record (op (fn (n) (+ n 10)))) 100))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 145);
+        let indirect = count_opcode(&bytes, |op| {
+            matches!(op, wasmparser::Operator::CallIndirect { .. })
+        });
+        assert_eq!(
+            indirect, 0,
+            "an inline-never def's const dict must still be inlined (0 call_indirect), not a runtime record"
+        );
+    }
+
+    #[test]
+    fn inline_always_on_a_recursive_def_is_rejected() {
+        // 09-functions "inline-always on a recursive definition is rejected" (Addendum 4). `inline-always`
+        // asks the compiler to always fold a def at its call sites, but a RECURSIVE def cannot inline (it
+        // is always emitted once) — the marker is a contradiction → coded CDZ0201 at the def's signature.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m \
+                       (inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
+                       (def (main) (loop-n 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("inline-always on a recursive def must be an error");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"));
+        assert!(
+            d.message.contains("recursive") && d.message.contains("inline-always"),
+            "the message names the conflict: {}",
+            d.message
         );
     }
 
@@ -40488,8 +41072,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
-        KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
+        KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -41490,6 +42074,128 @@ mod sidecar_driven {
         assert!(
             !kinds.is_empty() && kinds.iter().all(|k| k == "label"),
             "record field / member key are labels: {kinds:?}"
+        );
+    }
+
+    /// The lines of an `Instantiations` query for `name` over `src` — the sorted concrete instances.
+    fn instantiations_of(src: &str, name: &str) -> Vec<String> {
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::Instantiations { name: name.into() })],
+            ),
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "an instantiations query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        lines.sort();
+        lines
+    }
+
+    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each instance line, sorted —
+    /// dropping the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the node id.
+    fn instantiation_args(src: &str, name: &str) -> Vec<String> {
+        let mut args: Vec<String> = instantiations_of(src, name)
+            .iter()
+            .filter_map(|l| l.splitn(3, '\t').nth(2).map(str::to_string))
+            .collect();
+        args.sort();
+        args
+    }
+
+    #[test]
+    fn a_recursive_generic_reports_one_instantiation_per_concrete_type() {
+        // `loopn` threads a generic `x`; called at Int64 AND String it monomorphizes into two functions
+        // (the rep-sensitive case from the recursive-generic design). The query enumerates BOTH, each with
+        // its concrete per-parameter types — the reverse of "one source def, one function".
+        let src = "(module m \
+                   (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "loopn"),
+            vec!["n: Int64;x: Int64", "n: Int64;x: String"],
+        );
+    }
+
+    #[test]
+    fn a_non_generic_definition_has_no_instantiations() {
+        // A monomorphic def is never specialized — it emits one function, so it has no instantiations. Total.
+        let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+        assert!(instantiations_of(src, "f").is_empty());
+        // A non-recursive generic is INLINED (β-reduced) at each call site, emitting no shared function —
+        // so it, too, reports no instantiation (a documented boundary of the query).
+        let inl = "(module m (def (ident v) v) \
+                   (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
+        assert!(instantiations_of(inl, "ident").is_empty());
+    }
+
+    #[test]
+    fn an_instantiations_query_for_an_unknown_name_is_total() {
+        // A name that names no definition yields the empty result, never an error — the oracle contract.
+        let src = "(module m (def (main) 42) (export main))";
+        assert!(instantiations_of(src, "ghost").is_empty());
+    }
+
+    #[test]
+    fn a_type_valued_parameter_reports_the_erased_type_argument() {
+        // A recursive generic with a `(: t Type)` type-valued parameter monomorphizes per passed type; the
+        // type arg is compile-time-only (ERASED from the runtime signature), so the query renders it as an
+        // erased `const t = TYPE` and keeps the list parameter as `l: (Lst TYPE)`.
+        let src = "(module m (type Lst Nil (Cons a (Lst a))) \
+                   (def (len (: t Type) (: l (Lst t))) \
+                     (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl))))) \
+                   (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                                  (len String (Lst.Cons \"a\" Lst.Nil)))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "len"),
+            vec![
+                "const t = Int64;l: (Lst Int64)",
+                "const t = String;l: (Lst String)",
+            ],
+        );
+    }
+
+    #[test]
+    fn ad_hoc_polymorphism_reports_the_inlined_dictionary_per_instance() {
+        // The ad-hoc-polymorphism case: a `const` dictionary parameter is inlined + erased at each call, so
+        // `fold-n` monomorphizes once per DISTINCT dictionary. The query shows WHICH concrete dictionary
+        // each instance baked in (the distinguishing data), rendered as the inlined source — not an opaque
+        // fingerprint — while `n`/`acc` stay ordinary runtime parameters.
+        let src = "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (op (fn (x) (* x 2)))) 3 1))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "fold-n"),
+            vec![
+                "const d = (record (op (fn (x) (* x 2))));n: Int64;acc: Int64",
+                "const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64",
+            ],
+        );
+    }
+
+    #[test]
+    fn two_calls_at_the_same_instantiation_dedup_to_one() {
+        // The specialization is memoized on the concrete instantiation, so two calls with the SAME
+        // dictionary share ONE function — the query reports a single instance (no double-count).
+        let src = "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (op (fn (x) (+ x 10)))) 2 5))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "fold-n"),
+            vec!["const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64"],
         );
     }
 }
@@ -43915,6 +44621,308 @@ mod closure_host_resource {
             out[0],
             Val::S64(113),
             "closure (fn (p) (+ p.0 (+ p.1.0 p.1.1))) applied to (100, (10, 3)) = 113"
+        );
+    }
+
+    /// TWO-COMPOUND-ARGS oracle core: a closure `(fn (p q) (+ (. p 0) (. p 1) (. q 0) (. q 1)))` taking TWO
+    /// fixed-shape `tuple<s64,s64>` args. The HYPOTHESIS: the canonical ABI flattens EACH tuple independently,
+    /// so the guest `call` receives `(i32 self, i64 a, i64 b, i64 c, i64 d)` — the first tuple's fields then
+    /// the second's, NO memory / realloc / runtime decode. If this validates + runs, N compound args is an
+    /// implementation gap (a `Vec` of rebuilds, one per tuple), NOT an ABI wall. Standalone (no heap): the
+    /// lifted closure is `lifted(a,b,c,d) = a+b+c+d` (the body once both tuples are flattened to their fields).
+    fn closure_two_tuple_args_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64×4)->i64 (call_indirect); 2 = make ()->i32;
+        // 3 = call (i32 self, i64 a, i64 b, i64 c, i64 d)->i64 (self + the two tuples' FLATTENED fields).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(
+            vec![ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 1 lifted / indirect
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types.ty().function(
+            vec![
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            vec![ValType::I64],
+        ); // 3 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(a, b, c, d) = a + b + c + d
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::LocalGet(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::LocalGet(2));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::LocalGet(3));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, a, b, c, d) = call_indirect[type 1](a, b, c, d, slot = resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // a
+        call.instruction(&Instruction::LocalGet(2)); // b
+        call.instruction(&Instruction::LocalGet(3)); // c
+        call.instruction(&Instruction::LocalGet(4)); // d
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → rep (table slot)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the TWO-tuple-ARG closure: `call`'s two arguments are each a
+    /// `tuple<s64,s64>` DEFINED TYPE. Proves two independent `tuple<…>` args are expressible + re-exportable.
+    fn inner_reexport_component_two_tuple_args() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // two tuple<s64,s64> argument types (import side).
+        let (tup_p, tdp) = c.type_defined();
+        tdp.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_q, tdq) = c.type_defined();
+        tdq.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        // call : (self: own<0>, p: tuple<s64,s64>, q: tuple<s64,s64>) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("p", ComponentValType::Type(tup_p)),
+            ("q", ComponentValType::Type(tup_q)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        // RE-EXPORT the resource type + funcs.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (tup_pe, tdpe) = c.type_defined();
+        tdpe.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_qe, tdqe) = c.type_defined();
+        tdqe.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("p", ComponentValType::Type(tup_pe)),
+            ("q", ComponentValType::Type(tup_qe)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the TWO-tuple-ARG closure: `call` lifted against `(self: own<t>, p:
+    /// tuple<s64,s64>, q: tuple<s64,s64>) -> s64` with NO Memory/Realloc — the HYPOTHESIS is that wasmtime
+    /// flattens EACH tuple into two scalar core params, so the core `call` receives `(i32 self, i64,i64,i64,i64)`.
+    fn oracle_closure_two_tuple_args_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (tup_p, tdp) = c.type_defined();
+        tdp.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_q, tdq) = c.type_defined();
+        tdq.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("p", ComponentValType::Type(tup_p)),
+            ("q", ComponentValType::Type(tup_q)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_two_tuple_args());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT for N compound args: do TWO fixed-shape `tuple<s64,s64>` closure ARGUMENTS cross
+    /// by INDEPENDENT native flattening (no runtime decode)? `make()` the handle, then `call(handle, (3,4),
+    /// (10,20))` → 3+4+10+20 = 37. If this validates + runs, N compound args is an implementation gap (a `Vec`
+    /// of `TupleArgRebuild`, one per tuple, each at its own `base_param`), NOT an ABI wall.
+    #[test]
+    fn two_fixed_shape_tuple_closure_args_cross_by_independent_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_two_tuple_args_component(&closure_two_tuple_args_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("two-tuple-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
+
+        // call(handle, (3,4), (10,20)) → 3+4+10+20 = 37. Each tuple flattens to two core i64 params.
+        let p = Val::Tuple(vec![Val::S64(3), Val::S64(4)]);
+        let q = Val::Tuple(vec![Val::S64(10), Val::S64(20)]);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), p, q], &mut out)
+            .expect("call(handle, (3,4), (10,20))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(37),
+            "closure (fn (p q) (+ p.0 p.1 q.0 q.1)) applied to (3,4),(10,20) = 37"
         );
     }
 
@@ -48832,5 +49840,306 @@ mod cross_component_oracle {
             }
             cdz_run::Outcome::Trap(t) => panic!("shared-runtime cross-component run trapped: {t}"),
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5b — a COMPOUND value crosses between two SOURCE Cadenza components as an opaque handle over the
+    // shared runtime (the payoff). A peer builds a runtime `(Tuple Int64 Int64)` and returns it; a
+    // consumer receives the handle (typed `(Tuple Int64 Int64)` by its `(extern …)` decl) and projects
+    // element 0 — reading the peer's value through the shared heap, NO serialization.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A hand-built PROVIDER that exports `pair : func(x: s64) -> u32` (the value HANDLE of a runtime
+    /// `(tuple x x)` built on the shared heap) under interface `cadenza:pairs/api`, importing the runtime.
+    /// (The PROVIDER-side compound-result emit from SOURCE is X5c; this proves the CONSUMER-side compound
+    /// crossing now with a hand-built peer, the oracle-first move.)
+    fn pairs_peer_component(import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        // Core: import heap ops; `pair(x:i64)->i32` builds `[x, x]` and returns the array handle.
+        let core = {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            let mut imports = ImportSection::new();
+            let base = heap_import_prologue(&mut types, &mut imports);
+            let pair_ty = base;
+            types.ty().function(vec![ValType::I64], vec![ValType::I32]);
+            m.section(&types);
+            m.section(&imports);
+            let mut funcs = FunctionSection::new();
+            funcs.function(pair_ty);
+            m.section(&funcs);
+            let mut exports = ExportSection::new();
+            exports.export("pair", ExportKind::Func, base);
+            m.section(&exports);
+            let mut code = CodeSection::new();
+            let mut f = Function::new(vec![(1, ValType::I32)]); // local 1 = array handle
+            // a = arr-alloc(2)
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::Call(H_ARR_ALLOC));
+            f.instruction(&Instruction::LocalSet(1));
+            // a = arr-set(a, 0, box-int(x))
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(H_BOX_INT));
+            f.instruction(&Instruction::Call(H_ARR_SET));
+            f.instruction(&Instruction::LocalSet(1));
+            // a = arr-set(a, 1, box-int(x))
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(H_BOX_INT));
+            f.instruction(&Instruction::Call(H_ARR_SET));
+            f.instruction(&Instruction::LocalSet(1));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::End);
+            code.function(&f);
+            m.section(&code);
+            m.finish()
+        };
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let core_idx = c.core_module_raw(&core);
+        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let pair_core = c.core_alias_export(prog_inst, "pair", ExportKind::Func);
+        // `pair : func(p0: s64) -> u32` — the result u32 is the value HANDLE (the extern boundary form of
+        // a compound crossing over the shared runtime). Param name p0 matches the consumer's import decl.
+        let (pair_ty, mut pf) = c.type_function();
+        pf.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let pair_comp = c.lift_func(pair_core, pair_ty, []);
+        let inner = pairs_interface_wrapper();
+        let ic = c.component(inner);
+        let iinst = c.instantiate(ic, [("pair", ComponentExportKind::Func, pair_comp)]);
+        c.export(
+            "cadenza:pairs/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// Inner import-and-re-export wrapper publishing `pair : func(s64) -> u32` as an interface member.
+    fn pairs_interface_wrapper() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (ft, mut f) = c.type_function();
+        f.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let imported = c.import("pair", ComponentTypeRef::Func(ft));
+        let (et, mut ef) = c.type_function();
+        ef.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        c.export(
+            "pair",
+            ComponentExportKind::Func,
+            imported,
+            Some(ComponentTypeRef::Func(et)),
+        );
+        c
+    }
+
+    #[test]
+    fn x5b_a_compound_value_crosses_between_source_components_as_a_shared_handle() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (hand-built): `pair(x)` builds the runtime tuple `(x, x)` and returns its handle.
+        let provider = pairs_peer_component(&import_name);
+        // CONSUMER (from SOURCE): binds `pair : (-> Int64 (Tuple Int64 Int64))`, calls it, projects
+        // element 0. The tuple RESULT crosses as its opaque u32 handle over the shared runtime (X5b
+        // consumer-side widening). main(7) = tuple.0 (pair 7) = 7.
+        let consumer_src = "(do \
+            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
+            (def (main (: x Int64)) (. (pair x) 0)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer with a compound extern result compiles");
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5b] runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a compound value crosses between two source components")
+        {
+            // The tuple (7,7) the peer built on the shared heap crossed to the consumer as a handle; the
+            // consumer projected element 0 → 7. A runtime COMPOUND crossed between Cadenza components with
+            // NO serialization, over the shared runtime instance.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "7",
+                    "compound value crosses as a shared handle; consumer reads element 0"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("compound cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5c — BOTH sides from source: a source PROVIDER returns a runtime compound (crosses as its `u32`
+    // handle through the provider interface), a source CONSUMER receives + reads it. The full compound
+    // interop story from two Cadenza sources.
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x5c_a_source_provider_returns_a_compound_read_by_a_source_consumer() {
+        use crate::testkit::parse;
+        // PROVIDER (from SOURCE): `pair(x) = (tuple x x)` — a RUNTIME tuple, published under
+        // cadenza:pairs/api. Its result crosses as a u32 handle (X5c provider path). Imports the runtime.
+        let provider = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        // CONSUMER (from SOURCE): binds `pair`, calls it, projects element 0. main(9) = 9.
+        let consumer_src = "(do \
+            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
+            (def (main (: x Int64)) (. (pair x) 0)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer compiles");
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5c] runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two source components exchange a compound value")
+        {
+            // The provider built (9,9) on the shared heap and returned the handle; the consumer projected
+            // element 0 → 9. A runtime COMPOUND crossed between two SOURCE Cadenza components.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "9",
+                    "source provider's compound crosses to a source consumer"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("two-source compound run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5d — VALUE-MATRIX widening coverage: String / List / Sum / nested compounds all cross the same
+    // shared-handle way between two source components (extern_abi_val_type maps every runtime-owned type
+    // to the u32 handle). Each is a small coverage brick, no new machinery.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a provider `provider_src` (published under `iface`) + a consumer `consumer_src`, compose via
+    /// run_with_peers with the shared runtime, and assert `main(arg)` renders to `expect`. Skips if the
+    /// runtime wasm is not in the store.
+    fn run_two_source_peers(
+        provider_src: &str,
+        iface: &str,
+        consumer_src: &str,
+        arg: &str,
+        expect: &str,
+    ) {
+        use crate::testkit::parse;
+        let provider = compile_provider(provider_src, iface);
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .unwrap_or_else(|d| panic!("consumer compiles: {}", d.message));
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5d] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: iface.to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("two source peers run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{iface}: {consumer_src}"),
+            cdz_run::Outcome::Trap(t) => panic!("{iface} run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn x5d_a_list_value_crosses_between_source_components() {
+        // Provider builds a runtime `(List Int64)` of length 2; consumer reads its length → 2.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (List.push (List.push (list) x) x)) (export mk))",
+            "cadenza:lists/api",
+            "(do (extern \"cadenza:lists/api\" (mk (-> Int64 (List Int64)))) \
+               (def (main (: x Int64)) (List.len (mk x))) (export main))",
+            "5",
+            "2",
+        );
+    }
+
+    #[test]
+    fn x5d_a_string_value_crosses_between_source_components() {
+        // Provider returns a runtime String — a param-selected `if` defeats constant folding, so the
+        // String is built at run time and crosses as a handle. x>0 → "abc" (byte-len 3); consumer reads it.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (if (> x 0) (String.concat \"ab\" \"c\") \"\")) (export mk))",
+            "cadenza:strs/api",
+            "(do (extern \"cadenza:strs/api\" (mk (-> Int64 String))) \
+               (def (main (: x Int64)) (String.byte-len (mk x))) (export main))",
+            "3",
+            "3",
+        );
+    }
+
+    #[test]
+    fn x5d_a_record_value_crosses_and_a_field_is_read() {
+        // Provider returns a runtime record `{a: x, b: x+1}`; consumer reads field `b`.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (record (a x) (b (+ x 1)))) (export mk))",
+            "cadenza:recs/api",
+            "(do (extern \"cadenza:recs/api\" (mk (-> Int64 (Record (a Int64) (b Int64))))) \
+               (def (main (: x Int64)) (. (mk x) b)) (export main))",
+            "10",
+            "11",
+        );
     }
 }
