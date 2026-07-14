@@ -3617,6 +3617,22 @@ fn float_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, 
     }
 }
 
+/// The MIRROR of [`float_sibling_operator`]: a FLOAT-arithmetic operator's spelling and its INTEGER
+/// sibling `(float, int)`, or `None` for a non-float-arith prim. Used to repair `(+. n m)` — a FLOAT
+/// operator applied to two INTEGER operands — by swapping the operator name to `+`, the whole-operation
+/// fix (wrapping one operand in `Float64.of-int` leaves the OTHER an int, so it does not clear the fault;
+/// two integer operands mean integer math). The exact inverse of the two-floats→`+.` swap.
+fn int_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
+    use crate::resolved::Prim;
+    match prim {
+        Prim::FAdd => Some(("+.", "+")),
+        Prim::FSub => Some(("-.", "-")),
+        Prim::FMul => Some(("*.", "*")),
+        Prim::FDiv => Some(("/.", "/")),
+        _ => None,
+    }
+}
+
 /// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
 /// different conversions (`units-of-measure.md` §A Named Unit's Conversion Is Unique) — and push CDZ0502
 /// for each. A name conflicts when its reduced unit (`base` scaled by `num/den`) differs from the
@@ -3777,6 +3793,47 @@ fn check_application(
             Code::NumericMismatch,
             format!(
                 "`{int_op}` is integer arithmetic, but both operands are {} — use the floating-point \
+                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
+                a0.render_name(),
+            ),
+        )
+        .at(app);
+        if let Some(node) = op_name_node {
+            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
+        }
+        out.push(reject);
+        for &arg in args {
+            collect(db, arg, out);
+        }
+        return;
+    }
+    // The MIRROR: a FLOAT arithmetic operator (`+.`/`-.`/`*.`/`/.`) applied to two INTEGER operands —
+    // `(+. n m)` for `n`,`m` : `Int64`. The whole-operation repair is to SWAP the operator to its INTEGER
+    // sibling (`+`), NOT to wrap an operand: `+.`'s scheme wants `Float`, so the generic unify below faults
+    // an operand and offers `(Float64.of-int …)` on JUST that one — leaving the OTHER operand an int, so
+    // the fix does not clear the fault (`fix --all` rightly refuses it) and misreads intent (two integer
+    // operands mean integer math). Emit ONE clean CDZ0301 whose fix rewrites the OPERATOR NAME node to the
+    // int sibling, then return so the generic path does not also add the misleading per-operand wrap.
+    // Gated on BOTH operands being `Ty::Int` (a genuine int/float MIX — `(+. n 1.0)` — keeps the
+    // per-operand `of-int` coercion, right there since one operand is already a float). The exact inverse
+    // of the two-floats→`+.` swap above.
+    if args.len() == 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+        && let Some((float_op, sibling)) = int_sibling_operator(prim)
+        && let a0 = type_of(db, args[0])
+        && let b0 = type_of(db, args[1])
+        && matches!(a0, Ty::Int(_))
+        && matches!(b0, Ty::Int(_))
+    {
+        let op_name_node = match db.ast.get(app) {
+            crate::ast::Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        trace!(target: "rcdzc::infer", head = head.0, float_op, sibling, "fault: float arithmetic operator on two ints — swap to the int sibling (CDZ0301)");
+        let mut reject = Reject::coded(
+            Code::NumericMismatch,
+            format!(
+                "`{float_op}` is floating-point arithmetic, but both operands are {} — use the integer \
                  operator `{sibling}` (Cadenza never silently promotes a numeric type)",
                 a0.render_name(),
             ),
