@@ -12163,40 +12163,46 @@ mod match_engine {
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
     fn reject_code(src: &str) -> Option<String> {
-        let out = compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[Target::Wasm],
-        );
-        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
-            return None; // compiled — no rejection
-        }
-        out.diagnostics
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .and_then(|d| d.code.clone())
+        let bytes = crate::codec::encode(&parse(src));
+        crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    bytes,
+                )],
+                &[Target::Wasm],
+            );
+            if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+                return None; // compiled — no rejection
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        })
     }
 
     /// The first error `Diagnostic` from compiling `src` (full record, so a test can read the carried
     /// fix), or `None` if `src` compiled clean.
     fn reject_full(src: &str) -> Option<crate::abi::Diagnostic> {
-        let out = compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[Target::Wasm],
-        );
-        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
-            return None;
-        }
-        out.diagnostics
-            .into_iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
+        let bytes = crate::codec::encode(&parse(src));
+        crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    bytes,
+                )],
+                &[Target::Wasm],
+            );
+            if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+                return None;
+            }
+            out.diagnostics
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+        })
     }
 
     #[test]
@@ -31166,6 +31172,9 @@ mod stage1 {
     }
 
     #[test]
+    // The pinned sums are written `0 + 1 + … + n` to make `sum(0..=n)` explicit against the comment's
+    // N(N-1)/2 — the leading `0 +` is pedagogical, not a stray identity op.
+    #[allow(clippy::identity_op)]
     fn the_effect_fold_pure_classifier_scales_linearly_over_a_wide_context() {
         // REGRESSION (perf): the frame-free effect fold classifies pure one-hole contexts via
         // `effects::strongly_pure`, which called `subtree_performs` — a full recursive subtree walk — at
@@ -31232,9 +31241,14 @@ mod stage1 {
             "the wide `+`-spine sums 0..4 plus the perform's resumed state 5"
         );
         fn check_ms(src: &str) -> f64 {
-            let start = std::time::Instant::now();
-            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            start.elapsed().as_secs_f64() * 1000.0
+            // The wide `+`-spine (width 200/400) parses and type-checks to a deep-but-finite recursion —
+            // route it through the depth-sized compiler stack so it doesn't overflow the ~2 MB `cargo test`
+            // worker stack (the guard-thread pattern the deep-recursion tests use).
+            crate::host::run_with_compiler_stack(|| {
+                let start = std::time::Instant::now();
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                start.elapsed().as_secs_f64() * 1000.0
+            })
         }
         let (narrow, wide) = (wide_pure(200), wide_pure(400));
         check_ms(&narrow); // warm lazy one-time init before the first timed pair
