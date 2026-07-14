@@ -12909,6 +12909,48 @@ mod tests {
         assert_eq!(live_nodes(), before, "eq test reclaimed all nodes");
     }
 
+    /// TAGLESS invariant (the spec's determinism "no-type-tag" principle, duvet-annotated `@b470dd82`):
+    /// the runtime stores only STRUCTURE + DATA, never a value's TYPE, so `champ_eq`/`champ_hash`/
+    /// `champ_key_cmp` compare RAW BYTES + arity — they physically CANNOT distinguish two values of
+    /// DIFFERENT types that happen to share the same raw bytes and (zero) arity. A boxed Int and a Bytes
+    /// leaf holding the Int's little-endian bytes are therefore champ_eq + hash-equal + cmp-Equal. This is
+    /// not a bug — it is WHY keeping a map/set's keys HOMOGENEOUS is the COMPILER's obligation (the runtime
+    /// can't enforce it), and WHY the byte-hash is storage-transparent. Pinning it guards against anyone
+    /// accidentally adding a type discriminator to the comparison path (which would break byte-hash
+    /// transparency + the map/set key contract for a compiler that relies on this).
+    #[test]
+    fn champ_eq_is_tagless_same_raw_different_kind_is_equal() {
+        reset();
+        let before = live_nodes();
+        // A boxed Int (outside the fixnum window → a real heap leaf with 8 LE raw bytes, zero handles).
+        let n: i64 = 0x0102_0304_0506_0708;
+        let int_leaf = op_box_int(n);
+        assert!(!is_immediate(int_leaf), "the value is boxed (heap leaf), not an inline fixnum");
+        // A Bytes leaf holding those exact 8 little-endian bytes — same raw, same (zero) arity, DIFFERENT
+        // type. The runtime has no tag, so it is indistinguishable from the Int leaf.
+        let bytes_leaf = op_bytes_alloc(8);
+        for k in 0..8u32 {
+            op_bytes_set(bytes_leaf, k, ((n >> (8 * k)) & 0xff) as u32);
+        }
+        assert!(
+            champ_eq(int_leaf, bytes_leaf),
+            "tagless: an Int and a same-raw Bytes leaf are champ_eq (no type tag to tell them apart)"
+        );
+        assert_eq!(
+            champ_hash(int_leaf),
+            champ_hash(bytes_leaf),
+            "…and hash identically (byte-hash is storage/type-transparent)"
+        );
+        assert_eq!(
+            champ_key_cmp(int_leaf, bytes_leaf),
+            core::cmp::Ordering::Equal,
+            "…and compare Equal — hence homogeneous keys are the COMPILER's responsibility"
+        );
+        op_drop(int_leaf);
+        op_drop(bytes_leaf);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn champ_eq_and_cmp_descend_nested_compounds_via_lazy_worklist() {
         reset();
