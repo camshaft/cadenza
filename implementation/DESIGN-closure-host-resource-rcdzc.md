@@ -948,9 +948,16 @@ the component type. The new work:
   `assemble_closure_bytes_resource_borrow_tuple` + `resource_inner_component_closure_bytes_borrow_tuple` mint
   the `tuple<…>` type before the `list<u8>` result type (running type counter, both import + export sides).
   `emit_closure_resource`'s guard relaxed to allow byte-rope + tuple arg (still declines compound/collection
-  result). Corpus: `(fn (p) (bin (u8 (.p 0)) (u8 (.p 1))))`, `call(handle,(5,6))`→(5 6) e2e. Still to do:
-  the SAME for the value-form (fixed compound) + value-encode (collection) result cores; multi/mixed/
-  distinct-sig byte-rope + tuple arg (their multi bytes cores/envelopes also need the thread).
+  result). Corpus: `(fn (p) (bin (u8 (.p 0)) (u8 (.p 1))))`, `call(handle,(5,6))`→(5 6) e2e.
+- **✅ TUPLE ARG + FIXED-SHAPE COMPOUND RESULT (single-export)** (`@db6110b9`, baseline `@6a59dc64`). The
+  SECOND widening: a closure taking a fixed-shape scalar tuple/record arg AND returning a fixed-shape compound
+  (tuple/record/sum) now compiles + runs. Threaded `tuple_arg` into `closure_value_resource_core_module_borrow`
+  (reusing the shared `emit_tuple_rebuild`/`_drop` helpers) + routed the compound-result branch to the shared
+  list<u8> tuple envelope. 🪤 the i64 `scratch` local sits AFTER all i32 locals → its index = `cell + n_i32`
+  (a tuple arg adds a 3rd i32, shifting scratch by 1); getting it wrong gave a wasmparser "expected i64, found
+  i32". Corpus: tuple-arg → `(tuple 13 7)`, record-arg → `(record (diff 7) (sum 13))`; a tuple-arg + List
+  result decline anchor. Still to do: value-encode (collection) result core; multi/mixed/distinct-sig byte-rope
+  + fixed-compound + tuple arg (their multi list-result cores/envelopes also need the thread).
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
   SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (scalar result), plus
   single-export BYTE-ROPE result (above); still to widen: a compound arg ALONGSIDE other args (the
