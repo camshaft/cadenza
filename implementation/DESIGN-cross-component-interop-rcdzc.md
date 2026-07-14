@@ -115,6 +115,21 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   files exchanging a compound. Test `u6_*` + a `compile_provider` helper (compiles source with a
   `component_name_artifact`). No compiler change (byte-neutral); gate 2088/0/0, 10 cross-component tests.
 
+- **U7 — DOC refresh after U4. ✅ DONE (`spec`, comment-only).** A dozen backend/front-end doc comments
+  still described the removed `(extern …)` source surface / the removed `Core::ExternCall` node as if live
+  (the binding surface, extern-import selection, and a stale "extern after host+runtime, a later increment"
+  layout note contradicting X5's extern-FIRST order). Refreshed each to the effects-unified reality; kept
+  the historical "exactly as an `(extern …)` op did" analogies as tombstones. Byte-neutral.
+
+- **U8 — CLI PROVIDER delivery on the effects surface. ✅ DONE (`spec`, test-only).** X4b-4's CLI delivery
+  was hand-verified on the removed `extern` surface and had NO automated coverage after U4. New `cdz` CLI
+  test `cross_component_cli.rs` drives the real binary: `cdz compile <provider> --component-name
+  cadenza:pkg/iface` on a SCALAR provider publishes the named interface instance; on a COMPOUND-returning
+  provider (`pair x = (tuple x x)`) publishes the interface AND imports `cadenza:runtime/heap` (the
+  `assemble_provider_runtime` path); the control (no `--component-name`) keeps the export top-level. Shape
+  asserted by dependency-free byte inspection (the `cdz-run --peer` consumer-run half needs wasmtime + the
+  store, kept in `cdz-run`; `u6_*` proves the full run). Byte-neutral; gate 2105/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
