@@ -107,6 +107,17 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // literal. The default is the literal's starting type in unification, NOT a coercion: a mix with
         // another numeric type still rejects CDZ0301 (no silent promotion), and an explicit annotation
         // still wins (the `Annot` node fixes its own type regardless of the inner literal's).
+        //
+        // The map is keyed by literals WRITTEN in the pragma module (definition-site scoped), so an
+        // importer's literals are unaffected; the default only chooses the literal's starting type and
+        // introduces no conversion (no-silent-promotion is unchanged); and an explicit annotation/constraint
+        // takes precedence over the default.
+        //= spec/capabilities/numeric-model.md#a-declared-default-applies-at-the-definition-site
+        //# The default integer literal type in force for a literal MUST be the one declared by the module in which the literal is written, not one declared by any module that imports it, so that importing a module never changes the type its literals take.
+        //= spec/capabilities/numeric-model.md#a-declared-default-fixes-a-type-not-a-conversion
+        //# Declaring a default integer literal type MUST only determine the type an otherwise-unconstrained integer literal takes, and MUST NOT introduce any implicit conversion between numeric types, so that every no-silent-promotion rule applies unchanged to a literal whatever its declared default type.
+        //= spec/capabilities/numeric-model.md#a-declared-default-fixes-a-type-not-a-conversion
+        //# An explicit type annotation or other constraint on an integer literal MUST take precedence over the module's declared default integer literal type.
         Resolved::Int(_) => module_default_int_ty(db, id).unwrap_or_else(Ty::int),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
@@ -1485,6 +1496,14 @@ fn shape_fn_typed_params(
 /// to a `Ty` via the ordinary evaluator (`typeval_of`, the same path an annotation's type takes). Only an
 /// INTEGER type is honored (a non-integer `<T>` is separately the CDZ0303 domain reject); anything that
 /// does not reduce to a concrete integer type is `None` (the literal keeps the deferred `Int64` default).
+///
+/// So a module MAY declare — through the `(pragma default-integer <T>)` directive — the integer type an
+/// otherwise-unconstrained literal takes within it; and when a module declares none, `None` here lets the
+/// caller fall back to the numeric model's default integer type (`Int64`).
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type
+//# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the integer type that an integer literal with no other constraint takes within that module.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type
+//# When a module declares no default integer literal type, an integer literal with no other constraint MUST take the numeric model's default integer type.
 fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     let ty_expr = *db.default_int_literals.get(&id)?;
     let ty = crate::eval::typeval_of(db, ty_expr)?;
