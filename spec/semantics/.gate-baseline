@@ -600,6 +600,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations
 pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
@@ -695,6 +696,7 @@ pass	a literal subterm in a quote pattern matches by equality
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a lookup at a runtime key finds the present value, else None
+pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
@@ -2182,8 +2184,12 @@ pass	the underlying numeric type obeys the numeric core — no silent promotion 
 pass	the union contains the elements of either set
 pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
+pass	the value-yielding insert of a new key adds the entry
+pass	the value-yielding insert reports None when the key is new
 pass	the value-yielding insert reports the prior value at a runtime key
 pass	the value-yielding insert reports the value it replaced
+pass	the value-yielding remove of an absent key leaves the map unchanged
+pass	the value-yielding remove reports None when the key is absent
 pass	the value-yielding remove reports the dropped value at a runtime key
 pass	the value-yielding remove reports the value it dropped
 pass	the widening carries a full-width magnitude through BigInt
