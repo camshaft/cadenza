@@ -381,6 +381,18 @@ impl<'a> Printer<'a> {
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
+                // An INLINE-POLICY marker wrapping a def: `(inline-never (def …))` prints as
+                // `inline-never def …` (the keyword prefixing the def), the idiomatic ML form the parser
+                // accepts (rather than the generic `inline-never(def …)` application fallback). `args` is
+                // the wrapper's single operand — the inner `(def …)`.
+                kw @ ("inline-never" | "inline-always")
+                    if args.len() == 1 && self.a.head_name(args[0]) == Some("def") =>
+                {
+                    self.doc.word(kw);
+                    self.doc.word(" ");
+                    self.expr(args[0], parent_prec);
+                    return;
+                }
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "effect" if self.is_effect_shape(args) => return self.print_effect(args),

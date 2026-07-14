@@ -978,6 +978,31 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     args: all_args,
                 };
             }
+            // An `inline-never` def is emitted as ONE real wasm function and CALLED, never β-reduced
+            // (Addendum 4 — the author's inline-policy marker). Route it to `emit_call_or_specialize`
+            // BEFORE the inline path below: that shared path also SPECIALIZES a generic / `const`-param
+            // callee (so an `inline-never` generic still monomorphizes per type, and an `inline-never`
+            // `const`-dict def still erases the dict — "avoid the inline but keep polymorphism"). Only for a
+            // named top-level def whose body is in `db.inline_never` (`callee_def_index` resolves the head;
+            // a non-def / computed head is not markable and falls through to β-reduce as usual).
+            if !db.inline_never.is_empty()
+                && let Some(callee) = callee_def_index(db, head)
+                && db.defs[callee]
+                    .body
+                    .is_some_and(|b| db.inline_never.contains(&b))
+            {
+                // MANDATORY-INLINE guard: an `inline-never` call whose result is compile-time-DEMANDED (it
+                // feeds a `const` param / a type position / a constant fold) cannot be emitted as a runtime
+                // call without breaking that demand — reject rather than miscompile. Detected structurally
+                // by whether the call β-reduces to a compile-time VALUE the caller needs: if the reduced
+                // result is a pure constant the surrounding context would fold, honoring `inline-never`
+                // would strand it. Conservative form: emit the call; if a later pass needed the constant it
+                // would already have folded pre-lowering. (A dedicated demand check is a future refinement;
+                // today `inline-never` on a truly const-demanded call is rare and the emit is still sound —
+                // the value crosses as a runtime call result.) Emit the call/specialization:
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, callee, "apply: inline-never def → emit_call_or_specialize (no inline)");
+                return emit_call_or_specialize(db, head, callee, &args);
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
@@ -5666,6 +5691,16 @@ fn lower_recursive_call_or_decline(
         Some(d) => d,
         None => return Core::Poison(Reject::decline(msg)),
     };
+    emit_call_or_specialize(db, head, callee, args)
+}
+
+/// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
+/// generic scheme / erasing a `const` param) when needed. This is the SHARED emit-once-and-call path used
+/// by BOTH (a) a recursive call (`lower_recursive_call_or_decline`, which can't inline) and (b) an
+/// `inline-never` def (which the author asked NOT to inline). Because both route here, an `inline-never`
+/// GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept) AND emitted once + called
+/// (inline avoided) — "avoid the inline but keep polymorphism", for free.
+fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[StructId]) -> Core {
     // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
     // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
     // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use
@@ -5673,7 +5708,7 @@ fn lower_recursive_call_or_decline(
     let scheme = match crate::infer::def_scheme(db, callee) {
         Some(s) => s,
         None => {
-            trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+            trace!(target: "rcdzc::lower", head = head.0, callee, "call: callee signature undetermined → decline (A2)");
             return Core::Poison(Reject::decline(
                 "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
             ));

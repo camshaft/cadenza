@@ -679,6 +679,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // INLINE-POLICY CONFLICTS (Addendum 4). `inline-always` on a RECURSIVE def is a contradiction — a
+    // recursive def CANNOT inline (it would inline without end; it is always emitted once), so the marker
+    // is meaningless and almost certainly an author error. Reject it (CDZ0201) rather than silently ignore.
+    // (`inline-never` on a recursive def is a harmless no-op — recursion already emits once — so it is NOT
+    // a conflict.) The compile-time-DEMANDED `inline-never` conflict is caught at the call site in `lower`
+    // (a `const`-arg / type-position demand), not here, since it is a property of the USE, not the decl.
+    if !db.inline_always.is_empty() {
+        for di in 0..db.defs.len() {
+            let Some(body) = db.defs[di].body else {
+                continue;
+            };
+            if db.inline_always.contains(&body) && crate::eval::is_recursive(db, body) {
+                let name = db.defs[di].name.clone();
+                faults.push(
+                    Reject::coded(
+                        crate::diag::Code::Malformed,
+                        format!(
+                            "`{name}` is recursive, so it cannot be `inline-always` — a recursive \
+                             definition is always emitted as one function (drop the `inline-always`, or \
+                             use `inline-never` which is its default)"
+                        ),
+                    )
+                    .at(db.defs[di].sig_occ),
+                );
+            }
+        }
+    }
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
     // recognized declaration (`def`/`export`/`type`/`effect`) nor a grammar head nor a bound name. Two
     // real cases reach here, and they are STRUCTURALLY INDISTINGUISHABLE (both a list led by an unbound

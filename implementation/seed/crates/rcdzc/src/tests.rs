@@ -657,6 +657,25 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     run_returns_with(component_bytes, name, &[])
 }
 
+/// Count the core-module instructions in `component_bytes` matching `pred` — an emission-strategy probe
+/// (e.g. `i64.mul` count for inline-vs-emit-once, `call_indirect` count for dict erasure). Walks every
+/// code-section entry with `wasmparser`; `pred` classifies each operator.
+fn count_opcode(component_bytes: &[u8], pred: impl Fn(&wasmparser::Operator) -> bool) -> usize {
+    use wasmparser::{Parser, Payload};
+    let mut n = 0;
+    for payload in Parser::new(0).parse_all(component_bytes) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload {
+            let mut ops = body.get_operators_reader().expect("ops");
+            while let Ok(op) = ops.read() {
+                if pred(&op) {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
 /// Instantiate `component_bytes` and call export `name` WITH the given argument values, decoding the
 /// single result to `T` — the behavior check for a parameterized exported function.
 fn run_returns_with<T: FromVal>(
@@ -27298,7 +27317,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, find_runtime_wasm, run_returns, run_returns_with};
+    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -35000,6 +35019,88 @@ mod stage1 {
             ),
             None,
             "a const-scalar recursion compiles (only a const collection folded recursively rejects)"
+        );
+    }
+
+    #[test]
+    fn an_inline_never_def_is_emitted_once_not_inlined_per_call() {
+        // 09-functions "an inline-never definition is emitted once and called" (Addendum 4). The default
+        // is always-inline (every non-recursive call β-reduces); `inline-never` forces `big` to be emitted
+        // as ONE real function and CALLED. `big`'s body has 3 `i64.mul`s. `main` takes RUNTIME params (so
+        // the calls do NOT constant-fold away): called twice, INLINED it emits 6 muls, EMITTED-ONCE it
+        // emits 3. Assert the module has exactly 3 muls (emit-once); the un-marked control emits 6.
+        let src = "(module m \
+             (inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mul_count = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Mul));
+        assert_eq!(
+            mul_count, 3,
+            "inline-never `big` must be emitted ONCE (3 muls), not inlined per call (would be 6)"
+        );
+        // Control: WITHOUT the marker, the same program inlines `big` at both runtime call sites → 6 muls.
+        let inlined = "(module m \
+             (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13)))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let ib = compile_component(&crate::codec::encode(&parse(inlined))).expect("compile");
+        assert_eq!(
+            count_opcode(&ib, |op| matches!(op, wasmparser::Operator::I64Mul)),
+            6,
+            "the un-marked control must inline (6 muls) — the differential is the feature"
+        );
+    }
+
+    #[test]
+    fn an_inline_never_def_with_a_const_dict_still_erases_the_dict() {
+        // 09-functions "an inline-never definition with a const dictionary still monomorphizes the
+        // dictionary" — the HEADLINE composition (Addendum 4): "avoid the inline but keep polymorphism".
+        // `apply2` is `inline-never` (emit once + call) AND has a `const` dict param (monomorphize +
+        // erase). Both hold: the dict's `op` is INLINED into the specialized copy (NO `call_indirect`, no
+        // runtime record) and that copy is emitted once + called. Runs to 145; asserts 0 `call_indirect`.
+        let src = "(module m \
+             (inline-never \
+               (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
+                 ((. d op) ((. d op) x)))) \
+             (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
+                            (apply2 (record (op (fn (n) (+ n 10)))) 100))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 145);
+        let indirect = count_opcode(&bytes, |op| {
+            matches!(op, wasmparser::Operator::CallIndirect { .. })
+        });
+        assert_eq!(
+            indirect, 0,
+            "an inline-never def's const dict must still be inlined (0 call_indirect), not a runtime record"
+        );
+    }
+
+    #[test]
+    fn inline_always_on_a_recursive_def_is_rejected() {
+        // 09-functions "inline-always on a recursive definition is rejected" (Addendum 4). `inline-always`
+        // asks the compiler to always fold a def at its call sites, but a RECURSIVE def cannot inline (it
+        // is always emitted once) — the marker is a contradiction → coded CDZ0201 at the def's signature.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m \
+                       (inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
+                       (def (main) (loop-n 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("inline-always on a recursive def must be an error");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"));
+        assert!(
+            d.message.contains("recursive") && d.message.contains("inline-always"),
+            "the message names the conflict: {}",
+            d.message
         );
     }
 
