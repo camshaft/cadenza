@@ -11456,6 +11456,42 @@ mod tests {
         assert_eq!(live_object_count(), before, "no BigInt leak");
     }
 
+    /// `bigint-div` by ZERO TRAPS (numeric-model.md — an unbounded range gives `n/0` no value). The
+    /// zero-divisor trap was covered only implicitly (via the `Big::divmod` differential returning `None`);
+    /// no test asserted the OP itself traps. This matters especially since `op_bigint_div` gained an i128
+    /// FAST PATH (`spec@9bcfb04e`): a zero divisor makes `checked_div` return `None`, so it falls THROUGH
+    /// to the `Big` path — which traps. This pins that the fast path does NOT swallow the trap (return a
+    /// bogus value); a regression that mis-handled `y==0` in the fast path would return instead of panic.
+    #[test]
+    #[should_panic]
+    fn bigint_div_by_zero_traps() {
+        reset();
+        let (a, b) = (op_bigint_of_i64(10), op_bigint_of_i64(0));
+        let _ = op_bigint_div(a, b); // fail-fast: division by zero
+    }
+
+    /// `bigint-rem` by ZERO TRAPS (the `%` companion of div — same `divmod`-`None` origin, same i128
+    /// fast-path fall-through). Pins the op-level trap for the remainder path independently of div.
+    #[test]
+    #[should_panic]
+    fn bigint_rem_by_zero_traps() {
+        reset();
+        let (a, b) = (op_bigint_of_i64(10), op_bigint_of_i64(0));
+        let _ = op_bigint_rem(a, b); // fail-fast: remainder by zero
+    }
+
+    /// `rational-of` with a ZERO DENOMINATOR TRAPS (a rational `n/0` has no value — the rational analogue
+    /// of ÷0). The trap fires BEFORE normalization (`op_rational_of` checks `den.is_zero()` after reading
+    /// both operands). Pins the construction-time trap the port hits building a Rational from computed
+    /// components.
+    #[test]
+    #[should_panic]
+    fn rational_of_zero_denominator_traps() {
+        reset();
+        let (n, d) = (op_bigint_of_i64(1), op_bigint_of_i64(0));
+        let _ = op_rational_of(n, d); // fail-fast: zero denominator (consumes n, d)
+    }
+
     #[test]
     fn rational_ops_normalize_and_compute_over_bigint_children() {
         reset();
