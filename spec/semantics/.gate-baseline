@@ -394,6 +394,7 @@ pass	a let body of unit yields unit
 pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
+pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
@@ -426,6 +427,7 @@ pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
+pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a magic header and a length-prefixed chunk parse together
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
@@ -551,7 +553,9 @@ pass	a nested constructor payload that misses the inner variant falls through to
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested if on the same condition collapses the inner test to the known branch
+pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested literal pattern of the wrong type is a type error
+pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -687,6 +691,7 @@ pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
 pass	a recursive generic function called at one type twice shares a single instantiation
 pass	a recursive generic function is instantiated at two different types
+pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
@@ -1124,6 +1129,7 @@ pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
+pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
@@ -1504,6 +1510,7 @@ pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
+pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
@@ -1707,7 +1714,6 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
-todo	a nested lambda capturing a closure-typed def PARAMETER is declined
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
