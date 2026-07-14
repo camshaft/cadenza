@@ -2231,14 +2231,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 has_bakeable_type_export = true;
             }
             if !bakeable {
+                // The message embeds `TYPE_EXPORT_MARKER` ("is a TYPE, not a runtime value") so
+                // `dedup_faults` drops the downstream no-runtime-form decline family (a built-in-as-value /
+                // nullary-lambda / type-value-no-runtime-form cascade the emit path leaks for this same
+                // body) — exactly as the nested-type-value branch below does. Without the marker phrasing,
+                // a NON-bakeable type-value export (`(: Int64 Type)`, a parameterized/undetermined type)
+                // reported the coded reject PLUS three unanchored declines (the very cascade the comment
+                // above promises this reject replaces).
                 faults.push(
                     Reject::coded(
                         Code::Malformed,
                         format!(
-                            "export `{name}` is a TYPE that cannot cross the component boundary — a \
-                             type-value crosses only from a NULLARY export and only when it reduces to a \
-                             concrete type (a type-value never flows from runtime data, so a parameterized \
-                             or not-fully-determined type has no boundary form)"
+                            "export `{name}` is a TYPE, not a runtime value that can cross the component \
+                             boundary — a type-value crosses only from a NULLARY export and only when it \
+                             reduces to a concrete type (a type-value never flows from runtime data, so a \
+                             parameterized or not-fully-determined type has no boundary form)"
                         ),
                     )
                     .at(occ),

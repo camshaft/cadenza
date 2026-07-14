@@ -12981,7 +12981,7 @@ mod match_engine {
         );
         assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
         assert!(
-            errors[0].message.contains("is a TYPE that cannot cross"),
+            errors[0].message.contains(crate::diag::TYPE_EXPORT_MARKER),
             "the surviving error names the real cause: {}",
             errors[0].message
         );
@@ -12997,6 +12997,41 @@ mod match_engine {
             }),
             "the no-runtime-form declines must not accompany the coded reject: {:?}",
             out.diagnostics
+        );
+        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a type-value that
+        // `typeval_of` does not reduce to a bakeable concrete type — hits the SAME reject branch. Its
+        // message previously said "is a TYPE that cannot cross …", which did NOT contain
+        // `TYPE_EXPORT_MARKER`, so the three no-runtime-form declines LEAKED (the coded reject plus a
+        // built-in-as-value / nullary-lambda / type-value cascade). The reworded message embeds the marker,
+        // so `dedup_faults` drops the cascade here too — one coded error, exactly like the parameterized
+        // case above.
+        let ann = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (: Int64 Type)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let ann_errors: Vec<&crate::abi::Diagnostic> = ann
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            ann_errors.len(),
+            1,
+            "a nullary `(: T Type)` type-value export = one error, got: {:?}",
+            ann.diagnostics
+        );
+        assert!(
+            ann_errors[0]
+                .message
+                .contains(crate::diag::TYPE_EXPORT_MARKER),
+            "the nullary-annotated reject also names the marker: {}",
+            ann_errors[0].message
         );
     }
 
