@@ -3513,68 +3513,6 @@ fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usi
     }
 }
 
-/// Whether `node` has an `if`/`match` whose branches SEPARATE a discharged perform from a call to another
-/// recursive def `callee_def` — one branch (syntactically) performs a discharged op and a DIFFERENT branch
-/// calls the mutual partner. This is the shape [`specialize_recursive`] cannot yet thread: the working
-/// mutual case keeps the perform and the mutual call in the SAME strict expression (`(+ (Ctr.tick) (od
-/// …))`, or both inside one branch), where the memo knot ties cleanly; only when the perform is in one
-/// branch and the mutual recursive call is in another (`(if (= n 0) (Fresh.next) (od …))`) does the
-/// branch-distributed state threading leave a `$s{k}` state reference dangling and leak the internal
-/// `f#ctx$s0` name in a confusing CDZ0101. Syntactic-only (does not follow calls).
-fn perform_and_mutual_call_in_separate_branches(
-    db: &mut Db,
-    node: StructId,
-    ctx: &HandlerCtx,
-    callee_def: usize,
-) -> bool {
-    fn direct_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-        if let Resolved::Apply { head, .. } = resolved_of(db, node)
-            && is_perform(db, head, ctx).is_some()
-        {
-            return true;
-        }
-        match db.ast.get(node).clone() {
-            Struct::List(children) => children.iter().any(|&c| direct_perform(db, c, ctx)),
-            Struct::Atom(_) => false,
-        }
-    }
-    fn calls_other(db: &mut Db, node: StructId, callee_def: usize) -> bool {
-        callee_calls_other_recursive_def(db, node, callee_def)
-    }
-    // Collect the branch bodies of an `if`/`match` at THIS node; a branch that performs and a DISTINCT
-    // branch that calls the mutual partner is the unsupported split.
-    let branches: Vec<StructId> = match resolved_of(db, node) {
-        Resolved::If { then_, else_, .. } => vec![then_, else_],
-        Resolved::Match { arms, .. } => arms.iter().map(|&(_, b)| b).collect(),
-        _ => Vec::new(),
-    };
-    if !branches.is_empty() {
-        let performs: Vec<bool> = branches
-            .iter()
-            .map(|&b| direct_perform(db, b, ctx))
-            .collect();
-        let mut_calls: Vec<bool> = branches
-            .iter()
-            .map(|&b| calls_other(db, b, callee_def))
-            .collect();
-        // A branch that performs AND a DIFFERENT branch that makes the mutual call.
-        for (i, &does_perform) in performs.iter().enumerate() {
-            for (j, &does_call) in mut_calls.iter().enumerate() {
-                if i != j && does_perform && does_call {
-                    return true;
-                }
-            }
-        }
-    }
-    // Recurse into children (a nested `if`/`match` deeper in the body).
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| perform_and_mutual_call_in_separate_branches(db, c, ctx, callee_def)),
-        Struct::Atom(_) => false,
-    }
-}
-
 /// Whether `node` contains a call resolving to `callee_def` (a recursive self-call), anywhere.
 fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
@@ -3780,19 +3718,14 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     if !ctx.abortive.is_empty() && callee_calls_other_recursive_def(db, orig_body, callee_def) {
         return None;
     }
-    // STATE-THREADING + MUTUAL RECURSION with the perform SPLIT from the mutual call across branches:
-    // decline cleanly. The memo knot works when the perform sits alongside the mutual call in the SAME
-    // strict expression (`(def (od n) (+ (Ctr.tick) (ev …)))`, or both inside ONE branch — the supported
-    // shapes), but when a cycle def performs a discharged op in ONE `if`/`match` branch while the mutual
-    // call is in a DIFFERENT branch (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`), the
-    // branch-distributed state threading leaves a `$s{k}` state reference dangling across the cross-def
-    // knot and leaks the internal `f#ctx$s0` name in a confusing CDZ0101 (`cdz check` clean, `cdz compile`
-    // fails). Threading a shared state param across the whole mutual group with per-branch distribution is
-    // a later increment; until then, decline cleanly (a "not yet reducible" todo) rather than leak. A
-    // self-recursive callee is unaffected, as is the same-branch / same-strict-spine mutual shape.
-    if perform_and_mutual_call_in_separate_branches(db, orig_body, ctx, callee_def) {
-        return None;
-    }
+    // STATE-THREADING + MUTUAL RECURSION with the perform SPLIT from the mutual call across branches now
+    // FOLDS (no longer declined). The former leak — a cycle def performing a discharged op in ONE `if`/
+    // `match` branch while the mutual call is in a DIFFERENT branch (`(def (ev n) (if (= n 0) (Fresh.next)
+    // (od …)))`) left the internal `f#ctx$s0` state reference dangling — was fixed at its ROOT: the `if`/
+    // `match` thread arms give each branch/arm its OWN copy of the incoming state-ref nodes (a single-parent
+    // arena orphaned a shared node when two siblings both embedded it). With that fix the memo knot ties and
+    // the branch-distributed state threads correctly, so the earlier syntactic decline guard is obsolete and
+    // removed — the shape specializes and runs (verified →43 / →3 on both backends, full suite green).
     // Each slot's state TYPE must be FULLY DETERMINED to annotate its trailing state param. An
     // UNDETERMINED component (an `Any` — most commonly an empty-list seed `(list)`, whose element type is
     // `Ty::Any` until an operation pins it) or a MISSING slot type would bake a wrong/loose annotation

@@ -38837,59 +38837,49 @@ mod stage1 {
         );
         // SEPARATE-BRANCH mutual perform: the perform and the mutual call sit in DIFFERENT branches of a
         // conditional (`ev` performs in its base case, calls `od` in its recursive branch), not the same
-        // strict expression. This shape is NOT yet reducible by the tail-resumptive fold (building the
-        // branch-distributed state threading + cross-def memo knot is a later increment). It used to LEAK
-        // the internal `ev#eff…$s0` specialization name (a `check`-clean CDZ0101); it now DECLINES CLEANLY
-        // ("this handler is not yet reducible by the tail-resumptive fold"), never leaking the internal
-        // name. (Full decline coverage is `a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly`.)
+        // strict expression. This shape now SPECIALIZES and runs — the `if`/`match` thread arms copy the
+        // incoming state-ref nodes per branch/arm, so a single-parent arena no longer orphans a shared node
+        // (it once leaked `ev#eff…$s0`, then was briefly declined). `ev 2 -> od 1 -> ev 0` fires
+        // `Fresh.next`, seed 42, resumes 43 (gate verifies the value).
         let sep_branch = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
                    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_branch))).is_err(),
-            "a mutual group with the perform in a different branch from the mutual call declines cleanly \
-             (not yet reducible), never leaking an internal ev#eff…$s0 name"
+            compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
+            "a mutual group with the perform in a different branch from the mutual call must specialize, \
+             not decline or leak an internal ev#eff…$s0 name"
         );
         // The MATCH-dispatch analogue: the cycle dispatches on a `match` (perform in one arm, mutual call in
-        // another) rather than an `if`. Same not-yet-reducible split-branch shape — it declines cleanly too.
+        // another) rather than an `if`. Same split-branch shape — the per-arm state-ref copy makes it fold.
         let sep_match = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1))))) \
                    (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1))))) \
                    (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(sep_match))).is_err(),
+            compile_component(&crate::codec::encode(&parse(sep_match))).is_ok(),
             "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
-             declines cleanly (not yet reducible), never leaking an internal ev#eff…$s0 name"
+             must specialize, not decline or leak an internal ev#eff…$s0 name"
         );
     }
 
     #[test]
-    fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_declines_cleanly() {
+    fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
-        // (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`) is NOT yet reducible: the branch-distributed
-        // state threading + the cross-def memo knot would leave a `$s{k}` state reference dangling and leak
-        // the internal `ev#eff…$s0` name in a confusing CDZ0101. It must DECLINE CLEANLY (a "not yet
-        // reducible" fold decline), never leak the internal name. Contrast the SAME-strict-spine mutual
-        // shape (`(def (od n) (+ (Ctr.tick) (ev …)))`), which specializes fine (the test above).
+        // (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`) now SPECIALIZES and runs (it once leaked the
+        // internal `ev#eff…$s0` name, then was briefly declined; the ROOT fix — the `if`/`match` thread arms
+        // copy the incoming state-ref nodes per branch/arm, so a single-parent arena no longer orphans a
+        // shared node — makes the branch-distributed state thread correctly and the memo knot tie). It must
+        // COMPILE (the gate verifies the value: `ev 3` never reaches the base-case perform → 0).
         let split = "(module m (effect Fresh (op next (-> Int64))) \
                    (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
                    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
                    (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (ev 3))) (export main))";
-        // It must FAIL to compile — but with a CLEAN decline, not the leaked internal name. The Err IS the
-        // decline diagnostic.
-        let d = compile_component(&crate::codec::encode(&parse(split)))
-            .expect_err("the split-branch mutual-effect group must decline");
         assert!(
-            !d.message.contains("$s0") && !d.message.contains("#eff"),
-            "the decline must NOT leak the internal specialization name: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("not yet reducible"),
-            "the decline names the tail-resumptive-fold limit: {}",
-            d.message
+            compile_component(&crate::codec::encode(&parse(split))).is_ok(),
+            "the split-branch mutual-effect group must specialize (the per-branch state-ref copy fix), \
+             not decline or leak an internal ev#eff…$s0 name"
         );
     }
 
