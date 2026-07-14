@@ -1556,28 +1556,35 @@
 
 ; --- Checked overflow per width (numeric-model.md #Overflow Is Defined, at each width) ----
 
-(case "unsigned 8-bit addition that overflows its width traps"
+(case "unsigned 8-bit addition that overflows its width is rejected at compile time"
   (doc    "`(+ (: 255 UInt8) (: 1 UInt8))` = 256, one past UInt8.max, so it overflows the checked UInt8
-           range and MUST trap — the per-width analogue of `(+ Int64.max 1)`. Each fixed-width type is
-           checked at its OWN range, not only at 64 bits; a naive lowering that computed in i32 and
-           kept 256 would produce a value outside UInt8.")
+           range — the per-width analogue of `(+ Int64.max 1)`. Both operands are compile-time constants,
+           so the compiler PROVES the overflow and REJECTS the build (CDZ0304, the same code the wide
+           `(+ Int64.max 1)` gets), rather than deferring to a runtime trap — reject-don't-miscompile
+           (numeric-model.md #Overflow Is Defined). Each fixed-width type is checked at its OWN range,
+           not only at 64 bits; a naive lowering that computed in i32 and kept 256 would produce a value
+           outside UInt8. (A RUNTIME UInt8 addition whose operands are unknown until run time still traps
+           at run time — the checked-arith path emits the width range-check; only the both-constant case
+           is proven and rejected up front.)")
   (input  (+ (: 255 UInt8) (: 1 UInt8)))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
-(case "unsigned subtraction below zero traps rather than wrapping"
+(case "unsigned subtraction below zero is rejected at compile time"
   (doc    "`(- (: 0 UInt8) (: 1 UInt8))` would be -1, which UInt8 cannot represent (its range is
-           0..=255), so the subtraction overflows the unsigned range and MUST trap. The unsigned-
-           underflow companion of the overflow case: a checked unsigned type traps below zero, it does
-           not wrap to 255.")
+           0..=255), so the subtraction overflows the unsigned range. Both operands are constants, so the
+           compiler PROVES the underflow and rejects the build (CDZ0304) rather than deferring to a
+           runtime trap. The unsigned-underflow companion of the overflow case: a checked unsigned type
+           traps below zero, it does not wrap to 255.")
   (input  (- (: 0 UInt8) (: 1 UInt8)))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
-(case "signed 8-bit addition that overflows its width traps"
+(case "signed 8-bit addition that overflows its width is rejected at compile time"
   (doc    "`(+ (: 127 Int8) (: 1 Int8))` = 128, one past Int8.max (127), so it overflows the checked
-           Int8 range and MUST trap. Pins that the narrow SIGNED width is checked at its own boundary
-           too — a wrap would give -128 (Int8.min), the classic signed-overflow wrong value.")
+           Int8 range. Both operands are constants, so the compiler PROVES the overflow and rejects the
+           build (CDZ0304). Pins that the narrow SIGNED width is checked at its own boundary too — a wrap
+           would give -128 (Int8.min), the classic signed-overflow wrong value.")
   (input  (+ (: 127 Int8) (: 1 Int8)))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; --- No silent promotion ACROSS widths or signedness (numeric-model.md #Numeric ... Promote) --
 ; The no-promotion rule the `(+ 2 2.0)` case pins for Int64/Float64 applies equally to two integer
@@ -1686,13 +1693,14 @@
   (input  UInt32.max)
   (output (: 4294967295 UInt32)))
 
-(case "a UInt32 addition that overflows the 32-bit width traps"
+(case "a UInt32 addition that overflows the 32-bit width is rejected at compile time"
   (doc    "`(+ UInt32.max (: 1 UInt32))` = 2^32, one past UInt32.max, so it overflows the checked UInt32
-           range and MUST trap — even though 2^32 fits comfortably in the i64 the seed would use. Pins
-           that UInt32 is checked at 32 bits, not at 64: a compiler computing a section size must trap
-           on a 32-bit overflow, not silently carry a value the wasm format cannot encode.")
+           range — even though 2^32 fits comfortably in the i64 the seed would use. Both operands are
+           constants, so the compiler PROVES the overflow and rejects the build (CDZ0304). Pins that
+           UInt32 is checked at 32 bits, not at 64: a compiler computing a section size must catch a
+           32-bit overflow, not silently carry a value the wasm format cannot encode.")
   (input  (+ UInt32.max (: 1 UInt32)))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 ; --- A narrow binary op's operand widths reconcile regardless of operand ORDER --------------
 ; A narrow-width binary op (its width fixed by a narrow-typed variable operand) must emit BOTH operands
@@ -1772,14 +1780,15 @@
   (input  (: 281474976710655 (UInt 48)))
   (output (: 281474976710655 (UInt 48))))
 
-(case "an unusual-width value that overflows its computed range traps"
+(case "an unusual-width value that overflows its computed range is rejected at compile time"
   (doc    "`(+ (: 281474976710655 (UInt 48)) (: 1 (UInt 48)))` = 2^48, one past `(UInt 48).max`, so it
-           overflows the checked 48-bit range and MUST trap — the overflow bound is COMPUTED from N=48,
-           not drawn from a fixed width table. Pins that a non-aliased width is checked at its own width
-           exactly as an aliased one is; a naive lowering that only checked the 8/16/32/64 boundaries
-           would carry 2^48 as a wrong value.")
+           overflows the checked 48-bit range — the overflow bound is COMPUTED from N=48, not drawn from
+           a fixed width table. Both operands are constants, so the compiler PROVES the overflow and
+           rejects the build (CDZ0304). Pins that a non-aliased width is checked at its own width exactly
+           as an aliased one is; a naive lowering that only checked the 8/16/32/64 boundaries would carry
+           2^48 as a wrong value.")
   (input  (+ (: 281474976710655 (UInt 48)) (: 1 (UInt 48))))
-  (trap   "integer overflow"))
+  (error  CDZ0304))
 
 (case "a truncating conversion to an unusual width keeps that width's low bits"
   (doc    "`((UInt 48).wrap (: -1 Int64))` = 281474976710655: the truncating conversion keeps the low 48

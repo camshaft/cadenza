@@ -11924,21 +11924,25 @@ mod match_engine {
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
         // type for the runtime path, but the body's CONST-FOLD ran on the still-`Any` param → a const arg
         // folded at Int64, MISSING the Int8 overflow. `(app (fn (n) (+ n 1)))` @ (g 127) yielded 128 (Int64)
-        // instead of the CDZ0302 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
+        // instead of the CDZ0304 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
         // context arrow at `type_of` (so the body types narrow) AND wrapping the substituted arg in the
         // recovered `(: arg (Int N))` at β-reduction (so the fit-check fires + travels through copies).
+        // A constant arithmetic OPERATION that overflows the recovered narrow width is a provable trap →
+        // CDZ0304 (ConstTrap), like the wide `(+ Int64.max 1)`. (The context-typing fix — carrying the
+        // arrow's Int8 into the body const-fold — is what makes the overflow VISIBLE at compile time; the
+        // CODE is CDZ0304 because it is an operation with no value, not a literal that fails to fit.)
         let overflows = "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
             reject_code(overflows).as_deref(),
-            Some("CDZ0302"),
+            Some("CDZ0304"),
             "an unannotated context-Int8 param overflows a const arg like an explicit Int8 param"
         );
         // The `*` variant: 12*12 = 144 > Int8.max 127.
         let mul = "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
-        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0302"));
+        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0304"));
         // UInt8: 255 + 1 = 256 overflows.
         let uint = "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
-        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0302"));
+        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0304"));
         // NO OVER-REJECTION: an IN-RANGE const still compiles + runs (g 5 → 5+1 = 6, fits Int8).
         let in_range = "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
@@ -13399,21 +13403,28 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0302")
         );
-        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven CDZ0302.
+        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven a constant
+        // OPERATION with no value → CDZ0304 (ConstTrap), like the wide `(+ Int64.max 1)` — NOT CDZ0302
+        // (which is a LITERAL that doesn't fit; here 100 fits Int8, it is `100 + 100` that overflows).
         assert_eq!(
             reject_code(
                 "(module m (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))"
             )
             .as_deref(),
-            Some("CDZ0302")
+            Some("CDZ0304")
         );
-        // The annotated LET BINDER path range-checks its bound value the same way.
+        // The annotated LET BINDER path range-checks its bound value the same way — a bare out-of-range
+        // LITERAL bound value is still CDZ0302 (a literal that doesn't fit the annotated width).
         assert_eq!(
             reject_code("(module m (def (main) (let (((: a Int8) 200)) a)) (export main))")
                 .as_deref(),
             Some("CDZ0302")
         );
-        // A COMPUTED out-of-range value under a binder annotation folds and is caught too.
+        // A COMPUTED out-of-range value under a binder annotation folds and is caught too — here the
+        // operands `100`/`100` are UNANNOTATED (Int64), so `(+ 100 100)` folds to 200 at Int64 and the
+        // BINDER ANNOTATION `(: a Int8)` rejects the folded VALUE as not fitting Int8 → CDZ0302 (a
+        // value-fit at the annotation, exactly like `(: 200 Int8)`). This is DISTINCT from `(+ (: 100
+        // Int8) (: 100 Int8))`, whose `+` node is itself typed Int8 so the operation overflow is CDZ0304.
         assert_eq!(
             reject_code("(module m (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))")
                 .as_deref(),

@@ -1125,7 +1125,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
-                    lower_arith(db, prim, &args)
+                    lower_arith(db, id, prim, &args)
                 }
                 // A FLOAT arithmetic prim (`+.`/`-.`/`*.`/`/.`) — fold two constant floats, else decline
                 // (runtime float operands emit the machine op in F4).
@@ -8042,14 +8042,40 @@ fn lower_bigint_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core
     }
 }
 
-fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
+fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
-        (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
+        (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
+            // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
+            // (`255 + 1 = 256` over UInt8, `100 * 2 = 200` over Int8) folds to a valid `ConstInt` and
+            // would otherwise slip through to a backend CDZ0302 ("a literal that doesn't fit"). But this
+            // is a constant OPERATION whose defined outcome is a TRAP (the value overflows the type),
+            // NOT an out-of-range literal — so it is CDZ0304 (`ConstTrap`), the SAME code the wide
+            // `(+ Int64.max 1)` gets and the reject-don't-miscompile discipline the const-overflow /
+            // List.update-OOB path already follows. (A direct out-of-range LITERAL `(: 256 UInt8)` is
+            // still CDZ0302 at its own annotation — it is a literal, not an operation result.)
+            match fold_arith(op, a, b) {
+                Core::ConstInt(r) => match crate::infer::type_of(db, id) {
+                    crate::ty::Ty::Int(it)
+                        if !r.fits_width(it.ground_signed(), it.ground_width()) =>
+                    {
+                        trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "constant arithmetic result overflows the narrow width → CDZ0304");
+                        Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "this constant arithmetic operation overflows its integer type (a \
+                             compile-provable overflow traps)",
+                        ))
+                    }
+                    _ => Core::ConstInt(r),
+                },
+                other => other,
+            }
+        }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         // ALGEBRAIC IDENTITY: one operand is a constant whose value makes the op a NO-OP or a constant
         // result — the whole checked operation (and its overflow guard) is eliminated at lowering. Only

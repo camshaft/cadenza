@@ -108,6 +108,7 @@ pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scala
 pass	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
+pass	a UInt32 addition that overflows the 32-bit width is rejected at compile time
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -1223,6 +1224,7 @@ pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
+pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
 pass	applying a float is a type error
@@ -1621,6 +1623,7 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	set equality is independent of the order elements are written
+pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
@@ -1799,7 +1802,9 @@ pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unquote-splicing splices list elements into parent
+pass	unsigned 8-bit addition that overflows its width is rejected at compile time
 pass	unsigned comparison orders by magnitude, not by signed interpretation
+pass	unsigned subtraction below zero is rejected at compile time
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	updating a record field changes its type to the new value's
@@ -1812,7 +1817,6 @@ pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping multiplication wraps rather than trapping
 todo	Type is a first-class value
-todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
@@ -1825,7 +1829,6 @@ todo	a producer capturing a host-supplied COMPOUND parameter is declined — hos
 todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	constructing a runtime value that does not fit its segment traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
@@ -1834,8 +1837,5 @@ todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	reading the text a printer produced round-trips to an equal value
-todo	signed 8-bit addition that overflows its width traps
 todo	the default-integer pragma is definition-site scoped, not use-site
-todo	unsigned 8-bit addition that overflows its width traps
-todo	unsigned subtraction below zero traps rather than wrapping
 todo	wrapping arithmetic uses the distinct wrapping type

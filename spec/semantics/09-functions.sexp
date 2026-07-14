@@ -267,14 +267,15 @@
   (doc    "The NARROW-WIDTH edge of context typing: `app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n)
            (+ n 1)))`, where `g` is applied to the constant 127. The unannotated `n` is typed Int8 from
            app's declared `(-> Int8 Int8)` arrow, so `(+ n 1)` with n=127 is `127 + 1 = 128`, which
-           OVERFLOWS Int8 (max 127) — the SAME CDZ0302 the explicit `(fn ((: n Int8)) (+ n 1))` gives on
-           the same constant. The recovered narrow width must reach the body's CONST-FOLD, not only the
-           runtime path: without it the fold ran at the default Int64 and returned 128 (a wrong value where
-           an overflow is due). A RUNTIME argument traps for both the annotated and unannotated forms; this
-           pins that the compile-time const-fold carries the context width too.")
+           OVERFLOWS Int8 (max 127) — a constant OPERATION with no value → the SAME CDZ0304 (ConstTrap)
+           the explicit `(fn ((: n Int8)) (+ n 1))` gives on the same constant. The recovered narrow width
+           must reach the body's CONST-FOLD, not only the runtime path: without it the fold ran at the
+           default Int64 and returned 128 (a wrong value where an overflow is due). A RUNTIME argument
+           traps for both the annotated and unannotated forms; this pins that the compile-time const-fold
+           carries the context width too.")
   (input  (do (def (app (: g (-> Int8 Int8))) (g 127))
               (def (main) (app (fn (n) (+ n 1)))) (export main)))
-  (error  CDZ0302))
+  (error  CDZ0304))
 
 (case "an unannotated closure typed Int8 from context computes an in-range constant"
   (doc    "The value companion: the SAME `(app (fn (n) (+ n 1)))` but `g` applied to 5 — `5 + 1 = 6` fits
@@ -2599,10 +2600,11 @@
   (doc    "`(def (f (: a Int8)) (+ a a))` with `(f 100)`: 100 IS in Int8 range, but `(+ a a)` = 200
            OVERFLOWS Int8 (max 127). The argument carries the Int8 annotation into the body, so the
            addition is a homogeneous Int8 op whose CONSTANT operands fold and the compiler proves the
-           overflow at compile time — CDZ0302, exactly as `(+ (: 100 Int8) (: 100 Int8))` does. Pins that
-           the width constraint is not dropped by inlining: the wide 200 is never kept as the result.")
+           overflow at compile time — a constant OPERATION with no value → CDZ0304 (ConstTrap), exactly
+           as `(+ (: 100 Int8) (: 100 Int8))` and the wide `(+ Int64.max 1)` do. Pins that the width
+           constraint is not dropped by inlining: the wide 200 is never kept as the result.")
   (input  (do (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main)))
-  (error  CDZ0302))
+  (error  CDZ0304))
 
 (case "an in-range constant argument to a narrow parameter computes at the parameter width"
   (doc    "The complement — the check does NOT over-reject. `(def (f (: a Int8)) (+ a 10))` with `(f 100)`
