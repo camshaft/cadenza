@@ -17496,6 +17496,17 @@ mod match_engine {
                 "(module m (def (main) (: 5 (Int 32 64))) (export main))",
                 "`Int` is a WIDTH-indexed type constructor taking one width, but 2 arguments were supplied — write `(Int <width>)`, e.g. `Int64`",
             ),
+            // `Qty` takes 2 — a numeric TYPE + a UNIT. A wrong count `(Qty Int64)` / `(Qty)` read as the
+            // generic "not a type"; now the arity is named (a correct-arity `(Qty T u)` keeps its
+            // unit-position validation, tested clean below).
+            (
+                "(module m (def (g (: q (Qty Int64))) q) (export g))",
+                "`Qty` takes 2 type arguments, but 1 was supplied — write `(Qty T u)`",
+            ),
+            (
+                "(module m (def (g (: q (Qty))) q) (export g))",
+                "`Qty` takes 2 type arguments, but 0 were supplied — write `(Qty T u)`",
+            ),
         ] {
             let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
             assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
@@ -17526,6 +17537,15 @@ mod match_engine {
             .iter()
             .all(|d| !d.message.contains("WIDTH-indexed")),
             "the correct arity `(Int 64)` raises no width-ctor arity fault"
+        );
+        // A correct-arity `(Qty T u)` raises no `Qty`-arity fault — its unit-position validation stands.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: q (Qty Float64 (Unit.base #\"meter\")))) q) (export g))"
+            )))
+            .iter()
+            .all(|d| !d.message.contains("`Qty` takes 2 type arguments")),
+            "the correct arity `(Qty Float64 <unit>)` raises no Qty-arity fault"
         );
         let lit = reject_full("(module m (def (g (: n 5)) n) (export g))")
             .expect("a literal annotation rejects");

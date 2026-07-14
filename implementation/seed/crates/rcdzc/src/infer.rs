@@ -924,12 +924,16 @@ fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String
              were supplied — write `({name} <{placeholder}>)`, e.g. `{name}64`"
         ));
     }
-    // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
-    // names read naturally (`List Elem`, `Map Key Value`).
+    // A PRELUDE collection/quantity type constructor — its arity is fixed by the prim, and its argument
+    // placeholder names read naturally (`List Elem`, `Map Key Value`, `Qty T u`). `Qty` takes 2 — a numeric
+    // TYPE + a UNIT (`(Qty Int64 (Unit.base #"meter"))`); a wrong count `(Qty Int64)` / `(Qty)` reads as
+    // the generic "not a type", so name the arity here (only on a WRONG count — a correct-arity `(Qty T u)`
+    // returns `None` so its unit-position validation stands).
     if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {
         Some(crate::resolved::Prim::ListCtor) => Some(("List".to_string(), 1usize, "Elem")),
         Some(crate::resolved::Prim::SetCtor) => Some(("Set".to_string(), 1, "Elem")),
         Some(crate::resolved::Prim::MapCtor) => Some(("Map".to_string(), 2, "Key Value")),
+        Some(crate::resolved::Prim::QtyCtor) => Some(("Qty".to_string(), 2, "T u")),
         _ => None,
     } {
         if supplied == expected {
