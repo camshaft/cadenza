@@ -1155,14 +1155,34 @@ the component type. The new work:
   `list_slots` (like the single-export path) and the ≥2-compound list-decline guards are GONE. Corpus (all
   e2e): MULTI 2 tuples→List (+driving the other), →Tuple, →Bytes, 3 tuples→List; MIXED 2 tuples→List (+driving
   the plain export→42).
-  **REMAINING within this feature:** the DISTINCT-SIG export shape with ≥2 compound args
-  (`emit_distinct_sig_resource` detects one compound per group today — its `GroupCompoundArg` + per-group
-  `call-g<n>` envelope would take the same `ArgSlot` slot generalization). ✅ single-export, multi-export, and
-  mixed are all DONE × the full result matrix (scalar + byte-rope + fixed-compound + collection).
+  brick 8 (THIS increment) — **N compound args × the DISTINCT-SIG export shape — the LAST shape.** Generalized
+  `serialize::SigGroup.tuple_arg: Option<TupleArgRebuild>` → `tuples: Vec<TupleArgRebuild>` (all 4 `call-<g>`
+  body branches — value-encode/value-form/bytes/scalar — rebuild + drop each tuple, byte-neutral for ≤1); added
+  `SigGroupAbi.call_arg_slots: Option<Vec<ArgSlot>>`, minted per-group at ALL 6 functype sites (outer lift list
+  + scalar; inner import list + scalar; inner export list + scalar) via `mint_call_arg_tuple_types` +
+  `closure_call_functype_slots`/`closure_call_list_functype_slots`; `n_tuple` counts slot types.
+  `emit_distinct_sig_resource` binds `multi_compound_args` per group (a `GroupInfo.multi_args`), so distinct
+  groups may each take a DIFFERENT number of tuple args at different widths with any result shape. Removed the
+  now-dead `tuple_arg_slice` helper (all cores take `&[TupleArgRebuild]` directly). Corpus (all e2e): two
+  distinct-sig two-tuple closures (Int64 vs Int32, driving each), one-group-two-tuples-other-one-tuple, a
+  two-tuple group with a List result, capturing, and alongside a plain export.
+  **✅ N-COMPOUND-ARGS COMPLETE across ALL FOUR export shapes** (single/multi/mixed/distinct-sig), each × the
+  full result matrix (scalar + byte-rope + fixed-compound + collection).
+- **🏗️ SUM (Option/Result) direct-call arg — VERTICAL STARTED, brick 1 (oracle) landed (`spec@8442e483`).**
+  Test `an_option_scalar_closure_arg_crosses_by_native_flattening` PROVES the ABI: an `(Option scalar)` arg
+  crosses as a native component `option<s64>`, which the canonical ABI FLATTENS to `(disc: i32, payload: i64)`
+  core params — NO memory/realloc/`value-decode`. So a SUM arg is an IMPLEMENTATION GAP, not an ABI wall (same
+  finding shape as the N-compound-args tuple oracle). **REMAINING emit bricks:** (b) a classifier
+  `fixed_shape_sum_arg` (an Option/Result — 2-variant, ≤1 fixed-shape-scalar payload per variant — flattening to
+  `disc` + the payload leaf; the disc is the variant's decl index via `option_discs`/`result_discs`); (c) the
+  guest `call` decode: branch on the flattened `disc`, `sum-new(disc, box-<ty>(payload))` for the payload-bearing
+  variant / the inline-unit for the nullary variant, before `call_indirect`; (d) mint the `option<…>`/`variant<…>`
+  boundary type in the envelope (a NEW component-type former — no `option`/`variant` type is minted anywhere yet,
+  unlike `tuple`). A large multi-tick vertical, decompose like N-compound-args. Scope brick-by-brick:
+  single-export `(Option scalar)` scalar-result first.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
-  are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (2) a **SUM
-  (Option) direct-call arg** (needs host→guest decode of
-  the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
+  are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
+  (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
   these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
   resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope

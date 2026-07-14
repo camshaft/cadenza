@@ -15,6 +15,9 @@ export default function Basics() {
         an inner binding may shadow an outer one.
       </P>
       <Runnable source={`(let ((x 10)) (+ x 5))`} />
+      <P>
+        <C>x</C> is <C>10</C> for the body <C>(+ x 5)</C>, so this is <C>15</C>.
+      </P>
 
       <H2>Functions are values</H2>
       <P>
@@ -22,6 +25,7 @@ export default function Basics() {
         return it. Here we bind a function <C>inc</C> and call it.
       </P>
       <Runnable source={`(let ((inc (fn (x) (+ x 1)))) (inc 4))`} />
+      <P>Binding it to <C>inc</C> and calling <C>(inc 4)</C> gives <C>5</C>.</P>
 
       <P>
         Functions close over their environment. <C>adder</C> returns a function that remembers{" "}
@@ -29,6 +33,10 @@ export default function Basics() {
       </P>
       <Runnable source={`(let ((adder (fn (n) (fn (x) (+ x n)))))
   ((adder 3) 10))`} />
+      <P>
+        <C>(adder 3)</C> captures <C>n = 3</C> and returns a function that adds 3; applying it to <C>10</C>{" "}
+        gives <C>13</C>.
+      </P>
 
       <Why tenet="Uniformity over special cases">
         Underneath, every function takes exactly <em>one</em> argument and returns one value — a
@@ -45,6 +53,9 @@ export default function Basics() {
       </P>
       <Runnable source={`(let ((apply-twice (fn (f v) (f (f v)))))
   (apply-twice (fn (x) (+ x 1)) 5))`} />
+      <P>
+        The passed-in function adds 1, applied twice to <C>5</C> — so <C>5 → 6 → 7</C>.
+      </P>
 
       <H2>Types are inferred — and can be written</H2>
       <P>

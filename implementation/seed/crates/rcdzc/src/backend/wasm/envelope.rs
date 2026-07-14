@@ -814,6 +814,41 @@ pub fn assemble_host(
 /// imports each peer operation from this module; the envelope binds it to the imported peer instance.
 const PEER_MODULE: &str = "peer";
 
+/// The DISTINCT peer interfaces named in `op_ifaces`, in FIRST-APPEARANCE order — the order the extern
+/// envelope imports them as component instances/types `0..g`. `op_ifaces[i]` is the interface op `i`
+/// (in `extern_order`) is imported from; a single-interface consumer yields `["cadenza:pkg/iface"]`.
+fn distinct_ifaces<'a>(op_ifaces: &[&'a str]) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for &iface in op_ifaces {
+        if !out.contains(&iface) {
+            out.push(iface);
+        }
+    }
+    out
+}
+
+/// The position of `iface` in the distinct-interface list — the component instance/type index the extern
+/// envelope imports it under. `iface` is always present (it came from `op_ifaces`).
+fn iface_index(ifaces: &[&str], iface: &str) -> usize {
+    ifaces.iter().position(|&i| i == iface).unwrap_or(0)
+}
+
+/// The ops (in `extern_fns`/`extern_order` order) belonging to interface `iface` — those whose `op_ifaces`
+/// entry names it. Used to declare each imported interface's instance-type with only ITS ops (the func
+/// index in the instance-type is LOCAL to that instance, `0..ops-in-iface`).
+fn peer_group_ops<'a>(
+    extern_fns: &'a [HostFn],
+    op_ifaces: &[&str],
+    iface: &str,
+) -> Vec<&'a HostFn> {
+    extern_fns
+        .iter()
+        .zip(op_ifaces)
+        .filter(|(_, oi)| **oi == iface)
+        .map(|(f, _)| f)
+        .collect()
+}
+
 /// The CROSS-COMPONENT import shape (X3, `DESIGN-cross-component-interop-rcdzc.md`): a CONSUMER component
 /// that binds a PEER Cadenza component's exported interface `iface` and calls its operations across the
 /// live component boundary. Structurally IDENTICAL to [`assemble_host`] — import an instance-type
@@ -833,48 +868,76 @@ const PEER_MODULE: &str = "peer";
 /// functypes → component types `1..=m`. Peer op aliases → component funcs `0..p`; lifts → component funcs
 /// `p..p+m`. Imported peer instance → component instance 0; peer core instance → core instance 0; program
 /// → core instance 1.
+///
+/// MULTI-INTERFACE (U9): a consumer may bind MORE THAN ONE distinct peer interface. `op_ifaces[i]` names
+/// the interface op `i` (in `extern_fns`, i.e. `extern_order`) is imported from; the distinct interfaces
+/// (first-appearance order) become component instances/types `0..g`, and each op is aliased out of ITS
+/// interface's instance. The ONE `"peer"` core instance still exports every lowered op FLAT by name (the
+/// consumer core imports them all from `"peer"`), so op names must be globally unique across the bound
+/// interfaces — the front-end declines a cross-interface collision. A single interface (`g == 1`, every
+/// `op_ifaces` entry equal) reproduces the byte-exact X3 shape above.
 pub fn assemble_extern(
     core: &[u8],
     exports: &[BoundaryExport],
-    peer_iface: &str,
+    op_ifaces: &[&str],
     extern_fns: &[HostFn],
+    publish_iface: Option<&str>,
 ) -> Vec<u8> {
     let p = extern_fns.len();
     let m = exports.len();
+    // The distinct peer interfaces, in first-appearance order — imported as component instances `0..g`
+    // (and instance-types `0..g`). `op_ifaces[i]` is the interface op `i` (in `extern_fns`/extern_order) is
+    // imported from; a single interface (`g == 1`) reproduces the byte-exact X3 shape. See [`peer_groups`].
+    let ifaces = distinct_ifaces(op_ifaces);
+    let g = ifaces.len();
 
-    // sec 7: the peer interface's instance-type — component type 0. 2p declarations, interleaved per op:
-    // a `ty` decl (the op's component functype) then an `export` decl naming the op (kebab-normalized).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, f) in extern_fns.iter().enumerate() {
-            decls.push(0x01); // ty decl
-            decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
-            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
-            decls.push(0x01); // sort: component func
-            uleb128(i as u64, &mut decls);
+    // sec 7: one instance-type per distinct peer interface (component types `0..g`). Each declares ITS ops
+    // (those whose `op_ifaces` names it), interleaved `ty` decl + `export` decl, the export's func index
+    // LOCAL to that instance-type (`0..ops-in-iface`). For `g == 1` this is the single 2p-decl X3 shape.
+    let type_sec = {
+        let mut items = Vec::new();
+        for iface in &ifaces {
+            let ops = peer_group_ops(extern_fns, op_ifaces, iface);
+            let mut decls = Vec::new();
+            for (local, f) in ops.iter().enumerate() {
+                decls.push(0x01); // ty decl
+                decls.extend_from_slice(&f.comp_functype);
+                decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
+                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.push(0x01); // sort: component func
+                uleb128(local as u64, &mut decls);
+            }
+            let mut it = vec![0x42]; // instance type form
+            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            items.extend_from_slice(&it);
         }
-        let mut it = vec![0x42]; // instance type form
-        it.extend_from_slice(&wasm_vec(2 * p, &decls));
-        it
+        section(sec::COMPONENT_TYPE, &wasm_vec(g, &items))
     };
-    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the peer interface as an instance of component type 0, under its (kebab-normalized)
-    // interface name.
+    // sec 10: import each peer interface as an instance of its component type (`g_idx`), under its
+    // (kebab-normalized) interface name → component instances `0..g`.
     let import_sec = {
-        let mut item = extern_name(&super::kebab_extern_name(peer_iface));
-        item.push(0x05); // ComponentTypeRef::Instance sort
-        uleb128(0, &mut item); // type index 0
-        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+        let mut items = Vec::new();
+        for (g_idx, iface) in ifaces.iter().enumerate() {
+            let mut item = extern_name(&super::kebab_extern_name(iface));
+            item.push(0x05); // ComponentTypeRef::Instance sort
+            uleb128(g_idx as u64, &mut item); // type index g_idx
+            items.extend_from_slice(&item);
+        }
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g, &items))
     };
 
-    // sec 6 (first): alias each op out of the imported peer instance (component instance 0) → component
-    // funcs `0..p`, by the op's kebab-normalized component extern name.
+    // sec 6 (first): alias each op (flat, in extern_order) out of ITS interface's imported instance →
+    // component funcs `0..p`, by the op's kebab-normalized component extern name. A single interface aliases
+    // every op from instance 0 (byte-identical to X3).
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in extern_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
+            let inst = iface_index(&ifaces, oi);
+            items.extend_from_slice(&comp_alias_item(
+                inst as u32,
+                &super::kebab_extern_name(&f.op),
+            ));
         }
         section(sec::ALIAS, &wasm_vec(p, &items))
     };
@@ -925,7 +988,8 @@ pub fn assemble_extern(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → component types `1..=m`.
+    // sec 7 (second): one component functype per boundary export → component types `g..g+m` (after the g
+    // peer instance-types `0..g`; `g == 1` gives `1..=m`, the X3 shape).
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
@@ -938,23 +1002,52 @@ pub fn assemble_extern(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`p+j`) using its component type (`1+j`) → component
+    // sec 8 (second): lift each boundary core func (`p+j`) using its component type (`g+j`) → component
     // funcs `p..p+m`.
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((p + j) as u32, (1 + j) as u32));
+            items.extend_from_slice(&canon_lift_item((p + j) as u32, (g + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };
 
-    // sec 11: export each lifted component func (`p+j`) under its verbatim boundary name.
-    let export_sec = {
-        let mut items = Vec::new();
-        for (j, e) in exports.iter().enumerate() {
-            items.extend_from_slice(&comp_export_item(&e.name, (p + j) as u32));
+    // sec 5 + 11 (publish) OR sec 11 (top-level): when this component is ALSO a provider (`publish_iface`
+    // = `Some(iface)`, a MIDDLE-of-chain component that both binds a peer and publishes its own interface,
+    // U11), BUNDLE the lifted boundary funcs (comp funcs `p..p+m`) into a component instance and export
+    // THAT under `iface` — exactly the `assemble_provider` shape, but with the peer imports/lowers ahead of
+    // it. The bundle is comp instance `g` (after the g imported peer instances `0..g`). Otherwise
+    // (`None`, a pure consumer) export each lifted func at TOP LEVEL under its verbatim name (byte-identical
+    // to the X3 shape — the `instance_sec` is empty and never appended).
+    let (instance_sec, export_sec) = match publish_iface {
+        Some(iface) => {
+            let mut item = vec![0x01]; // export-items form
+            let mut members = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                let name = super::kebab_extern_name(&e.name);
+                members.extend_from_slice(&extern_name(&name));
+                members.push(0x01); // ComponentExportKind::Func
+                uleb128((p + j) as u64, &mut members);
+            }
+            item.extend_from_slice(&wasm_vec(m, &members));
+            let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
+            let iface_name = super::kebab_extern_name(iface);
+            let export_sec = section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(1, &export_instance_item(&iface_name, g as u32)),
+            );
+            (instance_sec, export_sec)
         }
-        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+        None => {
+            let mut items = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                items.extend_from_slice(&comp_export_item(&e.name, (p + j) as u32));
+            }
+            (
+                Vec::new(),
+                section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)),
+            )
+        }
     };
 
     let mut out = Vec::new();
@@ -968,7 +1061,8 @@ pub fn assemble_extern(
     out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
     out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
     out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
-    out.extend_from_slice(&export_sec); // 11: export
+    out.extend_from_slice(&instance_sec); // 5: (publish) bundle lifts into an instance — empty for a consumer
+    out.extend_from_slice(&export_sec); // 11: export the instance (publish) or each func (top-level)
     out
 }
 
@@ -981,12 +1075,18 @@ pub fn assemble_extern(
 /// serializer already composes both import spaces (`core_module_with_extern` lays peer ops, and the shared
 /// runtime ops follow), so this lays the component-side imports in the SAME order.
 ///
-/// Index spaces (`p = extern_fns.len()`, `k = imports.len()`, `m = exports.len()`): lowered PEER ops →
-/// core funcs `0..p`; lowered RUNTIME ops → core funcs `p..p+k`; boundary aliases → `p+k..p+k+m`. Peer
-/// instance-type → comp type 0; runtime instance-type → comp type 1; boundary functypes → comp types
-/// `2..=1+m`. Peer op aliases → comp funcs `0..p`; runtime aliases → `p..p+k`; lifts → `p+k..`. Imported
-/// peer instance → comp instance 0; runtime instance → comp instance 1; peer core instance 0; runtime core
-/// instance 1; program core instance 2.
+/// Index spaces (`p = extern_fns.len()`, `k = imports.len()`, `m = exports.len()`, `g` = distinct peer
+/// interfaces): lowered PEER ops → core funcs `0..p`; lowered RUNTIME ops → core funcs `p..p+k`; boundary
+/// aliases → `p+k..p+k+m`. Peer instance-types → comp types `0..g`; runtime instance-type → comp type `g`;
+/// boundary functypes → comp types `g+1..=g+m`. Peer op aliases → comp funcs `0..p`; runtime aliases →
+/// `p..p+k`; lifts → `p+k..`. Imported peer instances → comp instances `0..g`; runtime instance → comp
+/// instance `g`; peer core instance 0; runtime core instance 1; program core instance 2.
+///
+/// MULTI-INTERFACE (U9): `op_ifaces[i]` names the interface op `i` is imported from (see [`assemble_extern`]);
+/// the distinct interfaces become comp instances/types `0..g` and each op aliases out of ITS instance. The
+/// one merged `"peer"` core instance still exports every lowered peer op FLAT by name, so op names are
+/// globally unique across the bound interfaces (the front-end declines a collision). `g == 1` reproduces
+/// the byte-exact single-peer X5 shape.
 ///
 /// The handle a peer hands this consumer is meaningful only within the ONE shared runtime instance (both
 /// import the same runtime), and the consumer NEVER dereferences it — it reads the value only through the
@@ -999,31 +1099,39 @@ pub fn assemble_extern(
 pub fn assemble_extern_runtime(
     core: &[u8],
     exports: &[BoundaryExport],
-    peer_iface: &str,
+    op_ifaces: &[&str],
     extern_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
+    publish_iface: Option<&str>,
 ) -> Vec<u8> {
     let p = extern_fns.len();
     let k = imports.len();
     let m = exports.len();
+    // The distinct peer interfaces (first-appearance order) → comp instances/types `0..g`; the runtime is
+    // comp instance/type `g`. `g == 1` reproduces the byte-exact single-peer X5 shape (peer 0, runtime 1).
+    let ifaces = distinct_ifaces(op_ifaces);
+    let g = ifaces.len();
 
-    // sec 7: TWO instance-types — comp type 0 (the peer) then comp type 1 (the runtime).
+    // sec 7: g+1 instance-types — one per distinct peer interface (comp types `0..g`, each declaring ITS
+    // ops with instance-local func indices) then the runtime (comp type `g`).
     let type_sec = {
-        let peer_it = {
+        let mut items = Vec::new();
+        for iface in &ifaces {
+            let ops = peer_group_ops(extern_fns, op_ifaces, iface);
             let mut decls = Vec::new();
-            for (i, f) in extern_fns.iter().enumerate() {
+            for (local, f) in ops.iter().enumerate() {
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
                 decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
                 decls.push(0x01);
-                uleb128(i as u64, &mut decls);
+                uleb128(local as u64, &mut decls);
             }
             let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * p, &decls));
-            it
-        };
+            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            items.extend_from_slice(&it);
+        }
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1038,35 +1146,40 @@ pub fn assemble_extern_runtime(
             it.extend_from_slice(&wasm_vec(2 * k, &decls));
             it
         };
-        let mut items = peer_it;
         items.extend_from_slice(&rt_it);
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
     };
 
-    // sec 10: import the peer interface (comp type 0, kebab name) THEN the runtime (comp type 1,
-    // `import_name`) → comp instances 0 and 1.
+    // sec 10: import each peer interface (comp type `g_idx`, kebab name) → comp instances `0..g`, THEN the
+    // runtime (comp type `g`, `import_name`) → comp instance `g`.
     let import_sec = {
         let mut items = Vec::new();
-        let mut pe = extern_name(&super::kebab_extern_name(peer_iface));
-        pe.push(0x05);
-        uleb128(0, &mut pe);
-        items.extend_from_slice(&pe);
+        for (g_idx, iface) in ifaces.iter().enumerate() {
+            let mut pe = extern_name(&super::kebab_extern_name(iface));
+            pe.push(0x05);
+            uleb128(g_idx as u64, &mut pe);
+            items.extend_from_slice(&pe);
+        }
         let mut rt = extern_name(import_name);
         rt.push(0x05);
-        uleb128(1, &mut rt);
+        uleb128(g as u64, &mut rt);
         items.extend_from_slice(&rt);
-        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
     };
 
-    // sec 6 (first): alias each peer op out of comp instance 0 (→ comp funcs `0..p`), then each runtime op
-    // out of comp instance 1 (→ comp funcs `p..p+k`).
+    // sec 6 (first): alias each peer op out of ITS interface's instance (→ comp funcs `0..p`), then each
+    // runtime op out of comp instance `g` (→ comp funcs `p..p+k`).
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in extern_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
+            let inst = iface_index(&ifaces, oi);
+            items.extend_from_slice(&comp_alias_item(
+                inst as u32,
+                &super::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
-            items.extend_from_slice(&comp_alias_item(1, op.name));
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
         }
         section(sec::ALIAS, &wasm_vec(p + k, &items))
     };
@@ -1132,7 +1245,8 @@ pub fn assemble_extern_runtime(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → comp types `2..=1+m`.
+    // sec 7 (second): one component functype per boundary export → comp types `g+1..=g+m` (after the g
+    // peer instance-types `0..g` and the runtime instance-type `g`).
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
@@ -1145,22 +1259,50 @@ pub fn assemble_extern_runtime(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`p+k+j`) using its component type (`2+j`).
+    // sec 8 (second): lift each boundary core func (`p+k+j`) using its component type (`g+1+j`).
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((p + k + j) as u32, (2 + j) as u32));
+            items.extend_from_slice(&canon_lift_item((p + k + j) as u32, (g + 1 + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };
 
-    // sec 11: export each lifted component func (`p+k+j`) under its verbatim boundary name.
-    let export_sec = {
-        let mut items = Vec::new();
-        for (j, e) in exports.iter().enumerate() {
-            items.extend_from_slice(&comp_export_item(&e.name, (p + k + j) as u32));
+    // sec 5 + 11 (publish) OR sec 11 (top-level): when this component is ALSO a provider (`publish_iface`
+    // = `Some(iface)`, a MIDDLE-of-chain component binding a peer AND publishing its own interface while
+    // inspecting a compound handle, U11), BUNDLE the lifted boundary funcs (comp funcs `p+k..p+k+m`) into a
+    // component instance and export THAT under `iface`. The bundle is comp instance `g+1` (after the g
+    // imported peer instances `0..g` and the runtime instance `g`). Otherwise (`None`, a pure consumer)
+    // export each lifted func at TOP LEVEL (byte-identical to the X5 shape — `instance_sec` stays empty).
+    let (instance_sec, export_sec) = match publish_iface {
+        Some(iface) => {
+            let mut item = vec![0x01]; // export-items form
+            let mut members = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                let name = super::kebab_extern_name(&e.name);
+                members.extend_from_slice(&extern_name(&name));
+                members.push(0x01); // ComponentExportKind::Func
+                uleb128((p + k + j) as u64, &mut members);
+            }
+            item.extend_from_slice(&wasm_vec(m, &members));
+            let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
+            let iface_name = super::kebab_extern_name(iface);
+            let export_sec = section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(1, &export_instance_item(&iface_name, (g + 1) as u32)),
+            );
+            (instance_sec, export_sec)
         }
-        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+        None => {
+            let mut items = Vec::new();
+            for (j, e) in exports.iter().enumerate() {
+                items.extend_from_slice(&comp_export_item(&e.name, (p + k + j) as u32));
+            }
+            (
+                Vec::new(),
+                section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items)),
+            )
+        }
     };
 
     let mut out = Vec::new();
@@ -1174,7 +1316,8 @@ pub fn assemble_extern_runtime(
     out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
     out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
     out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
-    out.extend_from_slice(&export_sec); // 11: export
+    out.extend_from_slice(&instance_sec); // 5: (publish) bundle lifts into an instance — empty for a consumer
+    out.extend_from_slice(&export_sec); // 11: export the instance (publish) or each func (top-level)
     out
 }
 
@@ -1713,7 +1856,7 @@ pub fn assemble_runtime_resource(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
-    make_param_bytes: &[u8],
+    make_slots: &[ArgSlot],
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1842,49 +1985,63 @@ pub fn assemble_runtime_resource(
         section(sec::ALIAS, &wasm_vec(4, &items))
     };
     out.extend_from_slice(&boundary_aliases);
-    // sec 7: `own<t>` (type 2) then the `make` functype `(make-params…) -> own<t>` (type 3). The resource
-    // is component type 1 here (the import-instance-type is type 0), so `own` references type 1. A NULLARY
-    // export gives `make() -> own<t>` (empty `make_param_bytes`, byte-identical to the old form); a
-    // PARAMETERIZED export forwards its scalar boundary params so the host computes the heap value from
-    // its arguments (the value analogue of the closure resource's `make(k)`).
+    // sec 7: [one `tuple<…>` type per COMPOUND make-param, minted at types 2.., shifting the rest] then
+    // `own<t>` and the `make` functype `(make-params…) -> own<t>`. The resource is component type 1 (the
+    // import-instance-type is type 0), so `own` references type 1. A NULLARY export gives `make() ->
+    // own<t>` (byte-identical to the old form); a SCALAR param is an inline byte; a COMPOUND param takes a
+    // minted native `tuple<…>` (the ABI flattens it into the scalar core leaves the core `make` rebuilds).
+    // `shift` = the number of compound params (= tuple types minted), so `own<t>`/make-ft/encode types
+    // slide past them.
+    let shift = call_arg_tuple_type_count(make_slots); // total tuple types (nesting mints >1 per compound param)
+    let own_ty = 2 + shift; // own<t> sits after the minted tuple types (2..2+shift)
+    let make_ft = 3 + shift;
     let make_types = {
-        let mut items = own_item(1);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        // Mint the per-compound tuple types starting at type 2, then own<1>, then the make functype
+        // referencing each param's valtype (a scalar byte, or its minted tuple type index).
+        let mut next_type = 2u32;
+        let mut items = Vec::new();
+        let tup_idxs = mint_call_arg_tuple_types(make_slots, &mut next_type, &mut items);
+        items.extend_from_slice(&own_item(1));
+        items.extend_from_slice(&make_functype_slots(
+            make_slots,
+            &tup_idxs,
+            &owned_valtype(own_ty),
+        ));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 + shift as usize, &items))
     };
     out.extend_from_slice(&make_types);
-    // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
+    // sec 8: lift `make` (core func k+3) against the make functype → component func k.
     out.extend_from_slice(&section(
         sec::CANON,
-        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, make_ft)),
     ));
-    // sec 7: `borrow<t>` (type 4), the shared `list u8` type (type 5), then the `encode` functype
-    // `(self: borrow<t>) -> list<u8>` (type 6). `encode` BORROWS self — the host keeps ownership and
-    // drops the handle afterward (firing the dtor, which reclaims the heap rep). The core `t-encode`
-    // receives the borrow's REP DIRECTLY as its param (wasmtime's `lift_borrow` passes the rep, not a
-    // table index), so it walks the heap without `resource.rep` and does NOT drop — the value survives
-    // the call, making the method repeatable ([[rcdzc-r1-resource-encode-linking-findings]], the
-    // 2026-07-13 borrow correction; proven by `a_borrow_self_encode_walks_and_crosses`).
+    // sec 7: `borrow<t>`, the shared `list u8` type, then the `encode` functype `(self: borrow<t>) ->
+    // list<u8>` — each shifted +`shift` by the optional tuple type. `encode` BORROWS self (the host keeps
+    // ownership; the dtor reclaims on drop); the core `t-encode` gets the rep directly (no `resource.rep`),
+    // so the method is repeatable ([[rcdzc-r1-resource-encode-linking-findings]]).
+    let borrow_ty = 4 + shift;
+    let list_ty = 5 + shift;
+    let encode_ft = 6 + shift;
     let encode_types = {
         let mut items = borrow_item(1); // borrow<resource> — resource is component type 1
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(4, 5));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_ty, list_ty));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_types);
-    // sec 8: lift `encode` (core func k+4) against functype type 6, carrying Memory 0 + Realloc (core
+    // sec 8: lift `encode` (core func k+4) against the encode functype, carrying Memory 0 + Realloc (core
     // func k+5) → component func k+1.
     out.extend_from_slice(&section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, encode_ft),
         ),
     ));
     // sec 4: the nested re-export component — the BORROW variant (re-types `encode` against
     // `borrow<t>`), matching the borrow lift above; its `make` carries the same forwarded params.
     out.extend_from_slice(&component_section(&resource_inner_component_borrow(
-        make_param_bytes,
+        make_slots,
     )));
     // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the two
     // lifted funcs (comp funcs k, k+1) → component instance 0.
@@ -4002,6 +4159,11 @@ pub struct SigGroupAbi {
     /// mint sites emit the inner `tuple<…>` types by index from it (recursively). `None` = a flat all-scalar
     /// tuple (uses `tuple_arg_bytes`) or a scalar-arg group.
     pub tuple_shape: Option<Vec<TupleFieldShape>>,
+    /// The N-COMPOUND-ARGS override for this group: `Some(slots)` when its closure takes ≥2 fixed-shape
+    /// tuple/record args — the ordered slot list drives the per-group `call-<g>` functype's arg minting (one
+    /// `tuple<…>` group per tuple slot, in arg order, interleaved with scalars), subsuming the single-tuple
+    /// `tuple_arg_bytes`/prefix/suffix/`tuple_shape`. `None` reproduces the ≤1-tuple path byte-for-byte.
+    pub call_arg_slots: Option<Vec<ArgSlot>>,
 }
 
 /// One SIGNATURE GROUP's boundary shape for the distinct-signature ROUND-TRIP envelope: its producers
@@ -4103,7 +4265,9 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
     let n_tuple: usize = groups
         .iter()
         .map(|gr| {
-            if let Some(shape) = &gr.tuple_shape {
+            if let Some(slots) = &gr.call_arg_slots {
+                call_arg_tuple_type_count(slots) as usize
+            } else if let Some(shape) = &gr.tuple_shape {
                 nested_tuple_type_count(shape) as usize
             } else if gr.tuple_arg_bytes.is_some() {
                 1
@@ -4309,7 +4473,20 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                 // `(self, args…) -> list<u8>` functype (ti+2) — 3 types.
                 items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
-                if let Some(shape) = &gr.tuple_shape {
+                if let Some(slots) = &gr.call_arg_slots {
+                    // N-COMPOUND-ARGS list result: mint each tuple slot's type(s) after the handle (in arg
+                    // order), then `list<u8>`, then the slot-model list functype.
+                    let mut next = ti + 1;
+                    let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+                    let list_ty = next;
+                    items.extend_from_slice(&list_u8_defined_type());
+                    next += 1;
+                    items.extend_from_slice(&closure_call_list_functype_slots(
+                        own_ty, slots, &tup_idxs, list_ty,
+                    ));
+                    fn_functype.push(next);
+                    ti = next + 1;
+                } else if let Some(shape) = &gr.tuple_shape {
                     let mut next = ti + 1;
                     let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
                     let list_ty = next;
@@ -4349,6 +4526,20 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                     fn_functype.push(ti + 2);
                     ti += 3;
                 }
+            } else if let Some(slots) = &gr.call_arg_slots {
+                // N-COMPOUND-ARGS scalar result: own/borrow<t_g> (ti) + N tuple type(s) + slot-model functype.
+                items.extend_from_slice(&call_handle(rty));
+                let own_ty = ti;
+                let mut next = ti + 1;
+                let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+                items.extend_from_slice(&closure_call_functype_slots(
+                    own_ty,
+                    slots,
+                    &tup_idxs,
+                    gr.result_byte,
+                ));
+                fn_functype.push(next);
+                ti = next + 1;
             } else if let Some(shape) = &gr.tuple_shape {
                 // call-<g>: own/borrow<t_g> (ti) + nested tuple type(s) + `(self, tuple) -> R` functype.
                 items.extend_from_slice(&call_handle(rty));
@@ -5814,7 +6005,25 @@ fn resource_inner_component_distinct_sig_borrow(
             // call-<gi> returns list<u8>. With a TUPLE arg: handle + tuple type(s) + list<u8> + functype;
             // without: handle + list<u8> + functype (3 types).
             let own_ty = ty;
-            if let Some(shape) = &gr.tuple_shape {
+            if let Some(slots) = &gr.call_arg_slots {
+                let mut next = ty + 1;
+                let mut items = call_handle(gi as u32);
+                let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+                let list_ty = next;
+                items.extend_from_slice(&list_u8_defined_type());
+                next += 1;
+                items.extend_from_slice(&closure_call_list_functype_slots(
+                    own_ty, slots, &tup_idxs, list_ty,
+                ));
+                let ft_ty = next;
+                let n_types = 1 + call_arg_tuple_type_count(slots) as usize + 2;
+                out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty = ft_ty + 1;
+            } else if let Some(shape) = &gr.tuple_shape {
                 let mut next = ty + 1;
                 let mut items = call_handle(gi as u32);
                 let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
@@ -5877,6 +6086,26 @@ fn resource_inner_component_distinct_sig_borrow(
                 ));
                 ty += 3;
             }
+        } else if let Some(slots) = &gr.call_arg_slots {
+            // call-<gi> : (self: handle<t_gi>, N tuple/scalar slots) -> R  → handle + N tuple type(s) + ft.
+            let own_ty = ty;
+            let mut next = ty + 1;
+            let mut items = call_handle(gi as u32);
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+            items.extend_from_slice(&closure_call_functype_slots(
+                own_ty,
+                slots,
+                &tup_idxs,
+                gr.result_byte,
+            ));
+            let ft_ty = next;
+            let n_types = 1 + call_arg_tuple_type_count(slots) as usize + 1;
+            out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+            out.extend_from_slice(&section(
+                sec::COMPONENT_IMPORT,
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+            ));
+            ty = ft_ty + 1;
         } else if let Some(shape) = &gr.tuple_shape {
             // call-<gi> : (self: handle<t_gi>, p: nested tuple) -> R  → handle + nested tuple type(s) + ft.
             let own_ty = ty;
@@ -5975,7 +6204,28 @@ fn resource_inner_component_distinct_sig_borrow(
         if gr.ret_is_bytes {
             // list<u8> result. With a TUPLE arg: handle + tuple type(s) + list<u8> + functype; without:
             // handle + list<u8> + functype (3 types).
-            if let Some(shape) = &gr.tuple_shape {
+            if let Some(slots) = &gr.call_arg_slots {
+                let mut next = ti + 1;
+                let mut items = call_handle(exp_rty);
+                let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+                let list_ty = next;
+                items.extend_from_slice(&list_u8_defined_type());
+                next += 1;
+                items.extend_from_slice(&closure_call_list_functype_slots(
+                    ti, slots, &tup_idxs, list_ty,
+                ));
+                let ft_ty = next;
+                let n_types = 1 + call_arg_tuple_type_count(slots) as usize + 2;
+                out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ft_ty),
+                    ),
+                ));
+                ti = ft_ty + 1;
+            } else if let Some(shape) = &gr.tuple_shape {
                 let mut next = ti + 1;
                 let mut items = call_handle(exp_rty);
                 let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
@@ -6038,6 +6288,27 @@ fn resource_inner_component_distinct_sig_borrow(
                 ));
                 ti += 3;
             }
+        } else if let Some(slots) = &gr.call_arg_slots {
+            let mut next = ti + 1;
+            let mut items = call_handle(exp_rty);
+            let tup_idxs = mint_call_arg_tuple_types(slots, &mut next, &mut items);
+            items.extend_from_slice(&closure_call_functype_slots(
+                ti,
+                slots,
+                &tup_idxs,
+                gr.result_byte,
+            ));
+            let ft_ty = next;
+            let n_types = 1 + call_arg_tuple_type_count(slots) as usize + 1;
+            out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+            out.extend_from_slice(&section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(
+                    1,
+                    &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ft_ty),
+                ),
+            ));
+            ti = ft_ty + 1;
         } else if let Some(shape) = &gr.tuple_shape {
             let mut next = ti + 1;
             let mut items = call_handle(exp_rty);
@@ -6508,72 +6779,106 @@ fn component_instantiate_roundtrip_item(
 /// against the ComponentBuilder borrow oracle) as scaffolding for the follow-up; the live path still
 /// uses `own` ([[rcdzc-r1-resource-encode-linking-findings]]).
 #[allow(dead_code)]
-fn resource_inner_component_borrow(make_param_bytes: &[u8]) -> Vec<u8> {
+fn resource_inner_component_borrow(make_slots: &[ArgSlot]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
+    // Each COMPOUND make param mints a `tuple<…>` type just before EACH `make` functype (the imported one
+    // AND the re-export ascription), so every later type index shifts by `s` = the compound-param count.
+    // A scalar/nullary param mints nothing (`s`=0), byte-identical to before. `make_functype_items` emits,
+    // for a given `own<resource_ty>` at `own_type_idx` and a running `tuple_base` type index, the minted
+    // tuple types (one per compound slot, at `tuple_base..tuple_base+s`) + `own<resource_ty>` + the make
+    // functype referencing each param (scalar byte or its tuple type index). `resource_ty` is the RESOURCE
+    // type index (0 import side, the re-exported `E` export side).
+    let s: u32 = call_arg_tuple_type_count(make_slots); // total tuple types (nesting mints >1 per compound param)
+    let make_functype_items = |resource_ty: u32, own_type_idx: u32, tuple_base: u32| -> Vec<u8> {
+        let mut items = Vec::new();
+        let mut next = tuple_base;
+        let tup_idxs = mint_call_arg_tuple_types(make_slots, &mut next, &mut items);
+        items.extend_from_slice(&own_item(resource_ty));
+        items.extend_from_slice(&make_functype_slots(
+            make_slots,
+            &tup_idxs,
+            &owned_valtype(own_type_idx),
+        ));
+        items
+    };
     // sec 10: import the abstract resource `import-type-t` (Type, SubResource bound) → type 0.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_subresource_item("import-type-t")),
     ));
-    // sec 7: `own<0>` (type 1) then the imported `make` functype `(make-params…) -> own<0>` (type 2) —
-    // the SAME param signature the outer component lifts, so the re-export ascription type-checks.
+    // sec 7: [s tuple types at 1..1+s] `own<0>` then the imported `make` functype `(params) -> own<0>`.
+    // With s compounds: tuples 1..1+s, own<0>=1+s, make-ft=2+s. Without: own<0>=1, make-ft=2.
+    let own0 = 1 + s;
+    let make_import_ft = 2 + s;
     let make_import_types = {
-        let mut items = own_item(0);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let items = make_functype_items(0, own0, 1); // resource = imported type 0; tuples at 1..1+s
+        section(sec::COMPONENT_TYPE, &wasm_vec((2 + s) as usize, &items))
     };
     out.extend_from_slice(&make_import_types);
-    // sec 10: import `import-func-make` as a func of type 2 → func 0.
+    // sec 10: import `import-func-make` as a func of the make functype → func 0.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+        &wasm_vec(1, &import_func_item("import-func-make", make_import_ft)),
     ));
-    // sec 7: `borrow<0>` (type 3), `list u8` (type 4), then the imported `encode` functype
-    // `(self: borrow<0>) -> list<u8>` (type 5).
+    // sec 7: `borrow<0>`, `list u8`, then the imported `encode` functype — shifted +s by the tuple type.
+    let borrow0 = make_import_ft + 1; // 3 (+s)
+    let list0 = borrow0 + 1; // 4 (+s)
+    let enc_import_ft = list0 + 1; // 5 (+s)
     let encode_import_types = {
         let mut items = borrow_item(0);
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(3, 4));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow0, list0));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_import_types);
-    // sec 10: import `import-func-encode` as a func of type 5 → func 1.
+    // sec 10: import `import-func-encode` as a func of the encode functype → func 1.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-encode", 5)),
+        &wasm_vec(1, &import_func_item("import-func-encode", enc_import_ft)),
     ));
-    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under the name `t` → exported type 6.
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under `t` → exported type E.
+    let exp_rty = enc_import_ft + 1; // 6 (+s)
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: `own<6>` (type 7) then the `make` functype re-typed against the exported resource (type 8),
-    // carrying the same forwarded params as the import side.
+    // sec 7: [s tuple types at E+1..E+1+s] `own<E>` then the `make` functype re-typed against the exported
+    // resource — a SECOND set of tuple mints, shifting the export-side indices by another `s`.
+    let exp_tuple_base = exp_rty + 1; // the export-side tuple types start here (s of them)
+    let own_e = exp_rty + 1 + s; // own<E>, after the s export-side tuple types
+    let make_export_ft = exp_rty + 2 + s;
     let make_export_types = {
-        let mut items = own_item(6);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(7)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let items = make_functype_items(exp_rty, own_e, exp_tuple_base);
+        section(sec::COMPONENT_TYPE, &wasm_vec((2 + s) as usize, &items))
     };
     out.extend_from_slice(&make_export_types);
-    // sec 11: export `make` (func 0) ascribed to the exported functype 8.
+    // sec 11: export `make` (func 0) ascribed to the exported make functype.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, make_export_ft),
+        ),
     ));
-    // sec 7: `borrow<6>` (type 9), `list u8` (type 10), then the `encode` functype re-typed against the
-    // exported resource (type 11).
+    // sec 7: `borrow<E>`, `list u8`, then the `encode` functype re-typed against the exported resource.
+    let borrow_e = make_export_ft + 1;
+    let list_e = borrow_e + 1;
+    let enc_export_ft = list_e + 1;
     let encode_export_types = {
-        let mut items = borrow_item(6);
+        let mut items = borrow_item(exp_rty);
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(9, 10));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_e, list_e));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_export_types);
-    // sec 11: export `encode` (func 1) ascribed to the exported functype 11.
+    // sec 11: export `encode` (func 1) ascribed to the exported encode functype.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 11)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, enc_export_ft),
+        ),
     ));
     out
 }
@@ -6818,6 +7123,37 @@ fn params_result_functype(param_bytes: &[u8], result_valtype: &[u8]) -> Vec<u8> 
         params.push(vt);
     }
     item.extend_from_slice(&wasm_vec(param_bytes.len(), &params));
+    item.push(0x00); // one result
+    item.extend_from_slice(result_valtype);
+    item
+}
+
+/// A resource-`make` component functype `(params…) -> result` over a per-parameter [`ArgSlot`] list: a
+/// SCALAR slot is an inline primitive byte, a TUPLE slot references its minted `tuple<…>` type index (from
+/// `tuple_type_idxs`, positionally). No `self` receiver (unlike the closure `call` slot functype). An
+/// empty slot list is the nullary `() -> result`, byte-identical to [`params_result_functype`] over `&[]`.
+fn make_functype_slots(
+    slots: &[ArgSlot],
+    tuple_type_idxs: &[Option<u32>],
+    result_valtype: &[u8],
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    for (pn, (slot, tup_idx)) in slots.iter().zip(tuple_type_idxs).enumerate() {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        match (slot, tup_idx) {
+            (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option make param must carry a minted defined-type index")
+            }
+        }
+    }
+    item.extend_from_slice(&wasm_vec(slots.len(), &param_items));
     item.push(0x00); // one result
     item.extend_from_slice(result_valtype);
     item
@@ -7384,6 +7720,15 @@ fn tuple_defined_type(field_bytes: &[u8]) -> Vec<u8> {
     item
 }
 
+/// A component `option<T>` DEFINED TYPE: `0x6b <T-valtype>` — the `option` former tag then the payload's
+/// primitive valtype byte. The direct-call SUM-arg path: an `(Option scalar)` closure argument crosses as
+/// this native type, which the canonical ABI FLATTENS into `(disc: i32, payload: <T>)` core params — the
+/// guest `call` rebuilds the sum cell from them (`serialize::SumArgRebuild`). Pinned runnable by the
+/// `an_option_scalar_closure_arg_crosses_by_native_flattening` oracle (`wasm_encoder`'s `.option(...)`).
+fn option_defined_type(payload_byte: u8) -> Vec<u8> {
+    vec![0x6b, payload_byte]
+}
+
 /// The boundary component-TYPE shape of a fixed-shape compound closure argument, recursively: each field is
 /// either a PRIMITIVE valtype byte (an aliased-width scalar leaf) or a NESTED tuple (its own field shapes).
 /// A `Scalar` field is one flattened core param; a `Nested` field is its own `tuple<…>` DEFINED type the
@@ -7463,25 +7808,31 @@ pub enum ArgSlot {
     Scalar(u8),
     /// A fixed-shape tuple/record arg, its (possibly nested) field shape.
     Tuple(Vec<TupleFieldShape>),
+    /// An `(Option scalar)` arg carrying its payload's component primitive valtype byte — crosses as a native
+    /// `option<payload>` DEFINED type (minted by [`mint_call_arg_tuple_types`], flattened by the canonical ABI
+    /// to `(disc: i32, payload)`; the guest rebuilds the sum cell via `serialize::SumArgRebuild`).
+    OptionScalar(u8),
 }
 
 /// The number of component TYPES [`mint_call_arg_tuple_types`] emits for `slots`: the sum of
-/// [`nested_tuple_type_count`] over every `Tuple` slot (a `Scalar` slot mints none). Zero when there is no
-/// tuple slot (byte-identical to the all-scalar `call` functype path).
+/// [`nested_tuple_type_count`] over every `Tuple` slot, plus ONE `option<…>` type per `OptionScalar` slot (a
+/// `Scalar` slot mints none). Zero when every slot is a plain scalar (byte-identical to the all-scalar path).
 fn call_arg_tuple_type_count(slots: &[ArgSlot]) -> u32 {
     slots
         .iter()
         .map(|s| match s {
             ArgSlot::Scalar(_) => 0,
             ArgSlot::Tuple(shape) => nested_tuple_type_count(shape),
+            ArgSlot::OptionScalar(_) => 1,
         })
         .sum()
 }
 
-/// Mint the `tuple<…>` DEFINED TYPES for every `Tuple` slot into `items`, in arg order, advancing `next_type`
-/// past each. Returns, per slot, `Some(outer_tuple_type_idx)` for a `Tuple` slot and `None` for a `Scalar`
-/// slot — exactly the reference each slot contributes to the `call` functype's param list. A single `Tuple`
-/// slot mints byte-identically to `mint_tuple_type_nested`; N tuples mint their type groups back to back.
+/// Mint the aggregate DEFINED TYPES for every non-scalar slot into `items`, in arg order, advancing
+/// `next_type` past each. Returns, per slot, `Some(defined_type_idx)` for a `Tuple`/`OptionScalar` slot (the
+/// `tuple<…>`/`option<…>` type the `call` functype references by index) and `None` for a `Scalar` slot. A
+/// single `Tuple` slot mints byte-identically to `mint_tuple_type_nested`; an `OptionScalar` mints one
+/// `option<payload>`.
 fn mint_call_arg_tuple_types(
     slots: &[ArgSlot],
     next_type: &mut u32,
@@ -7492,6 +7843,12 @@ fn mint_call_arg_tuple_types(
         .map(|s| match s {
             ArgSlot::Scalar(_) => None,
             ArgSlot::Tuple(shape) => Some(mint_tuple_type_nested(shape, next_type, items)),
+            ArgSlot::OptionScalar(payload_byte) => {
+                items.extend_from_slice(&option_defined_type(*payload_byte));
+                let idx = *next_type;
+                *next_type += 1;
+                Some(idx)
+            }
         })
         .collect()
 }
@@ -7520,9 +7877,11 @@ fn closure_call_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_), Some(idx)) => param_items.extend_from_slice(&owned_valtype(*idx)),
-            (ArgSlot::Tuple(_), None) => {
-                unreachable!("a Tuple slot must carry a minted tuple type index")
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
     }
@@ -7554,9 +7913,11 @@ fn closure_call_list_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_), Some(idx)) => param_items.extend_from_slice(&owned_valtype(*idx)),
-            (ArgSlot::Tuple(_), None) => {
-                unreachable!("a Tuple slot must carry a minted tuple type index")
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
     }

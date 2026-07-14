@@ -179,6 +179,32 @@
             (def (main) (build (Set.of (list)) 3)) (export main)))
   (output (: ((. Set of) (list 1 2 3)) (Set Int64))))
 
+; The escape case above crosses an INSERT-built set. A set produced by set ALGEBRA (union / intersection /
+; difference) is also a runtime handle that must escape to the host as its value form — exercising the
+; value-encode walker on an algebra-op RESULT (distinct from reading its cardinality/membership, which the
+; algebra cases below do). A runtime element in one operand forces the algebra to run at run time, and the
+; whole result set crosses, rendered in CANONICAL sorted key order.
+
+(case "a runtime set-union result escapes to the host as its value form"
+  (doc    "`(Set.union (Set.of (list 1 2)) (Set.insert (Set.of (list)) x))` unions a constant set with a
+           runtime-built singleton, and the RESULT set escapes to the host. With x=5 the union is {1,2,5} →
+           `((. Set of) (list 1 2 5))`; with x=1 the shared element is held once → {1,2}. Pins that a
+           set-ALGEBRA result crosses the boundary via the value-encode walker (not only an insert-built
+           set), rendered in canonical sorted order — the union companion of the insert-built escape.")
+  (input  (do (def (main (: x Int64)) (Set.union (Set.of (list 1 2)) (Set.insert (Set.of (list)) x))) (export main)))
+  (call   main (: 5 Int64)) (output (: ((. Set of) (list 1 2 5)) (Set Int64)))
+  (call   main (: 1 Int64)) (output (: ((. Set of) (list 1 2)) (Set Int64))))
+
+(case "a runtime set-difference result escapes to the host as its value form"
+  (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.insert (Set.of (list)) x))` removes a runtime element
+           and the RESULT escapes: x=2 → {1,3} → `((. Set of) (list 1 3))`; x=9 (absent) → the unchanged
+           {1,2,3}. Pins that a difference result crosses as its canonical value form, the subtractive
+           companion of the union-escape case (the value-encode walker handles an algebra result of any of
+           the three set operations).")
+  (input  (do (def (main (: x Int64)) (Set.difference (Set.of (list 1 2 3)) (Set.insert (Set.of (list)) x))) (export main)))
+  (call   main (: 2 Int64)) (output (: ((. Set of) (list 1 3)) (Set Int64)))
+  (call   main (: 9 Int64)) (output (: ((. Set of) (list 1 2 3)) (Set Int64))))
+
 ; --- RUNTIME-element `Set.of`: equality and set algebra over a set whose element is a runtime value ----
 ; The cases above build every set from CONSTANT `Set.of` literals or a constant insert-loop, so they
 ; exercise only the compile-time constant-set folds. A `Set.of` over a list that CONTAINS a runtime

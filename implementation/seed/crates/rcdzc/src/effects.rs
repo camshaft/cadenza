@@ -1053,10 +1053,32 @@ fn op_result_type(db: &mut Db, head: StructId) -> Option<crate::ty::Ty> {
 /// perform may be cross-function). A perform whose effect is not in that set is ungranted → CDZ0401.
 pub fn check_no_home(db: &mut Db, node: StructId, out: &mut Vec<crate::diag::Reject>) {
     let mut handled: Vec<u32> = Vec::new();
+    // Dedup CALLEE-BODY re-walks: a nullary/pure helper called from N sites (`(mk)` × N in a wide record
+    // projection) would otherwise have its whole body re-walked once PER call site → O(sites × body) =
+    // O(N²). Keying on `(callee_body, handled-set)` is SOUND — a callee walked under an identical handled
+    // set yields identical CDZ0401s (a re-walk is redundant), while a DIFFERENT handled set (an effect
+    // granted at one call site, ungranted at another) is a distinct key and IS re-walked. Mirrors the
+    // sibling `body_reached_effects_walk`'s `visited` guard, which this walk was missing.
+    let mut followed: crate::fxhash::FxHashSet<(StructId, u64)> =
+        crate::fxhash::FxHashSet::default();
     // `node` is the ENTRYPOINT body — the node a host-delegation fix wraps (`(host (E) <body>)`), which is
     // constant across the walk (a perform deep in the body, or in a called function, still delegates at
     // the entrypoint). Thread it through unchanged so the CDZ0401 fix can anchor its wrap there.
-    check_no_home_walk(db, node, node, &mut handled, out, 0);
+    check_no_home_walk(db, node, node, &mut handled, &mut followed, out, 0);
+}
+
+/// A hash of the currently-HANDLED effect-decl set — the second component of the callee-follow dedup key.
+/// The handled set is a small `Vec<u32>` grown/truncated as `handle`/`host` frames are entered/left; its
+/// CONTENTS (not order — a handled set is a set) determine a callee's CDZ0401 verdict, so hash the sorted
+/// unique decls. Cheap: the set is tiny (one entry per enclosing handler/delegation, typically 0).
+fn handled_key(handled: &[u32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut v: Vec<u32> = handled.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    let mut h = crate::fxhash::FxHasher::default();
+    v.hash(&mut h);
+    h.finish()
 }
 
 fn check_no_home_walk(
@@ -1064,12 +1086,15 @@ fn check_no_home_walk(
     node: StructId,
     entrypoint: StructId,
     handled: &mut Vec<u32>,
+    followed: &mut crate::fxhash::FxHashSet<(StructId, u64)>,
     out: &mut Vec<crate::diag::Reject>,
     depth: u32,
 ) {
     if depth > 64 {
         return; // backstop — a deep call chain is left to the ordinary decline
     }
+    #[cfg(test)]
+    crate::db::CHECK_NO_HOME_VISITS.with(|c| c.set(c.get() + 1));
     match resolved_of(db, node) {
         // A PERFORM `(E.op args…)`: if its effect is not currently handled/delegated, it has no home.
         Resolved::Apply { head, args } => {
@@ -1104,7 +1129,7 @@ fn check_no_home_walk(
                 }
                 // Still walk the args (they may perform other effects).
                 for &a in args.iter() {
-                    check_no_home_walk(db, a, entrypoint, handled, out, depth);
+                    check_no_home_walk(db, a, entrypoint, handled, followed, out, depth);
                 }
                 return;
             }
@@ -1112,15 +1137,18 @@ fn check_no_home_walk(
             // callee's body is checked under the SAME handled set (dynamic extent: the caller's handlers
             // enclose the callee's performs). A recursive callee is not followed (E3), so an ungranted
             // perform only reachable through recursion is not reported here — a conservative miss, safe
-            // (it declines at lowering rather than mis-reporting).
+            // (it declines at lowering rather than mis-reporting). Following is DEDUPED per
+            // `(callee, handled)`: N call sites of the same pure/nullary helper re-walk its body ONCE per
+            // distinct handler context, not once per site (the O(N²)→O(N) fix).
             if let Some(callee) = crate::eval::lambda_body(db, head)
                 .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
                 && !crate::eval::is_recursive(db, callee)
+                && followed.insert((callee, handled_key(handled)))
             {
-                check_no_home_walk(db, callee, entrypoint, handled, out, depth + 1);
+                check_no_home_walk(db, callee, entrypoint, handled, followed, out, depth + 1);
             }
             for &a in args.iter() {
-                check_no_home_walk(db, a, entrypoint, handled, out, depth);
+                check_no_home_walk(db, a, entrypoint, handled, followed, out, depth);
             }
         }
         // A `handle` — its arms DISCHARGE their effects for the BODY (dynamic extent). Push each arm's
@@ -1130,10 +1158,10 @@ fn check_no_home_walk(
         // under the OUTER handled set (without this handle's effects added), matching forwarding. The
         // init is evaluated in the outer context too.
         Resolved::Handle { init, arms, body } => {
-            check_no_home_walk(db, init, entrypoint, handled, out, depth);
+            check_no_home_walk(db, init, entrypoint, handled, followed, out, depth);
             // Arm bodies: outer context (a re-performed op forwards to the next-outer handler).
             for arm in arms.iter() {
-                check_no_home_walk(db, arm.body, entrypoint, handled, out, depth);
+                check_no_home_walk(db, arm.body, entrypoint, handled, followed, out, depth);
             }
             // Body: this handle's effects are now handled.
             let added: Vec<u32> = arms
@@ -1142,7 +1170,7 @@ fn check_no_home_walk(
                 .collect();
             let before = handled.len();
             handled.extend(&added);
-            check_no_home_walk(db, body, entrypoint, handled, out, depth);
+            check_no_home_walk(db, body, entrypoint, handled, followed, out, depth);
             handled.truncate(before);
         }
         // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
@@ -1267,14 +1295,14 @@ fn check_no_home_walk(
             }
             let before = handled.len();
             handled.extend(added.iter().map(|&(_, d)| d));
-            check_no_home_walk(db, body, entrypoint, handled, out, depth);
+            check_no_home_walk(db, body, entrypoint, handled, followed, out, depth);
             handled.truncate(before);
         }
         // A resume's value/next-state, and every other structural form: descend into children.
         _ => {
             if let Struct::List(children) = db.ast.get(node).clone() {
                 for c in children {
-                    check_no_home_walk(db, c, entrypoint, handled, out, depth);
+                    check_no_home_walk(db, c, entrypoint, handled, followed, out, depth);
                 }
             }
         }

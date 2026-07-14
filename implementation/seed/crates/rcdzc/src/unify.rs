@@ -68,7 +68,7 @@ impl Subst {
     /// occurs-check keeps the variable graph acyclic.
     pub fn apply(&self, ty: &Ty) -> Ty {
         // GROUND FAST-PATH: a type with no substitutable variable of any kind is an `apply` fixpoint, so
-        // returning `ty.clone()` is correct — and for an Arc-shared `Record`/`Tuple`/`Sum` that clone is a
+        // returning `ty.clone()` is correct — and for an Rc-shared `Record`/`Tuple`/`Sum` that clone is a
         // refcount bump, NOT the deep `.iter().map(apply).collect()` rebuild (+ its BTreeMap drop) the arms
         // below would do. `unify` applies BOTH operands on entry, so a wide GROUND record unified per call
         // site (a wide-record arg passed to a function called N times) rebuilt its whole field map every
@@ -92,7 +92,7 @@ impl Subst {
                 width: self.apply_width(ft.width),
             }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
-            Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+            Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
                 fields
                     .iter()
                     .map(|(k, t)| (k.clone(), self.apply(t)))
@@ -695,7 +695,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             width: rename_width(ft.width, m),
         }),
         Ty::Fn(p, r) => Ty::Fn(Box::new(rename(p, m)), Box::new(rename(r, m))),
-        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), rename(t, m)))
@@ -816,7 +816,7 @@ fn freshen_free_go(
             Box::new(freshen_free_go(p, fresh, map, wmap, smap)),
             Box::new(freshen_free_go(r, fresh, map, wmap, smap)),
         ),
-        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), freshen_free_go(t, fresh, map, wmap, smap)))

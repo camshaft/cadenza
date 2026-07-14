@@ -96,14 +96,17 @@ pub enum Prim {
     /// matching `Ordering` variant (a `Core::SumNew` at the Ordering discs, like `List.at` builds Option);
     /// a compound or runtime operand declines (as the comparison prims do).
     Compare,
-    /// The FLOATING-POINT arithmetic operators `+.` `-.` `*.` `/.` — each `∀a. (Float a) → (Float a) →
-    /// (Float a)`, the width-generic float analogue of the integer `Add`/`Sub`/`Mul`/`Div`. Spelled
-    /// distinctly from the integer operators (OCaml-style dot suffix) so no operator silently mixes an
-    /// integer and a float operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point
-    /// Operator): an integer operand to `+.` fails to unify with `Float` → CDZ0301. UNLIKE the integer
-    /// arithmetic these NEVER trap on overflow — an IEEE result that leaves the finite range is an
-    /// infinity, division by zero is ±inf/NaN. A constant pair FOLDS (round-to-nearest-even at the width);
-    /// a runtime operand emits the machine `f64.add`/… (F4).
+    /// The FLOATING-POINT arithmetic prims — each `∀a. (Float a) → (Float a) → (Float a)`, the
+    /// width-generic float analogue of the integer `Add`/`Sub`/`Mul`/`Div`. These are INTERNAL — NOT a
+    /// distinct surface operator. The author writes the ONE arithmetic operator `+`/`-`/`*`/`/`; when its
+    /// operands solve to `Float`, `infer::apply_type` types the application `Float` and `lower` remaps the
+    /// integer prim to the matching `F*` here (routing to `lower_float_arith`) — the same solved-type
+    /// dispatch a `BigInt`/`Rational`/`Qty` operand rides (numeric-model.md §An Arithmetic Operator
+    /// Requires Both Operands To Be One Numeric Type). A mixed integer/float application is CDZ0301 from
+    /// that dispatch (the operands disagree), not a coercion. UNLIKE the integer arithmetic these NEVER
+    /// trap on overflow — an IEEE result that leaves the finite range is an infinity, division by zero is
+    /// ±inf/NaN. A constant pair FOLDS (round-to-nearest-even at the width); a runtime operand emits the
+    /// machine `f64.add`/… (F4).
     FAdd,
     FSub,
     FMul,
@@ -401,6 +404,23 @@ pub enum Prim {
     /// <SumNew tree>)` / `(Err unit)`; a runtime `Bytes` declines (the runtime deserializer is a later
     /// increment). The decode companion of `AstEncode`; the format is `lower::decode_ast_value`.
     AstDecode,
+    /// `print` — render an `Ast` value as its canonical re-readable TEXT: `Ast → String` (self-hosting-
+    /// surface.md §A Printer Renders The Canonical Representation As Re-Readable Text). The text analogue of
+    /// `AstEncode` (which produces canonical BYTES): a compile-time-visible `Ast` value (a `Core::SumNew`
+    /// tree of the `Int`/`Name`/`List` variants) folds to the `Core::ConstStr` of the s-expression the tree
+    /// denotes (`(Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))` → `"(+ 1 2)"`); a runtime `Ast`
+    /// declines. Paired with `Read` so `read(print(v)) == v` under structural equality.
+    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+    //# A printer MUST render a program's canonical representation as text that a reader converts back to the same canonical representation.
+    Print,
+    /// `read` — the inverse of `print`: parse canonical TEXT back to the `Ast` value it denotes: `String →
+    /// Ast` (self-hosting-surface.md §A Reader Converts Text To The Canonical Representation). The text
+    /// analogue of `AstDecode`: a compile-time-visible `Core::ConstStr` is parsed as one s-expression and
+    /// reified into the `Ast` `Core::SumNew` tree (`"(+ 1 2)"` → `(Ast.List …)`); a runtime `String`
+    /// declines. `read(print(v))` reproduces `v` exactly (the round-trip the corpus witnesses).
+    //= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
+    //# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
+    Read,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -489,6 +509,14 @@ pub enum Prim {
     /// `expect`) is explicit at the point the program crosses it, not hidden inside the access operation.
     //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
     //# A program that requires the present value of such an optional MUST obtain it through the optional's value-requiring operation carrying a mandatory message (core-semantics.md §"Requiring The Value Of An Optional Traps On Absence"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
+    ///
+    /// The message is a MANDATORY parameter of the operation, not optional: `expect`'s scheme is `∀a.
+    /// Sum<a> → String → a` and `lower` requires the full two-argument application (`args.len() == 2`), so
+    /// a program cannot require a present value without stating, at that point, why it expects presence.
+    /// (The runtime does not carry the text — that is a SEPARATE, currently-declined obligation; here only
+    /// the "MUST require a message argument" signature obligation is realized.)
+    //= spec/capabilities/core-semantics.md#requiring-the-value-of-an-optional-traps-on-absence
+    //# This operation MUST require a message argument, so that requiring a present value states, at the point it does so, why the value is expected to be present.
     SumExpect,
     /// `trap` — the DIVERGING primitive: `∀a. String → a`, an expression that never produces a value but
     /// HALTS the program at a defined point (core-semantics.md §A Trap Occurs Only Where Its Computation
@@ -710,10 +738,6 @@ impl Prim {
             ">=" => Some(Prim::Ge),
             "=" => Some(Prim::Eq),
             "compare" => Some(Prim::Compare),
-            "+." => Some(Prim::FAdd),
-            "-." => Some(Prim::FSub),
-            "*." => Some(Prim::FMul),
-            "/." => Some(Prim::FDiv),
             "wrap" => Some(Prim::Wrap),
             "checked-of" => Some(Prim::CheckedOf),
             "Int" => Some(Prim::IntCtor),
@@ -762,6 +786,8 @@ impl Prim {
             "ast-splice-lift" => Some(Prim::AstSpliceLift),
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
+            "print" => Some(Prim::Print),
+            "read" => Some(Prim::Read),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),
@@ -1004,12 +1030,12 @@ pub enum Resolved {
     /// and a field lookup is O(log n), not a linear scan. The labels are symbols (never resolved); the
     /// values resolve on demand. A duplicate label is a `Poison` before construction (a record's field
     /// names are a set — `core-semantics.md` §A Record Has A Fixed Set Of Named Fields).
-    /// (`fields` behind an `Arc` so CLONING a `Resolved::Record` — which `resolved_of` does on every
+    /// (`fields` behind an `Rc` so CLONING a `Resolved::Record` — which `resolved_of` does on every
     /// memoized read — is a refcount bump, not a deep map copy. A record read field-by-field
     /// (`member_value` re-clones the operand's resolved form per access) was O(N²) in map clone;
-    /// mirrors the `Ty::Record` Arc choice, faithful to Cadenza's ref-counted port target.)
+    /// mirrors the `Ty::Record` Rc choice, faithful to Cadenza's ref-counted port target.)
     Record {
-        fields: std::sync::Arc<BTreeMap<Symbol, StructId>>,
+        fields: std::rc::Rc<BTreeMap<Symbol, StructId>>,
     },
     /// Member access `(. operand key)` — the ONE generic projection. `key` is a label read from the
     /// key occurrence's spelling, NOT resolved (`prelude-and-resolution.md` §Member Access Is One
@@ -1024,15 +1050,15 @@ pub enum Resolved {
     /// its type (a tuple of different arity or a differently-typed position is a different type —
     /// `type-system.md` §The Structural Types Are Record, Tuple, And Sum). Distinct from `Record` (named
     /// fields): a tuple is accessed by POSITION (`Proj`), a record by NAME (`Member`).
-    /// (`elems` behind an `Arc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
+    /// (`elems` behind an `Rc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
     /// `Record`; a tuple projected element-by-element re-clones the operand's resolved form per access.)
-    Tuple { elems: std::sync::Arc<[StructId]> },
+    Tuple { elems: std::rc::Rc<[StructId]> },
     /// A LIST literal `(list e0 e1 …)` — a HOMOGENEOUS variable-length sequence. The elements are AST
     /// occurrences in order (resolved on demand); every element's type unifies to ONE element type (a
     /// mixed list is ill-typed — CDZ0203), so its type is `Ty::List(elem)`. Distinct from `Tuple` (a
     /// fixed-arity product with per-position types): a list's length is a runtime property and all
     /// elements share a type. Built on the persistent `vec-*` heap at run time.
-    List { elems: std::sync::Arc<[StructId]> },
+    List { elems: std::rc::Rc<[StructId]> },
     /// A MAP literal `(map (k v) …)` — a persistent association of keys to values. Each entry is a
     /// `(key-occ, value-occ)` PAIR of ORDINARY VALUE occurrences — the key is NOT a compile-time label
     /// (unlike a `Record` field, read by `read_key` into a `Symbol`): it is an expression resolved in
@@ -1043,7 +1069,7 @@ pub enum Resolved {
     /// (the keyset is runtime data, unlike a record's fixed field set). Built on the persistent CHAMP
     /// `map-*` heap at run time; a later duplicate key overwrites (keys compared by value).
     Map {
-        entries: std::sync::Arc<[(StructId, StructId)]>,
+        entries: std::rc::Rc<[(StructId, StructId)]>,
     },
     /// The SUB-VALUE a MAP PATTERN's binder binds. A map pattern `(map (k p) … .. rest)` is a KEY-DIRECTED
     /// lookup (ask-61, core-semantics.md §A Map Is Matched By Key-Directed Patterns): a VALUE binder `p` at
@@ -1059,7 +1085,7 @@ pub enum Resolved {
         /// `Some(key)`: a VALUE binder at `key`. `None`: the REST binder (scrutinee minus `named`).
         key: Option<StructId>,
         /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.
-        named: std::sync::Arc<[StructId]>,
+        named: std::rc::Rc<[StructId]>,
     },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
@@ -1078,11 +1104,11 @@ pub enum Resolved {
     /// to its arm (resolve Case 6), the sum analogue of the scalar Case 5 — but binding a nested payload.
     SumPayload {
         scrutinee: StructId,
-        steps: std::sync::Arc<[crate::core::PathStep]>,
+        steps: std::rc::Rc<[crate::core::PathStep]>,
         /// The variant-constructor head at EACH `Payload` step, in order — so inference can walk the
         /// scrutinee's type level by level (each head's `(-> payload Sum)` gives the next sub-value's
         /// type at that instantiation). The last head encloses the binder. One entry per `Payload` step.
-        heads: std::sync::Arc<[StructId]>,
+        heads: std::rc::Rc<[StructId]>,
     },
     /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
     /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a
@@ -1095,14 +1121,14 @@ pub enum Resolved {
     /// user function — dispatch is by the head value's meta channel, never its spelling
     /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
     /// Of Value Its Head Resolves To).
-    /// (`args` behind an `Arc<[StructId]>` so CLONING a `Resolved::Apply` — which `resolved_of` does on
+    /// (`args` behind an `Rc<[StructId]>` so CLONING a `Resolved::Apply` — which `resolved_of` does on
     /// EVERY memoized read — is a refcount bump, not a fresh heap `Vec`. An application is the most
     /// common node in operator-heavy / call-heavy programs, and every inline re-reads it; the per-clone
     /// `Vec` alloc/free was a top allocation source in the profile. Same rationale as the `Tuple`/
-    /// `Record`/`Lambda.params` Arc choice.)
+    /// `Record`/`Lambda.params` Rc choice.)
     Apply {
         head: StructId,
-        args: std::sync::Arc<[StructId]>,
+        args: std::rc::Rc<[StructId]>,
     },
     /// A TYPE ANNOTATION `(: expr ty_expr)` — the value of `expr`, with its type CONSTRAINED to the
     /// type `ty_expr` denotes. The annotation is transparent to the value: `(: e T)` evaluates and
@@ -1131,10 +1157,10 @@ pub enum Resolved {
     /// scheme" is just a compile-time lambda from a type/width to a type — instantiation is applying
     /// it to a fresh variable. Params are the binder-name occurrences; `body` is the body occurrence.
     Lambda {
-        // `params` behind an `Arc<[StructId]>` so cloning a `Resolved::Lambda` is a refcount bump; a
+        // `params` behind an `Rc<[StructId]>` so cloning a `Resolved::Lambda` is a refcount bump; a
         // def name resolving to its lambda is read once per call site, and `resolved_of` clones on
         // every read. Same rationale as `Record`/`Tuple`.
-        params: std::sync::Arc<[StructId]>,
+        params: std::rc::Rc<[StructId]>,
         body: StructId,
     },
     /// A `(handle INIT (ARM…) BODY)` — an in-program effect handler establishing a context for `body`
@@ -1163,13 +1189,13 @@ pub enum Resolved {
     //# A handler MUST evaluate to the value of its body, with the state it accumulated observable only through the operations the effect declares, so that reading the accumulated state is the same mechanism as any other operation and a handler needs no separate result form. Mutation is the instance of this that reads and updates the threaded state, so that a program expresses mutable-looking computation without the value heap becoming mutable.
     Handle {
         init: StructId,
-        /// The handler arms, behind an `Arc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
+        /// The handler arms, behind an `Rc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
         /// every memo read) is a refcount bump, not a deep `Vec<HandleArm>` copy — each `HandleArm` itself
         /// holds a `params: Vec`, so an N-arm handler's clone was O(N). A perform's `perform_host_target`
         /// walks PARENTS (`resolved_of` each) to find its enclosing `(host …)`, passing THROUGH the N-arm
         /// handle node every time — so re-cloning its arms per walk made a wide handler O(N²). Mirrors the
-        /// `Arc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
-        arms: std::sync::Arc<[HandleArm]>,
+        /// `Rc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
+        arms: std::rc::Rc<[HandleArm]>,
         body: StructId,
     },
     /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that
@@ -1215,7 +1241,7 @@ pub enum Resolved {
     /// segment's width to compute this one's byte offset).
     BinField {
         scrutinee: StructId,
-        segs: std::sync::Arc<[Segment]>,
+        segs: std::rc::Rc<[Segment]>,
         seg_index: usize,
     },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled

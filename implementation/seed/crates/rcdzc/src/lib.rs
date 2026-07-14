@@ -49,6 +49,9 @@ pub mod modules;
 // `(quote …)` reification — a quote rewritten to the `Ast` constructor application that BUILDS its value
 // (`(quote 42)` -> `(Ast.Int 42)`), so a quote result and a hand-built `Ast.*` value are one thing.
 pub mod quote;
+// `(eval AST)` desugar — the INVERSE of quote reification: reconstruct the source form an `Ast` value
+// denotes and splice it in, so `(eval (quote (+ 1 2)))` folds to `3` through the ordinary path.
+pub mod eval_ast;
 
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —

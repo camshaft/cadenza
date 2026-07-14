@@ -1661,10 +1661,21 @@ runtime_local! {
     /// REUSED completed-struct stack for `encode_value`'s walk (the `out` results Vec) — the companion of
     /// `ENCODE_BUILDER`. `encode_value`'s `out` grew from zero every call (a fresh `Vec<u32>` per encode);
     /// caching it here + `clear()`ing per call retains capacity, so after the first walk it never
-    /// reallocates. `Vec<u32>` (no borrowed lifetime, unlike the `work` stack which holds descriptor refs
-    /// `&'d …` and stays a fresh local), so a plain `'static` thread-local is sound. Safe: single-threaded,
-    /// the walk is iterative + never re-enters `encode_value`, so the borrow never nests.
+    /// reallocates. Safe: single-threaded, the walk is iterative + never re-enters `encode_value`, so the
+    /// borrow never nests.
     static ENCODE_OUT: core::cell::RefCell<Vec<u32>> = core::cell::RefCell::new(Vec::new());
+}
+
+runtime_local! {
+    /// REUSED WORK stack for `encode_value`'s iterative walk — the companion of `ENCODE_OUT`. The `work`
+    /// stack grows O(depth) (each container's assembler stays on the stack while its children are visited,
+    /// so a Cons-list's depth is O(N)), so a fresh `Vec<EncodeWork>` per encode paid an O(log depth)
+    /// grow-chain of reallocs EVERY call. Now that `EncodeWork` is `'static` (its formerly-borrowed key/
+    /// name/type-node fields are re-derived from `desc` at process time), the stack caches here +
+    /// `clear()`s per call, retaining capacity → grows ONCE to the high-water mark then refills allocation-
+    /// FREE. Measured: value_encode of a 50-node list dropped from ~13/encode toward the output-Vec floor.
+    /// Safe: single-threaded, iterative, never re-enters `encode_value` — the borrow never nests.
+    static ENCODE_WORK: core::cell::RefCell<Vec<EncodeWork>> = core::cell::RefCell::new(Vec::new());
 }
 
 runtime_local! {
@@ -2205,30 +2216,37 @@ const ENCODE_REF_CYCLE_CAP: u32 = 100_000;
 /// walk it replaces (below, as `encode_value_recursive` in the tests) so the SEQUENCE of `DocBuilder`
 /// leaf/struct pushes — and therefore the document bytes — is IDENTICAL. `'d` borrows the descriptor's
 /// interned names (the head/field/type strings), so no name is cloned.
-enum EncodeWork<'d> {
+// `'static` (no borrow of the descriptor) so the `work` stack can be REUSED from a thread-local across
+// encodes (grow-once, like `ENCODE_OUT`/`ENCODE_BUILDER`) instead of a fresh heap Vec per call — the
+// `work` stack grows O(depth) for a deep value (each container's assembler stays on the stack during
+// child descent), so a fresh Vec's grow-chain cost O(log depth) reallocs PER encode. The three formerly
+// borrowed fields (a record field's key `&str`, a `Named`'s type name `&str`, a `Framed`'s `&TypeNode`)
+// are re-derived from `desc` at PROCESS time via the OWNING shape's table index — the name leaf is still
+// built at process time, so emission order (byte-exactness) is unchanged.
+enum EncodeWork {
     /// Dispatch on the shape of value `h` at table entry `shape_ix`; leaf shapes emit + produce one
     /// result, container shapes emit their head eagerly then push children (in reverse) + an assembler.
     /// `refs` = consecutive non-consuming `Ref`/`Named` hops taken to reach here (reset on child descent).
     Visit { h: Handle, shape_ix: u32, refs: u32 },
     /// A record FIELD: emit the key leaf+atom (BEFORE the field value, matching the recursive per-field
-    /// order), then queue the value visit and a `Pair` assembler.
+    /// order), then queue the value visit and a `Pair` assembler. The key `&str` is re-derived at process
+    /// time from `desc.table[rec_ix]` (the `Shape::Record`) at `field_ix` — no borrow held on the stack.
     VisitField {
         h: Handle,
         shape_ix: u32,
-        key: &'d str,
+        rec_ix: u32,
+        field_ix: u32,
     },
     /// Assemble `list([head_s, <the top `nkids` results in child order>])` — the tuple/list/record/sum body.
     List { head_s: u32, nkids: usize },
     /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
-    /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
-    Named { colon_s: u32, name: &'d str },
+    /// (matching the recursive order), then `list([colon_s, value, tname_s])`. The name `&str` is
+    /// re-derived at process time from `desc.table[named_ix]` (the `Shape::Named`).
+    Named { colon_s: u32, named_ix: u32 },
     /// Assemble a `(: value <type-node>)` frame — like `Named` but the type is an arbitrary (possibly
-    /// NESTED) type node. Pop the inner value, `render_type_node` the type, then `list([colon_s, value,
-    /// type_node])`.
-    Framed {
-        colon_s: u32,
-        type_node: &'d TypeNode,
-    },
+    /// NESTED) type node, re-derived at process time from `desc.table[framed_ix]` (the `Shape::Framed`).
+    /// Pop the inner value, `render_type_node` the type, then `list([colon_s, value, type_node])`.
+    Framed { colon_s: u32, framed_ix: u32 },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
     /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
@@ -2261,14 +2279,16 @@ fn encode_value(
     desc: &Descriptor,
     b: &mut DocBuilder,
     out: &mut Vec<u32>,
+    work: &mut Vec<EncodeWork>,
     root_h: Handle,
     root_shape: u32,
 ) -> Option<u32> {
-    // `out` (completed struct indices, in completion order) is the REUSED `ENCODE_OUT` buffer, passed in
-    // by the caller (cleared there, capacity retained across encodes). `work` holds `EncodeWork<'_>`
-    // borrowing the descriptor, so it stays a fresh local — a `'static` thread-local can't hold the borrow.
+    // `out` (completed struct indices) and `work` (the pending-task stack) are both REUSED thread-local
+    // buffers, passed in by the caller (cleared here, capacity retained across encodes). `EncodeWork` is
+    // now `'static` (no descriptor borrow — the key/name/type-node are re-derived from `desc` at process
+    // time), so the `work` stack reuses like `out`/the builder instead of a fresh Vec per encode.
     out.clear();
-    let mut work: Vec<EncodeWork> = Vec::new();
+    work.clear();
     work.push(EncodeWork::Visit {
         h: root_h,
         shape_ix: root_shape,
@@ -2422,11 +2442,12 @@ fn encode_value(
                             head_s,
                             nkids: fields.len(),
                         });
-                        for (i, (k, fs)) in fields.iter().enumerate().rev() {
+                        for (i, (_k, fs)) in fields.iter().enumerate().rev() {
                             work.push(EncodeWork::VisitField {
                                 h: op_arr_get(h, i as u32),
                                 shape_ix: *fs,
-                                key: k,
+                                rec_ix: shape_ix, // the Record shape's own table index (re-derives the key)
+                                field_ix: i as u32,
                             });
                         }
                     }
@@ -2472,25 +2493,31 @@ fn encode_value(
                             });
                         }
                     }
-                    Shape::Named(name, inner) => {
+                    Shape::Named(_name, inner) => {
                         // The `(: <value> <Type>)` value-form frame — same `h`, no node consumed → count.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Named { colon_s, name });
+                        work.push(EncodeWork::Named {
+                            colon_s,
+                            named_ix: shape_ix, // re-derives `name` from desc.table[named_ix] at process time
+                        });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
                             refs: refs + 1,
                         });
                     }
-                    Shape::Framed(type_node, inner) => {
+                    Shape::Framed(_type_node, inner) => {
                         // The `(: <value> <type-node>)` frame — an arbitrary (possibly nested) type node.
                         // Same `h`, no node consumed → count toward the ref cap.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Framed { colon_s, type_node });
+                        work.push(EncodeWork::Framed {
+                            colon_s,
+                            framed_ix: shape_ix, // re-derives the TypeNode from desc.table[framed_ix]
+                        });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
@@ -2564,9 +2591,21 @@ fn encode_value(
                     }
                 }
             }
-            EncodeWork::VisitField { h, shape_ix, key } => {
+            EncodeWork::VisitField {
+                h,
+                shape_ix,
+                rec_ix,
+                field_ix,
+            } => {
                 // Key leaf+atom emitted BEFORE the field value; the `Pair` assembler runs AFTER it. The
                 // field value is a fresh child node (arr-get already applied) → a new walk, `refs` 0.
+                // Re-derive the key from the owning `Shape::Record` at `field_ix` (no borrow on the stack).
+                let key = match desc.table.get(rec_ix as usize) {
+                    Some(Shape::Record(fields)) => {
+                        fields.get(field_ix as usize).map(|(k, _)| k.as_str())
+                    }
+                    _ => None,
+                }?;
                 let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
                 work.push(EncodeWork::Pair { katom });
@@ -2584,14 +2623,24 @@ fn encode_value(
                 out.truncate(base);
                 out.push(s);
             }
-            EncodeWork::Named { colon_s, name } => {
+            EncodeWork::Named { colon_s, named_ix } => {
                 let value = out.pop()?;
+                // Re-derive the type name from the owning `Shape::Named` (no borrow on the stack).
+                let name = match desc.table.get(named_ix as usize) {
+                    Some(Shape::Named(name, _)) => name.as_str(),
+                    _ => return None,
+                };
                 let tname = b.name_leaf(name);
                 let tname_s = b.atom(tname);
                 out.push(b.list(&[colon_s, value, tname_s]));
             }
-            EncodeWork::Framed { colon_s, type_node } => {
+            EncodeWork::Framed { colon_s, framed_ix } => {
                 let value = out.pop()?;
+                // Re-derive the TypeNode from the owning `Shape::Framed` (no borrow on the stack).
+                let type_node = match desc.table.get(framed_ix as usize) {
+                    Some(Shape::Framed(tn, _)) => tn,
+                    _ => return None,
+                };
                 let type_s = b.render_type_node(type_node);
                 out.push(b.list(&[colon_s, value, type_s]));
             }
@@ -2655,17 +2704,20 @@ fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
             *slot = Some((desc.to_vec(), decoded));
         }
         let descriptor = &slot.as_ref()?.1;
-        // Reuse the thread-local builder + `out` stack — `reset()`/`clear()` empties them but retains
-        // capacity, so the leaf/struct/child-pool + result-stack growth is paid ONCE (not per encode). The
-        // result bytes are identical either way; the reuse is a pure allocation optimisation (see
-        // `ENCODE_BUILDER`/`ENCODE_OUT`). The three thread-locals are distinct cells, so they never alias.
+        // Reuse the thread-local builder + `out` + `work` stacks — `reset()`/`clear()` empties them but
+        // retains capacity, so the leaf/struct/child-pool + result-stack + work-stack growth is paid ONCE
+        // (not per encode). The result bytes are identical either way; the reuse is a pure allocation
+        // optimisation (see `ENCODE_BUILDER`/`ENCODE_OUT`/`ENCODE_WORK`). The cells are distinct → never alias.
         ENCODE_BUILDER.with(|bcell| {
             ENCODE_OUT.with(|ocell| {
-                let b = &mut *bcell.borrow_mut();
-                let out = &mut *ocell.borrow_mut();
-                b.reset();
-                let root = encode_value(descriptor, b, out, h, descriptor.root)?;
-                Some(b.finish(root))
+                ENCODE_WORK.with(|wcell| {
+                    let b = &mut *bcell.borrow_mut();
+                    let out = &mut *ocell.borrow_mut();
+                    let work = &mut *wcell.borrow_mut();
+                    b.reset();
+                    let root = encode_value(descriptor, b, out, work, h, descriptor.root)?;
+                    Some(b.finish(root))
+                })
             })
         })
     })
@@ -5836,14 +5888,19 @@ fn champ_insert_node(
                     nh.push(h);
                 }
             }
-            let mut subs: Vec<Handle> = Vec::with_capacity(scount + 1);
-            for s in 0..scount {
+            // Splice the subnodes directly into `nh` with `sub` at `new_sidx` — no transient `subs` Vec
+            // (dup each carried subnode; `sub` is already owned from `merge_two_entries`).
+            for s in 0..new_sidx {
                 let c = n.handles[subbase + s];
                 op_dup(c);
-                subs.push(c);
+                nh.push(c);
             }
-            subs.insert(new_sidx, sub);
-            nh.extend(subs);
+            nh.push(sub);
+            for s in new_sidx..scount {
+                let c = n.handles[subbase + s];
+                op_dup(c);
+                nh.push(c);
+            }
             nh
         });
         let new = alloc_raw(
@@ -8633,6 +8690,75 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// `value-encode` of a `Set String` — the EXACT shape the compiler-in-Cadenza port returns across the
+    /// host boundary (e.g. `free-vars.cdz`'s `Set String` of an AST's identifier Names). The int set-render
+    /// test above covers `canonical_scalar_order`'s numeric-Int arm; this covers its `Shape::Str` arm
+    /// (lexicographic BYTE order over the flattened leaf) driving `set_elements_canonical`'s sort. A String
+    /// element takes the arity-0 heap-byte-leaf champ path (distinct from an immediate int), and the
+    /// render must be lexicographic — NOT the CHAMP hash order the set stores/iterates in. Verifies the
+    /// canonical order (incl. the empty string sorting first + a shared "foo"/"foobar" prefix) + the
+    /// iterative-vs-recursive-oracle byte-identity + no leak.
+    #[test]
+    fn value_encode_renders_a_string_set_in_lexicographic_order() {
+        reset();
+        let before = live_nodes();
+        // desc: [0]=Str(tag 3), [1]=Set(tag 12, elem→0), root=1.
+        let desc: &[u8] = &[0x02, 0x03, 0x0c, 0x00, 0x01];
+        // Insert out of lexicographic order, incl. the empty string + a shared "foo"/"foobar" prefix.
+        let mut s = op_set_empty();
+        for e in &["foo", "bar", "baz", "", "foobar"] {
+            s = op_set_insert(s, op_str_new((*e).to_string()));
+        }
+        let doc = op_value_encode_form(s, desc).expect("encode a Set String");
+        // Differential: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root =
+            encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0).expect("recursive");
+        assert_eq!(
+            doc,
+            b.finish(root),
+            "iterative and recursive Set String encode must agree"
+        );
+        // Decode the KIND_STR (kind 7) leaves in emission order — the elements in canonical order.
+        let mut strs: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                7 => {
+                    // KIND_STR: LEB len + UTF-8 bytes.
+                    let len = doc[i] as usize;
+                    i += 1;
+                    strs.push(String::from_utf8(doc[i..i + len].to_vec()).expect("utf8"));
+                    i += len;
+                }
+                10 => {
+                    // KIND_NAME (`list`/`.`/`Set`/`of` heads): skip.
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                other => panic!("unexpected leaf kind {other} in a Set-of-String document"),
+            }
+        }
+        assert_eq!(
+            strs,
+            vec![
+                "".to_string(),
+                "bar".to_string(),
+                "baz".to_string(),
+                "foo".to_string(),
+                "foobar".to_string(),
+            ],
+            "a Set String renders its elements in LEXICOGRAPHIC byte order (empty first, \"foo\" before \
+             its extension \"foobar\"), NOT the CHAMP hash order they were inserted/stored in"
+        );
+        op_drop(s);
+        assert_eq!(live_nodes(), before, "no leak across the Set String encode");
+    }
+
     /// `value-encode` renders a Map (`Shape::Map`) as `(map (k1 v1) … (kn vn))` with entries in CANONICAL
     /// KEY order — NOT the CHAMP hash order. The walk collects (key,value) pairs + sorts by the key's
     /// canonical scalar value (matching `const_key_order`). Verifies the structure + canonical INT-key
@@ -8693,6 +8819,110 @@ mod tests {
         );
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// The Set/Map canonical-render-order tests above use only POSITIVE keys (256 vs 1), where
+    /// little-endian byte order already disagrees with numeric order. But NEGATIVE ints are the SEVERE
+    /// divergence: a negative's little-endian `raw` bytes are `0xFF…` (large unsigned), so a raw-byte
+    /// comparison — exactly what `champ_key_cmp` (the CHAMP KEY comparator) uses — sorts every negative
+    /// AFTER every positive, the OPPOSITE of numeric order. The value-encode render order comes from a
+    /// SEPARATE function, `canonical_scalar_order`, which reads `op_get_int` (SIGNED) — so negatives
+    /// render correctly BEFORE positives. This pins that: a signed-key map/set (symbol tables with
+    /// sentinels, coordinate/offset maps) renders in true numeric order, and guards against a future
+    /// "optimization" that makes `canonical_scalar_order` reuse the raw-byte `champ_key_cmp` rule (which
+    /// would silently mis-order every negative — a bug the positive-only 256-vs-1 tests can't catch).
+    ///
+    /// Reconstructs each int leaf's SIGNED value from the wire (kind 0 = KIND_INT_POS_DEC positive, kind
+    /// 3 = its negative variant; magnitude is big-endian) and asserts strict ascending numeric order.
+    #[test]
+    fn value_encode_renders_negative_int_keys_in_numeric_not_byte_order() {
+        reset();
+        let before = live_nodes();
+
+        // Decode the int leaves of a document (KIND_INT: 0 positive / 3 negative, LEB len + BE magnitude;
+        // KIND_NAME=10 skipped) into their SIGNED values, in emission order.
+        fn int_leaves_signed(doc: &[u8]) -> Vec<i64> {
+            let mut vals = Vec::new();
+            let leaf_count = doc[8] as usize;
+            let mut i = 9usize;
+            for _ in 0..leaf_count {
+                let kind = doc[i];
+                i += 1;
+                match kind {
+                    0 | 3 => {
+                        let len = doc[i] as usize;
+                        i += 1;
+                        let mut m: i64 = 0;
+                        for &b in &doc[i..i + len] {
+                            m = (m << 8) | (b as i64);
+                        }
+                        i += len;
+                        vals.push(if kind == 3 { -m } else { m });
+                    }
+                    10 => {
+                        let len = doc[i] as usize;
+                        i += 1 + len;
+                    }
+                    other => panic!("unexpected leaf kind {other} in an int document"),
+                }
+            }
+            vals
+        }
+
+        // (A) a SET of mixed negative/positive ints, inserted in scrambled order.
+        let set_desc: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01]; // [0]=Int [1]=Set(elem0) root1
+        let mut s = op_set_empty();
+        for &v in &[3i64, -5, 0, -1, 2, -128, 127] {
+            s = op_set_insert(s, op_box_int(v));
+        }
+        let sdoc = op_value_encode_form(s, set_desc).expect("encode a Set of signed ints");
+        // Differential: the recursive oracle agrees byte-for-byte.
+        let sdescr = decode_descriptor(set_desc).expect("set descriptor");
+        let mut sb = DocBuilder::default();
+        let sroot =
+            encode_value_recursive(&sdescr, &mut sb, s, sdescr.root, 0).expect("recursive set");
+        assert_eq!(
+            sdoc,
+            sb.finish(sroot),
+            "iterative and recursive Set encode agree (signed)"
+        );
+        assert_eq!(
+            int_leaves_signed(&sdoc),
+            vec![-128, -5, -1, 0, 2, 3, 127],
+            "a Set of signed ints renders in NUMERIC order (negatives BEFORE positives), NOT the raw \
+             little-endian byte order champ_key_cmp uses (which would sort negatives last)"
+        );
+        op_drop(s);
+
+        // (B) a MAP with signed keys, value = key so the pairing is checkable in the interleaved leaves.
+        let map_desc: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02]; // [0]Int [1]Int [2]Map(k0,v1) root2
+        let mut m = op_map_empty();
+        for &k in &[3i64, -5, 0, -1, 2] {
+            m = op_map_insert(m, op_box_int(k), op_box_int(k));
+        }
+        let mdoc = op_value_encode_form(m, map_desc).expect("encode a Map of signed keys");
+        let mdescr = decode_descriptor(map_desc).expect("map descriptor");
+        let mut mb = DocBuilder::default();
+        let mroot =
+            encode_value_recursive(&mdescr, &mut mb, m, mdescr.root, 0).expect("recursive map");
+        assert_eq!(
+            mdoc,
+            mb.finish(mroot),
+            "iterative and recursive Map encode agree (signed)"
+        );
+        // key,value interleaved in canonical KEY order; value == key here, so each key appears twice.
+        assert_eq!(
+            int_leaves_signed(&mdoc),
+            vec![-5, -5, -1, -1, 0, 0, 2, 2, 3, 3],
+            "a Map with signed keys renders entries in NUMERIC KEY order (negatives first)"
+        );
+        op_drop(m);
+
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the signed-key set/map encodes"
+        );
     }
 
     /// value-encode of a NESTED-COLLECTION value: a `Map Int (List Int)` — the map VALUE is itself a
@@ -9121,8 +9351,8 @@ mod tests {
         });
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
         assert!(
-            pinsert_new <= 6500,
-            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)"
+            pinsert_new <= 6100,
+            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6100 (path-copy growth: borrow-and-build, no upfront clone; measured ~6016 after the SPLIT branch splices subnodes directly into `nh` — no transient `subs` Vec (was ~6418), 7445 before the no-upfront-clone. Overwrite-only shared insert (no splits) is unaffected)"
         );
         op_drop(mkeep2);
 
@@ -9450,13 +9680,15 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup_tuplekey x{N}: {clookup}");
-        // Each iteration allocates ONLY the probe tuple (arr node Box + its 2-slot handles Vec = 2);
-        // BOTH the shallow-compound champ_hash fast path AND the shallow-compound champ_eq fast path add
-        // NO worklist — so a hit costs exactly the probe. A regression to the general walk (hash and/or
-        // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
+        // Each iteration allocates ONLY the probe tuple = 1 node Box (`op_arr_alloc(2)` carries its 2
+        // handles INLINE, empty raw, immediate elements — the inline-handles win; NOT the 2/op an
+        // out-of-line handles Vec cost before it). BOTH the shallow-compound champ_hash fast path AND the
+        // shallow-compound champ_eq fast path add NO worklist — so a hit costs exactly the probe node.
+        // ~1000 for N=1000 = 1/lookup. A regression to the general hash/eq walk would add ~1-2 more per
+        // lookup; a regression to an out-of-line probe-tuple handles Vec would be ~2/op.
         assert!(
-            clookup <= 1500,
-            "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)"
+            clookup <= 1000,
+            "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 1000 (1/op = JUST the probe tuple's node Box; shallow hash+eq fast paths add no worklist, probe handles inline)"
         );
         op_drop(cm);
 
@@ -9951,8 +10183,8 @@ mod tests {
         // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
         // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
         assert!(
-            smap_enc <= 2200,
-            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 2200 (10200 → 7100 (`DocLeaf::IntScalar` int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse) → ~1600 (`DocLeaf::Str` stores `Raw` — a SHORT key like \"k00\" inlines, no per-leaf `Vec` clone). The residual is the entries Vec + the output byte Vec growth. A LONG (>12-byte) key still heaps. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
+            smap_enc <= 1200,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 1200 (10200 → 7100 (`DocLeaf::IntScalar` int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse) → ~1600 (`DocLeaf::Str` stores `Raw` — a SHORT key like \"k00\" inlines, no per-leaf `Vec` clone) → ~903 (`ENCODE_WORK` reuse — the work stack no longer grows-from-zero per encode). The residual is the entries Vec + the output byte Vec growth. A LONG (>12-byte) key still heaps. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
         );
         op_drop(smap);
 
@@ -10024,16 +10256,18 @@ mod tests {
         // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`), the output-Vec pre-size
         // that killed the serialization realloc churn (~100→92, `@84ebc883`), the `DocLeaf::IntScalar`
         // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, `@6decb84a`), the reused
-        // thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: no more grow-from-ZERO per call), AND the
+        // thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: no more grow-from-ZERO per call), the
         // `DESCRIPTOR_CACHE` (19→13: the descriptor's table Vec + nested shape Vecs + name Strings — ~6/encode,
-        // 31% — are decoded ONCE and cached by bytes, skipped on every later same-descriptor call). The
-        // remaining allocs are the output byte Vec's own growth + the per-call `work` stack (borrows the
-        // descriptor, so NOT pooled). Ceiling TIGHTENED 2400→1800 to track the reduced floor; catches an
-        // O(N²) re-walk, a lost pool/descriptor reuse, or a return of per-node Vec / output-realloc churn.
-        // `xtask bench`'s baseline (1331) is the tight guard; this is the coarse in-suite backstop.
+        // decoded ONCE and cached by bytes), AND the reused thread-local `ENCODE_WORK` stack (13→~7: the
+        // iterative walk's task stack grows O(depth) — O(N) for a Cons-list — so a fresh Vec per call paid
+        // an O(log N) grow-chain EVERY encode; now it grows once + refills allocation-free, after
+        // `EncodeWork` became `'static`). The remaining allocs are the output byte Vec's own growth. Ceiling
+        // TIGHTENED 1800→1000 to track the reduced ~7/encode floor; catches an O(N²) re-walk, a lost
+        // pool/descriptor/work reuse, or a return of per-node Vec / output-realloc churn. `xtask bench`'s
+        // baseline (~737) is the tight guard; this is the coarse in-suite backstop.
         assert!(
-            venc <= 1800,
-            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 1800 (~13/encode of a 50-node list: 92 (per-int Vec) → 43 (`IntScalar`) → 19 (`ENCODE_BUILDER`/`ENCODE_OUT` reuse) → 13 (`DESCRIPTOR_CACHE` — the descriptor decode's ~6 Vecs/Strings paid ONCE, skipped on same-descriptor reuse). Residual = output byte Vec + per-call `work` stack. A lost cache/pool reuse, a per-int-Vec, or an output-realloc regression would climb)"
+            venc <= 1000,
+            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 1000 (~7/encode of a 50-node list after the ENCODE_WORK reuse; was ~13 before. Residual = the output byte Vec's growth. A lost cache/pool/work reuse, a per-int-Vec, or an output-realloc regression would climb)"
         );
         op_drop(ve_list);
     }
@@ -10401,7 +10635,7 @@ mod tests {
     /// `rc:u32`(4) + `Handles`(32) + `Raw`(24) = 60, padded to 64 for the 8-alignment `Handles`/`Raw`
     /// require — the 4-byte pad after `rc` is unavoidable. If you INTEND to change the layout, update
     /// these + re-measure the wasm hash impact.
-    #[test]
+#[test]
     fn node_layout_sizes_are_pinned_native() {
         use core::mem::size_of;
         assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
@@ -16240,6 +16474,141 @@ mod tests {
         assert_eq!(live_nodes(), before);
     }
 
+    /// `map_iter_order_is_deterministic` (above) proves insert-order-independent cursor iteration for INT
+    /// keys (immediate). STRING keys take a DIFFERENT champ path — an arity-0 heap-byte leaf whose slot is
+    /// chosen by `champ_hash`'s raw-byte FNV, not an int's little-endian bytes — so their CHAMP placement,
+    /// and thus the cursor's descent order, is a distinct code path. The self-hosting compiler's
+    /// symbol-table maps are STRING-keyed and it will iterate them (e.g. to emit definitions in a stable
+    /// order once `Map.fold`/`keys` are exposed — the runtime cursor is already shipped), so a string-key
+    /// cursor-order bug would make a compiler built on top produce non-deterministic output. Pin that a
+    /// string-keyed map iterates in the SAME order regardless of insert order (the order is CHAMP hash
+    /// order — NOT lexicographic; value-encode separately re-sorts to canonical render order).
+    #[test]
+    fn map_iter_order_is_deterministic_for_string_keys() {
+        reset();
+        let before = live_nodes();
+        // Varied lengths + a shared "key"/"keyword" prefix (distinct hashes, adjacent-ish slots) + the
+        // empty string, to spread keys across the trie rather than one bucket.
+        let names = [
+            "key",
+            "keyword",
+            "a",
+            "",
+            "bb",
+            "ccc",
+            "z",
+            "a-longer-identifier",
+        ];
+        let build = |order: &dyn Fn(usize) -> usize| -> Handle {
+            let mut m = op_map_empty();
+            for i in 0..names.len() {
+                let j = order(i);
+                m = op_map_insert(m, op_str_new(names[j].to_string()), op_box_int(j as i64));
+            }
+            m
+        };
+        let m1 = build(&|i| i); // forward insert order
+        let m2 = build(&|i| names.len() - 1 - i); // reverse insert order
+        let collect = |m: Handle| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut cur = op_map_iter(m);
+            loop {
+                let k = op_map_iter_key(cur);
+                if k == Handle::NULL {
+                    break;
+                }
+                out.push(op_str_get(k));
+                cur = op_map_iter_next(cur);
+            }
+            op_drop(cur);
+            out
+        };
+        let order1 = collect(m1);
+        let order2 = collect(m2);
+        assert_eq!(
+            order1.len(),
+            names.len(),
+            "the cursor visits every distinct string key exactly once"
+        );
+        assert_eq!(
+            order1, order2,
+            "a string-keyed map iterates in the SAME (CHAMP hash) order regardless of insert order"
+        );
+        op_drop(m1);
+        op_drop(m2);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the string-key iteration"
+        );
+    }
+
+    /// TRIPWIRE + COORDINATION CONTRACT for the compiler agent wiring `Map.fold`/`Map.keys`/`to-list`.
+    /// The runtime cursor (`map-iter`/`-next`/`-key`) walks the CHAMP in HASH order — deterministic and
+    /// insert-order-independent (pinned above), which satisfies HALF of the spec's *Map Iteration Is
+    /// Deterministic*: "a deterministic order derived from the keys, not from insertion order." BUT the
+    /// spec has a SECOND clause: "The order in which a map's entries are visited MUST AGREE with the order
+    /// its canonical byte form places them in" (collections-and-text.md §Map Iteration Is Deterministic,
+    /// cited at rcdzc lower.rs ~8207). The canonical byte form orders keys by `canonical_scalar_order`
+    /// (NUMERIC for ints, lexicographic for strings — what value-encode renders + what `Map.fold` output
+    /// must match). HASH order ≠ canonical order, so a `Map.fold`/`keys` emitted directly over the raw
+    /// cursor would VIOLATE the spec AND disagree with the same map's own `print`/value-encode output.
+    /// This test PINS that the two orders differ (so the discrepancy can't be forgotten) and documents the
+    /// contract: when iteration is exposed to the language, the compiler MUST re-sort the cursor output
+    /// through the canonical order (the runtime already does this internally in `map_entries_canonical`;
+    /// the alternative is a future canonical-order runtime cursor op — a coordination decision, NOT a
+    /// silent hash-order fold). If a future change makes the cursor ITSELF canonical-ordered, this test
+    /// will flip — update it (and the compiler emit) together; do not just delete the assertion.
+    #[test]
+    fn map_cursor_is_hash_order_which_differs_from_canonical_render_order() {
+        reset();
+        let before = live_nodes();
+        // Keys whose CHAMP hash order differs from numeric order (256's LE bytes, spread magnitudes).
+        let keyvals = [
+            (256i64, 2560i64),
+            (1, 10),
+            (3, 30),
+            (2, 20),
+            (100, 1000),
+            (7, 70),
+        ];
+        let mut m = op_map_empty();
+        for &(k, v) in &keyvals {
+            m = op_map_insert(m, op_box_int(k), op_box_int(v));
+        }
+        // (A) the runtime cursor's visiting order.
+        let mut cursor_keys: Vec<i64> = Vec::new();
+        let mut cur = op_map_iter(m);
+        loop {
+            let k = op_map_iter_key(cur);
+            if k == Handle::NULL {
+                break;
+            }
+            cursor_keys.push(op_get_int(k));
+            cur = op_map_iter_next(cur);
+        }
+        op_drop(cur);
+        // (B) the canonical byte-form key order = value-encode's sort = ascending numeric.
+        let mut canonical_keys: Vec<i64> = keyvals.iter().map(|&(k, _)| k).collect();
+        canonical_keys.sort_unstable();
+        // The cursor visits EVERY key exactly once (a correct, complete traversal)…
+        let mut cursor_sorted = cursor_keys.clone();
+        cursor_sorted.sort_unstable();
+        assert_eq!(
+            cursor_sorted, canonical_keys,
+            "the cursor visits exactly the map's keys (complete traversal)"
+        );
+        // …but NOT in canonical order — this is the contract gap the doc-comment describes.
+        assert_ne!(
+            cursor_keys, canonical_keys,
+            "the cursor walks HASH order, which for these keys differs from the canonical (numeric) byte-\
+             form order — a `Map.fold`/`keys` over the raw cursor would violate *Map Iteration Is \
+             Deterministic*'s agree-with-canonical clause; the compiler must re-sort when exposing iteration"
+        );
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn map_iter_fork_independence() {
         reset();
@@ -18610,8 +18979,15 @@ mod tests {
             // Iterative production walk (what the guest runs).
             let iter_doc = {
                 let mut b = DocBuilder::default();
-                encode_value(&descriptor, &mut b, &mut Vec::new(), v, descriptor.root)
-                    .map(|r| b.finish(r))
+                encode_value(
+                    &descriptor,
+                    &mut b,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    v,
+                    descriptor.root,
+                )
+                .map(|r| b.finish(r))
             };
             // Recursive reference over the SAME borrowed value + descriptor.
             let rec_doc = {

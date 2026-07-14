@@ -267,11 +267,11 @@
   (output (: 16 Int64)))
 
 (case "a closure capturing values of DIFFERENT types (Float64 + Int64)"
-  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+. x base)))` — the cell captures a Float64 AND an
+  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+ x base)))` — the cell captures a Float64 AND an
            Int64 (the latter unused in the body, but still stored), and the closure returns a Float64.
-           `make(1.5, 7)` then `call(2.5)` = 2.5 +. 1.5 = 4.0. Pins a MIXED-type capture environment (a float
+           `make(1.5, 7)` then `call(2.5)` = 2.5 + 1.5 = 4.0. Pins a MIXED-type capture environment (a float
            and an int share one cell) with a float `call` result.")
-  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+. x base)))
+  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+ x base)))
               (export mk)))
   (call   mk (: 1.5 Float64) (: 7 Int64) (: 2.5 Float64))
   (output (: 4.0 Float64)))
@@ -372,7 +372,7 @@
             (def (main)
               (host (ask)
                 (let ((v (ask.ask)))
-                  (fn ((: x Float64)) (+. x v))))) (export main)))
+                  (fn ((: x Float64)) (+ x v))))) (export main)))
   (call   main (: 1.5 Float64))
   (host-responses (respond ask.ask (: 2.5 Float64)))
   (host-calls (call ask.ask))
@@ -521,9 +521,9 @@
   (output (: 9 Int8)))
 
 (case "a 32-bit-float closure crosses the host boundary"
-  (doc    "`(fn (x) (+. x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
+  (doc    "`(fn (x) (+ x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
            than the f64 the runtime ops use. `call(2.5)` = 4.0. Pins the 32-bit float width.")
-  (input  (do (def (main) (fn ((: x Float32)) (+. x 1.5))) (export main)))
+  (input  (do (def (main) (fn ((: x Float32)) (+ x 1.5))) (export main)))
   (call   main (: 2.5 Float32))
   (output (: 4.0 Float32)))
 
@@ -3561,8 +3561,8 @@
 
 (case "a Tuple ARG of FLOAT fields crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Float64 Float64) Float64)` — a tuple of two f64 fields (each crosses as an f64
-           core param). `call(handle, (1.5, 2.5))` → `p.0 +. p.1` = 4.0. The field type need not be an integer.")
-  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+. (. p 0) (. p 1))))
+           core param). `call(handle, (1.5, 2.5))` → `p.0 + p.1` = 4.0. The field type need not be an integer.")
+  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (+ (. p 0) (. p 1))))
               (export mk)))
   (call   mk (: (tuple 1.5 2.5) (Tuple Float64 Float64)))
   (output (: 4.0 Float64)))
@@ -3993,6 +3993,147 @@
               (export mk) (export twice)))
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
+
+; N-COMPOUND-ARGS × DISTINCT-SIGNATURE: the ≥2-fixed-shape-compound-arg path now reaches the LAST export shape
+; — closures of DIFFERENT signatures crossing as G distinct resource types, each with its own per-signature
+; `call-g<n>`. A group whose closure takes ≥2 tuple args rebuilds each arg cell (a slice of `TupleArgRebuild`)
+; in its `call-g<n>` and mints N `tuple<…>` arg types via the SAME `ArgSlot` slot model — independently per
+; group, so distinct groups may each take a different number of tuple args, at different widths, with any
+; result shape. This CLOSES the N-compound-args feature across ALL FOUR export shapes (single/multi/mixed/
+; distinct-sig).
+
+(case "DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary"
+  (doc    "`mk-i : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` and `mk-b : (-> (Tuple Int32 Int32)
+           (Tuple Int32 Int32) Int32)` — two closures of DIFFERENT signatures (Int64 vs Int32 tuples), each
+           taking TWO tuple args, crossing as TWO distinct resource types with their own `call-g0`/`call-g1`.
+           Driving `mk-i`: `make-i()` → a handle, `call-g0(handle, (5,5), (5,10))` → `p.0 + q.1` = 15. Each
+           group mints its own two `tuple<…>` arg types via the slot model.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 15 Int64)))
+
+(case "DISTINCT-SIG: driving the Int32 two-Tuple-arg group"
+  (doc    "The SAME distinct-sig component, driving `mk-b` (the Int32 group, subtract): `call-g1(handle,
+           (10,3), (1,2))` → `p.0 - q.1` = `10 - 2` = 8. Confirms the second resource type's `call-g1` rebuilds
+           its own two `tuple<s32,s32>` args independently of group 0.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-b (: (tuple 10 3) (Tuple Int32 Int32)) (: (tuple 1 2) (Tuple Int32 Int32)))
+  (output (: 8 Int32)))
+
+(case "DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple"
+  (doc    "Distinct groups may take a DIFFERENT NUMBER of tuple args: `mk-i : (-> (Tuple Int64 Int64) (Tuple
+           Int64 Int64) Int64)` takes two, `mk-b : (-> (Tuple Int32 Int32) Int32)` takes one. Each group's
+           `call-g<n>` mints exactly its own arg tuples. Driving `mk-i`: `call-g0(handle, (5,5), (5,10))` →
+           `p.0 + q.1` = 15. Proves the slot model (≥2 tuples) and the single-tuple path coexist per group.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32))) (- (. p 0) (. p 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 15 Int64)))
+
+(case "DISTINCT-SIG: a two-Tuple-arg group with a LIST result"
+  (doc    "The distinct-sig ≥2-compound-arg path composes with a LIST result: `mk-i : (-> (Tuple Int64 Int64)
+           (Tuple Int64 Int64) (List Int64))` returns a list, alongside a scalar-result Int32 group `mk-b`. The
+           group's value-encode `call-g0` rebuilds both arg tuples then renders the returned List. Driving
+           `mk-i`: `call-g0(handle, (5,5), (5,10))` → `(list 5 10)`.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10) (List Int64))))
+
+(case "DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures"
+  (doc    "Distinct-sig ≥2-compound-args composes with capture: `mk-i (: k Int64)` and `mk-b (: k Int32)` each
+           close over `k` AND take two tuple args of their own width. `make-i(100)` → a handle over k=100;
+           `call-g0(handle, (5,5), (5,10))` → `p.0 + q.1 + k` = 115. The forwarded capture cell + both rebuilt
+           arg cells coexist in the group's `call-g0`.")
+  (input  (do (def (mk-i (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (+ (+ (. p 0) (. q 1)) k)))
+              (def (mk-b (: k Int32)) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32)))
+                (- (. p 0) k)))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 115 Int64)))
+
+(case "DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export"
+  (doc    "The distinct-sig ≥2-compound-arg path coexists with a PLAIN (non-closure) export: two closures of
+           different tuple-arg signatures cross as two resource types WHILE `twice` rides alongside as an
+           ordinary top-level func. Driving the plain export: `twice(21)` → 42.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk-i) (export mk-b) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
+; DIRECT-CALL SUM ARG: a closure whose argument is an `(Option scalar)` crosses the host boundary as a NATIVE
+; component `option<payload>` — the canonical ABI FLATTENS it into `(disc: i32, payload)` core params (no
+; memory/realloc/runtime decode). The guest `call` rebuilds the sum cell in-guest: branch on the flattened disc
+; (the component `option` sends Some=1, None=0 — INDEPENDENT of Cadenza's `(Some a) None` decl order, so the
+; guest tests the BOUNDARY disc but builds the cell with the DECL disc), then `sum-new(decl-disc, box payload)`
+; for Some / `sum-new(decl-disc, unit)` for None, before dispatching the closure's `match`. This is the first
+; host→guest SUM decode; the `option<…>` boundary type is a new component-type former. Scope: a SOLE `(Option
+; scalar)` arg, single-export, scalar result (a Result/user-sum arg, or a list result over a sum, are later).
+
+(case "a closure taking an Option Int64 ARG — Some crosses the direct-call boundary"
+  (doc    "`mk : () -> (-> (Option Int64) Int64)` returns `(fn (o) (match o ((Some x) x) (None 0)))`. The
+           `(Option Int64)` arg crosses as a native `option<s64>` the ABI flattens to `(disc, payload)`; the
+           guest rebuilds the sum cell (branch on the boundary disc → `sum-new`) and matches it. `make()` → a
+           handle; `call(handle, Some(42))` → 42.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "a closure taking an Option Int64 ARG — None crosses the direct-call boundary"
+  (doc    "The SAME closure driven with `None`: the boundary option's disc 0 (None) → the guest builds the
+           `None` cell (`sum-new(decl-none-disc, unit)`), the match takes the `None` arm → 0.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: None (Option Int64)))
+  (output (: 0 Int64)))
+
+(case "a closure taking an Option Bool ARG crosses the direct-call boundary"
+  (doc    "The payload need not be Int64: `(Option Bool)` crosses as `option<bool>`, the guest boxes the Bool
+           payload (`box-bool`) into the `Some` cell. `call(handle, Some(true))` → `(if b 1 2)` = 1.")
+  (input  (do (def (mk) (fn ((: o (Option Bool))) (match o ((Some b) (if b 1 2)) (None 0)))) (export mk)))
+  (call   mk (: (Some true) (Option Bool)))
+  (output (: 1 Int64)))
+
+(case "a closure taking an Option Float64 ARG crosses the direct-call boundary"
+  (doc    "A Float64 payload: `(Option Float64)` crosses as `option<f64>`, the guest boxes the float
+           (`box-float`) into the `Some` cell. `call(handle, Some(2.5))` → the payload 2.5.")
+  (input  (do (def (mk) (fn ((: o (Option Float64))) (match o ((Some x) x) (None 0.0)))) (export mk)))
+  (call   mk (: (Some 2.5) (Option Float64)))
+  (output (: 2.5 Float64)))
+
+(case "a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary"
+  (doc    "A NARROW-int payload: `(Option Int32)` crosses as `option<s32>`; the guest i32→i64-extends the
+           flattened payload before `box-int` (a narrow int widens to the boxed i64). `call(handle, Some(7))`
+           → 7.")
+  (input  (do (def (mk) (fn ((: o (Option Int32))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: (Some 7) (Option Int32)))
+  (output (: 7 Int32)))
+
+(case "a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary"
+  (doc    "The sum-arg path composes with capture (C-HOST-2): a parameterized export `(def (mk (: k Int64)) …)`
+           returns a closure that BOTH captures `k` AND takes an `(Option Int64)` arg. `make(100)` → a handle
+           closing over k=100; `call(handle, Some(5))` → `(match o ((Some x) (+ x k)) (None k))` = `5 + 100` =
+           105. The make-forwarded capture cell + the rebuilt sum-arg cell coexist in the one `call`.")
+  (input  (do (def (mk (: k Int64)) (fn ((: o (Option Int64))) (match o ((Some x) (+ x k)) (None k))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (Some 5) (Option Int64)))
+  (output (: 105 Int64)))
+
+(case "a CAPTURING closure taking an Option Int64 ARG — None takes the captured value"
+  (doc    "The SAME capturing closure driven with `None`: the `None` arm returns the captured `k`.
+           `call(make(100), None)` → 100.")
+  (input  (do (def (mk (: k Int64)) (fn ((: o (Option Int64))) (match o ((Some x) (+ x k)) (None k))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: None (Option Int64)))
+  (output (: 100 Int64)))
 
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter

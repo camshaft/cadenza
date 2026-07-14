@@ -143,7 +143,10 @@ export class Calculator {
         message: firstErr ? `${firstErr.code || ""} ${firstErr.message}`.trim() : "declined",
       };
     }
-    const r = await runComponent(out.component, this.surface);
+    // `display: true` renders a result for a human — a rational bare (`1/4`), a quantity in its concise
+    // `<value> <unit>` surface, the result type annotation dropped — the calculator's mode (the
+    // playground keeps the canonical, re-readable form).
+    const r = await runComponent(out.component, this.surface, true);
     switch (r.kind) {
       case "value":
         return { kind: "value", text: r.text };

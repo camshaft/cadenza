@@ -21,7 +21,7 @@
 | Integer conversions | **explicit** only: `T.of x` is a **checked** conversion (traps when `x` is outside `T`'s range), `T.wrap x` is a **truncating/wrapping** conversion (keeps the low `N` bits under `T`'s two's-complement representation). Neither is ever performed implicitly. |
 | Wrapping integers | available as a **distinct type**, not a mode on the default integer, so wrap is never silent |
 | Arbitrary-precision integer | a distinct **big-integer** type, opted into explicitly. A width `N` **above 64** is reserved to this multi-word layer, not to the width-indexed constructors above (see §"Widths above 64 are reserved"). |
-| Floating-point | the **width-indexed type constructor** `Float`, applied to a compile-time width `N` in the admitted set `{32, 64}`: `(Float 32)` is IEEE-754 binary32, `(Float 64)` binary64. `Float32`/`Float64` are aliases. All use a single fixed rounding mode (round-to-nearest-even), no fused-multiply-add contraction, and a canonical not-a-number bit pattern. Arithmetic is written with the **distinct floating-point operators** `+.` `-.` `*.` `/.` — never the integer `+`/`-`/`*`/`/`. `Float64` is the type an unconstrained float literal takes. |
+| Floating-point | the **width-indexed type constructor** `Float`, applied to a compile-time width `N` in the admitted set `{32, 64}`: `(Float 32)` is IEEE-754 binary32, `(Float 64)` binary64. `Float32`/`Float64` are aliases. All use a single fixed rounding mode (round-to-nearest-even), no fused-multiply-add contraction, and a canonical not-a-number bit pattern. Arithmetic is written with the **one arithmetic operator** `+`/`-`/`*`/`/`, dispatched to float by the operand type; a mixed integer/float application is rejected, not coerced. `Float64` is the type an unconstrained float literal takes. |
 | Exact rational | a **normalized pair of big-integers** (reduced to lowest terms, fixed sign convention), opted into explicitly |
 | Numeric promotion | **none** — an operation on two different numeric types (including two different integer widths or signednesses) requires an explicit conversion |
 
@@ -134,14 +134,16 @@ binary32, `(Float 64)` binary64. `Float32` and `Float64` are ordinary **aliases*
   `Float64` (`(+ 2 2.0)`), or a `Float32` and a `Float64`, is rejected `CDZ0301` — the same
   no-silent-promotion rule the integer widths obey (numeric-model.md §"Numeric Types Do Not Silently
   Promote", §"A Conversion Involving A Floating-Point Type Is Explicit").
-- **Arithmetic uses the distinct floating-point operators.** `+.` `-.` `*.` `/.` are the float
-  arithmetic operators, spelled distinctly from the integer `+`/`-`/`*`/`/` (numeric-model.md §"A
-  Floating-Point Operation Uses A Floating-Point Operator"). This is why no operator has to guess a
-  mixed operand's intent: `(+ 2 2.0)` mixes types under the integer `+` and is rejected, `(+. 2 2.0)`
-  supplies an integer where the float `+.` wants a float and is rejected — a program adds two floats with
-  `(+. 1.0 2.0)`. Unlike integer arithmetic, a float operation **never traps on overflow**: an IEEE
-  operation that exceeds the finite range yields an infinity and division by zero yields ±infinity or
-  NaN, per the determinism-constrained emission — the trap-on-overflow discipline is the integers' alone.
+- **Arithmetic uses the ONE operator, dispatched on the operand type.** `+` `-` `*` `/` is a single
+  operator spelling across every numeric type; the operand type selects the operation (numeric-model.md
+  §"An Arithmetic Operator Requires Both Operands To Be One Numeric Type"). `(+ 1.0 2.0)` is float
+  addition, `(+ 1 2)` integer addition, `(+ (Rational.of 1 3) (Rational.of 1 6))` exact rational — the
+  same `+`. Both operands must be one numeric type: `(+ 2 2.0)` mixes an `Int64` and a `Float64` and is
+  rejected `CDZ0301` in either operand order, the rejection following from the operands disagreeing, not
+  from the operator naming a type — so no operator has to guess a mixed operand's intent. Unlike integer
+  arithmetic, a float operation **never traps on overflow**: an IEEE operation that exceeds the finite
+  range yields an infinity and division by zero yields ±infinity or NaN, per the determinism-constrained
+  emission — the trap-on-overflow discipline is the integers' alone.
 - **Conversions are explicit.** `Float64.of-int` converts an integer up to a float (the float analogue
   of `T.of`); `Float32.of` / `Float64.of` convert between the two float widths (narrowing rounds under
   the fixed mode). None is ever implicit.

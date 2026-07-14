@@ -324,7 +324,10 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     let to = resolve_to(args.to, args.file.as_deref());
 
     let input = read_input(args.file.as_deref())?;
-    let opts = Options { width: args.width };
+    let opts = Options {
+        width: args.width,
+        ..Options::default()
+    };
     let output = convert::convert_with(&input, from, to, opts).map_err(|e| e.to_string())?;
 
     std::io::stdout()

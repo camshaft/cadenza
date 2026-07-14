@@ -740,6 +740,36 @@ impl<'a> Parser<'a> {
                 let full = span.merge(self.prev_span());
                 self.list(vec![head, name, form], full)
             }
+            // A PRAGMA sugar: `@!key arg` -> `(pragma key arg)`. The inner-attribute twin of `@` — an
+            // annotation applies to the item below it, a pragma to the enclosing MODULE (Rust's `#[…]` vs
+            // `#![…]`). The head is the `pragma` keyword itself, so the desugared form is byte-identical to
+            // a written `(pragma key arg)` and flows through the SAME registry/validation with no new
+            // downstream case. The KEY is any ident (the registry decides which are defined); the ARGUMENT
+            // is one form parsed in PREFIX position (a type name `Float32` or a parenthesized type
+            // expression `(Int 8)`), so a juxtaposed following form is not swallowed as an application.
+            Kind::AtBang => {
+                self.bump(); // `@!`
+                let head = self.name("pragma", span);
+                let key = if self.at(Kind::Ident) {
+                    let key_span = self.cur_span();
+                    let t = self.bump().unwrap();
+                    self.name(self.text(t), key_span)
+                } else {
+                    self.error("expected a pragma key after `@!` (e.g. `@!default-float Float32`)");
+                    self.error_node(self.cur_span())
+                };
+                // The ARGUMENT is a TYPE expression parsed in prefix+POSTFIX position — so a bare name
+                // (`Float32`), a member access (`Foo.Bar`), and a constructor APPLICATION (`Int(8)` ->
+                // `(Int 8)`) all parse as the single argument, exactly as a type annotation's type does. The
+                // postfix stops at a `.`/`(` glued to the type; a following module member (`def …` on the
+                // next line) does not begin with either, so it is never swallowed. Infix operators / `as`
+                // are intentionally NOT consumed (a pragma type is a single type, never `A -> B`).
+                let arg_start = self.cur_span();
+                let arg_prefix = self.prefix();
+                let arg = self.postfix(arg_prefix, arg_start);
+                let full = span.merge(self.prev_span());
+                self.list(vec![head, key, arg], full)
+            }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
                 Some(Keyword::If) => self.if_expr(),

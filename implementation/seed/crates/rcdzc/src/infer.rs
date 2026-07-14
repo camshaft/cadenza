@@ -160,9 +160,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
-        // A bare decimal literal: normally the default float; but a `(pragma default-fraction Rational)`
-        // module grounds it to the EXACT rational its digits denote (`0.5` → `1/2`) — exact-by-default.
-        Resolved::Float(_) => module_default_fraction_ty(db, id).unwrap_or_else(Ty::float),
+        // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT
+        // rational its digits denote (`0.5` → `1/2`) — exact-by-default, checked FIRST (an exact-fraction
+        // default is a stronger statement than a float-width default); else a `(pragma default-float <T>)`
+        // width; else the deferred float default (`Float64`).
+        //
+        // The final `.unwrap_or_else` here (a decimal → `Ty::float`) and its twin on the integer arm above
+        // (a `Resolved::Int` → `Ty::int`) realize the NO-fraction-default fallthrough: when no default
+        // fraction is in force, a literal takes the numeric model's default for its WRITTEN form — an
+        // integer literal the default integer type, a decimal literal the default floating-point type.
+        //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+        //# When a module declares no default fraction literal type, a numeric literal with no other constraint MUST take the numeric model's default numeric type for its written form (an integer literal the default integer type, a decimal literal the default floating-point type).
+        Resolved::Float(_) => module_default_fraction_ty(db, id)
+            .or_else(|| module_default_float_ty(db, id))
+            .unwrap_or_else(Ty::float),
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
@@ -211,7 +222,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                     let t = type_of(db, value);
                     field_tys.insert(label.clone(), t);
                 }
-                Ty::Record(std::sync::Arc::new(field_tys))
+                Ty::Record(std::rc::Rc::new(field_tys))
             }
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
@@ -263,7 +274,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
             Ty::Map(Box::new(key_ty), Box::new(val_ty))
         }
-        // (Arc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
+        // (Rc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
         // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
         // not a tuple, or an index outside its arity, has no element type — typed `Any` here so it does
         // not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
@@ -390,6 +401,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // (`(: 5 Int64)` types as `Int64`), and a genuine conflict (`(: true Int64)`) is a fault the
         // `type_errors` side reports (here we return `T`, the asserted type, so the value column stays
         // definite). If `T` is not a type expression this stage reduces, fall back to `expr`'s type.
+        //
+        // `T` is not a syntactic marker stripped before evaluation: `ty_expr` is REDUCED to a type VALUE
+        // (`typeval_of` runs the SAME evaluator that reduces any value — `(Int 8)`/`(-> A B)` etc. fold to
+        // a `Ty` through the one `Meta.apply` channel), and that value is what unifies into `expr`'s type.
+        // The annotation carries its type AS a value, exactly as §Types Are First-Class Values requires.
+        //= spec/capabilities/core-semantics.md#types-are-first-class-values
+        //# A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker erased before evaluation.
         Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
             Some(annot_ty) => {
                 let expr_ty = type_of(db, expr);
@@ -823,6 +841,38 @@ fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String
     }
 }
 
+/// Validate a NON-type-denoting annotation type expression `ty_expr` (one `typeval_of` rejected), pushing
+/// each fault. The SHARED core of the three annotation sites — a parameter annotation, a value annotation
+/// `(: value T)`, and a let-binder annotation — so all three name a bad type the same way. A RECORD-bearing
+/// type (`(Record (name Type)…)`, or a container carrying one) uses the record-aware position split
+/// (`push_payload_type_positions` skips field LABELS + descends into each field's TYPE; `validate_type_position`
+/// keeps only a genuinely-unknown type name), so a `(Record (x Nonesuch))` names only `Nonesuch`, not the
+/// label `x` (the naive value-`collect` mis-resolves labels as unbound names — M125). Otherwise: collect the
+/// operand's own faults (an unbound name → CDZ0101), and if none surfaced (a well-formed non-type — a
+/// literal, a compound), add the "expected a type" CDZ0203 with `lead` naming the site.
+fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out: &mut Vec<Reject>) {
+    if crate::compile::is_record_bearing(db, ty_expr) || db.ast.head_name(ty_expr) == Some("Record")
+    {
+        let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
+        crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
+        for (pos, params) in &positions {
+            crate::compile::validate_type_position(db, *pos, params, lead, out);
+        }
+        return;
+    }
+    let before = out.len();
+    collect(db, ty_expr, out);
+    if out.len() == before {
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                non_type_annotation_message(db, ty_expr, lead),
+            )
+            .at(ty_expr),
+        );
+    }
+}
+
 /// An ARITY-specific message when the annotation type is a prelude type CONSTRUCTOR applied to the WRONG
 /// number of arguments — `(List Int64 Int64)` (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64
 /// Bool)` (Set takes 1). Such a form reduces to NO type-value (`reduce_ctor` rejects the arity), so the
@@ -892,12 +942,16 @@ fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String
              were supplied — write `({name} <{placeholder}>)`, e.g. `{name}64`"
         ));
     }
-    // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
-    // names read naturally (`List Elem`, `Map Key Value`).
+    // A PRELUDE collection/quantity type constructor — its arity is fixed by the prim, and its argument
+    // placeholder names read naturally (`List Elem`, `Map Key Value`, `Qty T u`). `Qty` takes 2 — a numeric
+    // TYPE + a UNIT (`(Qty Int64 (Unit.base #"meter"))`); a wrong count `(Qty Int64)` / `(Qty)` reads as
+    // the generic "not a type", so name the arity here (only on a WRONG count — a correct-arity `(Qty T u)`
+    // returns `None` so its unit-position validation stands).
     if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {
         Some(crate::resolved::Prim::ListCtor) => Some(("List".to_string(), 1usize, "Elem")),
         Some(crate::resolved::Prim::SetCtor) => Some(("Set".to_string(), 1, "Elem")),
         Some(crate::resolved::Prim::MapCtor) => Some(("Map".to_string(), 2, "Key Value")),
+        Some(crate::resolved::Prim::QtyCtor) => Some(("Qty".to_string(), 2, "T u")),
         _ => None,
     } {
         if supplied == expected {
@@ -1052,34 +1106,8 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // payload / effect-op type checks use — so a record-type annotation validates its field TYPES exactly
     // as a variant payload's do, without a spurious label fault.
     if crate::eval::typeval_of(db, ty_expr).is_none() {
-        if crate::compile::is_record_bearing(db, ty_expr)
-            || db.ast.head_name(ty_expr) == Some("Record")
-        {
-            let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
-            crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
-            for (pos, params) in &positions {
-                crate::compile::validate_type_position(
-                    db,
-                    *pos,
-                    params,
-                    "a parameter's annotation",
-                    out,
-                );
-            }
-            return;
-        }
-        let before = out.len();
-        collect(db, ty_expr, out);
-        if out.len() == before {
-            trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
-                )
-                .at(ty_expr),
-            );
-        }
+        trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type");
+        validate_non_type_annotation(db, ty_expr, "a parameter's annotation", out);
     }
 }
 
@@ -1763,6 +1791,13 @@ fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
 //# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), that a numeric literal with no other constraint takes an exact fraction type within that module, so that ordinary arithmetic in that module is exact by default.
 //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
 //# A declared default fraction literal type MUST apply to both an integer-written literal and a decimal-written literal with no other constraint: an integer literal takes the whole value (a denominator of one) and a decimal literal takes the exact fraction its written digits denote, with no rounding.
+// The definition-site, no-conversion, and annotation-precedence rules are the SAME three the default-
+// integer twin obeys: the default in force is the one the literal's OWN module declares (the map is
+// `default_fraction_literals`, keyed per pragma-module by the original literal node — definition-site,
+// not import-site); it fixes a TYPE not a conversion (`matches!(ty, Ty::Rational)`, no-silent-promotion
+// still faults a mix); and an explicit annotation WINS (the `(: <lit> T)` guard below).
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default fraction literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
 fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     // An EXPLICIT ANNOTATION WINS: a literal that is the expression of a `(: <lit> T)` annotation is
     // governed by `T`, not the module default — so DON'T apply the fraction default to it (else the
@@ -1779,6 +1814,49 @@ fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     let ty_expr = *db.default_fraction_literals.get(&id)?;
     let ty = crate::eval::typeval_of(db, ty_expr)?;
     matches!(ty, Ty::Rational).then_some(ty)
+}
+
+/// The declared default-FLOAT type for the bare DECIMAL literal at `id`, or `None` if it is not written in
+/// a `(pragma default-float <T>)` module. Reads the load-time `default_float_literals` map (keyed by the
+/// literal's ORIGINAL node, β-copy-robust) and reduces the recorded `<T>` occurrence to a `Ty`. Only a
+/// FLOAT type is honored (a non-float `<T>` is separately the CDZ0303 domain reject); anything that does
+/// not reduce to a concrete float type is `None` (the literal keeps the deferred `Float64` default). This
+/// fixes a TYPE, not a conversion: no-silent-promotion still holds, and an explicit annotation on the
+/// literal wins.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the floating-point type that a decimal literal with no other constraint takes within that module.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# When a module declares no default float literal type, a decimal literal with no other constraint MUST take the numeric model's default floating-point type.
+// This fn is consulted ONLY for a `Resolved::Float(_)` node (a DECIMAL-written literal): a bare
+// integer-written literal takes `module_default_int_ty`, so a default-float directive governs how a
+// written fraction is represented and never silently makes an integer a float.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# A declared default float literal type MUST apply only to a decimal-written literal with no other constraint, leaving an integer-written literal at its declared or model-default integer type, so that a default float width governs how a written fraction is represented without silently making an integer a float.
+// The default in force is the one the literal's OWN module declares (`collect_default_float_literals`
+// walks each pragma-module's member subtrees, keyed by the original literal node — definition-site, not
+// import-site); it fixes a TYPE not a conversion (no-silent-promotion still faults a mix); and an
+// explicit annotation WINS (the `(: <lit> T)` guard below) — the same three rules as default-integer.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default float literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
+fn module_default_float_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    // An EXPLICIT ANNOTATION WINS (numeric-model.md §"An explicit annotation … takes precedence over the
+    // module's declared default"): a literal that is the expression of a `(: <lit> T)` annotation is
+    // governed by `T`, not the module default — so DON'T apply the default-float to it. Unlike the
+    // `default-integer` twin (which relies on the fault walk's integer-literal GROUNDING branch to let a
+    // conflicting annotation win), a bare FLOAT literal has no such grounding branch, so a FIXED default
+    // width (`Float32`) would UNIFY against a differing annotation (`(: 3.14 Float64)`) and spuriously
+    // reject CDZ0203. Excluding the annotated literal here makes it behave exactly as it would with no
+    // pragma — the deferred literal grounds through its annotation, the annotation wins. Same guard as
+    // `module_default_fraction_ty`.
+    if let Some(parent) = db.parent_of(id)
+        && let Some(tail) = db.ast.as_form(parent, ":")
+        && tail.first() == Some(&id)
+    {
+        return None;
+    }
+    let ty_expr = *db.default_float_literals.get(&id)?;
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    matches!(ty, Ty::Float(_)).then_some(ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the
@@ -2537,7 +2615,7 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
                 for (label, &value) in fields.iter() {
                     field_tys.insert(label.clone(), type_of(db, value));
                 }
-                Ty::Record(std::sync::Arc::new(field_tys))
+                Ty::Record(std::rc::Rc::new(field_tys))
             }
             // A malformed field list has no well-formed record type — `Any`; the fault is reported by
             // `type_errors`.
@@ -2744,7 +2822,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                 kept.insert(label.clone(), ty.clone());
             }
         }
-        return Ty::Record(std::sync::Arc::new(kept));
+        return Ty::Record(std::rc::Rc::new(kept));
     }
     // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
     // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
@@ -2762,7 +2840,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             .filter(|(k, _)| !drop.contains(*k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        return Ty::Record(std::sync::Arc::new(kept));
+        return Ty::Record(std::rc::Rc::new(kept));
     }
     // `Record.merge a b` — the UNION of two records' fields. The result is a NEW record type with every
     // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
@@ -2779,7 +2857,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         for (k, v) in b.iter() {
             union.insert(k.clone(), v.clone());
         }
-        return Ty::Record(std::sync::Arc::new(union));
+        return Ty::Record(std::rc::Rc::new(union));
     }
     // `Record.extend r (z v)` / `Record.with r (z v)` — ADD (extend) or REPLACE (with) field `z` with the
     // VALUE `v`'s type. Both yield a NEW record type = `r`'s fields with `z ↦ typeof(v)` inserted (an
@@ -2802,7 +2880,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let mut out: std::collections::BTreeMap<_, _> =
             fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         out.insert(label, type_of(db, value));
-        return Ty::Record(std::sync::Arc::new(out));
+        return Ty::Record(std::rc::Rc::new(out));
     }
     // `Record.pop r z` — yields `(tuple (. r z) (r without z))`: the field's value paired with the record
     // of the remaining fields (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
@@ -2820,8 +2898,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             .filter(|(k, _)| **k != label)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let rest_ty = Ty::Record(std::sync::Arc::new(rest));
-        return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
+        let rest_ty = Ty::Record(std::rc::Rc::new(rest));
+        return Ty::Tuple(std::rc::Rc::from([field_ty, rest_ty]));
     }
     // Each `Tuple.*` positional row op below derives a NEW `Ty::Tuple` (or `Ty::Unit` for the empty
     // prefix) from the OPERANDS' element types — cat sums the arities, split-at/pop partition — so the
@@ -2863,7 +2941,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let k = k as usize;
         let prefix = tuple_or_unit(&elems[..k]);
         let suffix = tuple_or_unit(&elems[k..]);
-        return Ty::Tuple(std::sync::Arc::from([prefix, suffix]));
+        return Ty::Tuple(std::rc::Rc::from([prefix, suffix]));
     }
     // `Tuple.pop t` — element 0 off: `(tuple (. t 0) <rest>)`. Result `(Tuple <e0> (Tuple <rest…>))`. A
     // non-tuple or empty-tuple operand falls through (Any); the arity-≥1 requirement is `check_application`'s.
@@ -2873,7 +2951,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         && !elems.is_empty()
     {
         let rest = tuple_or_unit(&elems[1..]);
-        return Ty::Tuple(std::sync::Arc::from([elems[0].clone(), rest]));
+        return Ty::Tuple(std::rc::Rc::from([elems[0].clone(), rest]));
     }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
@@ -2980,6 +3058,34 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             ) && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
             {
                 return Ty::Rational;
+            }
+            // A `+`/`-`/`*`/`/` over FLOAT operands is that float type — the SAME arithmetic operator as
+            // the integer case, dispatched here on a `Ty::Float` operand (there is no distinct `+.`). Its
+            // `∀a. (Int a) → …` scheme does NOT accept a `Float`, so the generic scheme-unify would reject
+            // it; type it directly instead, and `lower` remaps to `Prim::FAdd`… + `lower_float_arith`. A
+            // `Float`/integer mix is rejected in `check_application` (CDZ0301), so if one operand is
+            // `Float` the well-typed case has both — return the float type (the concrete-width operand, so
+            // a `Float32` op stays `Float32`; a deferred literal grounds to `Float64`). Comparison over
+            // floats is `Bool` via the generic path; `%`/bitwise/shift have no float form and fall through
+            // to the scheme (which rejects a float operand — those stay integer-only).
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
+            {
+                // Prefer whichever operand fixed the width (a concrete `Float32`/`Float64` over a deferred
+                // literal), mirroring the `join` width preference — so `(+ x 1.0)` with `x : Float32`
+                // stays `Float32` rather than the literal's deferred width.
+                return match (&a, &b) {
+                    (Ty::Float(fa), _) if fa.width_is_fixed() => a.clone(),
+                    (_, Ty::Float(fb)) if fb.width_is_fixed() => b.clone(),
+                    (Ty::Float(_), _) => a.clone(),
+                    (_, Ty::Float(_)) => b.clone(),
+                    _ => Ty::float(),
+                };
             }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
@@ -3940,6 +4046,53 @@ fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     })
 }
 
+/// An actionable message TAIL when `expected` and `actual` are BOTH FUNCTION types (`Ty::Fn`) that differ
+/// — the function analogue of the record/tuple/sum per-member hints. A `Ty::Fn` is CURRIED (`p0 → p1 →
+/// result`), so naming two full arrow renders (`(-> Int64 (-> Int64 Int64))` vs `(-> Int64 Int64)`) makes
+/// the reader unwind the curry to see what actually differs. Peel both arrow chains and name the SPECIFIC
+/// difference, in the order a caller most cares about:
+///  • DIFFERENT ARITY — the two take a different number of arguments ("expected a function taking 2
+///    arguments, but this one takes 1", rustc's arrow-arity message); OR
+///  • same-arity RESULT-type difference — the parameter types agree but the RESULT differs (`(-> Int64
+///    Bool)` vs `(-> Int64 Int64)`), named "its result should be Bool, but this one returns Int64".
+/// A same-arity PARAMETER-type difference is deliberately NOT named here: the generic arg-unify already
+/// descends into the first differing parameter position and reports it directly (`(-> Bool …)` vs `(-> Int64
+/// …)` surfaces as an ordinary "Int64 vs Bool" at the parameter), so a param-axis hint here would duplicate
+/// it. `None` unless both are functions AND they differ in arity or result. `agrees_with` (the relation
+/// `unify` uses) gates the result check. Tail only — the repair (add/drop a parameter, or change the return
+/// expression) is the author's, so no mechanical fix, like the sibling per-member hints.
+fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if !matches!(expected, Ty::Fn(..)) || !matches!(actual, Ty::Fn(..)) {
+        return None;
+    }
+    // Peel the curried arrows: collect the parameter count and the ultimate result of each.
+    let peel = |mut t: &Ty| {
+        let mut arity = 0usize;
+        while let Ty::Fn(_, r) = t {
+            arity += 1;
+            t = r;
+        }
+        (arity, t.clone())
+    };
+    let ((want_arity, want_result), (got_arity, got_result)) = (peel(expected), peel(actual));
+    if want_arity != got_arity {
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        return Some(format!(
+            " — expected a function taking {} argument{}, but this one takes {}",
+            want_arity,
+            plural(want_arity),
+            got_arity,
+        ));
+    }
+    (!want_result.agrees_with(&got_result)).then(|| {
+        format!(
+            " — its result should be {}, but this one returns {}",
+            want_result.render_name(),
+            got_result.render_name()
+        )
+    })
+}
+
 /// The combined per-member structural-delta TAIL for two SAME-KIND compound types that differ inside — a
 /// record field-set / per-field type, a tuple arity / per-position type, or a collection element/key/value
 /// type. This bundles the three per-member hints (`record_field_diff_hint`, `tuple_arity_mismatch_hint`,
@@ -3963,6 +4116,7 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| tuple_arity_mismatch_hint(first, other))
         .or_else(|| collection_element_mismatch_hint(first, other))
         .or_else(|| sum_payload_mismatch_hint(first, other))
+        .or_else(|| fn_signature_delta_hint(first, other))
 }
 
 /// The message TAIL for a PEER-JOIN type clash — two `if` branches, two `match` arm bodies, two `list`
@@ -4676,41 +4830,6 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
     }
 }
 
-/// The INTEGER-arithmetic operator spelling and its FLOAT-arithmetic sibling spelling `(int, float)`,
-/// or `None` for a prim with no float sibling. The four arithmetic operators `+`/`-`/`*`/`/` each have a
-/// width-generic float twin `+.`/`-.`/`*.`/`/.` (`prelude.rs`); the comparisons `<`/`=`/… are ALREADY
-/// polymorphic over floats (no separate spelling), and `%`/bit-ops have no float form. Used to repair
-/// `(+ 1.0 2.0)` — an integer operator applied to two FLOAT operands — by swapping the operator name,
-/// the whole-operation fix (rewriting one operand to an int leaves the other float; the author clearly
-/// wants float math). Returns both spellings so the message names the written operator and the fix names
-/// the sibling.
-fn float_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
-    use crate::resolved::Prim;
-    match prim {
-        Prim::Add => Some(("+", "+.")),
-        Prim::Sub => Some(("-", "-.")),
-        Prim::Mul => Some(("*", "*.")),
-        Prim::Div => Some(("/", "/.")),
-        _ => None,
-    }
-}
-
-/// The MIRROR of [`float_sibling_operator`]: a FLOAT-arithmetic operator's spelling and its INTEGER
-/// sibling `(float, int)`, or `None` for a non-float-arith prim. Used to repair `(+. n m)` — a FLOAT
-/// operator applied to two INTEGER operands — by swapping the operator name to `+`, the whole-operation
-/// fix (wrapping one operand in `Float64.of-int` leaves the OTHER an int, so it does not clear the fault;
-/// two integer operands mean integer math). The exact inverse of the two-floats→`+.` swap.
-fn int_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
-    use crate::resolved::Prim;
-    match prim {
-        Prim::FAdd => Some(("+.", "+")),
-        Prim::FSub => Some(("-.", "-")),
-        Prim::FMul => Some(("*.", "*")),
-        Prim::FDiv => Some(("/.", "/")),
-        _ => None,
-    }
-}
-
 /// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
 /// different conversions (`units-of-measure.md` §A Named Unit's Conversion Is Unique) — and push CDZ0502
 /// for each. A name conflicts when its reduced unit (`base` scaled by `num/den`) differs from the
@@ -4841,7 +4960,7 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
         // `resolved_ref` (a BORROW, not a `resolved_of` clone): this scans EVERY node of every program, and
         // the vast majority are not `Apply`, so cloning the whole `Resolved` per node just to test the
         // variant was pure churn (on a large unit-FREE program this whole pass was ~30% of compile). The
-        // `head` is Copy; `args.first()` is read through the borrow (no `args` Arc clone needed here).
+        // `head` is Copy; `args.first()` is read through the borrow (no `args` Rc clone needed here).
         let (head, name_occ) = match crate::resolve::resolved_ref(db, id) {
             crate::resolved::Resolved::Apply { head, args } => match args.first() {
                 Some(&name_occ) => (*head, name_occ),
@@ -4944,91 +5063,10 @@ fn check_application(
         collect(db, args[1], out);
         return;
     }
-    // An INTEGER arithmetic operator (`+`/`-`/`*`/`/`) applied to two FLOAT operands — `(+ 1.0 2.0)`.
-    // The whole-operation repair is to SWAP the operator to its float sibling (`+.`), NOT to rewrite an
-    // operand: `+`'s scheme is `(Int a)`, so the generic unify below would fault the FIRST operand and
-    // offer to drop its `.0` — a fix that leaves the SECOND operand float (so `fix --all` rightly refuses
-    // it) and misreads the intent (two float literals mean float math). Detect it here and emit ONE clean
-    // CDZ0301 whose fix rewrites the OPERATOR NAME node (the app's first child) to the float sibling, then
-    // return so the generic path does not also add the misleading per-operand fix. Gated on BOTH operands
-    // being `Ty::Float` (a genuine int/float MIX — `(+ 1 2.0)` — keeps the per-operand coercion, which is
-    // the right call there: one operand is already an integer). `numeric-model.md` §Numeric Types Do Not
-    // Silently Promote (the explicit-conversion discipline) + `diagnostics.md` §A Diagnostic Carries A
-    // Route To A Fix.
-    if args.len() == 2
-        && let Some(prim) = crate::eval::meta_apply_of(db, head)
-        && let Some((int_op, sibling)) = float_sibling_operator(prim)
-        && let a0 = type_of(db, args[0])
-        && let b0 = type_of(db, args[1])
-        && matches!(a0, Ty::Float(_))
-        && matches!(b0, Ty::Float(_))
-    {
-        // The operator NAME occurrence is the application's first child (`(+ …)` → the `+` atom). Fall
-        // back to an unfixed reject if the shape is unexpected (never mis-target a fix).
-        let op_name_node = match db.ast.get(app) {
-            crate::ast::Struct::List(items) => items.first().copied(),
-            _ => None,
-        };
-        trace!(target: "rcdzc::infer", head = head.0, int_op, sibling, "fault: integer arithmetic operator on two floats — swap to the float sibling (CDZ0301)");
-        let mut reject = Reject::coded(
-            Code::NumericMismatch,
-            format!(
-                "`{int_op}` is integer arithmetic, but both operands are {} — use the floating-point \
-                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
-                a0.render_name(),
-            ),
-        )
-        .at(app);
-        if let Some(node) = op_name_node {
-            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
-        }
-        out.push(reject);
-        for &arg in args {
-            collect(db, arg, out);
-        }
-        return;
-    }
-    // The MIRROR: a FLOAT arithmetic operator (`+.`/`-.`/`*.`/`/.`) applied to two INTEGER operands —
-    // `(+. n m)` for `n`,`m` : `Int64`. The whole-operation repair is to SWAP the operator to its INTEGER
-    // sibling (`+`), NOT to wrap an operand: `+.`'s scheme wants `Float`, so the generic unify below faults
-    // an operand and offers `(Float64.of-int …)` on JUST that one — leaving the OTHER operand an int, so
-    // the fix does not clear the fault (`fix --all` rightly refuses it) and misreads intent (two integer
-    // operands mean integer math). Emit ONE clean CDZ0301 whose fix rewrites the OPERATOR NAME node to the
-    // int sibling, then return so the generic path does not also add the misleading per-operand wrap.
-    // Gated on BOTH operands being `Ty::Int` (a genuine int/float MIX — `(+. n 1.0)` — keeps the
-    // per-operand `of-int` coercion, right there since one operand is already a float). The exact inverse
-    // of the two-floats→`+.` swap above.
-    if args.len() == 2
-        && let Some(prim) = crate::eval::meta_apply_of(db, head)
-        && let Some((float_op, sibling)) = int_sibling_operator(prim)
-        && let a0 = type_of(db, args[0])
-        && let b0 = type_of(db, args[1])
-        && matches!(a0, Ty::Int(_))
-        && matches!(b0, Ty::Int(_))
-    {
-        let op_name_node = match db.ast.get(app) {
-            crate::ast::Struct::List(items) => items.first().copied(),
-            _ => None,
-        };
-        trace!(target: "rcdzc::infer", head = head.0, float_op, sibling, "fault: float arithmetic operator on two ints — swap to the int sibling (CDZ0301)");
-        let mut reject = Reject::coded(
-            Code::NumericMismatch,
-            format!(
-                "`{float_op}` is floating-point arithmetic, but both operands are {} — use the integer \
-                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
-                a0.render_name(),
-            ),
-        )
-        .at(app);
-        if let Some(node) = op_name_node {
-            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
-        }
-        out.push(reject);
-        for &arg in args {
-            collect(db, arg, out);
-        }
-        return;
-    }
+    // (A `+`/`-`/`*`/`/` over FLOAT operands — including the int/float MIX `(+ 2 2.0)` — is handled by the
+    // Float skip+mix arm further below, alongside the BigInt/Rational skips: floating-point arithmetic
+    // reuses the ONE arithmetic operator, so there is no operator-swap repair — the fix is the one-shot
+    // int→float coercion on the integer operand, the same repair wherever an int/float mismatch surfaces.)
     // The RECORD + TUPLE ROW OPERATIONS have NO HM scheme (a label-list / literal-position operand is not
     // a typed value; a result shape is row-/arity-polymorphic), so SKIP the generic scheme-unify (it would
     // fault the operand). The per-op faults (CDZ0212 absent / CDZ0211 shared / CDZ0201 split-out-of-arity)
@@ -5429,6 +5467,87 @@ fn check_application(
             }
             return;
         }
+        // A `+`/`-`/`*`/`/` over FLOAT operands is float arithmetic — the SAME operator as the integer
+        // case, dispatched on a `Ty::Float` operand (there is no distinct `+.`). The operator's `∀a. (Int
+        // a) → …` scheme does NOT accept a `Float`, so the generic scheme-unify below would spuriously
+        // reject two well-typed floats. Skip it (both operands are Float in the well-typed case; `lower`
+        // remaps to `Prim::FAdd`… + folds/emits the machine op), descend for operand faults, and return.
+        // A genuine FLOAT/other MIX (`(+ 2 2.0)`, `(+ x 1.0)` for an integer `x`) still faults CDZ0301 —
+        // reported here, since if it fell through, the scheme-unify would fault only the second operand
+        // (its first `(Int a)` param having unified with the leading float's… no — a float never unifies
+        // with `(Int a)`, so BOTH would fault, a double-report). This is the numeric-model §An Arithmetic
+        // Operator Requires Both Operands To Be One Numeric Type rejection: the mix is caught by the
+        // operand disagreement, offering the one-shot int→float coercion on the integer operand (the
+        // `(: 3 Float64)` retype for a literal, `(Float64.of-int …)` for a computed int) — the SAME repair
+        // wherever an int/float mismatch surfaces. Widths must also agree: a `Float32`/`Float64` mix is a
+        // no-silent-promotion CDZ0301 with the `(<Float>.of …)` width wrap (via `numeric_text_coercion_fix`).
+        // Comparisons ride the generic `∀a. a→a→Bool` scheme (which accepts two floats) — a float/other
+        // comparison mix is faulted below/there — so only the ARITHMETIC forms need this skip; `is_additive`
+        // covers comparisons too, so guard the skip to a well-typed both-float pair and let a mix report.
+        if (is_multiplicative
+            || matches!(
+                prim,
+                Some(crate::resolved::Prim::Add | crate::resolved::Prim::Sub)
+            ))
+            && (matches!(a0, Ty::Float(_)) || matches!(b0, Ty::Float(_)))
+        {
+            // A mix — one operand a float, the other neither a matching-width float nor `Any` — is the
+            // no-promotion error CDZ0301. `agrees_with` handles the width check: two `Ty::Float`s agree
+            // iff their widths agree (a deferred/var width is compatible), and a float never agrees with a
+            // non-float. So the well-typed case is exactly "both floats AND they agree"; anything else is
+            // the mix. This is the compile-time rejection of a mixed floating-point/integer application
+            // (`(+ 2 2.0)`) — the operator requires both operands to be ONE numeric type, and the fault
+            // follows from the operands disagreeing (no silent promotion, no float→int coercion).
+            //= spec/capabilities/numeric-model.md#an-arithmetic-operator-requires-both-operands-to-be-one-numeric-type
+            //# An arithmetic operator MUST require both of its operands to be the same numeric type, so that an application mixing a floating-point operand with an integer operand is rejected at compile time rather than silently accepting one integer and one floating-point operand or coercing a floating-point operand to an integer.
+            let both_float = matches!(a0, Ty::Float(_)) && matches!(b0, Ty::Float(_));
+            let a_ok = matches!(a0, Ty::Float(_)) || matches!(a0, Ty::Any);
+            let b_ok = matches!(b0, Ty::Float(_)) || matches!(b0, Ty::Any);
+            let widths_ok = !both_float || a0.agrees_with(&b0);
+            if !(a_ok && b_ok && widths_ok) {
+                // Offer a one-shot coercion that conforms the SECOND operand to the FIRST operand's type —
+                // the first operand establishes the intended numeric type, the second is retyped to match.
+                // So `(+ 2 2.0)` (Int64, Float64) drops the `.0` (`2.0` → `2`, an int context); `(+ 2.0 2)`
+                // (Float64, Int64) retypes the int up (`2` → `2.0`); a `Float32`/`Float64` mix wraps the
+                // second in the first's `.of`. `numeric_text_coercion_fix` picks the right repair from the
+                // (expected = first's type, actual = second's type) pair — and returns `None` when there is
+                // no clean one-shot (a non-integer float `2.5` into an int context), leaving the bare
+                // CDZ0301. Deterministic and order-consistent (always the second operand), never guessing.
+                let (expected, fix_arg, actual) = (a0.clone(), args[1], &b0);
+                // A both-float WIDTH mismatch (`Float32`/`Float64`) names the FLOAT domain ("precisions
+                // differ … never silently widens or narrows a float") — the message the `Ty::Float`
+                // scheme-unify used to give before floating-point arithmetic moved onto the shared `(Int
+                // a)`-schemed operator. A float-vs-non-float mix ("no implicit conversion between numeric
+                // types") is the ordinary no-promotion wording. Both are CDZ0301 + the same coercion fix.
+                let msg = if both_float {
+                    let (Ty::Float(fa), Ty::Float(fb)) = (&a0, &b0) else {
+                        unreachable!("both_float guarantees two Ty::Float")
+                    };
+                    format!(
+                        "floating-point precisions differ: {}-bit vs {}-bit — convert explicitly \
+                         (Cadenza never silently widens or narrows a float)",
+                        fa.ground_width(),
+                        fb.ground_width(),
+                    )
+                } else {
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    )
+                };
+                let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
+                if let Some(fix) = numeric_text_coercion_fix(db, &expected, actual, fix_arg) {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
+            }
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         if is_additive {
             let a = a0;
             let b = b0;
@@ -5644,10 +5763,11 @@ fn check_application(
         }
         if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
+            let delta = peer_type_delta_hint(first_ty, et).unwrap_or_default();
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
-                    "a set contains elements of one type, but the elements differ: {} and {}",
+                    "a set contains elements of one type, but the elements differ: {} and {}{delta}",
                     first_ty.render_name(),
                     et.render_name()
                 ),
@@ -5751,11 +5871,15 @@ fn check_application(
                 if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
                     // Name the two clashing key types (like the list-homogeneity message) and, for an
                     // int-literal-vs-float clash, offer the same `3.0` retype fix — the map-key twin of the
-                    // list/if/match "same repair wherever the same mismatch surfaces" (M57).
+                    // list/if/match "same repair wherever the same mismatch surfaces" (M57). The
+                    // structural-delta hint names the SPECIFIC differing sub-part when the two key types are
+                    // same-kind compounds (a record field / tuple position / sum payload) — the peer-join
+                    // hint the list/if/match/set sites carry.
+                    let delta = peer_type_delta_hint(&fkt, &kt).unwrap_or_default();
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
-                            "a map associates keys of one type, but the keys differ: {} and {}",
+                            "a map associates keys of one type, but the keys differ: {} and {}{delta}",
                             fkt.render_name(),
                             kt.render_name()
                         ),
@@ -5769,10 +5893,11 @@ fn check_application(
                 }
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
+                    let delta = peer_type_delta_hint(&fvt, &vt).unwrap_or_default();
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
-                            "a map associates values of one type, but the values differ: {} and {}",
+                            "a map associates values of one type, but the values differ: {} and {}{delta}",
                             fvt.render_name(),
                             vt.render_name()
                         ),
@@ -6065,6 +6190,28 @@ fn check_application(
         }
         return;
     }
+    // An ARITHMETIC operator applied at an arity OTHER than 2, over a NON-integer numeric operand
+    // (`(+ 1.0 2.0 3.0)`, `(+ x 1.0 2.0)` for a Float `x`) — the well-typed arity-2 case took the
+    // Float/BigInt/Rational skip arm above (guarded on `args.len() == 2`), but an over/under-application
+    // falls through here to the generic `∀a. (Int a) → …` scheme-unify, which faults each Float/BigInt/
+    // Rational arg CDZ0301 (they never unify with `(Int a)`). That is a SPURIOUS type-mismatch masking
+    // the real ARITY error — the emit-path lowering reports the clean CDZ0201 "+ takes exactly 2
+    // operands" (with the delete/complete fix). So skip the generic unify for this shape, descend for the
+    // operands' own faults, and return; the arity CDZ0201 is the sole report. (An arity-2 integer/mixed
+    // application is unaffected — it is handled above or wants the generic unify's numeric report.)
+    if args.len() != 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+        && prim.is_arith()
+        && args
+            .iter()
+            .any(|&a| matches!(type_of(db, a), Ty::Float(_) | Ty::BigInt | Ty::Rational))
+    {
+        trace!(target: "rcdzc::infer", head = head.0, "fault: skip generic unify for a non-arity-2 arithmetic op over a non-int numeric (the arity CDZ0201 is the real fault)");
+        for &arg in args {
+            collect(db, arg, out);
+        }
+        return;
+    }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
@@ -6303,12 +6450,19 @@ fn check_application(
                         // The ARGUMENT is an UNAPPLIED function where a non-function param is wanted — a
                         // partial application `(+ (h 1) 2)` (h takes 2, applied to 1) passed to `+`, which
                         // wants an Int64. This falls through the bare-operator path to the generic unify
-                        // "Int64 and (-> Int64 Int64) must be the same type here" (an internal-clash read).
-                        // Append the "forgot to call it — apply N more argument(s)" hint, the arg-site twin
-                        // of the annotation-mismatch fn hint. No mechanical fix (which values were meant is
-                        // unknown), so tail only, added to the unify-produced message.
+                        // "type mismatch: Int64 and (-> Int64 Int64) must be the same type here, but differ"
+                        // — an INTERNAL-CLASS read that never says the argument is simply a function you
+                        // forgot to finish calling. REPLACE the raw unify LEAD with the arg-site phrasing the
+                        // annotation / member-op / effect-op siblings use ("this argument is …, but a value
+                        // of type … is expected here"), then append the "apply N more argument(s)" hint
+                        // (`fn_not_applied_hint`). No mechanical fix (which values were meant is unknown), so
+                        // the hint is a tail only. Keeps the reject's CODE.
                         out.push(Reject {
-                            message: format!("{}{hint}", reject.message),
+                            message: format!(
+                                "this argument is a function value, but a value of type {} is expected \
+                                 here{hint}",
+                                sparam.render_name()
+                            ),
                             ..reject
                         });
                     } else {
@@ -7449,22 +7603,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     && ann.len() == 2
                     && crate::eval::typeval_of(db, ann[1]).is_none()
                 {
-                    let before = out.len();
-                    collect(db, ann[1], out);
-                    if out.len() == before {
-                        // Name a bound VALUE misused as a type (`(: x helper)` where `helper` is a value)
-                        // — the SHARED `non_type_annotation_message` the parameter + value annotation sites
-                        // use (M77), so the let-binder is not the odd one out with a generic "found a
-                        // non-type". (Parallel producers drift — the sibling's `@5fc3bc85` unknown-type
-                        // check landed here without the category message the other two sites already had.)
-                        out.push(
-                            Reject::coded(
-                                Code::TypeMismatch,
-                                non_type_annotation_message(db, ann[1], "a binder's annotation"),
-                            )
-                            .at(ann[1]),
-                        );
-                    }
+                    // The SHARED annotation-type validator (M125): a record-bearing binder type
+                    // (`(: r (Record (x Nonesuch)))`) names only the bad field TYPE, not the label `x`
+                    // (the naive value-`collect` mis-resolved labels), and a bound-value-misused-as-a-type
+                    // gets the category message the parameter + value sites use — the let-binder is not the
+                    // odd one out.
+                    validate_non_type_annotation(db, ann[1], "a binder's annotation", out);
                 }
                 collect(db, value, out);
             }
@@ -7607,7 +7751,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Apply { head, args } => {
             check_application(db, id, head, &args, out);
             // OPERATOR-ARITY WELL-FORMEDNESS: a fixed-arity binary operator applied to a count other than 2
-            // (an over-application `(+ n 1 2)`/`(< n 1 2)`/`(+. x 1.0 2.0)`, or an under-application `(+ n)`)
+            // (an over-application `(+ n 1 2)`/`(< n 1 2)`/`(+ x 1.0 2.0)`, or an under-application `(+ n)`)
             // has a clear operator-specific CDZ0201 "+ takes exactly 2 operands" — but it is produced ONLY
             // by the emit-path lowering walk (`collect_reached_poisons`, nullary-exported bodies), so `check`
             // on a PARAMETERIZED body saw only `check_application`'s GENERIC CDZ0203 ("applied N arguments to
@@ -8434,6 +8578,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // Two FUNCTION types that differ in ARITY or RESULT — `(-> Int64 Bool)` where
+                            // `(-> Int64 Int64)` is expected (a callback of the wrong return type), or a
+                            // 2-arg fn where a 1-arg is wanted. `fn_not_applied_hint` (fn_tail) only covers
+                            // an UNAPPLIED function; two genuinely-different signatures fall through it, and
+                            // the curried arrow render (`(-> Int64 (-> Int64 Int64))`) is hard to diff by eye.
+                            // Name the differing part (result / arity), the function twin of the collection/
+                            // sum axis hints. Last in the chain (a same-arity PARAMETER difference surfaces at
+                            // the inner position on its own, so this only adds the result/arity axis).
+                            let fn_sig_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                                && collection_tail.is_none()
+                                && sum_tail.is_none()
+                            {
+                                fn_signature_delta_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
@@ -8442,6 +8605,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(fn_tail)
                                 .or(collection_tail.clone())
                                 .or(sum_tail.clone())
+                                .or(fn_sig_tail)
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
@@ -8474,29 +8638,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             } else if !runtime_width {
                 // The TYPE OPERAND does not denote a type — an unbound name, an integer/compound VALUE,
                 // an arbitrary expression, or a non-constructor type applied to arguments (`(Int64 Int64)`).
-                // The type position REQUIRES a type, so this is REJECTED, not dropped-and-ignored (the
-                // drop-instead-of-reject gap: `typeval_of` → None was treated as "no constraint"). First
-                // collect the operand's OWN faults — an UNBOUND NAME surfaces as CDZ0101 there (the same
-                // code it gets in value position, `(+ foo 1)`), so a typo in a type is not swallowed. If
-                // the operand is well-formed but simply not a type (a literal, a compound, `(Int64 Int64)`),
-                // no fault surfaces from that collect, so add an "expected a type" TypeMismatch (CDZ0203).
+                // The type position REQUIRES a type, so this is REJECTED, not dropped-and-ignored. The
+                // SHARED validator (M125): a record-bearing annotation type (`(: v (Record (x Nonesuch)))`)
+                // names only the bad field TYPE, not the label `x` (the naive value-`collect` mis-resolved
+                // labels); an unbound name → CDZ0101; a well-formed non-type → the "expected a type" CDZ0203.
                 // (A RUNTIME WIDTH also makes `typeval_of` return None but is already reported CDZ0302
                 // above — excluded here so it is not double-faulted.)
-                let before = out.len();
-                collect(db, ty_expr, out);
-                if out.len() == before {
-                    trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
-                    // A wrong-arity type constructor was already caught above (before the `typeval_of`
-                    // use), so here it is a genuine non-type — the generic "requires a type" message.
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
-                        non_type_annotation_message(
-                            db,
-                            ty_expr,
-                            "the type position of an annotation",
-                        ),
-                    ));
-                }
+                trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type");
+                validate_non_type_annotation(
+                    db,
+                    ty_expr,
+                    "the type position of an annotation",
+                    out,
+                );
             }
             // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`
             // — is finite as the literal's default `Float64` but rounds to `±inf` in `Float32`, a value

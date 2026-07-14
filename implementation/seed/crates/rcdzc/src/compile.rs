@@ -439,8 +439,8 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// Module Directive Is Drawn From A Fixed Set). The single source of truth for BOTH the `(pragma …)`
 /// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
 /// suggestion can never drift from the accepted set. Small and closed today (`default-integer`,
-/// `default-fraction`); a new spec directive adds its key here.
-const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction"];
+/// `default-fraction`, `default-float`); a new spec directive adds its key here.
+const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction", "default-float"];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
 /// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
@@ -500,7 +500,10 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 /// rational type (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). The
 /// fraction analogue of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its
 /// CDZ0101; a type that does not reduce to a concrete `Ty` returns `None`, no false reject), the domain
-/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303.
+/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303 —
+/// the machine-readable diagnostic for the unsatisfied "the named type must be an exact rational" constraint.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# The type named by a default-fraction-literal directive MUST be an exact rational type the numeric model admits, and a directive naming a type that is not an exact rational type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
 fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
     // note for the bound-unmodeled vs unbound distinction this turns on).
@@ -520,6 +523,42 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
             format!(
                 "`default-fraction` must name an exact rational type (Rational), but `{}` is not \
                  (the default grounds otherwise-unconstrained numeric literals to an exact fraction)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
+/// The numeric-domain check for a well-formed `(pragma default-float <T>)`: `<T>` MUST be a floating-point
+/// type (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The floating-point twin
+/// of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its CDZ0101; a type that
+/// does not reduce to a concrete `Ty` returns `None`, no false reject), the domain predicate is
+/// `Ty::Float` (`Float32`/`Float64` — every admitted IEEE width, the ONE representation every fixed-width
+/// and deferred float shares). A non-float type-value (`Int64`, `Rational`, a record, …) is CDZ0303 — the
+/// machine-readable diagnostic for the unsatisfied "the named type must be a floating-point type" constraint.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# The type named by a default-float-literal directive MUST be a floating-point type the numeric model admits, and a directive naming a type that is not a floating-point type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
+fn non_float_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
+    // note for the bound-unmodeled vs unbound distinction this turns on).
+    if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, ty_expr)
+        && reject.code == Some(Code::Unbound)
+    {
+        return Some(reject);
+    }
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    // The floating-point domain is `Ty::Float` — every admitted IEEE width (`Float32`/`Float64`), fixed or
+    // deferred.
+    if matches!(ty, crate::ty::Ty::Float(_)) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-float` must name a floating-point type (Float32 or Float64), but `{}` is not \
+                 (the default fixes the type otherwise-unconstrained decimal literals take)",
                 ty.render_name()
             ),
         )
@@ -698,6 +737,11 @@ fn unbacktick(msg: &str) -> Option<&str> {
 
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // A BAKEABLE type-valued export (a nullary export whose type-value reduces to a concrete type) crosses
+    // via the constant value-form escape — NOT a fault. But its body's lowering still declines the bare
+    // type-value as a runtime value (`TYPE_VALUE_NO_RUNTIME_DECLINE` + friends); this flag lets
+    // `dedup_faults` drop that cascade (the escape, not a reject, is the answer). Set in the export loop.
+    let mut has_bakeable_type_export = false;
     // Fresh reached-poison walk state for this call: the visited-set (which lets the walk skip a shared
     // core DAG node instead of re-descending it as a tree) accumulates across the per-body walks BELOW
     // that all feed this one `faults` vec, and is stale from any prior `collect_faults` call — clear it.
@@ -787,23 +831,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // members never reach `unknown_top_forms`, so this fires only for a top-level/root-scope pragma.)
         if head == "pragma" {
             // Only emit the placement message for a RECOGNIZED, WELL-FORMED directive — a top-level
-            // `(pragma default-integer <T>)` with the correct arity whose SOLE defect is its placement. A
-            // malformed pragma (an unknown key `nonesuch`, a wrong arity, a non-integer type) ALSO gets a
-            // more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
+            // `(pragma <key> <T>)` with a registry key and the correct arity whose SOLE defect is its
+            // placement. A malformed pragma (an unknown key `nonesuch`, a wrong arity, a bad type) ALSO gets
+            // a more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
             // CDZ0303 domain), which is MORE actionable than "it's mis-scoped" — so skip the placement
             // message there and let the registry message be the one primary. Gate on the exact shape the
-            // registry pass accepts: key `default-integer` with exactly one argument (`ptail.len() == 2`);
-            // the domain (integer-type) check is the registry's, so a bad type still gets CDZ0303 alone.
+            // registry pass accepts: a registry key with exactly one argument (`ptail.len() == 2`) that
+            // passes its key's domain check, so a bad type still gets CDZ0303 alone.
             let ptail = db.ast.as_form(occ, "pragma").map(<[_]>::to_vec);
-            let well_formed_default_integer = ptail.as_deref().is_some_and(|t| {
-                t.len() == 2
-                    && t.first()
-                        .and_then(|&k| db.ast.as_name(k))
-                        == Some("default-integer")
-                    // A non-integer type argument is the registry's CDZ0303 — defer to it, no placement noise.
-                    && non_integer_default_fault(db, occ, t[1]).is_none()
+            let well_formed_default = ptail.as_deref().is_some_and(|t| {
+                if t.len() != 2 {
+                    return false;
+                }
+                // A domain-bad type argument is the registry's CDZ0303 — defer to it, no placement noise.
+                match t.first().and_then(|&k| db.ast.as_name(k)) {
+                    Some("default-integer") => non_integer_default_fault(db, occ, t[1]).is_none(),
+                    Some("default-fraction") => non_rational_default_fault(db, occ, t[1]).is_none(),
+                    Some("default-float") => non_float_default_fault(db, occ, t[1]).is_none(),
+                    _ => false,
+                }
             });
-            if well_formed_default_integer {
+            if well_formed_default {
                 faults.push(
                     Reject::coded(
                         Code::UnknownDirective,
@@ -906,6 +954,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         .at(form),
                     );
                 } else if let Some(reject) = non_rational_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
+                }
+            }
+            // `default-float <T>` — exactly one argument; a well-formed one whose type is not a
+            // floating-point type → the numeric-domain CDZ0303 (the float twin of `default-integer`).
+            Some("default-float") => {
+                if ptail.len() != 2 {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`default-float` takes exactly one type argument (e.g. `(pragma default-float Float32)`)",
+                        )
+                        .at(form),
+                    );
+                } else if let Some(reject) = non_float_default_fault(db, form, ptail[1]) {
                     faults.push(reject);
                 }
             }
@@ -1952,8 +2015,13 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // and an unbound name surfaces its own CDZ0101 at the reference; only an unambiguous non-effect def is a
     // certain mis-bind. Uses `def_by_name` — a top-level value def — exactly as the host-delegates-a-value
     // check does, since `effect_decl_by_name` is a top-level-only registry.)
+    // Scan only the TOP-LEVEL `(bind …)` directives — the same scope `scan_effect_bindings` uses. An
+    // arena-wide scan (`0..structure.len()`) also matches a `(bind …)` list NESTED in a handler arm — an
+    // effect declaring an operation named `bind`, whose arm is `(bind (params) s body)` — and misreads it
+    // as a malformed peer-binding (arity ≠ 2) → a spurious CDZ0201 on a legal operation name. `bind` is an
+    // ordinary identifier; only a top-level `(bind …)` is a peer-binding directive.
     let mut bound_effects: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+    for form in db.top_bind_forms() {
         let Some(btail) = db.ast.as_form(form, "bind").map(<[_]>::to_vec) else {
             continue;
         };
@@ -2028,36 +2096,49 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             _ => false,
         }
     }
-    // Collect (body, name, occ) FIRST (immutable borrow), then read each body's type with `&mut db`.
-    let export_results: Vec<(StructId, String, StructId)> = db
+    // Collect (body, name, occ, nullary) FIRST (immutable borrow), then read each body's type with `&mut
+    // db`. `nullary` (the def takes no parameters) gates whether a type-valued export can be baked — a
+    // parameterized one has no constant form.
+    let export_results: Vec<(StructId, String, StructId, bool)> = db
         .exports
         .iter()
         .filter_map(|e| {
-            let body = e.def.and_then(|d| db.defs[d].body)?;
-            Some((body, e.name.clone(), e.occ))
+            let d = e.def?;
+            let body = db.defs[d].body?;
+            Some((body, e.name.clone(), e.occ, db.defs[d].params.is_empty()))
         })
         .collect();
-    for (body, name, occ) in export_results {
+    for (body, name, occ, nullary) in export_results {
         let ty = crate::infer::type_of(db, body);
-        // A TYPE-VALUED export — `(def (main) Int64)` exports a bare type name. A type is a COMPILE-TIME
-        // value with no runtime form (the erasure fence), so it cannot be an entrypoint's result. The emit
-        // path declines this through FOUR different downstream paths (type-value-has-no-runtime-form,
-        // nullary-lambda-no-closure, closure-param-no-repr, built-in-op-as-value) — a 4-error cascade for
-        // one root cause. Report it ONCE here, coded CDZ0201 at the export clause with a clear message;
-        // `dedup_faults` drops the downstream declines. `Ty::Type` is the type of a type-value — the
-        // authoritative signal (an ordinary runtime value never has it).
+        // A TYPE-VALUED export — `(def (main) Int64)` exports a bare type value. A Type is a FIRST-CLASS
+        // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
+        // Values), so a NULLARY export whose type-value reduces to a concrete `Ty` CROSSES the boundary via
+        // the constant value-form escape (`constant_value_form` bakes `(: <TypeName> Type)` — the type is
+        // fully compile-time-known, its runtime footprint nil). Only a type-value that CANNOT be baked is
+        // rejected: a PARAMETERIZED export (its result would depend on a runtime argument, but a type-value
+        // never flows from runtime data — §226), or a type that does not reduce to a concrete type (a free
+        // variable). Report that ONCE here, coded CDZ0201 (the emit path would otherwise cascade four
+        // no-runtime-form declines); `dedup_faults` drops the downstream declines.
         if matches!(ty, crate::ty::Ty::Type) {
-            faults.push(
-                Reject::coded(
-                    Code::Malformed,
-                    format!(
-                        "export `{name}` is a TYPE, not a runtime value — a type is compile-time only \
-                         and cannot cross the component boundary (export a value of the type, or a \
-                         function, not the type itself)"
-                    ),
-                )
-                .at(occ),
-            );
+            let bakeable =
+                nullary && crate::eval::typeval_of(db, body).is_some_and(|t| !t.has_free_var());
+            if bakeable {
+                has_bakeable_type_export = true;
+            }
+            if !bakeable {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "export `{name}` is a TYPE that cannot cross the component boundary — a \
+                             type-value crosses only from a NULLARY export and only when it reduces to a \
+                             concrete type (a type-value never flows from runtime data, so a parameterized \
+                             or not-fully-determined type has no boundary form)"
+                        ),
+                    )
+                    .at(occ),
+                );
+            }
             continue;
         }
         // A type-value NESTED in a compound result — `(def (main) (tuple Int64 5))` returns `(Tuple Type
@@ -2191,7 +2272,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // family nor a user `Unit.define` (`5zorks`, `5gram`) fails to reduce and otherwise surfaces only as a
     // generic "no machine representation" decline — name the unknown unit (CDZ0201) with a did-you-mean.
     crate::infer::check_unknown_units(db, &mut faults);
-    dedup_faults(db, faults)
+    dedup_faults(db, faults, has_bakeable_type_export)
 }
 
 /// The BODY occurrence of each VALUE / NULLARY `(def …)` member of the module at `mod_form` — a bare-name
@@ -2234,7 +2315,7 @@ fn module_member_value_bodies(db: &Db, mod_form: StructId) -> Vec<StructId> {
 /// drop the rest. DISTINCT occurrences (same code, DIFFERENT node — e.g. two separate unbound uses)
 /// are NOT duplicates and both survive. An UNANCHORED fault (`at == None`) dedups by code+message, so
 /// two different unanchored declines still both show.
-fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
+fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) -> Vec<Reject> {
     // If any CDZ0401 (an ungranted effect reached with no home) was produced, the emit path's UNCODED
     // "performed with no enclosing handler here" DECLINE is the same root cause reported more weakly —
     // drop it so one ungranted effect yields ONE primary `error:` (the coded CDZ0401), not a coded
@@ -2565,6 +2646,25 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                 return false;
             }
             if has_type_export_reject
+                && r.is_decline()
+                && matches!(
+                    r.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                        | crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
+                )
+            {
+                return false;
+            }
+            // A BAKEABLE type-valued export crosses via the constant escape, so the SAME no-runtime-form
+            // cascade its body's lowering produces (a bare type-value / built-in-op-as-value / nullary
+            // lambda has no runtime form) is not a fault — the escape bakes `(: <TypeName> Type)` from the
+            // reduced type. Drop that cascade when a bakeable type export is present (no reject to anchor
+            // it — the escape is the answer). Same decline family as the type-export-reject case above.
+            if has_bakeable_type_export
                 && r.is_decline()
                 && matches!(
                     r.message.as_str(),
@@ -3527,6 +3627,117 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         }
     }
 
+    // MATCH-ARM PATTERN BINDERS. A variant/tuple pattern binder — `x` in `(match o ((Some x) …) …)` —
+    // that its arm body never references is unused, exactly like an unused `let` binding or parameter, and
+    // should be `_`-prefixed. It is NOT tracked by the `used`-occ set: a reference to a match binder
+    // resolves to a `SumPayload` (reading the scrutinee) or a scalar-match `Ref` (to the scrutinee), never
+    // to the binder's OWN occurrence. So — like the parameter path — use a scope-correct NAME check: a
+    // binder is used iff some name occurrence in its arm BODY resolves to a match binder of that name
+    // (`resolves_to_match_binder`). Collected per `(match …)` arm; a `_`-prefixed binder is skipped (the
+    // shared loop filters `_` too, but a variant head / literal in the pattern is not a binder anyway).
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) {
+            continue;
+        }
+        let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
+            continue;
+        };
+        // A match whose lowering POISONS — a malformed pattern (`(tuple a b c)` against a 2-tuple →
+        // CDZ0201), a non-linear binder, an unbound scrutinee — is being REJECTED; its arm binders never
+        // bind, so "unused binding" on them is CONSEQUENT noise, not an INDEPENDENT problem. Skip the
+        // whole match's binder pass, deferring to the poison the SAME lowering produces (the authority the
+        // CDZ0201 comes from — the two can never disagree). This closes a check≡compile discrepancy: the
+        // `compile` path bails at the first fault set before any warning is collected, so it shows ONLY the
+        // CDZ0201; the `diagnostics()`/`cdz check` path collects faults AND warnings, and without this
+        // guard it appended spurious CDZ0306s for the binders inside the rejected pattern.
+        //= spec/capabilities/diagnostics.md#diagnosis-reports-the-maximal-independent-set-in-one-pass
+        //# The compiler MUST recover from an error and report the maximal set of independent problems in one pass rather than only the first.
+        if matches!(crate::lower::core_of(db, id), crate::core::Core::Poison(_)) {
+            continue;
+        }
+        for (pat, body) in arms.iter() {
+            // A GUARD pattern `(guard <pat> <cond>)` binds names in `<pat>`, and its `<cond>` is a USE
+            // site (`(guard x (> x 0))` reads `x`) — NOT a second binding. Split them: binders come from
+            // the inner `<pat>`, and the guard `<cond>` is scanned for uses alongside the arm body.
+            // `arm_pattern_binders` over the WHOLE guard form would wrongly collect the cond's `x` as a
+            // binder AND miss it as a use — a false "unused" (a guard binder used only in the cond).
+            let (binder_pat, guard_cond) = match db.ast.as_form(*pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (*pat, None),
+            };
+            // The arm's pattern binders (variant payloads, tuple elements, scalar binders); a `_`/`..`
+            // separator and a literal bind nothing.
+            let pat_binders = crate::resolve::arm_pattern_binders(db, binder_pat);
+            if pat_binders.is_empty() {
+                continue;
+            }
+            // The binder NAMES referenced in the arm body OR the guard cond (both resolving to a match
+            // binder) — a binder used in either is used.
+            let mut referenced = used_match_binder_names(db, *body);
+            if let Some(cond) = guard_cond {
+                referenced.extend(used_match_binder_names(db, cond));
+            }
+            for (name, name_occ) in pat_binders {
+                if name.starts_with('_') || referenced.contains(&name) {
+                    continue;
+                }
+                // `arm_pattern_binders` is deliberately SYNTACTIC — it does NOT resolve ctor-vs-binder, so a
+                // bare NULLARY VARIANT CONSTRUCTOR pattern (`D` in `((A) 1) ((B) 2) (D …)`, or a bare `None`)
+                // arrives here looking like an unused binder. It binds NOTHING (it is a refutable ctor
+                // match), so it can't be "unused" — flagging it and auto-prefixing `_D` would silently
+                // DOWNGRADE the precise variant arm to a catch-all wildcard. Skip it, matching the
+                // ctor-vs-binder authority `lower::collect_pattern_binders` uses (`eval::variant_disc_of`).
+                if crate::eval::variant_disc_of(db, name_occ).is_some() {
+                    continue;
+                }
+                binders.push(Binder {
+                    name_occ,
+                    target: name_occ,
+                    name,
+                    kind: "match binding",
+                    precomputed_unused: true, // decided by the name scan, not the `used` occ set
+                });
+            }
+        }
+    }
+
+    // ANONYMOUS-LAMBDA PARAMETERS. A `(fn (x) …)` param never referenced in the lambda body is unused,
+    // exactly like an unused DEF parameter — but a lambda is not in `db.defs`, so the def-param loop above
+    // misses it. Gated on `head_name == "fn"`: a DEF's signature list also resolves to a `Lambda` (its
+    // params are already checked by the def-param loop), so only an ANONYMOUS `(fn …)` is handled here (no
+    // double-report). Uses the same name-based check the def-param path does (`used_param_names` over the
+    // body — a reference resolves to a `Param`, synthesis-independent), which is scope-correct.
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) || db.ast.head_name(id) != Some("fn") {
+            continue;
+        }
+        let Resolved::Lambda { params, body } = crate::resolve::resolved_of(db, id) else {
+            continue;
+        };
+        if params.is_empty() {
+            continue;
+        }
+        let referenced = used_param_names(db, body);
+        for &p in params.iter() {
+            let name_occ = param_name_occ(db, p);
+            let Some(name) = db.ast.as_name(name_occ).map(str::to_string) else {
+                continue;
+            };
+            if name.starts_with('_') || referenced.contains(&name) {
+                continue;
+            }
+            binders.push(Binder {
+                name_occ,
+                target: name_occ,
+                name,
+                kind: "parameter",
+                precomputed_unused: true, // decided by the reference-name set, not the `used` occ set
+            });
+        }
+    }
+
     // A non-exported top-level DEFINITION that nothing references is unused (an exported def is part of
     // the interface — used by definition). A def's target is its body (a `Ref` to a nullary def points
     // at the body) OR — for a def-with-params — the reference resolves to a `Lambda { body }`, which is
@@ -3725,6 +3936,36 @@ fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<St
         }
         // Recurse into children (a user node's subtree). Clone the child list to avoid holding a
         // borrow across the recursive `&mut` call.
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            for c in kids.clone() {
+                walk(db, c, out);
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
+}
+
+/// The NAME occurrences in an arm-body / guard-cond subtree that could REFERENCE a match-arm binder — a
+/// plain name-presence scan (every name occurrence that is not itself a binding-declaration name). Used
+/// to decide whether a match-arm pattern binder is used: a match binder is scoped to its OWN arm, and its
+/// declaration occurrences live in the PATTERN (not the body/cond) — so ANY occurrence of the binder name
+/// in the arm body/cond subtree is a use of it. A resolution-KIND check is NOT reliable here (a scalar /
+/// whole-value binder resolves to `Ref { value: scrutinee }` — indistinguishable from an ordinary
+/// variable `Ref` without knowing the scrutinee shape, which varies: a param → `Ref`-to-`Param`, a
+/// literal → `Ref`-to-`Int`, …). The name-presence scan is robust regardless of scrutinee shape;
+/// `is_let_binding_name` skips an inner `let`'s own NAME position (a declaration, not a use). CONSERVATIVE
+/// on inner shadowing: a binder shadowed by an inner same-named binder that is then used counts the outer
+/// as "used" (under-reports the rare shadow case — never a false "unused"), the right side to err on for a
+/// warning.
+fn used_match_binder_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
+    fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
+        if let Some(name) = db.ast.as_name(id).map(str::to_string)
+            && !is_let_binding_name(db, id)
+        {
+            out.insert(name);
+        }
         if let crate::ast::Struct::List(kids) = db.ast.get(id) {
             for c in kids.clone() {
                 walk(db, c, out);

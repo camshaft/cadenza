@@ -19,6 +19,7 @@ import init, {
   repl_eval as wasmReplEval,
   defined_names as wasmDefinedNames,
   render_syntax as wasmRenderSyntax,
+  render_syntax_display as wasmRenderSyntaxDisplay,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
 } from "../wasm/pkg/cdz_wasm.js";
@@ -220,6 +221,14 @@ const api = {
   async renderSyntax(text: string, from: Surface, to: string): Promise<string> {
     await ensureReady();
     return wasmRenderSyntax(text, from, to);
+  },
+
+  // Render for human DISPLAY (a calculator result): a rational bare, a quantity in its concise
+  // `<value> <unit>` surface, the result type annotation dropped. Non-round-tripping by design; the
+  // playground uses `renderSyntax` (canonical) instead.
+  async renderSyntaxDisplay(text: string, from: Surface, to: string): Promise<string> {
+    await ensureReady();
+    return wasmRenderSyntaxDisplay(text, from, to);
   },
 
   async renderValue(bytes: Uint8Array): Promise<string> {

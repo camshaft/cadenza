@@ -1,0 +1,53 @@
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+def free-vars(node: Ast) = match node with
+  | Ast.Name(n) => Set.insert(#(), n)
+  | Ast.List(es) => free-vars-list(es)
+  | _ => #()
+
+def free-vars-list(es: List(Ast)) = match es with
+  | [] => #()
+  | [h, .. r] => Set.union(free-vars(h), free-vars-list(r))
+
+def name-count(node: Ast) = Set.len(free-vars(node))
+
+@test
+def fv-single-name() = if name-count(Ast.Name("x")) == 1 then unit else trap("single name")
+
+@test
+def fv-int-none() = if name-count(Ast.Int(5)) == 0 then unit else trap("int has no names")
+
+@test
+def fv-flat() =
+  if name-count(Ast.List([Ast.Name("f"), Ast.Name("g"), Ast.Int(1)])) == 2 then
+    unit
+  else
+    trap("f,g = 2")
+
+@test
+def fv-dedup() =
+  if name-count(Ast.List([Ast.Name("x"), Ast.Name("x"), Ast.Name("x")])) == 1 then
+    unit
+  else
+    trap("x dedups to 1")
+
+@test
+def fv-nested() =
+  if name-count(Ast.List([Ast.Name("a"), Ast.List([Ast.Name("b"), Ast.Name("a")])])) == 2 then
+    unit
+  else
+    trap("a,b nested = 2")
+
+@test
+def fv-empty() = if name-count(Ast.List([])) == 0 then unit else trap("empty = 0")
+
+@test
+def fv-contains() = match free-vars(Ast.List([Ast.Name("foo")])) with
+  | s => if Set.contains(s, "foo") then unit else trap("should contain foo")
+
+export { free-vars, name-count }

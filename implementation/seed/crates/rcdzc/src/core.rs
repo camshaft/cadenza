@@ -302,14 +302,14 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
     //# A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
     ///
-    /// The field map is behind an `Arc` so CLONING a `Core::Record` (which `core_of` does on every memo
+    /// The field map is behind an `Rc` so CLONING a `Core::Record` (which `core_of` does on every memo
     /// read, and every recursive Core-tree walk — `collect_host_arg_strings`, layout, select — does per
     /// node) is a refcount bump, not a deep O(fields) `BTreeMap` copy. A wide record read field-by-field
     /// (`(+ (. r f0) (+ (. r f1) …))`) re-reads the record's `Core` per access, so an owned map made that
     /// O(N²) — 3200 fields ≈ 2.8s, ~50% in `BTreeMap::clone`. Mirrors [`crate::ty::Ty::Record`], which is
-    /// `Arc`-wrapped for the identical reason.
+    /// `Rc`-wrapped for the identical reason.
     Record {
-        fields: std::sync::Arc<BTreeMap<Symbol, StructId>>,
+        fields: std::rc::Rc<BTreeMap<Symbol, StructId>>,
     },
     /// A TUPLE value — a fixed-arity positional product, each element referenced by its AST occurrence.
     /// Present only when the tuple SURVIVES to selection as a RUNTIME value (constructed from runtime

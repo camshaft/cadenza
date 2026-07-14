@@ -327,14 +327,167 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
 ///     (FAIL). A failure's message rides `cdz-run`'s `host-arg` stderr line (the assertion text the test
 ///     emitted via a host effect before trapping).
 ///
-/// Exits non-zero if ANY test fails (or if the compile declines / no `@test` is present) — the CI shape.
+/// Exits non-zero if ANY test fails (or if a file's compile declines / no `@test` is present) — the CI
+/// shape. FILE may be a DIRECTORY: every source file under it (recursively, `.cdz`/`.ml`/`.sexp`) is run
+/// and the pass/fail totals are aggregated, so `cdz test <dir>` runs a whole package's suite in one call.
 fn run_test(args: &TestArgs) -> ExitCode {
+    // Resolve WHICH files to run. Cases:
+    //  - NO arg → search UP from the current directory for the nearest `Project.cdz` (like `cargo test`
+    //    finding `Cargo.toml`) and run its suite;
+    //  - a `Project.cdz` (or a directory holding one): run the manifest's `tests` list — the project
+    //    TELLS us its suite (the Cadenza-authored manifest, no per-run flags);
+    //  - a directory with NO manifest: run every source file's `@test`s (path-sorted walk);
+    //  - a single file: the one-file case.
+    let target: String = match &args.file {
+        Some(f) => f.clone(),
+        None => match find_manifest_upward() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                eprintln!(
+                    "{PROG}: no `{MANIFEST_NAME}` found in the current directory or any ancestor \
+                     (name a file/dir to test, or add a `{MANIFEST_NAME}`)"
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let path = std::path::Path::new(&target);
+    let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    let manifest_dir: Option<std::path::PathBuf> = if is_manifest_arg {
+        path.parent().map(|p| {
+            if p.as_os_str().is_empty() {
+                std::path::Path::new(".").to_path_buf()
+            } else {
+                p.to_path_buf()
+            }
+        })
+    } else if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        None
+    };
+    let files: Vec<String> = if let Some(dir) = &manifest_dir {
+        match load_manifest(dir) {
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return ExitCode::FAILURE;
+            }
+            // A manifest is present: run its declared `tests`, resolved relative to the manifest's dir.
+            // A `tests` entry may be a literal file OR a GLOB (`*.cdz`, `tests/*.cdz`, `**/x.cdz`),
+            // expanded against the dir (path-sorted, deduped) — so a project can say `tests = ["*.cdz"]`.
+            Ok(Some((mpath, m))) => {
+                if m.tests.is_empty() {
+                    eprintln!(
+                        "{PROG}: {}: the manifest declares no `tests` (add `def tests = [\"…\"]`)",
+                        mpath.display()
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                let expanded = expand_manifest_globs(dir, &m.tests, &m.exclude);
+                if expanded.is_empty() {
+                    eprintln!(
+                        "{PROG}: {}: the manifest's `tests` matched no files",
+                        mpath.display()
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                expanded
+            }
+            // No manifest in the directory: fall back to walking every source file (path-sorted).
+            Ok(None) if is_manifest_arg => {
+                eprintln!("{PROG}: {target}: no such file");
+                return ExitCode::FAILURE;
+            }
+            Ok(None) => {
+                let mut out = Vec::new();
+                if let Err(e) = collect_source_dir(dir, &mut out) {
+                    eprintln!("{PROG}: {e}");
+                    return ExitCode::FAILURE;
+                }
+                if out.is_empty() {
+                    eprintln!(
+                        "{PROG}: {target}: no source files (.cdz/.ml/.sexp) found in directory"
+                    );
+                    return ExitCode::SUCCESS; // an empty tree is vacuously green
+                }
+                out
+            }
+        }
+    } else {
+        vec![target.clone()]
+    };
+
+    // Locate the sibling `cdz-run` binary + the runtime store ONCE (shared across files).
+    let Some(cdz_run) = locate_cdz_run() else {
+        eprintln!(
+            "{PROG}: cannot find the `cdz-run` binary beside this executable — build it \
+             (`cargo build --bin cdz-run`) so `cdz test` can run the compiled tests"
+        );
+        return ExitCode::FAILURE;
+    };
+    let store = args.store.clone().unwrap_or_else(default_store);
+    let multi = files.len() > 1;
+
+    let mut total_pass = 0usize;
+    let mut total_fail = 0usize;
+    let mut any_error = false; // a file whose compile DECLINED (distinct from a test that failed)
+    for (i, file) in files.iter().enumerate() {
+        // In multi-file mode, head each file's block with its path so the output stays legible.
+        if multi {
+            if i > 0 {
+                println!();
+            }
+            println!("── {file} ──");
+        }
+        match run_test_file(
+            file,
+            args.filter.as_deref(),
+            &cdz_run,
+            &store,
+            args.trials,
+            args.seed,
+        ) {
+            Ok((p, f)) => {
+                total_pass += p;
+                total_fail += f;
+            }
+            Err(()) => any_error = true, // the compile declined; errors already printed to stderr
+        }
+    }
+
+    // A combined total across a package (a single file already printed its own "N passed, M failed").
+    if multi {
+        println!(
+            "\n═══ TOTAL: {total_pass} passed, {total_fail} failed (across {} files) ═══",
+            files.len()
+        );
+    }
+    if total_fail == 0 && !any_error {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Run one file's `@test` definitions, printing `PASS`/`FAIL` per test and a per-file `N passed, M
+/// failed` summary. Returns `(passed, failed)` on success, or `Err(())` when the test compile DECLINED
+/// (its errors are printed to stderr) — distinct from a clean run where some tests failed. A file with no
+/// matching `@test` prints nothing and returns `(0, 0)` (vacuously green), so a directory of mixed
+/// modules — some without tests — aggregates cleanly.
+fn run_test_file(
+    file: &str,
+    filter: Option<&str>,
+    cdz_run: &std::path::Path,
+    store: &std::path::Path,
+    trials: u64,
+    seed: u64,
+) -> Result<(usize, usize), ()> {
     // Parse the source once; the arenas feed BOTH the test-name enumeration (a `Db`) and the emit compile.
-    let (_source, arenas) = match load_program(&args.file) {
+    let (_source, arenas) = match load_program(file) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
+            return Err(());
         }
     };
 
@@ -347,33 +500,31 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // sorted). Building a `Db` here is the same load the compile does; it is cheap relative to emit and
     // gives the runner the names to `--call` + report. Filter by `--filter` (a name-substring) if given.
     let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast) else {
-        eprintln!("{PROG}: {}: could not decode the program's AST", args.file);
-        return ExitCode::FAILURE;
+        eprintln!("{PROG}: {file}: could not decode the program's AST");
+        return Err(());
     };
-    let db = rcdzc::db::Db::load(rcdzc_arenas);
-    let mut tests: Vec<String> = db
-        .test_defs()
-        .into_iter()
-        .map(|i| db.defs[i].name.clone())
-        .filter(|name| {
-            args.filter
-                .as_deref()
-                .is_none_or(|needle| name.contains(needle))
-        })
-        .collect();
-    tests.dedup();
+    let mut db = rcdzc::db::Db::load(rcdzc_arenas);
+    // Each test's name PLUS the generators for its parameters (empty = a plain nullary test, run once;
+    // non-empty = a PROPERTY test, run `trials` times with generated inputs). A param whose type is not a
+    // generatable scalar makes `param_generators` return `None` — reported per test, not aborting the run.
+    let mut tests: Vec<(String, Option<Vec<GenKind>>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for i in db.test_defs() {
+        let name = db.defs[i].name.clone();
+        if filter.is_some_and(|needle| !name.contains(needle)) {
+            continue;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let gens = param_generators(&mut db, i);
+        tests.push((name, gens));
+    }
     if tests.is_empty() {
-        let scope = match &args.filter {
-            Some(f) => format!(" matching `{f}`"),
-            None => String::new(),
-        };
-        eprintln!(
-            "{PROG}: {}: no `@test` definition{scope} (mark a nullary def with `@test`)",
-            args.file
-        );
-        // No tests to run is not a failure to REPORT — but nothing passed either; exit 0 (an empty suite
-        // is vacuously green), matching the common `--filter` "nothing selected" convention.
-        return ExitCode::SUCCESS;
+        // No matching `@test` here. A file with no tests (e.g. a pure library module in a package dir, or
+        // a `--filter` that selects nothing) is vacuously green — return (0, 0) and print nothing, so a
+        // directory run aggregates without a spurious error line per test-free file.
+        return Ok((0, 0));
     }
 
     // Compile the test component: the `ast` (encoded above) + an `EmitTests` sidecar request. `EmitTests`
@@ -391,85 +542,334 @@ fn run_test(args: &TestArgs) -> ExitCode {
         // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,
         // etc.). `report_errors` prints each coded/uncoded error to stderr.
         report_errors(&out);
-        return ExitCode::FAILURE;
+        return Err(());
     };
     let component = component.to_vec();
 
     // Write the component to a temp file the runner reads. (cdz-run also reads `-` from stdin, but a
-    // per-test re-invocation reuses one file rather than re-piping the bytes each call.)
-    let tmp = std::env::temp_dir().join(format!("cdz-test-{}.wasm", std::process::id()));
+    // per-test re-invocation reuses one file rather than re-piping the bytes each call.) Keyed by pid +
+    // a path-derived tag (non-alphanumerics → `_`, so a nested `dir/mod.cdz` yields a FLAT temp name, not
+    // a path with missing parent dirs) so files in a directory run never clash on one path.
+    let tag: String = file
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let tmp = std::env::temp_dir().join(format!("cdz-test-{}-{tag}.wasm", std::process::id()));
     if let Err(e) = std::fs::write(&tmp, &component) {
         eprintln!(
             "{PROG}: writing the test component to {}: {e}",
             tmp.display()
         );
-        return ExitCode::FAILURE;
+        return Err(());
     }
 
-    // Locate the sibling `cdz-run` binary — it lives beside THIS binary in `target/<profile>/` (both are
-    // built together). `current_exe().parent()/cdz-run` is the robust, install-location-independent path
-    // (the same `current_exe`-relative convention xtask uses to re-invoke its own tools).
-    let cdz_run = match std::env::current_exe().ok().and_then(|p| {
-        p.parent().map(|dir| {
-            dir.join(if cfg!(windows) {
-                "cdz-run.exe"
-            } else {
-                "cdz-run"
-            })
-        })
-    }) {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!(
-                "{PROG}: cannot find the `cdz-run` binary beside this executable — build it \
-                 (`cargo build --bin cdz-run`) so `cdz test` can run the compiled tests"
-            );
-            let _ = std::fs::remove_file(&tmp);
-            return ExitCode::FAILURE;
-        }
-    };
-    let store = args.store.clone().unwrap_or_else(default_store);
-
-    // Run each test through `cdz-run`, in declaration order. PASS = exit 0 (the test returned); FAIL =
-    // nonzero (it trapped). A failure's message is `cdz-run`'s `host-arg\t<op>\t<message>` stderr line —
-    // the assertion text the test emitted via its report host effect just before trapping.
+    // Run each test through `cdz-run`, in declaration order. A NULLARY test runs ONCE — PASS = exit 0
+    // (returned), FAIL = nonzero (trapped). A PROPERTY test (parameters) runs `trials` times with generated
+    // inputs; it PASSES only if every trial returns, and FAILS on the first trapping trial — reported with
+    // the failing inputs (shrunk toward a minimal counterexample) + the seed to replay.
     let mut passed = 0usize;
     let mut failed = 0usize;
-    for name in &tests {
+    for (name, gens) in &tests {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
-        let run = std::process::Command::new(&cdz_run)
-            .arg(&tmp)
-            .arg("--call")
-            .arg(&kebab)
-            .arg("--store")
-            .arg(&store)
-            .output();
-        match run {
-            Ok(o) if o.status.success() => {
-                passed += 1;
-                println!("PASS {name}");
-            }
-            Ok(o) => {
+        let run_one = |arg_vals: &[String]| -> TrialOutcome {
+            run_one_trial(cdz_run, &tmp, &kebab, store, arg_vals)
+        };
+        match gens {
+            // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
+            None => {
                 failed += 1;
-                match test_failure_message(&o.stderr) {
-                    Some(msg) => println!("FAIL {name}: {msg}"),
-                    None => println!("FAIL {name}"),
+                println!(
+                    "FAIL {name}: cannot generate inputs — a parameter's type is not a scalar this \
+                     runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
+                );
+            }
+            // Nullary: one run, the plain unit-test path.
+            Some(gens) if gens.is_empty() => match run_one(&[]) {
+                TrialOutcome::Pass => {
+                    passed += 1;
+                    println!("PASS {name}");
                 }
-            }
-            Err(e) => {
-                failed += 1;
-                println!("FAIL {name}: could not run `cdz-run`: {e}");
-            }
+                TrialOutcome::Fail(msg) => {
+                    failed += 1;
+                    match msg {
+                        Some(m) => println!("FAIL {name}: {m}"),
+                        None => println!("FAIL {name}"),
+                    }
+                }
+            },
+            // A PROPERTY test: run `trials` trials with generated inputs.
+            Some(gens) => match run_property(gens, trials, seed, &run_one) {
+                None => {
+                    passed += 1;
+                    println!("PASS {name} ({trials} trials)");
+                }
+                Some(PropertyFailure { inputs, message }) => {
+                    failed += 1;
+                    let args_str = inputs.join(", ");
+                    let msg = message.map(|m| format!(": {m}")).unwrap_or_default();
+                    println!(
+                        "FAIL {name}{msg}\n  counterexample: {name}({args_str})  (seed {seed}; replay \
+                         with `--seed {seed}`)"
+                    );
+                }
+            },
         }
     }
     let _ = std::fs::remove_file(&tmp);
 
     println!("\n{passed} passed, {failed} failed");
-    if failed == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    Ok((passed, failed))
+}
+
+/// The scalar KIND of a property-test parameter — what the runner generates a value of and renders to a
+/// `cdz-run --arg` string. Restricted to the scalars `cdz-run`'s `coerce_one` parses from `--arg` text:
+/// the boundary-crossable scalars this first property-testing increment supports (a compound param —
+/// tuple/sum/list — is a later increment via a guest-side `Gen` effect).
+#[derive(Clone, Copy)]
+enum GenKind {
+    /// A fixed-width integer: `(signed, width)`. Generated as a random value in the width's range.
+    Int {
+        signed: bool,
+        width: u32,
+    },
+    Bool,
+    /// A float (32 or 64). Generated as a random finite decimal — the text parses as either width, so the
+    /// width need not be tracked here (`cdz-run`'s `coerce_one` parses `f32`/`f64` from the same decimal).
+    Float,
+    Char,
+}
+
+/// The generators for definition `def`'s parameters, or `None` if ANY parameter's solved type is not a
+/// generatable scalar (so the test cannot be property-run). An EMPTY vec means a nullary def (run once).
+/// Each param's type is solved with `infer::type_of` on its binder (seeing through a `(: n T)` annotation,
+/// the shape a boundary parameter needs) — the same type `layout::export_params` crossed it as.
+fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> {
+    let params = db.defs[def].params.clone();
+    let mut kinds = Vec::with_capacity(params.len());
+    for p in params {
+        // See through a `(: name T)` binder to the name occurrence `type_of` types (bare param → itself).
+        let binder = db
+            .ast
+            .as_form(p, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(p);
+        let ty = rcdzc::infer::type_of(db, binder);
+        let kind = match ty {
+            rcdzc::ty::Ty::Int(it) => GenKind::Int {
+                signed: it.ground_signed(),
+                width: it.ground_width(),
+            },
+            rcdzc::ty::Ty::Bool => GenKind::Bool,
+            rcdzc::ty::Ty::Float(_) => GenKind::Float,
+            rcdzc::ty::Ty::Char => GenKind::Char,
+            _ => return None, // a non-scalar (or unresolved) param — cannot generate it here
+        };
+        kinds.push(kind);
     }
+    Some(kinds)
+}
+
+/// The outcome of one trial: PASS (the export returned) or FAIL (it trapped) with the failure message the
+/// test reported (via its `Test`/report host effect), if any.
+enum TrialOutcome {
+    Pass,
+    Fail(Option<String>),
+}
+
+/// A property-test failure: the (rendered) inputs that reproduced it, and the reported message.
+struct PropertyFailure {
+    inputs: Vec<String>,
+    message: Option<String>,
+}
+
+/// Invoke `cdz-run` once on the test component, calling `kebab` with `arg_vals` (rendered `--arg` text).
+/// PASS = exit 0; FAIL carries `cdz-run`'s `host-arg` failure message if the test reported one.
+fn run_one_trial(
+    cdz_run: &std::path::Path,
+    component: &std::path::Path,
+    kebab: &str,
+    store: &std::path::Path,
+    arg_vals: &[String],
+) -> TrialOutcome {
+    let mut cmd = std::process::Command::new(cdz_run);
+    cmd.arg(component)
+        .arg("--call")
+        .arg(kebab)
+        .arg("--store")
+        .arg(store);
+    for v in arg_vals {
+        cmd.arg("--arg").arg(v);
+    }
+    match cmd.output() {
+        Ok(o) if o.status.success() => TrialOutcome::Pass,
+        Ok(o) => TrialOutcome::Fail(test_failure_message(&o.stderr)),
+        Err(e) => TrialOutcome::Fail(Some(format!("could not run `cdz-run`: {e}"))),
+    }
+}
+
+/// Run a PROPERTY test `trials` times with generated inputs, returning `None` if every trial passed or the
+/// first counterexample (SHRUNK toward a minimal failing input). Generation is seeded (`seed`) so a run is
+/// reproducible; each trial advances the seed deterministically (`seed + trial`), so the failing trial's
+/// inputs re-generate identically on replay. On the first failing trial, `shrink` searches for a smaller
+/// still-failing input before reporting.
+fn run_property(
+    gens: &[GenKind],
+    trials: u64,
+    seed: u64,
+    run_one: &dyn Fn(&[String]) -> TrialOutcome,
+) -> Option<PropertyFailure> {
+    for trial in 0..trials {
+        let inputs = generate_inputs(gens, seed.wrapping_add(trial));
+        if let TrialOutcome::Fail(message) = run_one(&inputs) {
+            let (inputs, message) = shrink(gens, &inputs, message, run_one);
+            return Some(PropertyFailure { inputs, message });
+        }
+    }
+    None
+}
+
+/// Generate one `--arg` string per generator, from a driver seeded at `seed` — bolero's `driver::Rng`
+/// (a seeded, reproducible driver) feeding each type's `ValueGenerator`. The rendered forms are exactly
+/// what `cdz-run`'s `coerce_one` parses (`5`, `-3`, `true`, `1.5`, a single char).
+fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
+    use bolero_generator::driver::{self, Rng};
+    use bolero_generator::{ValueGenerator, produce};
+    let rng = rand_from_seed(seed);
+    let mut d = Rng::new(rng, &driver::Options::default());
+    gens.iter()
+        .map(|g| match g {
+            GenKind::Bool => produce::<bool>()
+                .generate(&mut d)
+                .unwrap_or(false)
+                .to_string(),
+            GenKind::Char => produce::<char>()
+                .generate(&mut d)
+                .unwrap_or('a')
+                .to_string(),
+            GenKind::Float => {
+                let v = produce::<f64>().generate(&mut d).unwrap_or(0.0);
+                // Render a finite decimal `coerce_one` (`parse::<f64>`) accepts; a non-finite generated
+                // value falls back to 0 (NaN/inf have no re-parseable decimal here).
+                if v.is_finite() { v } else { 0.0 }.to_string()
+            }
+            GenKind::Int { signed, width } => {
+                let raw = produce::<i64>().generate(&mut d).unwrap_or(0);
+                render_int(raw, *signed, *width)
+            }
+        })
+        .collect()
+}
+
+/// Render a generated `i64` as the decimal text for an integer parameter of the given signedness/width,
+/// truncated into that width's range so `cdz-run`'s `parse::<iN/uN>` accepts it (a wider raw value would
+/// fail to parse as the narrower type). The `as` truncation into range keeps the full value spread.
+fn render_int(raw: i64, signed: bool, width: u32) -> String {
+    match (signed, width) {
+        (true, 8) => (raw as i8).to_string(),
+        (false, 8) => (raw as u8).to_string(),
+        (true, 16) => (raw as i16).to_string(),
+        (false, 16) => (raw as u16).to_string(),
+        (true, 32) => (raw as i32).to_string(),
+        (false, 32) => (raw as u32).to_string(),
+        (false, 64) => (raw as u64).to_string(),
+        // signed 64 (and any deferred/other width defaults to i64 at the boundary).
+        _ => raw.to_string(),
+    }
+}
+
+/// A reproducible RNG from a `u64` seed — `Xoshiro256PlusPlus` (bolero's own generator rng), whose
+/// `seed_from_u64` SplitMix64-expands the seed to the full state, so `cdz test --seed N` is deterministic
+/// without depending on OS entropy.
+fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
+    use rand_core::SeedableRng;
+    use rand_xoshiro::Xoshiro256PlusPlus;
+    Xoshiro256PlusPlus::seed_from_u64(seed)
+}
+
+/// SHRINK a failing property input toward a minimal counterexample: for each argument position, try
+/// replacing it with progressively "smaller" values (an integer toward 0 by halving, a bool toward
+/// `false`, a float toward 0, a char toward `a`) and keep any replacement that STILL fails. Greedy +
+/// bounded — one left-to-right pass per position, each position bisected — so it terminates quickly and
+/// reports a smaller, more legible witness than the raw random input. Returns the shrunk inputs + the
+/// (possibly updated) failure message from the last failing run.
+fn shrink(
+    gens: &[GenKind],
+    inputs: &[String],
+    message: Option<String>,
+    run_one: &dyn Fn(&[String]) -> TrialOutcome,
+) -> (Vec<String>, Option<String>) {
+    let mut best = inputs.to_vec();
+    let mut best_msg = message;
+    for (i, g) in gens.iter().enumerate() {
+        for candidate in shrink_candidates(g, &best[i]) {
+            let mut trial = best.clone();
+            trial[i] = candidate;
+            if let TrialOutcome::Fail(m) = run_one(&trial) {
+                best = trial;
+                best_msg = m;
+            }
+        }
+    }
+    (best, best_msg)
+}
+
+/// The ordered shrink candidates for one argument (largest-reduction first), by kind: an integer halves
+/// toward 0 (then 0); a bool toward `false`; a float toward 0; a char toward `a`. Each is a value that,
+/// if it still fails, is a smaller witness than the current one.
+fn shrink_candidates(g: &GenKind, current: &str) -> Vec<String> {
+    match g {
+        GenKind::Int { .. } => {
+            let Ok(mut n) = current.parse::<i64>() else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            // Halve toward 0 (a geometric descent), ending at 0 — a bounded sequence.
+            while n != 0 {
+                n /= 2;
+                out.push(n.to_string());
+            }
+            out
+        }
+        GenKind::Bool => {
+            if current == "true" {
+                vec!["false".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        GenKind::Float => {
+            if current != "0" {
+                vec!["0".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        GenKind::Char => {
+            if current != "a" {
+                vec!["a".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Locate the sibling `cdz-run` binary — it lives beside THIS binary in `target/<profile>/` (both are
+/// built together). `current_exe().parent()/cdz-run` is the robust, install-location-independent path
+/// (the same `current_exe`-relative convention xtask uses to re-invoke its own tools). `None` if absent.
+fn locate_cdz_run() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.parent().map(|dir| {
+                dir.join(if cfg!(windows) {
+                    "cdz-run.exe"
+                } else {
+                    "cdz-run"
+                })
+            })
+        })
+        .filter(|p| p.exists())
 }
 
 /// The failure MESSAGE a trapped test emitted — the FIRST `host-arg\t<op>\t<message>` line in `cdz-run`'s
@@ -584,8 +984,10 @@ fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
 
 #[derive(clap::Args)]
 struct TestArgs {
-    /// The program file whose `@test` definitions to run (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
-    file: String,
+    /// What to test: a FILE (its `@test` defs), a DIRECTORY (its `Project.cdz` suite, else every source
+    /// file), or a `Project.cdz`. OMITTED → search up from the current directory for the nearest
+    /// `Project.cdz` and run its suite (like `cargo test` finding `Cargo.toml`).
+    file: Option<String>,
     /// Run only tests whose name CONTAINS this substring (a filter). Absent = run every `@test`.
     #[arg(long)]
     filter: Option<String>,
@@ -593,6 +995,14 @@ struct TestArgs {
     /// builds heap values. Defaults to `<repo>/target/cadenza-store` (built by `cargo xtask build`).
     #[arg(long)]
     store: Option<PathBuf>,
+    /// Trials per PROPERTY test — a `@test` that takes parameters is run this many times with generated
+    /// inputs (a nullary `@test` runs once regardless). Default 100.
+    #[arg(long, default_value_t = 100)]
+    trials: u64,
+    /// The random SEED for property-input generation — the run is reproducible from it (a reported
+    /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
 }
 
 // ── the semantic queries ─────────────────────────────────────────────────────────────────────────
@@ -2103,6 +2513,258 @@ fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
         }
     }
     paths
+}
+
+// ── Project.cdz — the project manifest, written in Cadenza itself ──────────────────────────────────
+
+/// A project manifest read from a `Project.cdz` — the Cadenza-authored description of a project's
+/// layout, so `cdz` knows how to build / run / test it WITHOUT per-command flags. The manifest is
+/// ordinary Cadenza: a set of well-known TOP-LEVEL DEFS binding constant values (a string, or a list of
+/// strings), read straight from the arena — no compile, no new grammar (a def "is a really good way to
+/// do this"). Every field is optional; a missing def leaves it `None`/empty.
+///
+/// Recognized defs (all relative to the manifest's own directory). A file list (`modules`/`tests`/
+/// `exclude`) entry may be a literal name OR a GLOB (`*.cdz`, `sub/*.cdz`, `**/x.cdz`).
+/// - `def name = "…"`            — the project name (display only).
+/// - `def entry = "main.cdz"`     — the entry module `cdz build`/`run` compiles as the component root.
+/// - `def modules = ["a.cdz", …]` — the library modules the package links (the entry's importables).
+/// - `def tests = ["*.cdz", …]`   — the modules whose `@test` defs `cdz test` runs.
+/// - `def exclude = ["x.cdz", …]` — files REMOVED from `modules`/`tests` after glob expansion (skip a
+///   demo/fixture a wildcard would otherwise sweep up).
+#[derive(Default, Debug)]
+struct Manifest {
+    name: Option<String>,
+    entry: Option<String>,
+    modules: Vec<String>,
+    tests: Vec<String>,
+    exclude: Vec<String>,
+}
+
+/// The file name of a project manifest (looked up in a directory).
+const MANIFEST_NAME: &str = "Project.cdz";
+
+/// Read a value def's payload from a manifest arena at `value_id`: a bare STRING literal → one string;
+/// a `["…", …]` list literal (arena head `"list"`) → each string element. Anything else → empty (a
+/// non-string/list value is ignored rather than erroring — the manifest is advisory).
+fn manifest_strings(
+    arenas: &cadenza_syntax::Arenas,
+    value_id: cadenza_syntax::StructId,
+) -> Vec<String> {
+    if let Some(s) = arenas.as_str(value_id) {
+        return vec![s.to_string()];
+    }
+    // A list literal is the compound-ctor form `("list" elem…)` — a STRING head, so `as_ctor_form`.
+    if let Some(elems) = arenas.as_ctor_form(value_id, "list") {
+        return elems
+            .iter()
+            .filter_map(|&e| arenas.as_str(e))
+            .map(str::to_string)
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Whether `pat` is a GLOB (contains a wildcard metacharacter) rather than a literal file name. A
+/// literal entry in a manifest list is used verbatim; a glob is expanded against the manifest dir.
+fn is_glob(pat: &str) -> bool {
+    pat.contains('*') || pat.contains('?')
+}
+
+/// Match a single PATH SEGMENT (no `/`) against a glob segment supporting `*` (any run, incl. empty)
+/// and `?` (exactly one char). A backtracking matcher over char slices — segments are short (file
+/// names), so the worst-case backtracking is irrelevant. `**` is handled by the caller (it spans
+/// segments), never reaching here.
+fn glob_segment_matches(pat: &[char], name: &[char]) -> bool {
+    match pat.split_first() {
+        None => name.is_empty(),
+        Some((&'*', rest)) => {
+            // `*` matches zero or more chars: try consuming 0, 1, … of `name`.
+            (0..=name.len()).any(|i| glob_segment_matches(rest, &name[i..]))
+        }
+        Some((&'?', rest)) => !name.is_empty() && glob_segment_matches(rest, &name[1..]),
+        Some((&c, rest)) => {
+            matches!(name.split_first(), Some((&n, nrest)) if n == c && glob_segment_matches(rest, nrest))
+        }
+    }
+}
+
+/// Whether the RELATIVE path `rel` (forward-slash segments, relative to the manifest dir) matches the
+/// glob `pat`. `**` matches any number of path segments (incl. zero — so `**/x.cdz` matches `x.cdz` and
+/// `a/b/x.cdz`); every other segment matches by [`glob_segment_matches`]. A trailing `**` matches
+/// everything below. Segment counts must line up otherwise.
+fn glob_path_matches(pat: &str, rel: &str) -> bool {
+    fn go(pat: &[&str], seg: &[&str]) -> bool {
+        match pat.split_first() {
+            None => seg.is_empty(),
+            Some((&"**", prest)) => {
+                // `**` consumes zero or more path segments.
+                (0..=seg.len()).any(|i| go(prest, &seg[i..]))
+            }
+            Some((&p, prest)) => match seg.split_first() {
+                Some((&s, srest)) => {
+                    glob_segment_matches(
+                        &p.chars().collect::<Vec<_>>(),
+                        &s.chars().collect::<Vec<_>>(),
+                    ) && go(prest, srest)
+                }
+                None => false,
+            },
+        }
+    }
+    let ps: Vec<&str> = pat.split('/').filter(|s| !s.is_empty()).collect();
+    let ss: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    go(&ps, &ss)
+}
+
+/// Expand a manifest file-list against `dir`: a LITERAL entry (no wildcard) is kept as-is (resolved to
+/// `dir/entry`); a GLOB entry (`*.cdz`, `sub/*.cdz`, `**/x.cdz`) is expanded to every SOURCE file under
+/// `dir` whose relative path matches, path-SORTED. The manifest itself (`Project.cdz`) is never matched
+/// by a glob (it is the manifest, not a member). Any file whose relative path matches an `exclude`
+/// pattern (literal or glob) is then REMOVED — so `tests = ["*.cdz"]` + `exclude = ["demo.cdz"]` skips
+/// the demo. Results are de-duplicated in first-appearance order. Returns paths (`dir/rel`) ready to
+/// hand to the per-file runner/compiler.
+fn expand_manifest_globs(
+    dir: &std::path::Path,
+    patterns: &[String],
+    exclude: &[String],
+) -> Vec<String> {
+    // Collect the directory's source files ONCE (relative forward-slash paths), only if a glob is present.
+    let has_glob = patterns.iter().any(|p| is_glob(p));
+    let mut rels: Vec<String> = Vec::new();
+    if has_glob {
+        let mut abs = Vec::new();
+        let _ = collect_source_dir(dir, &mut abs); // best-effort; a bad dir yields no matches
+        for a in abs {
+            if let Ok(r) = std::path::Path::new(&a).strip_prefix(dir) {
+                let rel = r.to_string_lossy().replace('\\', "/");
+                if rel != MANIFEST_NAME {
+                    rels.push(rel);
+                }
+            }
+        }
+        rels.sort();
+    }
+    // A file's relative path is excluded if it matches any `exclude` pattern (literal == or glob match).
+    let is_excluded = |rel: &str| -> bool {
+        exclude.iter().any(|e| {
+            if is_glob(e) {
+                glob_path_matches(e, rel)
+            } else {
+                e == rel
+            }
+        })
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push = |rel: String, out: &mut Vec<String>| {
+        if is_excluded(&rel) {
+            return;
+        }
+        let full = dir.join(&rel).to_string_lossy().into_owned();
+        if seen.insert(full.clone()) {
+            out.push(full);
+        }
+    };
+    for pat in patterns {
+        if is_glob(pat) {
+            for rel in rels.iter().filter(|r| glob_path_matches(pat, r)) {
+                push(rel.clone(), &mut out);
+            }
+        } else {
+            push(pat.clone(), &mut out);
+        }
+    }
+    out
+}
+
+/// Peel a leading `(comment TEXT FORM)` / `(doc TEXT FORM)` wrapper to the FORM it decorates — the
+/// reader attaches a `//` line comment or `///` doc as such a wrapper around the following top-level
+/// form, so a commented `(def …)` is nested inside it. Returns `id` unchanged when it is not a
+/// comment/doc wrapper. Handles a stacked wrapper (`(comment … (doc … (def …)))`) by iterating.
+fn unwrap_comment(
+    arenas: &cadenza_syntax::Arenas,
+    id: cadenza_syntax::StructId,
+) -> cadenza_syntax::StructId {
+    let mut cur = id;
+    loop {
+        // `(comment TEXT FORM)` / `(doc TEXT FORM)` — the decorated form is the LAST child.
+        let inner = arenas
+            .as_form(cur, "comment")
+            .or_else(|| arenas.as_form(cur, "doc"))
+            .and_then(|tail| tail.last().copied());
+        match inner {
+            Some(next) if next != cur => cur = next,
+            _ => return cur,
+        }
+    }
+}
+
+/// Parse a `Project.cdz`'s arena into a [`Manifest`] by reading its well-known top-level `(def NAME
+/// VALUE)` forms. Mirrors [`declared_import_paths`]'s arena walk: a `(do …)` root's children (or a lone
+/// root form) are the top-level items; each `(def name value)` whose name matches a known field fills
+/// it. Unknown defs are ignored (forward-compatible — a newer manifest field is a no-op to an older
+/// `cdz`), so the manifest never fails to parse on an unrecognized key.
+fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
+    let root = arenas.root;
+    let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
+        Some(tail) => tail.to_vec(),
+        None => vec![root],
+    };
+    let mut m = Manifest::default();
+    for item in items {
+        // Unwrap a leading `(comment TEXT FORM)` / `(doc TEXT FORM)` wrapper: the reader attaches a `//`
+        // line comment or `///` doc as `(comment "…" <the form>)`, so a commented `def` is nested one
+        // level in. Peel it to reach the real `(def …)` (manifests are naturally commented).
+        let item = unwrap_comment(arenas, item);
+        // A `(def NAME VALUE)` — the name is the first child, the value the second.
+        let Some(tail) = arenas.as_form(item, "def") else {
+            continue;
+        };
+        let (Some(&name_id), Some(&value_id)) = (tail.first(), tail.get(1)) else {
+            continue;
+        };
+        let Some(name) = arenas.as_name(name_id) else {
+            continue;
+        };
+        match name {
+            "name" => m.name = manifest_strings(arenas, value_id).into_iter().next(),
+            "entry" => m.entry = manifest_strings(arenas, value_id).into_iter().next(),
+            "modules" => m.modules = manifest_strings(arenas, value_id),
+            "tests" => m.tests = manifest_strings(arenas, value_id),
+            "exclude" => m.exclude = manifest_strings(arenas, value_id),
+            _ => {} // an unrecognized def — ignore (forward-compatible)
+        }
+    }
+    m
+}
+
+/// Load + parse the `Project.cdz` manifest at `dir/Project.cdz`, if present. `Ok(None)` when there is no
+/// manifest there (the caller falls back to its non-manifest behavior); `Err` only when a manifest
+/// EXISTS but fails to parse (a genuine authoring error worth surfacing).
+fn load_manifest(dir: &std::path::Path) -> Result<Option<(std::path::PathBuf, Manifest)>, String> {
+    let path = dir.join(MANIFEST_NAME);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let spec = path.to_string_lossy().into_owned();
+    let (_source, arenas) = load_program(&spec)?;
+    Ok(Some((path, parse_manifest(&arenas))))
+}
+
+/// Search UP from the current working directory for the nearest `Project.cdz` — the current dir, then
+/// each ancestor, stopping at the first that holds one (like `cargo` locating `Cargo.toml`). Returns the
+/// manifest path, or `None` if no ancestor has one. Used when `cdz test` is invoked with NO argument.
+fn find_manifest_upward() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(MANIFEST_NAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None; // reached the filesystem root with no manifest
+        }
+    }
 }
 
 /// Resolve an `(import "name" …)` path to a sibling source file in `dir`, trying each source

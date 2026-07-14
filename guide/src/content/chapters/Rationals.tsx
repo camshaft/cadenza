@@ -13,15 +13,16 @@ export default function Rationals() {
       </Lede>
 
       <P>
-        You saw in <strong>Floating-point numbers</strong> that <C>(+. 0.1 0.2)</C> isn't quite{" "}
+        You saw in <strong>Floating-point numbers</strong> that <C>(+ 0.1 0.2)</C> isn't quite{" "}
         <C>0.3</C> — floats trade exactness for speed. A <C>Rational</C> makes the other trade: it holds a
         number as an exact ratio of two integers, so arithmetic never rounds. Build one with{" "}
         <C>Rational.of</C>, giving a numerator and a denominator:
       </P>
       <Runnable source={`(Rational.of 1 2)`} />
       <P>
-        The result prints as <C>1/2</C>. A whole number is just a denominator of one — <C>Rational.of-int</C>{" "}
-        makes that explicit:
+        The value comes back as <C>1/2</C>, tagged with its type — <C>1/2 : Rational</C> in the conventional
+        surface, <C>(: 1/2 Rational)</C> in s-expressions. A whole number is just a denominator of one —{" "}
+        <C>Rational.of-int</C> makes that explicit:
       </P>
       <Runnable source={`(Rational.of-int 5)`} />
 
@@ -36,7 +37,7 @@ export default function Rationals() {
         It's the very same value as the constructor — <C>0.5R</C> equals <C>(Rational.of 1 2)</C> — just
         terser to write. Here's the point of it, and the contrast with <strong>Floating-point numbers</strong>:
         write the tenths as rationals and <C>0.1 + 0.2</C> is <em>exactly</em> <C>3/10</C>, where the float{" "}
-        <C>(+. 0.1 0.2)</C> drifted to <C>0.30000000000000004</C>:
+        <C>(+ 0.1 0.2)</C> drifted to <C>0.30000000000000004</C>:
       </P>
       <Runnable source={`(+ 0.1R 0.2R)`} />
       <P>

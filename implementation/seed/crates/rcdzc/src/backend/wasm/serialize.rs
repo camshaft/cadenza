@@ -1009,6 +1009,7 @@ pub fn runtime_resource_core_module(
     export_abs: u32,
     template: &crate::lower::ValueFormTemplate,
     make_param_vts: &[ValType],
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form(
         funcs,
@@ -1016,6 +1017,7 @@ pub fn runtime_resource_core_module(
         export_abs,
         EscapeForm::Flat(template),
         make_param_vts,
+        make_core_slots,
     )
 }
 
@@ -1048,8 +1050,17 @@ pub fn runtime_resource_core_module_form(
     export_abs: u32,
     form: EscapeForm,
     make_param_vts: &[ValType],
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
-    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, &[], make_param_vts)
+    runtime_resource_core_module_form_ex(
+        funcs,
+        imports,
+        export_abs,
+        form,
+        &[],
+        make_param_vts,
+        make_core_slots,
+    )
 }
 
 /// A value-resource METHOD the core module emits beyond make/t-encode/cabi_realloc (VM-1..VM-3). Each is a
@@ -1083,6 +1094,7 @@ pub fn runtime_resource_core_module_form_ex(
     form: EscapeForm,
     methods: &[CoreMethod],
     make_param_vts: &[ValType],
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1258,16 +1270,62 @@ pub fn runtime_resource_core_module_form_ex(
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // make: forward the export's params (locals `0..p`), `call <export>` (builds the compound → its heap
-    // handle on the stack) then `call resource-new` (register the handle → a resource handle). A NULLARY
-    // export forwards zero params (byte-identical to the old `make()`); a parameterized export threads its
-    // scalar params into the body call so the compound is computed from the host's arguments.
+    // make: forward the export's params, `call <export>` (builds the compound → its heap handle on the
+    // stack) then `call resource-new` (register the handle → a resource handle). A NULLARY export forwards
+    // zero params (byte-identical to the old `make()`); a SCALAR-param export threads its scalar params
+    // (locals `0..p`) into the body call; a COMPOUND-param export REBUILDS the cell in-guest from the
+    // flattened leaf params (the canonical ABI flattened its `tuple<…>` param into scalar leaves — the same
+    // `emit_cell_rebuild` a closure `call` uses) and passes that one handle. So the compound is computed
+    // from the host's arguments however they cross.
     {
-        let mut inner = uleb_bytes(0); // no locals of its own — params are locals 0..p
-        for p in 0..make_param_vts.len() {
-            inner.push(op::LOCAL_GET);
-            uleb128(p as u64, &mut inner);
-        }
+        let (inner, imp) = {
+            let imp = |name: &str| import_index[name] as u64;
+            // Each COMPOUND slot needs one i32 local to stash its rebuilt cell handle (for the post-build
+            // `local.tee`); scalar slots use no local. The flattened leaf params occupy locals `0..L`, so
+            // the compound-cell locals start at `L` (`make_param_vts.len()`), one per compound slot.
+            let n_cell_locals = make_core_slots
+                .iter()
+                .filter(|s| matches!(s, MakeCoreSlot::Tuple(_)))
+                .count();
+            let mut inner = if n_cell_locals == 0 {
+                uleb_bytes(0) // no locals — scalar params are forwarded directly
+            } else {
+                let mut l = uleb_bytes(1); // one local group…
+                uleb128(n_cell_locals as u64, &mut l); // …of `n_cell_locals` i32s
+                l.push(wasm_abi::CORE_I32);
+                l
+            };
+            // Push each parameter as the export body expects it, in param order — a SCALAR leaf directly
+            // (`local.get`), a COMPOUND rebuilt into its cell (from its run of flattened leaves) — threading
+            // a leaf cursor across the params AND a cell-local cursor across the compound slots. A mix of
+            // scalar + compound, and multiple compounds, compose: leaves run left-to-right, each compound
+            // reads its own contiguous run.
+            let mut leaf_cursor = 0u32;
+            let mut cell_local = make_param_vts.len() as u32;
+            for slot in make_core_slots {
+                match slot {
+                    MakeCoreSlot::Scalar => {
+                        inner.push(op::LOCAL_GET);
+                        uleb128(leaf_cursor as u64, &mut inner);
+                        leaf_cursor += 1;
+                    }
+                    MakeCoreSlot::Tuple(fields) => {
+                        // Rebuild this compound's cell from the leaves at `leaf_cursor..`; `emit_tuple_rebuild`
+                        // stashes into `cell_local` and leaves the handle on the stack as the arg.
+                        let rebuild = TupleArgRebuild {
+                            fields: fields.clone(),
+                            base_param: leaf_cursor,
+                        };
+                        emit_tuple_rebuild(&rebuild, cell_local, &imp, &mut inner);
+                        leaf_cursor += fields.iter().map(FieldRebuild::leaf_count).sum::<u32>();
+                        cell_local += 1;
+                    }
+                }
+            }
+            (inner, imp)
+        };
+        let _ = imp;
+        let mut inner = inner;
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
         inner.push(op::CALL);
@@ -1419,6 +1477,20 @@ pub struct PlainExport {
 /// box, `arr-set`) — the exact `Core::Tuple` build shape (`select.rs`) — and push the resulting handle in
 /// place of the raw fields. Proven runnable by the `a_fixed_shape_tuple_closure_arg_crosses_by_native_
 /// flattening` oracle. `None` (the common case) is byte-identical to the scalar path.
+///
+/// One resource-`make` PARAMETER's core-side plan: a SCALAR leaf (forwarded to the export body directly
+/// via `local.get`) or a fixed-shape TUPLE/record (rebuilt into its value-heap cell from its contiguous
+/// run of flattened leaf params, via [`emit_cell_rebuild`]). `make` iterates these in param order,
+/// threading a leaf cursor (across all params) and a cell-local cursor (across the compound slots), so any
+/// MIX of scalar + compound params — and multiple compounds — composes.
+#[derive(Clone)]
+pub enum MakeCoreSlot {
+    /// A scalar parameter — one flattened leaf, forwarded as-is.
+    Scalar,
+    /// A fixed-shape scalar tuple/record parameter — its per-field rebuild; consumes its fields' leaves.
+    Tuple(Vec<FieldRebuild>),
+}
+
 #[derive(Clone)]
 pub struct TupleArgRebuild {
     /// The fields of this compound, in cell order. Each is either an aliased-width SCALAR leaf (consumes ONE
@@ -1474,6 +1546,103 @@ impl FieldRebuild {
             }
         }
     }
+}
+
+/// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
+/// two-variant sum where the payload-bearing variant carries ≤1 aliased-width scalar payload) into the single
+/// value-heap CELL its lifted body expects. The sum crosses the DIRECT-CALL boundary as a native component
+/// `option<T>`/`variant<…>`, which the canonical ABI FLATTENS into `(disc: i32, payload…)` core params — the
+/// disc at `base_param`, the payload leaf (when present) at `base_param + 1`. This descriptor tells the `call`
+/// body to rebuild that cell in-guest: branch on the flattened disc; for the payload variant box the payload
+/// param + `sum-new(payload_disc, boxed)`; for the nullary variant `sum-new(nullary_disc, IMM_UNIT)` — the
+/// exact `Core::SumNew` build shape (`select.rs`) — and push the resulting handle in place of the raw params.
+/// Proven runnable by the `an_option_scalar_closure_arg_crosses_by_native_flattening` oracle. This increment
+/// scopes a TWO-VARIANT sum with a nullary variant + a ≤1-scalar-payload variant (Option/Result).
+#[derive(Clone)]
+pub struct SumArgRebuild {
+    /// The CORE-PARAM index the flattened sum's `disc` (i32) lands at; the payload (if any) is at
+    /// `base_param + 1`. `1` when the sum is the SOLE closure arg (after `self`=0).
+    pub base_param: u32,
+    /// The discriminant the COMPONENT boundary type sends for the PAYLOAD-bearing variant — the value the
+    /// flattened `disc` param carries when the payload is present. For a component `option<T>` this is ALWAYS
+    /// `1` (the canonical `variant { none, some(T) }` order — Some=1), INDEPENDENT of Cadenza's decl order.
+    /// The guest branches `disc == boundary_payload_disc` to pick the payload arm.
+    pub boundary_payload_disc: u32,
+    /// The discriminant of the PAYLOAD-bearing variant IN CADENZA'S DECL — the disc `sum-new` builds the cell
+    /// with (may differ from `boundary_payload_disc`: Cadenza's `(Some a) None` has Some=0, but the boundary
+    /// option sends Some=1). This is what a guest `match` on the rebuilt cell dispatches on.
+    pub payload_disc: u32,
+    /// The `box_op` for the single scalar payload (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`) +
+    /// whether a NARROW int payload needs an i32→i64 extend before `box-int`. `None` when the payload variant
+    /// is ALSO nullary (a two-nullary-variant sum, e.g. a bare enum) — then both variants build the unit.
+    pub payload_box: Option<(&'static str, Option<bool>)>,
+    /// The DECL discriminant of the NULLARY variant (`None`) — builds `sum-new(nullary_disc, IMM_UNIT)`.
+    pub nullary_disc: u32,
+    /// The i32 core valtype of the flattened payload param, when present (for the guest `if` result type is
+    /// always i32 — a sum handle — so this is unused for the block type; retained for documentation/future).
+    #[allow(dead_code)]
+    pub payload_is_i32_param: bool,
+}
+
+/// Emit the SUM-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape sum argument
+/// (which crossed FLATTENED as `(disc, payload…)` core params) into the one i32 sum-cell handle the lifted
+/// body expects, leaving the handle on the stack AND stashed in `sum_local` (dropped after `call_indirect`).
+/// Emits `if disc == payload_disc { sum-new(payload_disc, box(payload)) } else { sum-new(nullary_disc, UNIT) }`.
+/// `imp(name) -> import index`. See [`SumArgRebuild`].
+fn emit_sum_arg_rebuild(
+    rebuild: &SumArgRebuild,
+    sum_local: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let disc_param = rebuild.base_param;
+    let payload_param = rebuild.base_param + 1;
+    // Branch on the BOUNDARY disc (the component option's Some=1), NOT the decl disc — the flattened `disc`
+    // param carries the component-model convention, which may differ from Cadenza's decl order.
+    out.push(op::LOCAL_GET);
+    uleb128(disc_param as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.boundary_payload_disc as i64, out);
+    out.push(op::I32_EQ);
+    out.push(op::IF);
+    out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
+    // PAYLOAD variant: sum-new(payload_disc, box(payload)) — or the unit when the payload variant is nullary.
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.payload_disc as i64, out); // [disc]
+    if let Some((box_op, extend)) = &rebuild.payload_box {
+        out.push(op::LOCAL_GET);
+        uleb128(payload_param as u64, out); // [disc, payload-leaf]
+        if let Some(signed) = extend {
+            out.push(if *signed {
+                op::I64_EXTEND_I32_S
+            } else {
+                op::I64_EXTEND_I32_U
+            });
+        }
+        out.push(op::CALL);
+        uleb128(imp(box_op), out); // [disc, payload-handle]
+    } else {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(
+            crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+            out,
+        ); // [disc, unit]
+    }
+    out.push(op::CALL);
+    uleb128(imp("sum-new"), out); // [sum-handle]
+    out.push(op::ELSE);
+    // NULLARY variant: sum-new(nullary_disc, IMM_UNIT).
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.nullary_disc as i64, out); // [disc]
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(crate::backend::wasm::runtime_abi::IMM_UNIT as i64, out); // [disc, unit]
+    out.push(op::CALL);
+    uleb128(imp("sum-new"), out); // [sum-handle]
+    out.push(op::END);
+    // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
+    out.push(op::LOCAL_TEE);
+    uleb128(sum_local as u64, out);
 }
 
 /// Emit the tuple-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape tuple/record
@@ -1556,13 +1725,30 @@ fn emit_closure_call_args(
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
+    emit_closure_call_args_with_sums(tuples, tuple_local, &[], 0, arity, imp, out)
+}
+
+/// [`emit_closure_call_args`] with ZERO OR MORE fixed-shape SUM-arg rebuilds interleaved among the scalars +
+/// tuples. Each sum consumes `1` (nullary payload variant) or `2` (disc + one scalar payload) flattened core
+/// params from its `base_param`; at a sum's `base_param` the walk emits its rebuilt cell (stashed at
+/// `sum_local + i`) and skips its params. Sums + tuples are non-overlapping. With `sums` empty, byte-identical
+/// to [`emit_closure_call_args`]. (This increment wires only sums; a tuple + sum together is a later widening.)
+fn emit_closure_call_args_with_sums(
+    tuples: &[TupleArgRebuild],
+    tuple_local: u32,
+    sums: &[SumArgRebuild],
+    sum_local: u32,
+    arity: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
     use crate::backend::wasm::wasm_abi::op;
     let get = |l: u32, out: &mut Vec<u8>| {
         out.push(op::LOCAL_GET);
         uleb128(l as u64, out);
     };
-    // Walk the flattened core params `1..1+arity`; at each tuple's `base_param` emit its rebuild + skip its
-    // leaves, else push the scalar. `tuples` are ascending by `base_param` + non-overlapping.
+    // Walk the flattened core params `1..1+arity`; at each tuple's/sum's `base_param` emit its rebuild + skip
+    // its params, else push the scalar. `tuples`/`sums` are ascending by `base_param` + non-overlapping.
     let mut a = 1u32;
     while a < 1 + arity {
         if let Some((ti, rebuild)) = tuples.iter().enumerate().find(|(_, t)| t.base_param == a) {
@@ -1572,6 +1758,11 @@ fn emit_closure_call_args(
                 .iter()
                 .map(FieldRebuild::leaf_count)
                 .sum::<u32>();
+        } else if let Some((si, rebuild)) = sums.iter().enumerate().find(|(_, s)| s.base_param == a)
+        {
+            emit_sum_arg_rebuild(rebuild, sum_local + si as u32, imp, out);
+            // disc (1) + the payload leaf (1) when the payload variant carries a scalar.
+            a += 1 + if rebuild.payload_box.is_some() { 1 } else { 0 };
         } else {
             get(a, out);
             a += 1;
@@ -1588,16 +1779,6 @@ fn emit_tuple_rebuilt_drop(tuple_local: u32, imp: &dyn Fn(&str) -> u64, out: &mu
     uleb128(tuple_local as u64, out);
     out.push(op::CALL);
     uleb128(imp("drop"), out);
-}
-
-/// View a single-tuple `Option<&TupleArgRebuild>` as the 0-or-1-element slice `emit_closure_call_args` (and
-/// the multi-tuple paths) take. `None` → `&[]`, `Some(rb)` → the one-element slice. (Not `Option::as_slice`,
-/// which would yield `&[&TupleArgRebuild]`.)
-fn tuple_arg_slice(tuple_arg: Option<&TupleArgRebuild>) -> &[TupleArgRebuild] {
-    match tuple_arg {
-        Some(rb) => std::slice::from_ref(rb),
-        None => &[],
-    }
 }
 
 /// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
@@ -1657,6 +1838,7 @@ pub fn closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
+        &[],
         &[],
     )
 }
@@ -3802,6 +3984,7 @@ pub fn multi_closure_resource_core_module_borrow(
         layout,
         call_borrow,
         &[],
+        &[],
     )
 }
 
@@ -3835,6 +4018,7 @@ pub fn multi_closure_resource_core_module_with_host(
         layout,
         false,
         &[],
+        &[],
     )
 }
 
@@ -3864,6 +4048,10 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     // The scalar `call` rebuilds each cell from its flattened fields, interleaved with scalars in arg order,
     // and drops each after `call_indirect`. `&[]` = no tuple arg (byte-identical to the scalar path).
     tuples: &[TupleArgRebuild],
+    // ZERO OR MORE fixed-shape SUM args (Option/Result — each a `SumArgRebuild` at its own `base_param`). The
+    // `call` rebuilds each sum cell by branching on the flattened disc + `sum-new`, and drops each after
+    // `call_indirect`. `&[]` = no sum arg (byte-identical). This increment wires the SOLE-sum-arg case.
+    sums: &[SumArgRebuild],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let h = host_fns.len();
@@ -4045,9 +4233,11 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // the rebuilt tuple-cell handle. Params are: 0 = self, 1..1+arity = the closure's args (the FLATTENED
         // tuple fields when `tuple_arg` is set). `arg_vts` is the boundary/core param list either way.
         let cell_local = (1 + arg_vts.len()) as u32;
-        // One i32 per tuple arg for its rebuilt cell handle (at `tuple_local + i`), after the cell-rep local.
+        // One i32 per tuple arg for its rebuilt cell handle (at `tuple_local + i`), after the cell-rep local;
+        // then one i32 per SUM arg (at `sum_local + i`), after the tuple locals.
         let tuple_local = cell_local + 1;
-        let n_extra_locals = 1 + tuples.len() as u32;
+        let sum_local = tuple_local + tuples.len() as u32;
+        let n_extra_locals = 1 + tuples.len() as u32 + sums.len() as u32;
         let mut inner = Vec::new();
         // one local group: n_extra_locals × i32.
         inner.extend_from_slice(&wasm_vec(1, &{
@@ -4074,7 +4264,15 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // scalar args when `tuples` is empty). See [`emit_closure_call_args`].
         {
             let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
-            emit_closure_call_args(tuples, tuple_local, arg_vts.len() as u32, &imp, &mut inner);
+            emit_closure_call_args_with_sums(
+                tuples,
+                tuple_local,
+                sums,
+                sum_local,
+                arg_vts.len() as u32,
+                &imp,
+                &mut inner,
+            );
         }
         // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
         inner.push(op::LOCAL_GET);
@@ -4124,6 +4322,19 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
                 *import_index
                     .get("drop")
                     .expect("drop imported for the tuple-arg cell release") as u64,
+                &mut inner,
+            );
+        }
+        // Each REBUILT sum-arg cell is likewise an owned per-call temporary — drop it unconditionally,
+        // balancing its `sum-new`. (`sum-new` with the inline-unit payload allocs a heap sum node either way.)
+        for si in 0..sums.len() as u32 {
+            inner.push(op::LOCAL_GET);
+            uleb128((sum_local + si) as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the sum-arg cell release") as u64,
                 &mut inner,
             );
         }
@@ -4178,13 +4389,13 @@ pub struct SigGroup {
     /// PAST all compound-template data (`bytes_out_off`), so a compound group + a collection group + a
     /// byte-rope group never collide. Mutually exclusive with `ret_is_bytes`/`ret_template`.
     pub ret_descriptor: Option<Vec<u8>>,
-    /// `Some(rebuild)` when this group's closure takes a single FIXED-SHAPE SCALAR tuple/record ARGUMENT (the
-    /// direct-call compound-arg path). The arg crossed the boundary FLATTENED into its N scalar fields (core
-    /// params `1..1+N` of `call-<g>`), so the group's SCALAR `call-<g>` rebuilds the tuple cell from them
-    /// (`arr-alloc N` + per field box/`arr-set`) before `call_indirect`, then drops the rebuilt cell (an owned
-    /// per-call temporary). `arg_vts` for such a group is the FLATTENED field valtypes. This increment
-    /// supports it only on a SCALAR-result group (`ret_is_bytes`/`ret_template`/`ret_descriptor` all `None`).
-    pub tuple_arg: Option<TupleArgRebuild>,
+    /// ZERO OR MORE fixed-shape tuple/record ARGUMENTS this group's closure takes (the direct-call
+    /// compound-arg path). Each arg crossed the boundary FLATTENED into its scalar fields, so the group's
+    /// `call-<g>` rebuilds each tuple cell (`arr-alloc N` + per field box/`arr-set`, at `tuple_local + i`)
+    /// before `call_indirect`, then drops each rebuilt cell (an owned per-call temporary). `arg_vts` for such
+    /// a group is the FULL flattened field valtypes of every arg. `&[]` = scalar args (byte-identical); a
+    /// single rebuild reproduces the one-tuple body byte-for-byte; ≥2 is the N-compound-args case.
+    pub tuples: Vec<TupleArgRebuild>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -4463,7 +4674,7 @@ pub fn distinct_sig_resource_core_module(
             let nlen = doc + 1;
             let iv = nlen + 1;
             let tuple_local = iv + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 7 } else { 6 };
+            let n_locals = 6 + gr.tuples.len() as u32; // cell/rep/desc/doc/n/i + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4489,13 +4700,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4507,9 +4712,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient collection handle `rep` is separate and released after value-encode.
@@ -4598,9 +4803,9 @@ pub fn distinct_sig_resource_core_module(
                 compound_place[gi].expect("a compound group has a data placement");
             let cell = 1 + arity;
             let rep = cell + 1;
-            // i32 group FIRST (cell, rep, [tuple]) then the i64 scratch — scratch index = cell + n_i32.
-            let n_i32: u32 = if gr.tuple_arg.is_some() { 3 } else { 2 };
-            let tuple_local = rep + 1; // only valid when tuple_arg.is_some()
+            // i32 group FIRST (cell, rep, [one per tuple]) then the i64 scratch — scratch index = cell + n_i32.
+            let n_i32: u32 = 2 + gr.tuples.len() as u32; // cell, rep, + one i32 per rebuilt tuple cell
+            let tuple_local = rep + 1; // the first rebuilt tuple cell (only valid when !gr.tuples.is_empty())
             let scratch = cell + n_i32;
             inner.extend_from_slice(&wasm_vec(2, &{
                 let mut gl = uleb_bytes(n_i32 as u64);
@@ -4626,13 +4831,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             inner.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -4645,9 +4844,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient compound handle `rep` is separate and dropped after the walk.
@@ -4672,7 +4871,7 @@ pub fn distinct_sig_resource_core_module(
             let nlen = bh + 1;
             let iv = nlen + 1;
             let tuple_local = iv + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 5 } else { 4 };
+            let n_locals = 4 + gr.tuples.len() as u32; // cell/bh/n/i + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4698,13 +4897,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4716,9 +4909,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(bh, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient Bytes handle `bh` is separate and dropped after the copy.
@@ -4776,12 +4969,12 @@ pub fn distinct_sig_resource_core_module(
             ci32(bytes_ret_off as i64, &mut inner);
             inner.push(op::END);
         } else {
-            // A tuple-arg group needs a SECOND i32 local for the rebuilt tuple cell (the closure's single
-            // argument, reassembled from the flattened field params); a plain scalar group needs just the
-            // closure-cell local.
+            // A tuple-arg group needs one MORE i32 local per rebuilt tuple cell (the closure's compound args,
+            // reassembled from the flattened field params, at `tuple_local + i`); a plain scalar group needs
+            // just the closure-cell local.
             let cell_local = 1 + arity;
             let tuple_local = cell_local + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 2 } else { 1 };
+            let n_locals = 1 + gr.tuples.len() as u32; // the closure cell + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4796,16 +4989,10 @@ pub fn distinct_sig_resource_core_module(
             }
             inner.push(op::LOCAL_SET);
             uleb128(cell_local as u64, &mut inner);
-            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuple, suffix scalars).
+            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuples, suffix scalars).
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::I32_CONST);
@@ -4830,11 +5017,11 @@ pub fn distinct_sig_resource_core_module(
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
             // dispatch (both own + borrow), balancing its `arr-alloc`.
-            if gr.tuple_arg.is_some() {
+            for ti in 0..gr.tuples.len() as u32 {
                 inner.push(op::LOCAL_GET);
-                uleb128(tuple_local as u64, &mut inner);
+                uleb128((tuple_local + ti) as u64, &mut inner);
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }

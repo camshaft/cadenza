@@ -50,6 +50,45 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
+; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
+; VALUE flows into the result: the SAME program with a DIFFERENT response produces a DIFFERENT (but
+; deterministic) result, so the run is a function OF the response, not a constant
+; (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And Responses). The third
+; case pins that MULTIPLE responses combine in call order through a NON-commutative operator — swapping the
+; consumption order would give -18, not 18 — so the ordered response fixture feeds the computation as
+; recorded.
+
+(case "the same program with a different response gives a different deterministic result"
+  (doc    "The discriminating companion of the determinism case above: the identical program `(* (ask.ask)
+           10)` with the response fixed at 7 (not 10) deterministically computes 70. Together with the
+           10 → 100 case, this pins that the run genuinely CONSUMES the response value (a compiler that
+           hardcoded 100 would fail here) — the result is a function OF the response, deterministic given it.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (* (ask.ask) 10))) (export main)))
+  (host-responses (respond ask.ask (: 7 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 70 Int64)))
+
+(case "two host responses combine in call order through a non-commutative operator"
+  (doc    "`(- (io.get) (io.get))` performs `io.get` twice; the ordered fixture supplies 30 then 12, so the
+           FIRST call consumes 30 and the second 12, and `30 - 12` = 18. `-` is non-commutative, so a run
+           that consumed the responses in the wrong order would compute `12 - 30` = -18 — the recorded 18
+           pins that the two responses feed the computation in the order the fixture records them
+           (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And Responses; the
+           ordered-consumption companion of the two-calls-in-order observation below).")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (main)
+              (host (io)
+                (- (io.get) (io.get)))) (export main)))
+  (host-responses (respond io.get (: 30 Int64)) (respond io.get (: 12 Int64)))
+  (host-calls (call io.get) (call io.get))
+  (output (: 18 Int64)))
+
 (case "two host calls consume their responses in order"
   (doc    "Witnesses capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
            Responses: two host calls consume two responses in the order made; the sum is a deterministic
@@ -188,6 +227,40 @@
               (handle B 100 ((b (u) s (resume s s)))
                 (handle A 0 ((a (u) s (resume (B.b) s))) (A.a)))) (export main)))
   (output (: 100 Int64)))
+
+(case "an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect"
+  (doc    "The SAME-effect forwarding case: an arm resuming with a fresh perform of the effect IT discharges
+           re-performs OUTWARD — a handler arm's own-effect perform forwards to the next-OUTER handler of that
+           effect, not back into itself (`check_no_home` walks arm bodies under the OUTER handled set). Inner
+           `Inner`'s arm resumes with `(Outer.i-style)`… here spelled with two effects to show the forward
+           reaches an ENCLOSING handler: `Inner`'s arm resumes `(Outer.o)`, and `Outer` is handled outside —
+           `Outer` seeded 50 resumes its state, so `(Outer.o)` = 50, `Inner.i` resumes 50, `(+ 1 (Inner.i))` =
+           51. Pins that a resume value performing an effect handled FURTHER OUT folds (the forward reaches an
+           enclosing home) — the mechanism the interpose cases rely on, isolated to the resume-value position.")
+  (input  (do
+            (effect Outer (op o (-> Unit Int64)))
+            (effect Inner (op i (-> Unit Int64)))
+            (def (main)
+              (handle Outer 50 ((o (u) t (resume t t)))
+                (handle Inner 0 ((i (u) s (resume (Outer.o) s)))
+                  (+ 1 (Inner.i))))) (export main)))
+  (output (: 51 Int64)))
+
+(case "an arm re-performing its own effect with no outer handler has no home"
+  (doc    "The reject companion of the forwarding case above: when an arm resumes with a fresh perform of the
+           effect it discharges — `(flip (u) s (resume (Amb.flip) s))` — that own-effect perform re-performs
+           OUTWARD (arm bodies resolve under the outer handled set), so it needs an ENCLOSING `Amb` handler.
+           Here there is none (this is the only `Amb` handler), so the re-perform has no home: CDZ0401. This
+           is NOT a misleading message — under the forwarding model an arm's own-effect perform genuinely
+           escapes to an outer handler, and the outermost one has nowhere to forward. (A bare self-resume like
+           this would also be a non-terminating re-perform loop were it to fold; the no-home reject is the
+           correct diagnosis, the same check that flags forwarding a DIFFERENT unheld effect above.)")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume (Amb.flip) s)))
+                (+ 1 (Amb.flip)))) (export main)))
+  (error  CDZ0401))
 
 (case "an abortive handler abandons a host call in the path it discards"
   (doc    "Witnesses that an abortive perform's abandonment extends to a DELEGATED host call in the
@@ -537,6 +610,22 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 12 Int64)))
+
+(case "a MULTI-shot arm whose FIRST resume value is chosen by an if on the state"
+  (doc    "Composes multi-shot resumption with a conditional-resume value: the arm resumes TWICE, and the
+           FIRST resume's value is chosen by an `if` on the handler state. `(flip (u) s (+ (resume (if (> s
+           2) 10 20) s) (resume 1 s)))` over the body `(+ 100 (Amb.flip))` — the pure one-hole continuation
+           `C = (+ 100 [])` is spliced per resume: seeded 3, `(> 3 2)` holds so the first resume value is 10
+           → `C[10]` = 110, and the second is 1 → `C[1]` = 101, so the arm yields `(+ 110 101)` = 211. Pins
+           that a multi-shot arm's per-resume continuation splice composes with a resume value COMPUTED by a
+           branch on the state — each resumption independently folds `C` at its own (state-derived) value.
+           Both backends agree.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 3 ((flip (u) s (+ (resume (if (> s 2) 10 20) s) (resume 1 s))))
+                (+ 100 (Amb.flip)))) (export main)))
+  (output (: 211 Int64)))
 
 (case "a MULTI-shot arm folds a perform wrapped in an inline lambda application"
   (doc    "A perform WRAPPED IN A LAMBDA APPLICATION folds under a multi-shot arm. `((fn (x) (+ x (Amb.flip)))
@@ -956,6 +1045,24 @@
                 (+ 1 (St.get)))) (export main)))
   (output (: 6 Int64)))
 
+(case "a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance"
+  (doc    "The handler's threaded state is a TUPLE packing TWO independent slots — a running accumulator and
+           a fixed base — and the arm READS BOTH components (via projection) and REBUILDS the pair to thread
+           a modified state, a read-modify-write on a compound state slot. `Acc.step : Int64 -> Int64`, arm
+           `(step (v) p (resume (+ (. p 0) (. p 1)) (tuple (+ (. p 0) v) (. p 1))))`: it resumes with the sum
+           of the two fields and threads a new tuple advancing only field 0 by `v` (field 1 held). Seeded
+           `(0, 100)`: `(Acc.step 1)` reads `(0, 100)` → resumes `0 + 100` = 100, state → `(1, 100)`; `(Acc.step
+           2)` reads `(1, 100)` → resumes `1 + 100` = 101, state → `(3, 100)`; so `(+ 100 101)` = 201. Pins
+           that a handler state slot carries a TUPLE through the fold — the arm projects its fields and
+           reconstructs it — the compound-scalar-pair companion of the sum-state and list-state cases (two
+           independent scalar sub-states threaded in one tuple slot, not one shared counter).")
+  (input  (do
+            (effect Acc (op step (-> Int64 Int64)))
+            (def (main)
+              (handle Acc (tuple 0 100) ((step (v) p (resume (+ (. p 0) (. p 1)) (tuple (+ (. p 0) v) (. p 1)))))
+                (+ (Acc.step 1) (Acc.step 2)))) (export main)))
+  (output (: 201 Int64)))
+
 (case "an arm chooses its resume value by an if on the handler state"
   (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
            different value per branch — a CONDITIONAL resume. `(get (u) s (if (> s 5) (resume 100 s) (resume
@@ -1001,6 +1108,41 @@
                 (. (record (x (Ask.get)) (y 3)) x))) (export main)))
   (output (: 7 Int64)))
 
+(case "a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator"
+  (doc    "The value and state columns of the effect fold are TYPE-AGNOSTIC: an operation whose result and
+           whose handler state are both Float64 thread through the same machinery as the Int64 cases, and the
+           `+` in the continuation — which now dispatches on operand TYPE (float `+`, no separate `+.`) —
+           resolves to the float add inside the folded body. `Rng.next : Unit -> Float64`, arm `(next (u) s
+           (resume s (+ s 2.0)))`, seeded 1.5: `(Rng.next)` reads 1.5 (state → 3.5), the second reads 3.5
+           (state → 5.5), so `(+ 1.5 3.5)` = 5.0. Pins that (i) a non-Int64 SCALAR result/state slot threads
+           correctly (the fold copies values by identity, indifferent to their type) and (ii) the unified
+           numeric `+` picks the Float64 add within a folded continuation — the float companion of the
+           two-lets / operator-operand Int64 sequencing cases.")
+  (input  (do
+            (effect Rng (op next (-> Unit Float64)))
+            (def (main)
+              (handle Rng 1.5 ((next (u) s (resume s (+ s 2.0))))
+                (+ (Rng.next) (Rng.next)))) (export main)))
+  (output (: 5.0 Float64)))
+
+(case "a BOOL-result effect op threads state across two performs on a boolean connective's operands"
+  (doc    "The Bool companion of the float/Int64 sequencing cases: a `Unit -> Bool` operation whose resume
+           value is derived from the handler state, performed on BOTH operands of an `and` (the left operand
+           is true, so the connective does NOT short-circuit and the right also runs). `Coin.flip : Unit ->
+           Bool`, arm `(flip (u) s (resume (= s 0) (+ s 1)))`, seeded 0: the first `(Coin.flip)` reads `(= 0
+           0)` = true (state → 1), the second reads `(= 1 0)` = false (state → 2), so `(and true (not
+           false))` = `(and true true)` = true. Pins that (i) a Bool result/state column threads through the
+           fold like any scalar and (ii) when the connective's LEFT operand is true the RIGHT-operand perform
+           genuinely runs and reads the ADVANCED state (had it not threaded, the second would read `(= 0 0)` =
+           true too and `(not true)` = false → the whole `and` false). Distinct from the abortive-connective
+           and pure-one-hole-in-an-and-lhs cases: here BOTH operands perform and thread tail-resumptively.")
+  (input  (do
+            (effect Coin (op flip (-> Unit Bool)))
+            (def (main)
+              (handle Coin 0 ((flip (u) s (resume (= s 0) (+ s 1))))
+                (and (Coin.flip) (not (Coin.flip))))) (export main)))
+  (output (: true Bool)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
@@ -1017,6 +1159,58 @@
                 (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
   (output (: 10 Int64)))
 
+(case "two performs of a MULTI-parameter op each combine both args with the state advancing between them"
+  (doc    "A two-scalar-parameter operation whose arm combines BOTH arguments with the threaded state, called
+           twice on one strict spine so each perform reads the state the previous one advanced. `Acc.add2 :
+           Int64 -> Int64 -> Int64`, arm `(add2 (a b) s (resume (+ (+ a b) s) (+ s 1)))` — sums its two args
+           plus the current state, threading `s + 1`. Seeded 100: `(Acc.add2 1 2)` = `1 + 2 + 100` = 103
+           (state → 101), then `(Acc.add2 10 20)` = `10 + 20 + 101` = 131 (state → 102), so `(+ 103 131)` =
+           234. Pins that a multi-parameter op's arm binds ALL its parameters AND the state, and that the
+           state advances between successive performs on the spine (had it not threaded, the second would
+           read 100 too, giving 233) — the multi-arg companion of the sequential-state-threading case above.")
+  (input  (do
+            (effect Acc (op add2 (-> Int64 Int64 Int64)))
+            (def (main)
+              (handle Acc 100 ((add2 (a b) s (resume (+ (+ a b) s) (+ s 1))))
+                (+ (Acc.add2 1 2) (Acc.add2 10 20)))) (export main)))
+  (output (: 234 Int64)))
+
+(case "a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer"
+  (doc    "The data dependency runs THROUGH the argument position rather than through a let: the inner
+           perform's result is the very argument the outer perform consumes — `(Acc.step (Acc.step 1))`.
+           Because an argument is evaluated before its call, the INNER perform runs first and advances the
+           state the OUTER one then reads, so the two are still sequenced left-of-the-arrow / inner-first.
+           `Acc.step : Int64 -> Int64`, arm `(step (a) s (resume (+ a s) (+ s 1)))`, seeded 100: inner
+           `(Acc.step 1)` = `1 + 100` = 101 (state → 101), outer `(Acc.step 101)` = `101 + 101` = 202 (state
+           → 102), so the result is 202. Pins that state threads through nested-perform ARGUMENT evaluation
+           in inner-to-outer order (had the outer read the seed 100 instead of the inner's advanced 101 it
+           would be 201) — the argument-position companion of the two-lets and multi-param cases above, with
+           the added twist that one perform's OUTPUT is the other's INPUT.")
+  (input  (do
+            (effect Acc (op step (-> Int64 Int64)))
+            (def (main)
+              (handle Acc 100 ((step (a) s (resume (+ a s) (+ s 1))))
+                (Acc.step (Acc.step 1)))) (export main)))
+  (output (: 202 Int64)))
+
+(case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
+  (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
+           evaluates its arguments left-to-right before applying — so the two reads are sequenced by the
+           call's own argument evaluation, not by an operator or a let. `sub a b = a - b`, `Acc.get : Unit
+           -> Int64`, arm `(get (u) s (resume s (+ s 5)))`, seeded 10: `(sub (Acc.get) (Acc.get))` reads the
+           first arg as 10 (state → 15) and the second as 15 (state → 20), so `(sub 10 15)` = -5. Pins that
+           the fold sequences performs across a user call's ARGUMENT list identically to operator operands
+           (had the args not threaded, both would read 10 → 0) — the user-call companion of the operator-
+           operand and nested-perform cases, and distinct from the arms that call an effect-free helper on a
+           resume RESULT (the performs here are the call's inputs, sequenced at the call site).")
+  (input  (do
+            (effect Acc (op get (-> Unit Int64)))
+            (def (sub a b) (- a b))
+            (def (main)
+              (handle Acc 10 ((get (u) s (resume s (+ s 5))))
+                (sub (Acc.get) (Acc.get)))) (export main)))
+  (output (: -5 Int64)))
+
 (case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
   (input  (do
             (effect Log (op w (-> Int64 Unit)))
@@ -1032,6 +1226,22 @@
            accumulator) then returns its result. The handler's threaded total is observed only through the
            state; the handle's value is the body's tail.")
   (output (: 99 Int64)))
+
+(case "textually-identical performs are DISTINCT state-advancing reads, not a common subexpression"
+  (doc    "A soundness pin against the backend optimizer's CSE/value-numbering: four TEXTUALLY-IDENTICAL
+           `(C.t)` performs are FOUR DISTINCT reads that each advance the handler state, NOT a common
+           subexpression to dedup. `(+ (* (C.t) (C.t)) (* (C.t) (C.t)))` seeded 0, arm `(resume s (+ s 1))`:
+           evaluated left-to-right, the four reads are 0, 1, 2, 3, so it is `(+ (* 0 1) (* 2 3))` = `(+ 0 6)`
+           = 6. Were the compiler to treat the identical `(C.t)` as a common subexpression and compute it
+           ONCE (a CSE that ignores effect ordering), the answer would be wrong (e.g. `(* 0 0) + (* 0 0)` =
+           0). The effect fold discharges each perform to its own distinct state-advancing read BEFORE the
+           optimizer runs, so straight-line CSE never sees a shared effectful node — pinned here at 6.")
+  (input  (do
+            (effect C (op t (-> Unit Int64)))
+            (def (main)
+              (handle C 0 ((t (u) s (resume s (+ s 1))))
+                (+ (* (C.t) (C.t)) (* (C.t) (C.t))))) (export main)))
+  (output (: 6 Int64)))
 
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
@@ -1248,6 +1458,27 @@
                   (walk 3)))) (export main)))
   (output (: 6 Int64)))
 
+(case "one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers"
+  (doc    "The cross-effect, non-recursive companion of the two-effects-in-one-walk case: the result of an
+           INNER-handled effect's perform is the very argument an OUTER-handled effect's perform consumes —
+           `(Dst.put (Src.get))`. The argument `(Src.get)` is discharged by the inner `Src` handler first
+           (advancing the Src state), and its result feeds `Dst.put`, discharged by the outer `Dst` handler
+           (advancing the Dst state independently). `Src.get : Unit -> Int64` seeded 5, arm `(get (u) s
+           (resume s (+ s 1)))` → reads 5; `Dst.put : Int64 -> Int64` seeded 100, arm `(put (v) t (resume (+
+           v t) (+ t 10)))` → `(Dst.put 5)` = `5 + 100` = 105. Pins that a value produced by discharging one
+           effect crosses into a DIFFERENT effect's operation as its argument, each threading its own handler
+           state through a distinct slot — the two folds compose along the data dependency without sharing or
+           clobbering state (distinct from the SAME-effect nested-perform-argument case, where one handler's
+           single state slot threads both reads).")
+  (input  (do
+            (effect Src (op get (-> Unit Int64)))
+            (effect Dst (op put (-> Int64 Int64)))
+            (def (main)
+              (handle Src 5 ((get (u) s (resume s (+ s 1))))
+                (handle Dst 100 ((put (v) t (resume (+ v t) (+ t 10))))
+                  (Dst.put (Src.get))))) (export main)))
+  (output (: 105 Int64)))
+
 (case "a handle's TUPLE value pairing a scalar with a built list escapes and is destructured"
   (doc    "The handle's VALUE is a COMPOUND — a tuple pairing a scalar with an effect-built heap list — and
            the whole tuple escapes the handle to be destructured outside. `(handle Idx 1 … (tuple 42 (build
@@ -1313,6 +1544,24 @@
                   (Unify.resolve 4)))) (export main)))
   (output (: 5 Int64))
   (host-calls))
+
+(case "an effect operation may be named `bind` — the interop directive keyword is not reserved for op names"
+  (doc    "`bind` is the head of the top-level peer-binding DIRECTIVE `(bind Effect \"cadenza:pkg/iface\")`,
+           but that keyword is reserved only at the top level — an effect operation, like any member, may
+           be named `bind`. `(effect Scope (op bind (-> Int64 Int64)) (op depth (-> Unit Int64)))` declares
+           a `bind` operation whose handler arm is the NESTED list `(bind (v) d (resume (+ v d) (+ d 1)))`.
+           Seeded 0: `(Scope.bind 10)` reads d=0 → `10 + 0` = 10 (state → 1), `(Scope.bind 20)` reads d=1 →
+           `20 + 1` = 21 (state → 2), `(Scope.depth)` reads 2, so `(+ 10 (+ 21 2))` = 33. Pins that the
+           malformed-`(bind …)` diagnostic scopes to TOP-LEVEL directives only: an arena-wide scan misreads
+           the arity-3 handler arm as a malformed peer-binding (wrong arity) and rejects the program with a
+           spurious CDZ0201 — a false positive on a legal operation name, fixed by scoping the scan to
+           top-level `(bind …)` forms.")
+  (input  (do
+            (effect Scope (op bind (-> Int64 Int64)) (op depth (-> Unit Int64)))
+            (def (main)
+              (handle Scope 0 ((bind (v) d (resume (+ v d) (+ d 1))) (depth (u) d (resume d d)))
+                (let ((a (Scope.bind 10))) (let ((b (Scope.bind 20))) (+ a (+ b (Scope.depth))))))) (export main)))
+  (output (: 33 Int64)))
 
 ; The dual of the collision-free cross-effect case: WITHIN one effect, an operation name declared TWICE
 ; is ill-formed. capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its

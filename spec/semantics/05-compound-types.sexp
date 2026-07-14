@@ -355,6 +355,49 @@
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
+; --- A LET-BOUND if-produced compound, projected at ≥2 positions (the if-value-join scratch-floor bug) -
+; The cases above project an if-chosen tuple/record at ONE position with the compound INLINE (not let-
+; bound). Binding it and reading it at TWO positions is a distinct shape: the `let` gives the handle a
+; PERSISTENT slot, and its `if` initializer is emitted at `binding_slot + 1` — but the compound-build
+; sites float their element scratch off the running high-water, which LAGGED the binding slot, so the
+; first tuple element's i64 temp was teed into the binding's OWN (i32-handle) slot → invalid wasm
+; (`expected i32, found i64`). Reading a SINGLE element hid it (the mis-typed slot was overwritten before
+; a second read forced the conflict); the `match`-producer form worked (its join pre-reserves the slot).
+; The fix reserves the `let` binding slot before the initializer emits, so every inner scratch stays
+; above it. These pin the double-projection of a let-bound if-produced tuple AND record.
+
+(case "a let-bound tuple produced by an if, projected at two indices, compiles and runs"
+  (doc    "A `let`-bound tuple whose producer is an `if` (a runtime-selected tuple), projected at BOTH
+           indices, MUST compile and run: `(let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+           (+ (. r 0) (. r 1)))` with p=0 is `(tuple 5 2)` → 7. It emitted an INVALID component
+           (`expected i32, found i64`) — the `if`-tuple initializer's first element `(+ p 5)` (an i64
+           temp) was teed into the binding's own i32-handle slot, because the compound-build scratch floor
+           lagged the reserved binding slot. Reading a single element compiled; the second read exposed it.
+           The `match`-producer form compiled (its arm join pre-reserves its slot). Fixed by reserving the
+           `let` binding slot before its initializer emits.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+                (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "a let-bound record produced by an if, two fields read, compiles and runs"
+  (doc    "The record sibling — the fault was not tuple-specific. A `let`-bound RECORD whose producer is an
+           `if` with a runtime-computed field, read at TWO fields, MUST compile and run: `(let ((r (if (= p
+           0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2)))))) (+ (. r x) (. r y)))` with
+           p=0 is `(record (x 5) (y 2))` → 7. It emitted the SAME invalid component as the tuple case — the
+           mis-typed if-value-join binding slot applies to any heap-handle compound. Same fix (reserve the
+           binding slot). p=1 → else branch `(record (x 99) (y 3))` → 99+3 = 102.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+                (+ (. r x) (. r y))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
 ; --- Field access on a RUNTIME record (returned from a call / selected by a conditional) -----------
 ; The record analogue of the runtime-tuple projection cases: `(. rec field)` where the record operand
 ; does NOT reduce to a compile-time-visible record — it is RETURNED FROM A CALL, or SELECTED BY AN
@@ -459,6 +502,137 @@
             (export main)))
   (call   main (: true Bool) (: 0 Int64))
   (trap   "division by zero"))
+
+; The cases above project an if-of-tuples at ONE index, which sinks into each branch (a fold, no heap
+; build). When the if-produced tuple is `let`-BOUND and read at MORE THAN ONE index, it cannot be sunk —
+; it must MATERIALIZE as one runtime value-heap handle joined from both branches, then be projected twice.
+; These pin that materialize-and-read-twice path (regression guards: it previously emitted INVALID WASM —
+; the `if`-value-join slot for a heap handle was mis-typed i64 vs the i32 handle, tripping the wasm
+; validator on the second projection; now fixed). A runtime `if` condition drives the choice so nothing
+; folds, and the elements are runtime-computed so the tuple/record is a genuine handle, not a constant.
+
+(case "a let-bound tuple produced by an if is projected at both indices"
+  (doc    "`(let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))) (+ (. r 0) (. r 1)))` binds a
+           tuple chosen by a runtime `if` (elements computed from the parameter, so it is a real heap handle)
+           and reads BOTH elements: p=0 → `(tuple 5 2)` → 7, p=1 → `(tuple 99 3)` → 102. Unlike the
+           single-projection cases above (which sink into each branch), reading two indices forces the
+           if-joined tuple to materialize once and be projected twice. Regression guard: this emitted invalid
+           wasm (`expected i32, found i64`) until the `if`-branch-join slot for a heap-handle result was
+           typed as the i32 handle it is.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+                (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "a let-bound record produced by an if is read at both fields"
+  (doc    "The record sibling — the fault was never tuple-specific. `(let ((r (if (= p 0) (record (x (+ p 5))
+           (y (+ p 2))) (record (x 99) (y (+ p 2)))))) (+ (. r x) (. r y)))` reads both fields of an
+           if-joined record handle: p=0 → 7, p=1 → 102. Pins that the `if`-value-join for ANY compound
+           handle (not only tuples) types the joined slot as the i32 handle — the same regression guard
+           across the record kind.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+                (+ (. r x) (. r y))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "an if-tuple returned from a call, let-bound and projected twice"
+  (doc    "The if-join handle crosses a CALL return: `(mk p)` returns an if-tuple, and `main` binds it and
+           reads both elements — `(let ((r (mk p))) (+ (. r 0) (. r 1)))` = 7 at p=0. Pins that the
+           mis-typed-slot regression is guarded even when the if-produced handle travels through a function
+           return before the double projection (the caller has no `if` of its own) — the shape a decode
+           helper returning a (value, cursor) pair takes.")
+  (input  (do
+            (def (mk (: p Int64)) (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))
+            (def (main (: p Int64)) (let ((r (mk p))) (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64)) (output (: 104 Int64)))
+
+; The full decode-loop shape those projection guards protect — a self-hosted reader in miniature. A
+; self-tail `read-leaves` loop advances its cursor via `leaf-end`, which projects BOTH fields of the
+; (value, cursor) tuple returned by the recursive `read-varu`, AND pushes compound-payload `Ast` sum nodes
+; (a type with a `(List Ast)` variant) into a `(List Ast)` accumulator. This composes tuple projection,
+; recursive helpers, a sum-node list accumulator, and a self-tail loop — the exact byte→AST reader a
+; self-hosted front end is written in, and (regression guard) the shape whose loop-transform scratch slots
+; must keep i32 heap handles disjoint from i64 arithmetic temps (it previously emitted invalid wasm at this
+; local-count threshold). A single-field scalar advance is the trivial control; this pins the two-field one.
+
+(case "a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs"
+  (doc    "A miniature self-hosted reader: `read-leaves` folds over the input bytes, advancing its position
+           with `leaf-end` (which projects BOTH fields of the (value, cursor) tuple `read-varu` returns) and
+           pushing `Ast` sum nodes into a `(List Ast)` accumulator. Over `b\"\\x00\\x01\\x05\"` it reads one
+           leaf — an `(Ast.Int …)` — and `nc` (node-count) of an `Ast.Int` is 1. Pins that the composed
+           decode shape (tuple projection + recursive helpers + a compound-sum list accumulator + a self-tail
+           loop) compiles to valid wasm and runs — the loop-transform keeps its i32 heap-handle scratch
+           disjoint from its i64 arithmetic temps at this local-count threshold. The self-hosting workload
+           the projection guards above protect, assembled end to end.")
+  (input  (do
+            (type Ast (Int Int64) (List (List Ast)))
+            (def (read-varu (: b Bytes) (: p Int64) (: a Int64) (: s Int64))
+              (let ((byte (Option.expect (Bytes.at b p) "v")))
+                (let ((a2 (+ a (<< (& byte 127) s))))
+                  (if (= (& byte 128) 0) (tuple a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
+            (def (read-mag (: b Bytes) (: p Int64) (: len Int64) (: acc Int64))
+              (if (= len 0) acc (read-mag b (+ p 1) (- len 1) (+ (* acc 256) (Option.expect (Bytes.at b p) "m")))))
+            (def (read-leaf (: b Bytes) (: pos Int64)) ((. Ast Int) (read-mag b (+ pos 1) (. (read-varu b (+ pos 1) 0 0) 0) 0)))
+            (def (leaf-end (: b Bytes) (: pos Int64)) (let ((v (read-varu b (+ pos 1) 0 0))) (+ (. v 1) (. v 0))))
+            (def (read-leaves (: b Bytes) (: pos Int64) (: count Int64) (: acc (List Ast)))
+              (if (= count 0) acc (read-leaves b (leaf-end b pos) (- count 1) (List.push acc (read-leaf b pos)))))
+            (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
+            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
+            (export main)))
+  (output (: 1 Int64)))
+
+; A recursion that CARRIES a heap collection (Bytes / List) as a parameter and, at its BASE arm, performs
+; a FALLIBLE INDEXED READ (`Bytes.at` / `List.at`, which materializes an Option HANDLE in a scratch slot)
+; must keep that i32 handle scratch DISJOINT from the loop's i64 arithmetic temps — otherwise the loop
+; function is invalid wasm (the same i32/i64 slot-typing family as the decode loop above, at its simplest).
+; These pin that shape directly — a reader recursing over its input and reading one element fallibly at the
+; base — across a Bytes operand, a List operand, and a non-tail `(+ 0 (recurse …))` spine.
+
+(case "a recursion carrying a Bytes parameter does a fallible read in its base arm"
+  (doc    "A self-recursive `loop` carries a `Bytes` parameter and at its base (n=0) reads byte `p` fallibly
+           `(Option.expect (Bytes.at b p) …)` — byte 0 of `b\"\\x05\"` = 5. Pins that the recursion's i64
+           arithmetic temps (`(- n 1)`, the bound check) stay disjoint from the i32 Option handle the base
+           arm's fallible read materializes — the simplest form of the reader-recurses-over-Bytes shape a
+           self-hosted front end takes.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
+            (def (main (: p Int64)) (loop b"\x05" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+(case "a recursion carrying a List parameter does a fallible read in its base arm"
+  (doc    "The List companion — the shape is not Bytes-specific. `loop` carries a `(List Int64)` and reads
+           element `i` fallibly at the base `(Option.expect (List.at xs i) …)`: i=0 → 10, i=2 → 30. Pins the
+           same i32-handle/i64-temp scratch disjointness for a `List.at` read in a collection-carrying
+           recursion.")
+  (input  (do
+            (def (loop (: xs (List Int64)) (: i Int64) (: n Int64))
+              (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
+            (def (main (: i Int64)) (loop (list 10 20 30) i 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 30 Int64)))
+
+(case "a non-tail recursion with a fallible read in its base arm composes"
+  (doc    "The non-tail spine: the recursive call is under `(+ 0 …)` (not a tail call), and the base arm
+           still does the fallible read `(Option.expect (Bytes.at b p) …)` = 7 for `b\"\\x07\"` at p=0. Pins
+           that the scratch disjointness holds for the accumulable non-tail shape too — the loop transform
+           covers both the tail and the `1 + recurse`-style spine carrying a fallible-read base.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (+ 0 (loop b p (- n 1)))))
+            (def (main (: p Int64)) (loop b"\x07" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
 
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
@@ -1919,6 +2093,63 @@
                                    ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
+
+(case "a literal list element dispatches a runtime list by its value"
+  (doc    "A list element position MAY be a refutable SCALAR/STRING LITERAL — `((list 0 a .. rest) …)` matches
+           only a list whose FIRST element is 0, binding the SECOND to `a`. This is the opcode/keyword
+           list-dispatch idiom a compiler leans on: `(match instr ((list \"add\" x y) …) ((list \"neg\" x)
+           …) (_ …))`. The length-dispatch matcher cannot test an element VALUE directly, so a literal
+           element DESUGARS to a fresh binder at that position plus a `(= binder <literal>)` value test
+           conjoined into the arm's guard — reusing the guard machinery, no new runtime form. Since a literal
+           test may fail, the arm is EXCLUDED from length-coverage exhaustiveness, so a `_`/rest catch-all
+           stays required. Here `classify (list 0 5 9)` → the head is 0 → the first arm binds `a`=5; a
+           different head falls through to the wildcard-head arm (× 10). `classify (list 3 5 9)` → 50.")
+  (input  (do
+            (def (classify (: xs (List Int64)))
+              (match xs
+                ((list 0 a .. rest) a)
+                ((list _ a .. rest) (* a 10))
+                (_                  -1)))
+            (def (main) (classify (list 0 5 9))) (export main)))
+  (output (: 5 Int64)))
+
+(case "a constructor list element dispatches a runtime list by its discriminant"
+  (doc    "THE compiler tree-walk idiom: a list of TAGGED nodes matched by the head's DISCRIMINANT —
+           `(match instrs ((list (Op.Add x) .. r) …) ((list (Op.Neg x) .. r) …) (_ …))`. A multi-variant
+           constructor element `(Op.Add n)` is REFUTABLE (matches only an `Add`-tagged element) AND binds
+           the payload, so — unlike a literal element (a pure `=` test) — it desugars to a fresh binder + a
+           DISCRIMINANT-TEST guard `(match __e ((Op.Add _) true) (_ false))` (which gates the arm, falling
+           through to the next arm on a different tag) PLUS a body re-match `(match __e ((Op.Add n) body) (_
+           trap))` that binds the payload for the body. Reuses the guard machinery + the ordinary sum
+           matcher, no new runtime form. A discriminant test may fail, so the arm is EXCLUDED from
+           length-coverage exhaustiveness — a `_` catch-all stays required. `classify (list (Op.Neg 5) …)`
+           → the head is `Neg` → the second arm binds `n`=5 and negates it → -5.")
+  (input  (do
+            (type Op (Add Int64) (Neg Int64))
+            (def (classify (: xs (List Op)))
+              (match xs
+                ((list (Op.Add n) .. r) n)
+                ((list (Op.Neg n) .. r) (* n -1))
+                (_                      -99)))
+            (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
+  (output (: -5 Int64)))
+
+(case "a nested list element composes over a runtime list of lists"
+  (doc    "A list element MAY itself be a nested LIST pattern (`core-semantics.md §A List Is Deconstructed`:
+           an element MAY itself be a nested element pattern, matched recursively). Over a runtime `List
+           (List Int64)`, `((list (list .. inner) .. outer) …)` binds `inner` to the FIRST sublist and
+           `outer` to the rest of the outer list — the binder resolution descends the nested `(list …)`
+           element (its `Elem(0)`/`RestFrom` steps stack onto the outer `Elem(0)`). The ZERO-LEADING inner
+           rest form `(list .. inner)` matches EVERY inner list (so it is irrefutable and needs no
+           inner-length test), which is why it composes with the outer length-dispatch directly. Here the
+           outer list `(list (list 1 2 3) (list 4 5))` binds `inner`=`(list 1 2 3)`; its length is 3.")
+  (input  (do
+            (def (first-len (: xss (List (List Int64))))
+              (match xss
+                ((list (list .. inner) .. outer) ((. List len) inner))
+                (_                               -1)))
+            (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
+  (output (: 3 Int64)))
 
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
@@ -4075,6 +4306,45 @@
             (export main)))
   (output (: 7 Int64)))
 
+; A sum VARIANT may be named the same as a PRELUDE type or operation module (`List`, `Bool`, …). Within
+; the declaring module a constructor selector `(. T List)` (surface `T.List`) resolves to `T`'s
+; constructor — a member access on the nominal type `T`, NOT a reference to the free prelude name `List`
+; — so the variant and the prelude name coexist: `T.List` builds the variant while `List.len` still
+; names the prelude op in the same body. These pin that coexistence in the DECLARING file (the natural
+; case: a hand-rolled `Ast`/IR sum has a `List` variant, a `Bool` variant, etc., and a compiler's own
+; passes construct and match them alongside the real `List`/`Bool` prelude). (Reaching such a variant
+; through an IMPORT from another file is a separate concern tracked in the failures queue — the importer
+; currently mis-resolves the colliding tail to the prelude name; these declaring-file cases are correct
+; today and are the counterpart working boundary.)
+
+(case "a variant named like a prelude type is constructed and matched in its declaring module"
+  (doc    "`(type T (Foo Int64) (List (List T)))` declares a variant `List` whose name shadows the prelude
+           `List` — and whose payload is a real `(List T)` using that same prelude `List` as the type
+           constructor. Within the module `(T.List …)` builds the variant (a member access on `T`), the
+           `((T.List es) …)` arm matches it, and `(List.len es)` on the payload still names the prelude op:
+           `sz (T.List [Foo 1, Foo 2])` = 9 + 2 = 11. Pins that a constructor selector on a nominal type
+           resolves to the type's constructor, independent of a prelude binding of the same name, so a sum
+           and the prelude coexist in one body (the AST/IR-sum-with-a-List-variant idiom a compiler needs).")
+  (input  (do
+            (type T (Foo Int64) (List (List T)))
+            (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.List es) (+ 9 (List.len es)))))
+            (def (main) (sz (T.List (list (T.Foo 1) (T.Foo 2)))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a variant named Bool shadows the prelude Bool within its declaring module"
+  (doc    "The `Bool` companion — the collision is not `List`-specific. `(type T (Foo Int64) (Bool Int64))`
+           declares a variant `Bool`; `(T.Bool 42)` constructs it and `((T.Bool v) v)` reads its payload →
+           42. Pins that a variant whose name shadows the prelude TYPE `Bool` resolves to `T`'s constructor
+           through `T.Bool`, so naming a variant after any prelude type is admissible in its declaring
+           module.")
+  (input  (do
+            (type T (Foo Int64) (Bool Int64))
+            (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.Bool v) v)))
+            (def (main) (sz (T.Bool 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a variant carrying a record payload escapes to the host"
   (doc    "The escape companion: `(P.Pt (record (x 1) (y 2)))` returned as the program result renders
            its canonical form `(: (Pt (record (x 1) (y 2))) P)` — the variant's BARE name `Pt` applied to
@@ -5350,11 +5620,17 @@
   (output (: 1 Int64)))
 
 (case "comparing same-shape nominal types is a type error"
-  (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. Point and
-           Vector share a shape but are distinct nominal types; the compiler tracks nominal identity
-           and rejects comparing them (CDZ0202), or declines if it does not yet track nominal tags in
-           comparison (reject-don't-miscompile).")
-  (input    (= (Point (x 0) (y 0)) (Vector (x 0) (y 0))))
+  (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. `Point` and
+           `Vector` are nominal types over the SAME underlying record shape `(Record (x Int64) (y Int64))`
+           — but a nominal type's identity is its declaration, not its shape, so they are distinct. The
+           compiler tracks nominal identity and rejects comparing `(Point.Mk …)` with `(Vector.Mk …)`
+           across the nominal boundary (CDZ0202). The record sibling of the nominal-SUM case below; a
+           nominal type is a name tagging any structural type (§Nominal Is An Orthogonal Modifier Over Any
+           Structural Type — record, tuple, or sum).")
+  (input    (do
+              (type Point  (Mk (Record (x Int64) (y Int64))))
+              (type Vector (Mk (Record (x Int64) (y Int64))))
+              (= (Point.Mk (record (x 0) (y 0))) (Vector.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
 ; --- The other half of the nominal boundary: nominal vs the untagged shape ----------------
@@ -5366,19 +5642,24 @@
 ; as the nominal-vs-nominal case above is.
 
 (case "a nominal record compared to a plain record of the same shape is a type error"
-  (doc    "`(Point (x 0) (y 0))` is a nominal record; `(record (x 0) (y 0))` is the untagged structural
-           value of the same shape. Comparing them is a type error the compiler rejects (CDZ0202,
-           type-system.md #Nominal Types Are Not Comparable Across Their Boundary, 2nd sentence) — a
-           nominal value never silently compares equal to the untagged shape it was declared distinct
-           from.")
-  (input    (= (Point (x 0) (y 0)) (record (x 0) (y 0))))
+  (doc    "`(Point.Mk (record (x 0) (y 0)))` is a nominal record (a `Point` tagging the underlying record
+           shape); `(record (x 0) (y 0))` is the untagged structural value of the same shape. Comparing
+           them is a type error the compiler rejects (CDZ0202, type-system.md #Nominal Types Are Not
+           Comparable Across Their Boundary, 2nd sentence) — a nominal value never silently compares equal
+           to the untagged shape it was declared distinct from (unwrap the nominal to compare the
+           underlying value).")
+  (input    (do
+              (type Point (Mk (Record (x Int64) (y Int64))))
+              (= (Point.Mk (record (x 0) (y 0))) (record (x 0) (y 0)))))
   (error    CDZ0202))
 
 (case "a plain record compared to a nominal record of the same shape is a type error"
-  (doc    "The order-flipped companion: `(= (record …) (Point …))` is the same nominal-boundary
+  (doc    "The order-flipped companion: `(= (record …) (Point.Mk …))` is the same nominal-boundary
            violation regardless of which operand carries the tag — CDZ0202. Pins that the nominal tag
            is checked on either side of the comparison, not only the left.")
-  (input    (= (record (x 0) (y 0)) (Point (x 0) (y 0))))
+  (input    (do
+              (type Point (Mk (Record (x Int64) (y Int64))))
+              (= (record (x 0) (y 0)) (Point.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
 ; --- The nominal boundary holds for user-declared SUM types too, not only nominal records -----------
@@ -5818,6 +6099,18 @@
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 5 Int64)) (output (: 99 Int64)))
 
+(case "the new map from a runtime-key take has the key removed"
+  (doc    "The take-side companion of the swap-new-map case above: the SECOND tuple element of `Map.take` is
+           the NEW map, with the taken key REMOVED. Taking key `k` from a two-entry map `{1↦10, 2↦20}` and
+           measuring the resulting map's size — k=1 (present) → the map drops to size 1, k=9 (absent) → the
+           map is unchanged at size 2 (removal is total). Pins that `Map.take` produces a USABLE resulting
+           map handle (agreeing with the plain `Map.remove`), not only a reported dropped value — the
+           value-yielding remove's `.1` is re-queryable, driven by the runtime key.")
+  (input  (do (def (main (: k Int64))
+                (Map.size (. (Map.take (Map.insert (Map.insert Map.empty 1 10) 2 20) k) 1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64)) (output (: 2 Int64)))
+
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
 ; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len
 ; xs))`, `(def (f b) (Bytes.len b))`, and `(def (f s) (String.byte-len s))` all compile and run when the
@@ -6120,3 +6413,115 @@
   (input  (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64))))
+
+; The parameterized COLLECTION-return cases above always return a NON-EMPTY collection. The EMPTY boundary
+; — a parameterized export whose result is a runtime-SELECTED empty-or-nonempty collection (an `if` choosing
+; between `(list)` and `(list …)`) — is a distinct case: the empty branch must cross as the canonical EMPTY
+; value form (`(list)` / `(map)` / `((. Set of) (list))`), and the non-empty branch as its populated form,
+; both from the SAME export driven by the argument. A collection escape that assumed a non-empty payload (a
+; length-prefix off-by-one, a head read on an empty structure) would break the empty branch. These pin both.
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty list"
+  (doc    "`main(n) = (if (> n 0) (list n) (list))` returns an empty or one-element list decided by the
+           argument. n=0 → the canonical empty list `(list)`; n=5 → `(list 5)`. Pins that the empty branch
+           of a runtime-selected collection crosses the resource-escape boundary as the canonical empty
+           value form, alongside the populated branch — the degenerate boundary the non-empty
+           parameterized-return cases above cannot witness.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (list n) (list))) (export main)))
+  (call   main (: 0 Int64)) (output (: (list) (List Int64)))
+  (call   main (: 5 Int64)) (output (: (list 5) (List Int64))))
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty map"
+  (doc    "The map companion: `main(n) = (if (> n 0) (Map.insert Map.empty n n) Map.empty)` returns an empty
+           or one-entry map by the argument. n=0 → the canonical empty map `(map)`; n=5 → `(map (5 5))`.
+           Pins that `Map.empty` crosses the boundary as the canonical empty map form from a parameterized
+           export, not only a populated map.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
+  (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
+  (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64))))
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty set"
+  (doc    "The set companion: `main(n) = (if (> n 0) (Set.of (list n)) (Set.of (list)))` returns an empty or
+           singleton set by the argument. n=0 → the canonical empty set `((. Set of) (list))`; n=5 →
+           `((. Set of) (list 5))`. Pins that the empty set crosses the boundary as its canonical empty
+           value form from a parameterized export.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
+  (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
+  (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64))))
+
+(case "a tuple-parameter export returns a list computed from its fields"
+  (doc    "An export whose PARAMETER is a fixed-shape tuple crosses the boundary: the param arrives as a
+           native `tuple<…>` the canonical ABI flattens into scalar leaves, which `make` rebuilds into the
+           cell before running the body — so `main((tuple 7 9)) = (list 7 9)`. Closes the compound-PARAM
+           side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
+  (input  (do (def (main (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))) (export main)))
+  (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
+  (output (: (list 7 9) (List Int64))))
+
+(case "a tuple-parameter export returns a BigInt computed from its fields"
+  (doc    "`main((tuple 5000000000 6000000000)) = 5e9 + 6e9 = 11000000000` as a BigInt — a heap numeric
+           value computed from a tuple parameter's fields, past Int64's reach.")
+  (input  (do (def (main (: p (Tuple Int64 Int64))) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1)))) (export main)))
+  (call   main (: (tuple 5000000000 6000000000) (Tuple Int64 Int64)))
+  (output (: 11000000000 BigInt)))
+
+(case "a record-parameter export returns a tuple computed from its fields"
+  (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
+           (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
+  (input  (do (def (main (: p (Record (x Int64) (y Int64)))) (tuple (. p y) (. p x))) (export main)))
+  (call   main (: (record (x 3) (y 8)) (Record (x Int64) (y Int64))))
+  (output (: (tuple 8 3) (Tuple Int64 Int64))))
+
+(case "an export mixing a scalar and a tuple parameter returns a list from both"
+  (doc    "`make` forwards a MIX of parameter shapes: a scalar leaf AND a fixed-shape tuple (crossing as a
+           native `tuple<…>` the ABI flattens, rebuilt in-guest) compose in one export. `main(5, (tuple 7
+           9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
+  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (list a (. p 0) (. p 1))) (export main)))
+  (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
+  (output (: (list 5 7 9) (List Int64))))
+
+(case "an export with a tuple parameter before a scalar returns a list from both"
+  (doc    "Parameter ORDER is preserved across the mix: a tuple param FOLLOWED by a scalar. `main((tuple
+           20 30), 40) = (list 20 30 40)` — the leaf cursor threads the tuple's flattened fields then the
+           trailing scalar.")
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) (list (. p 0) (. p 1) a)) (export main)))
+  (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
+  (output (: (list 20 30 40) (List Int64))))
+
+(case "an export with two tuple parameters returns a list from both"
+  (doc    "MULTIPLE compound params compose: two tuples each cross as their own native `tuple<…>` (the
+           envelope mints one type per compound), each rebuilt from its own run of flattened leaves.
+           `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
+  (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: (list 1 2 3 4) (List Int64))))
+
+(case "an export mixing a scalar and a tuple parameter returns a BigInt from both"
+  (doc    "The mixed-param compound path composes with a BigInt result: `main(1e9, (tuple 2e9 3e9)) =
+           1e9 + 2e9 + 3e9 = 6000000000`, past Int64, from a scalar and a tuple parameter.")
+  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (+ (BigInt.of a) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1))))) (export main)))
+  (call   main (: 1000000000 Int64) (: (tuple 2000000000 3000000000) (Tuple Int64 Int64)))
+  (output (: 6000000000 BigInt)))
+
+(case "an export with a nested-tuple parameter returns a list from its leaves"
+  (doc    "A NESTED fixed-shape compound param — a tuple whose first field is itself a tuple — crosses as
+           a native nested `tuple<tuple<…>, …>` the canonical ABI flattens depth-first into scalar leaves,
+           which `make` rebuilds into the nested cell (recursive `FieldRebuild`). `main((tuple (tuple 1 2)
+           3)) = (list 1 2 3)`.")
+  (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) (list (. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
+  (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: (list 1 2 3) (List Int64))))
+
+(case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
+  (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
+           canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
+  (input  (do (def (main (: p (Record (pt (Tuple Int64 Int64)) (n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
+  (call   main (: (record (pt (tuple 10 20)) (n 30)) (Record (pt (Tuple Int64 Int64)) (n Int64))))
+  (output (: (list 10 20 30) (List Int64))))
+
+(case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
+  (doc    "A nested compound composes with a scalar param: `main(9, (tuple (tuple 5 6) 7)) = (list 9 5 7)`
+           — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
+  (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
+  (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: (list 9 5 7) (List Int64))))

@@ -23,3 +23,14 @@ path = "src/main.rs"
 cadenza-syntax = { path = "../cadenza-syntax" }
 rcdzc = { path = "../rcdzc" }
 clap = { version = "4", features = ["derive"] }
+# The property-testing generator engine for `cdz test`: `bolero-generator` produces values from a seeded
+# driver (`driver::Rng`) — reproducible + shrinkable — used as a LIBRARY (not the `check!` cargo-test
+# harness), so `cdz test` loops trials itself. (The old seed-vs-bolero lockfile conflict the cdz-smith
+# comment cites is STALE: modern `proc-macro-crate` pulls `toml_edit 0.20` as a build-dep major that
+# coexists with the front-end's `toml_edit 0.22`, both sharing one `toml_datetime` — no clash.)
+bolero-generator = "0.13"
+# The seeded RNG that drives bolero's `driver::Rng` — a reproducible stream from `cdz test --seed N`.
+# Versions matched to what `bolero-generator` itself resolves (`rand_core 0.9` / `rand_xoshiro 0.7`), so
+# the `TryRngCore` the driver bounds on is the SAME trait our RNG implements (one `rand_core` in the lock).
+rand_core = "0.9"
+rand_xoshiro = "0.7"

@@ -1923,6 +1923,78 @@
   (call   main)
   (output (: 15 Int64)))
 
+; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
+; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
+; fields of a tuple returned by a recursive helper, accumulating compound-payload sum nodes into a list.
+; Over enough locals the loop function reused one slot for an i64 arithmetic temp AND an i32 heap handle
+; (an invalid module, `expected i32 found i64`). Root-caused to the same slot-reservation weakness as the
+; let-bound if-compound miscompile (a persistent slot must be reserved BEFORE the sub-expressions that
+; float their scratch off the high-water) — the fix there cleared this too. A now-passing regression guard.
+
+(case "a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles"
+  (doc    "A decode loop `read-leaves` advances its position via `leaf-end`, which projects BOTH fields of
+           the tuple returned by the recursive `read-varu` (`(+ (. v 1) (. v 0))`), and pushes `Ast` sum
+           nodes (a type with a `(List Ast)` variant — a compound payload) into a `(List Ast)` accumulator.
+           Over `b\"\\x00\\x01\\x05\"` it reads ONE leaf, an `(Ast.Int …)`, and `nc` of an `Ast.Int` is 1.
+           This emitted INVALID WASM (`expected i32, found i64`) — a threshold-dependent slot-aliasing bug
+           in the loop transform (one local held both an i64 arithmetic temp and the i32 handle from
+           `read-varu`), the same scratch-slot family as the let-bound if-compound miscompile; the
+           slot-reservation fix cleared both. Expected: 1.")
+  (input  (do
+            (type Ast (Int Int64) (List (List Ast)))
+            (def (read-varu (: b Bytes) (: p Int64) (: a Int64) (: s Int64))
+              (let ((byte (Option.expect (Bytes.at b p) "v")))
+                (let ((a2 (+ a (<< (& byte 127) s))))
+                  (if (= (& byte 128) 0) (tuple a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
+            (def (read-mag (: b Bytes) (: p Int64) (: len Int64) (: acc Int64))
+              (if (= len 0) acc (read-mag b (+ p 1) (- len 1) (+ (* acc 256) (Option.expect (Bytes.at b p) "m")))))
+            (def (read-leaf (: b Bytes) (: pos Int64)) ((. Ast Int) (read-mag b (+ pos 1) (. (read-varu b (+ pos 1) 0 0) 0) 0)))
+            (def (leaf-end (: b Bytes) (: pos Int64)) (let ((v (read-varu b (+ pos 1) 0 0))) (+ (. v 1) (. v 0))))
+            (def (read-leaves (: b Bytes) (: pos Int64) (: count Int64) (: acc (List Ast)))
+              (if (= count 0) acc (read-leaves b (leaf-end b pos) (- count 1) (List.push acc (read-leaf b pos)))))
+            (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
+            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
+            (export main)))
+  (output (: 1 Int64)))
+
+; A further residual of the SAME i32/i64 slot family, on the `if`-BRANCH axis: a self-recursive function
+; CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE. The two `if`
+; branches are mutually exclusive, so the emit reused one scratch slot index across them — but the base
+; arm wants it as an i32 Option handle (from `Bytes.at`/`List.at`) while the recursive arm's `(- n 1)`
+; wants it as an i64 temp; a slot's type is recorded ONCE, so the local was declared at one width and used
+; at the other (`expected i32, found i64`). The fix starts the ELSE branch's scratch above the THEN
+; branch's high-water (disjoint by width), like the tuple/list examples above. These pin both the Bytes
+; and the List carry, and both the `Option.expect` and the raw `match` fallible read.
+
+(case "a collection-carrying recursion whose base arm does a fallible indexed read compiles"
+  (doc    "A self-recursive `loop` carries a `Bytes` parameter and at its base arm (n=0) performs a FALLIBLE
+           read `(Option.expect (Bytes.at b p) …)` — byte `p` of `b\"\\x05\"` at p=0 = 5. This emitted
+           INVALID WASM (`expected i32, found i64`): the base arm's i32 Option handle and the recursive
+           arm's i64 `(- n 1)` temp collided on one scratch slot (the two mutually-exclusive `if` branches
+           shared a slot index recorded at a single width). The SAME fallible read WITHOUT the recursion
+           compiles and runs to 5, and a scalar `(Bytes.len b)` base (no handle) also compiles — pinning the
+           trigger to a handle-materializing base arm of a collection-carrying recursion. Fix: the else
+           branch's scratch starts above the then branch's high-water, so the i32 handle stays disjoint from
+           the i64 temps. Expected: 5.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
+            (def (main (: p Int64)) (loop b"\x05" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+(case "a list-carrying recursion whose base arm does a fallible indexed read compiles"
+  (doc    "The LIST companion of the Bytes case above — the fault is not Bytes-specific. A self-recursive
+           `loop` carries a `(List Int64)` and its base arm reads `(Option.expect (List.at xs i) …)`. With
+           `xs`=(list 7 8 9) and i=1 the base yields 8. Same slot collision (i32 List-element Option handle
+           vs i64 recursion temp), same fix. Expected: 8.")
+  (input  (do
+            (def (loop (: xs (List Int64)) (: i Int64) (: n Int64))
+              (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
+            (def (main (: i Int64)) (loop (list 7 8 9) i 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 8 Int64)))
+
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
            argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial
@@ -3134,6 +3206,27 @@
             (def (main) (loop-n 5))
             (export main)))
   (error  CDZ0201))
+
+; The `@` sigil is GENERAL (`@name form` — "future annotations `@deprecated`, `@test` layer in with no new
+; lexer/parser/resolver rules"). An annotation name the compiler does NOT model is TRANSPARENT: the strip
+; pass unwraps `(@ <name> (def …))` to the def just as it does a known one, recording nothing — so the def
+; takes effect, the unmodeled name is simply ignored. (Previously an unmodeled `(@ …)` node survived to
+; resolve, where the head `@` is no declaration → the wrapped def was DROPPED with a misleading "unbound
+; name `@`" plus a phantom unbound-name for the def.) A future annotation gains meaning by joining the
+; compiler's known set; until then it is an inert marker that never breaks the def it annotates.
+
+(case "an unrecognized annotation leaves its wrapped definition in effect"
+  (doc    "`(@ deprecated (def (f) 5))` — the `@name` annotation sigil with a name OTHER than the modeled
+           inline policies / test marker. The def must still register and `main` → 5: an unmodeled
+           annotation is transparent (unwrapped to the def, its name ignored), not a rejection. This holds
+           for ANY unknown name (`@deprecated`, `@lint`, …) and for a def USED by another def; the modeled
+           `@inline-never`/`@inline-always` retain their emission policy. A generation that unwraps an
+           unknown annotation runs `f` (→ 5) rather than dropping it with 'unbound name @'.")
+  (input  (do
+            (@ deprecated (def (f) 5))
+            (def (main) (f))
+            (export main)))
+  (output (: 5 Int64)))
 
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.

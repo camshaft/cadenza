@@ -25,6 +25,10 @@ export default function Strings() {
   (String.concat "Hello, " name))
 (def (main) (greet "Cadenza"))`}
       />
+      <P>
+        <C>(greet "Cadenza")</C> joins the two pieces into <C>"Hello, Cadenza"</C> — a brand-new string, with
+        the two inputs left untouched.
+      </P>
 
       <H2>How long is a string?</H2>
       <P>

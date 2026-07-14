@@ -103,6 +103,18 @@ A declared default fraction literal type MUST apply to both an integer-written l
 
 The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default fraction literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
 
+### A Module May Declare Its Default Float Literal Type
+
+A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the floating-point type that a decimal literal with no other constraint takes within that module.
+
+When a module declares no default float literal type, a decimal literal with no other constraint MUST take the numeric model's default floating-point type.
+
+The type named by a default-float-literal directive MUST be a floating-point type the numeric model admits, and a directive naming a type that is not a floating-point type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
+
+A declared default float literal type MUST apply only to a decimal-written literal with no other constraint, leaving an integer-written literal at its declared or model-default integer type, so that a default float width governs how a written fraction is represented without silently making an integer a float.
+
+The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default float literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
+
 ## Exactness
 
 ### Exact Arithmetic Is Exact
@@ -135,9 +147,11 @@ A floating-point bit width that is outside the set the numeric model admits MUST
 
 A conversion between a floating-point type and any other numeric type, or between two floating-point types of different width, MUST be written explicitly rather than performed as an implicit promotion or narrowing.
 
-### A Floating-Point Operation Uses A Floating-Point Operator
+### An Arithmetic Operator Requires Both Operands To Be One Numeric Type
 
-An arithmetic operation on floating-point values MUST be written with a floating-point operator distinct from the integer arithmetic operator, so that no operator silently accepts one integer and one floating-point operand and no integer operator coerces a floating-point operand.
+An arithmetic operator MUST be a single symbol whose result type and operation are resolved from its operand types, rather than a set of type-specific symbols the author selects by hand — the same operator writes integer, arbitrary-precision, exact-rational, and floating-point arithmetic, dispatched on what its operands are.
+
+An arithmetic operator MUST require both of its operands to be the same numeric type, so that an application mixing a floating-point operand with an integer operand is rejected at compile time rather than silently accepting one integer and one floating-point operand or coercing a floating-point operand to an integer. This is the no-silent-promotion rule applied to the operator: the rejection follows from the operands disagreeing, not from the operator naming a type.
 
 ### A Floating-Point Literal That Denotes No Representable Value Is Malformed
 

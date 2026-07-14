@@ -297,14 +297,20 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     finish_layout(db, exports)
 }
 
-/// Compute the boundary layout for a `cdz test` build: the exported entries are every `@test` NULLARY
+/// Compute the boundary layout for a `cdz test` build: the exported entries are every `@test`
 /// definition (`db.test_defs`), IN PLACE OF the program's `(export …)` clauses. Each becomes an
-/// `ExportPlan` with NO parameters and its solved result type (a test's body typically diverges — it
-/// traps on failure — so `result` is a `Never`/`Unit`, which the backend's diverging-export path crosses
-/// as a no-result entry). The reachable set + lifted closures are closed exactly as [`compute`] does
-/// (shared `finish_layout`). A `@test` on a def WITH PARAMETERS is rejected (a test takes no arguments —
-/// it is invoked nullary at the boundary). A build with NO `@test` def declines ("no `@test`: nothing to
-/// run") — the test-artifact analogue of `compute`'s "no export" decline.
+/// `ExportPlan` with its solved result type (a test's body typically diverges — it traps on failure —
+/// so `result` is a `Never`/`Unit`, which the backend's diverging-export path crosses as a no-result
+/// entry). The reachable set + lifted closures are closed exactly as [`compute`] does (shared
+/// `finish_layout`). A build with NO `@test` def declines ("no `@test`: nothing to run") — the
+/// test-artifact analogue of `compute`'s "no export" decline.
+///
+/// A `@test` with PARAMETERS is a PROPERTY test: its parameters cross the boundary as ordinary export
+/// parameters (`export_params`, the boundary-representable variant), and `cdz test` runs it over many
+/// trials with generated inputs (`cdz-run --call NAME --arg …`). A NULLARY `@test` is the plain
+/// (single-run) case — `export_params` returns an empty list for it, so both go through one path. A
+/// parameter whose type has no boundary valtype still declines with the "annotate it" message
+/// `export_params` gives (a property input must be a concrete scalar the runner can generate + pass).
 ///
 /// This is the ONE place the export SOURCE differs from `compute`; everything downstream (reachability,
 /// selection, serialization, the diverging-export→unit-entry crossing) is source-agnostic, so a test
@@ -320,15 +326,6 @@ pub fn compute_tests(db: &mut Db) -> Result<Layout, Reject> {
     let mut exports: Vec<ExportPlan> = Vec::new();
     for def in test_defs {
         let name = db.defs[def].name.clone();
-        // A test must be NULLARY — it is invoked with no arguments at the boundary. A `@test` on a def
-        // with parameters is a misuse: reject with an actionable message rather than emit an entry the
-        // runner could never call.
-        if !db.defs[def].params.is_empty() {
-            return Err(Reject::decline(format!(
-                "`@test` definition `{name}` takes parameters — a test must be NULLARY (it is run with \
-                 no arguments); remove its parameters"
-            )));
-        }
         let body = match db.defs[def].body {
             Some(b) => b,
             None => {
@@ -337,13 +334,18 @@ pub fn compute_tests(db: &mut Db) -> Result<Layout, Reject> {
                 )));
             }
         };
+        // A test's PARAMETERS (empty for a plain test) cross as boundary-representable export params — the
+        // property-test inputs `cdz test` generates + passes. `export_params` solves each param's type and
+        // declines a non-representable one (asking for an annotation), exactly as a normal export does; a
+        // nullary test yields an empty list, so the plain and property cases share this one path.
+        let params = export_params(db, def, &name)?;
         let result = type_of(db, body);
-        trace!(target: "rcdzc::layout", %name, def, result = %result.render_name(), "test export plan");
+        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(), "test export plan");
         exports.push(ExportPlan {
             name,
             def,
             body,
-            params: Vec::new(),
+            params,
             result,
         });
     }

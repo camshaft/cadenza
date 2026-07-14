@@ -192,6 +192,30 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 //= constitution.md#iii-the-compiler-introduces-no-undeclared-nondeterminism
 //# The compiler MUST NOT introduce into a component a source of nondeterminism that the program did not obtain through a declared capability.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
+    // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
+    // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing
+    // self-application in a sum-constructor payload materializes an unbounded `Core::SumNew` chain that
+    // would overflow the native stack. Past the limit stop descending — a host call buried deeper belongs
+    // to a program `collect_faults` rejects anyway, so a clipped set changes no ACCEPTED program.
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    collect_host_imports_at(db, id, out);
+    db.walk_depth -= 1;
+}
+
+/// The CORE walk of [`collect_host_imports`] — descend the LOWERED core so a `HostCall` reached through
+/// an INLINED helper (spliced into the caller's core by β-reduction, absent from the caller's AST) is
+/// found. Mirrors [`crate::layout::collect_closure_codes`] arm-for-arm (exhaustive, NO wildcard, so a new
+/// `Core` variant is a compile error here rather than a silently-dropped host call — the same discipline
+/// the closure/callee walks hold). A `Core::Call` descends only its ARGS, not the callee's body: a
+/// non-inlined callee is itself a `layout.order` entry whose body is walked by the caller loop, so
+/// recursing into it here would be redundant (and, for a recursive callee, non-terminating). This is why
+/// a reusable effect-performing helper (`assert-eq` performing `Test.fail`) now contributes its op to the
+/// import set whether it inlines or emits — where the old AST walk saw only the un-inlined `(assert-eq …)`
+/// application and missed the performed op entirely.
+fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
             effect,
@@ -269,12 +293,214 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
                 collect_host_imports(db, a, out);
             }
         }
-        _ => {
-            // Descend structurally into every child — a host call may be nested anywhere.
-            if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
-                for c in children {
-                    collect_host_imports(db, c, out);
+        // A CALL descends only its ARGS (a host call may hide in an argument); the callee's own body is
+        // walked when it is itself expanded from `layout.order`. A CallClosure likewise descends the
+        // closure value + args.
+        Core::Call { args, .. } => {
+            for a in args {
+                collect_host_imports(db, a, out);
+            }
+        }
+        Core::CallClosure { closure, args } => {
+            collect_host_imports(db, closure, out);
+            for a in args {
+                collect_host_imports(db, a, out);
+            }
+        }
+        // A closure's CAPTURES are ordinary values built in the enclosing scope — a captured value may be a
+        // host-call RESULT (`(let ((a (ask.ask))) (fn (x) (+ x a)))` captures the host call `a`), so the
+        // captures must be walked or that host op is missed and the program declines. The closure's BODY is
+        // walked separately (it emits as its own lifted function whose body the layout reaches).
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_host_imports(db, c, out);
+            }
+        }
+        Core::If { cond, then_, else_ } => {
+            collect_host_imports(db, cond, out);
+            collect_host_imports(db, then_, out);
+            collect_host_imports(db, else_, out);
+        }
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_host_imports(db, value, out);
+            }
+            collect_host_imports(db, body, out);
+        }
+        Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_host_imports(db, s, out);
+            }
+            collect_host_imports(db, tail, out);
+        }
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs }
+        | Core::And { lhs, rhs, .. }
+        | Core::ListConcat { lhs, rhs }
+        | Core::BytesConcat { lhs, rhs }
+        | Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalOfInts { num: lhs, den: rhs }
+        | Core::RationalBinOp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => {
+            collect_host_imports(db, lhs, out);
+            collect_host_imports(db, rhs, out);
+        }
+        Core::BigIntOfI64 { value } => collect_host_imports(db, value, out),
+        Core::BigIntToI64 { operand } => collect_host_imports(db, operand, out),
+        Core::RationalOfIntWiden { value } => collect_host_imports(db, value, out),
+        Core::ListPush { list, elem } => {
+            collect_host_imports(db, list, out);
+            collect_host_imports(db, elem, out);
+        }
+        Core::ListUpdate { list, index, elem } => {
+            collect_host_imports(db, list, out);
+            collect_host_imports(db, index, out);
+            collect_host_imports(db, elem, out);
+        }
+        Core::ListAt { list, index, .. } => {
+            collect_host_imports(db, list, out);
+            collect_host_imports(db, index, out);
+        }
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_host_imports(db, k, out);
+                collect_host_imports(db, v, out);
+            }
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            collect_host_imports(db, map, out);
+            collect_host_imports(db, key, out);
+            collect_host_imports(db, val, out);
+        }
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_host_imports(db, map, out);
+            collect_host_imports(db, key, out);
+        }
+        Core::MapSize { map } => collect_host_imports(db, map, out),
+        Core::SetOf { elems, .. } => {
+            for e in elems {
+                collect_host_imports(db, e, out);
+            }
+        }
+        Core::SetContains { set, elem, .. }
+        | Core::SetInsert { set, elem, .. }
+        | Core::SetRemove { set, elem, .. } => {
+            collect_host_imports(db, set, out);
+            collect_host_imports(db, elem, out);
+        }
+        Core::SetLen { set } => collect_host_imports(db, set, out),
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_host_imports(db, lhs, out);
+            collect_host_imports(db, rhs, out);
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            collect_host_imports(db, bytes, out);
+            collect_host_imports(db, index, out);
+        }
+        Core::StrAt { string, index, .. } => {
+            collect_host_imports(db, string, out);
+            collect_host_imports(db, index, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_host_imports(db, bytes, out);
+            collect_host_imports(db, start, out);
+            collect_host_imports(db, len, out);
+        }
+        Core::BytesCompact { operand }
+        | Core::Convert { operand, .. }
+        | Core::Not { operand }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand } => collect_host_imports(db, operand, out),
+        Core::Match { scrutinee, arms } => {
+            collect_host_imports(db, scrutinee, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_host_imports(db, g, out);
                 }
+                collect_host_imports(db, arm.body, out);
+            }
+        }
+        Core::Record { fields } => {
+            for value in fields.values() {
+                collect_host_imports(db, *value, out);
+            }
+        }
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            for e in elems {
+                collect_host_imports(db, e, out);
+            }
+        }
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_host_imports(db, s.value, out);
+            }
+        }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_host_imports(db, f.value, out);
+            }
+        }
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            collect_host_imports(db, bytes, out)
+        }
+        Core::Proj { operand, .. } => collect_host_imports(db, operand, out),
+        Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_host_imports(db, p, out);
+            }
+        }
+        Core::MatchSum { scrutinee, root } => {
+            collect_host_imports(db, scrutinee, out);
+            collect_cont_host_imports(db, &root, out);
+        }
+        Core::MatchList { scrutinee, arms } => {
+            collect_host_imports(db, scrutinee, out);
+            for arm in &arms {
+                collect_host_imports(db, arm.body, out);
+            }
+        }
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            collect_host_imports(db, scrutinee, out)
+        }
+        // Leaves / references perform no host call.
+        Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::Unit
+        | Core::Trap
+        | Core::Param { .. }
+        | Core::Captured { .. }
+        | Core::LocalRef { .. }
+        | Core::Poison(_) => {}
+    }
+}
+
+/// Walk a sum-match continuation for the host calls its arm bodies perform — the host-import analogue of
+/// `collect_cont_closure_codes`, so a `Test.fail`-style perform inside a `(match …)` arm over a sum is
+/// found too.
+fn collect_cont_host_imports(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<HostImport>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_host_imports(db, *body, out),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_host_imports(db, *cond, out);
+            collect_host_imports(db, *body, out);
+            collect_cont_host_imports(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_host_imports(db, then_, out);
+            collect_cont_host_imports(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                collect_cont_host_imports(db, &arm.cont, out);
             }
         }
     }

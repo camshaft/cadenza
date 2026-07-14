@@ -1001,7 +1001,7 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
 /// surfaces if it is the NEAREST to the typo, and the arm's own names are exactly what is in scope). The
 /// separators `_` (wildcard) and `..` (rest marker) bind nothing and are skipped. Bounded recursion over
 /// the pattern tree; a pattern is shallow, so no depth guard is needed.
-fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
+pub(crate) fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
     let mut out: Vec<(String, StructId)> = Vec::new();
     collect_arm_binder_leaves(db, pat, &mut out);
     out
@@ -1815,6 +1815,14 @@ fn find_leading_binder_in_list_pattern(
             elem_name == name && elem_name != "_"
         } else if is_tuple_pattern(db, elem) {
             find_binder_in_tuple(db, elem, name, &mut path, &mut heads)
+        } else if is_list_pattern(db, elem) {
+            // A NESTED LIST element `(list (list a .. r1) .. r2)` — the element at `Elem(i)` is itself a
+            // list pattern, so descend it with `find_binder_in_list` (which handles nested leading elements
+            // AND a `.. rest` sublist via `RestFrom`). Its own `Elem`/`RestFrom` steps stack onto the outer
+            // `Elem(i)`, so `a` reads `Elem(i), Elem(0)` and `r1` reads `Elem(i), RestFrom(…)`. `find_binder_
+            // in_pattern` excludes the `list` head (it is a compound-value ctor, not a variant), so without
+            // this branch a nested-list element's binder fell through unresolved (CDZ0101 in the body).
+            find_binder_in_list(db, elem, name, &mut path, &mut heads)
         } else {
             find_binder_in_pattern(db, elem, name, &mut path, &mut heads)
         };
@@ -3218,7 +3226,7 @@ fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
     // Otherwise apply `rhs` itself to `lhs` (a bare function name, a projected method, …).
     Resolved::Apply {
         head: rhs,
-        args: std::sync::Arc::from([lhs]),
+        args: std::rc::Rc::from([lhs]),
     }
 }
 
@@ -3760,7 +3768,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 let t = decode_ty(db, items[1])?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
-            Some(Ty::Record(std::sync::Arc::new(fields)))
+            Some(Ty::Record(std::rc::Rc::new(fields)))
         }
         _ => None,
     }
@@ -3854,9 +3862,9 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
-    // The parameter occurrences (each a bare name). Collected into the `Arc<[StructId]>` the variant
+    // The parameter occurrences (each a bare name). Collected into the `Rc<[StructId]>` the variant
     // holds (a refcounted slice — cloning the lambda is then O(1)).
-    let params: std::sync::Arc<[StructId]> = match db.ast.get(params_occ) {
+    let params: std::rc::Rc<[StructId]> = match db.ast.get(params_occ) {
         Struct::List(ps) => ps.clone().into(),
         _ => {
             return Resolved::Poison(Reject::coded(
@@ -3893,7 +3901,7 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_ctor_form(id, "record").unwrap_or(&[]);
     match read_record_fields(db, tail) {
         Ok(fields) => Resolved::Record {
-            fields: std::sync::Arc::new(fields),
+            fields: std::rc::Rc::new(fields),
         },
         Err(reject) => Resolved::Poison(reject),
     }
@@ -3999,9 +4007,19 @@ fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            "member access takes an operand and a key",
+        // `(. operand key)` is a fixed-arity form (want 2), so route it through the SHARED
+        // `fixed_arity_reject` the other fixed-arity forms (`if`/`and`/`not`/`resume`/`let`/`fn`) use — a
+        // TOO-MANY access (`(. r x y)`, an over-chained member) gets the delete-the-surplus fix (`cdz fix`
+        // removes extras until `(. r x)` remains — for a deeper chain the author writes `(. (. r x) y)`),
+        // and a TOO-FEW access (`(. r)`, no key) keeps a message-only reject (supplying the key is not a
+        // mechanical edit). Before this, member access was the one fixed-arity form with a terse fix-less
+        // message — the fix-parity-across-the-family gap.
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            "member access is `(. operand key)` — an operand and a single key (a field name or a tuple \
+             index); for a nested access chain them: `(. (. r a) b)`",
         ));
     }
     let operand = tail[0];
@@ -4053,7 +4071,7 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
     Resolved::Tuple { elems }
 }
 
@@ -4062,7 +4080,7 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 /// element type — `infer`/`type_errors` enforce homogeneity). An empty `(list)` has no elements — a
 /// list of a deferred element type.
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
-    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
     Resolved::List { elems }
 }
 
