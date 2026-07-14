@@ -17381,6 +17381,34 @@ mod match_engine {
             "a monomorphic sum keeps the M108 message, not the arity one: {}",
             mono.message
         );
+        // A NESTED wrong-arity ctor — inside a `List`, a `Tuple` element, or a record field — is caught
+        // too (the check recurses into type-argument positions), not only at the top-level annotation.
+        for src in [
+            "(module m (type Box (W a) (E)) (def (g (: xs (List (Box Int64 Bool)))) xs) (def (main) 0) (export main))",
+            "(module m (type Box (W a) (E)) (def (g (: t (Tuple Int64 (Box Int64 Bool)))) t) (def (main) 0) (export main))",
+            "(module m (type Box (W a) (E)) (def (g (: r (Record (b (Box Int64 Bool))))) r) (def (main) 0) (export main))",
+            // A nested PRELUDE ctor at the wrong arity is caught by the same recursion.
+            "(module m (def (g (: xs (List (Map Int64)))) xs) (def (main) 0) (export main))",
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("nested wrong-arity rejects: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("takes")
+                    && d.message.contains("type argument")
+                    && d.message.contains("supplied"),
+                "the nested ctor's arity is named: {}",
+                d.message
+            );
+        }
+        // NO false positive: a deeply-nested but WELL-FORMED type is clean (the recursion only flags a
+        // genuine arity mismatch, not every nested ctor).
+        assert!(
+            reject_full(
+                "(module m (def (g (: xs (List (Map Int64 (Set Int64))))) xs) (def (main) 0) (export main))"
+            )
+            .is_none_or(|d| !d.message.contains("takes")),
+            "a valid deeply-nested type raises no arity fault"
+        );
     }
 
     #[test]
