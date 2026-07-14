@@ -1828,6 +1828,14 @@ pub fn select_function_of(
         collect_dominating_frontier(db, body, &mut frontier);
         let mut hoist: Vec<StructId> = Vec::new();
         collect_hoistable(db, body, &inv_params, &frontier, &mut hoist);
+        // Every DISTINCT node occurrence in the body, in first-seen order — the pool we scan for other
+        // occurrences VALUE-EQUAL to a hoisted node (so a loop-invariant subexpression written in BOTH the
+        // condition AND the body — `(if (< i (* n 2)) … (+ acc (* n 2)) …)` — shares the ONE hoist rather
+        // than recomputing the body copy each iteration; the two `(* n 2)` are distinct StructIds but
+        // `core_eq`). Counts are unused here; we only need the id list.
+        let mut counts: HashMap<StructId, u32> = HashMap::new();
+        let mut body_nodes: Vec<StructId> = Vec::new();
+        collect_node_refs(db, body, &mut counts, &mut body_nodes);
         for node in hoist {
             // The hoisted value's machine slot. Skip anything without a machine rep (a heap-handle
             // invariant is fine — it is an i32 handle — but a rep-less type cannot be stashed).
@@ -1856,6 +1864,22 @@ pub fn select_function_of(
             )?;
             code.push(Lir::LocalSet(slot));
             slot_of.insert(node, slot);
+            // VALUE-NUMBER the hoist: point every OTHER body occurrence that is `core_eq` to this one (and
+            // itself loop-invariant, so its value is identical every iteration) at the SAME slot. Without
+            // this, a second textual copy of the invariant in the body (a distinct StructId) would
+            // recompute it per iteration despite the hoist already holding the value. Sound: the slot holds
+            // the value computed once before the loop from invariant params, and a `core_eq` invariant
+            // occurrence denotes that same value on every iteration. Skip an already-slotted node (a nested
+            // hoist / param) — it already reads a correct slot.
+            for &m in &body_nodes {
+                if m != node
+                    && !slot_of.contains_key(&m)
+                    && licm_invariant(db, m, &inv_params)
+                    && core_eq(db, node, m)
+                {
+                    slot_of.insert(m, slot);
+                }
+            }
         }
     }
     if loops {

@@ -11611,6 +11611,67 @@ mod recursion {
             "n=0 runs zero iterations and does not trap"
         );
     }
+
+    #[test]
+    fn a_loop_invariant_in_both_the_condition_and_the_body_is_hoisted_once() {
+        // The SAME loop-invariant `(* n 2)` appears in BOTH the condition `(< i (* n 2))` AND the body
+        // `(+ acc (* n 2))` — two distinct StructIds, but `core_eq`. LICM value-numbers the hoist: it
+        // computes `(* n 2)` ONCE before the loop and points BOTH occurrences at that slot, so exactly
+        // ONE `i64.shl` is emitted (the strength-reduced `* 2`), not one hoisted + one per-iteration copy.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (go (: i Int64) (: n Int64) (: acc Int64)) \
+                       (if (< i (* n 2)) (go (+ i 1) n (+ acc (* n 2))) acc)) \
+                     (def (f (: x Int64)) (go 0 x 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("go").expect("go");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert_eq!(
+            code.iter().filter(|i| matches!(i, Lir::I64Shl)).count(),
+            1,
+            "the invariant `(* n 2)` in both the condition and the body is hoisted ONCE (one i64.shl): \
+             {code:?}"
+        );
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("go compiles to a loop");
+        assert_eq!(
+            code[loop_ix..]
+                .iter()
+                .filter(|i| matches!(i, Lir::I64Shl))
+                .count(),
+            0,
+            "no `(* n 2)` remains inside the loop body (the body copy reads the hoisted slot): {code:?}"
+        );
+
+        // VALUE PARITY: go(0, 3, 0) — bound = 6, loop i in [0,6), adds (n*2)=6 each iteration → 6*6 = 36.
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
+            36,
+            "go(0, 3, 0) = 6 iterations * (3*2)"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
