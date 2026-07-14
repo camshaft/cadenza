@@ -916,6 +916,15 @@ impl Decimal {
     pub fn is_finite_f64(&self) -> bool {
         f64::from_bits(self.to_f64_bits()).is_finite()
     }
+
+    /// Whether the literal fits `Float32` — its `f64` value, cast to `f32`, is still FINITE. A magnitude
+    /// past the largest finite `f32` (`~3.4e38`) rounds to `±inf` in `Float32` (a value with no written
+    /// form), so `(: 1e40 Float32)` is a MALFORMED-for-the-width literal, the `Float32` analogue of
+    /// `is_finite_f64` (which guards the `Float64` default). A value that already overflows `f64` fails
+    /// this too (its `f64` is `±inf`, and `inf as f32` stays `inf`).
+    pub fn fits_f32(&self) -> bool {
+        (f64::from_bits(self.to_f64_bits()) as f32).is_finite()
+    }
 }
 
 /// The two arenas plus the root occurrence — the whole AST of one program unit.

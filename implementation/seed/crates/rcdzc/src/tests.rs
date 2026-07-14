@@ -13274,6 +13274,31 @@ mod match_engine {
     }
 
     #[test]
+    fn a_float_literal_that_overflows_float32_is_out_of_range() {
+        // The float analogue of an out-of-range integer literal: `(: 1.0e300 Float32)` is finite as the
+        // default `Float64` but rounds to `±inf` in `Float32` (a value with no written form), so CDZ0302 —
+        // it was silently accepted before (only the `Float64` bare-literal overflow was caught). Fires at
+        // BOTH a value annotation and a let-binder annotation (the shared `literal_width_fault`).
+        for src in [
+            "(module m (def (main) (: 1.0e300 Float32)) (export main))",
+            "(module m (def (main) (let (((: x Float32) 1.0e300)) x)) (export main))",
+        ] {
+            let d = reject_full(src).expect("a Float32-overflowing literal is rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+            assert!(
+                d.message.contains("Float32") && d.message.contains("infinity"),
+                "names Float32 + the overflow-to-inf cause: {}",
+                d.message
+            );
+        }
+        // NO false positive: a value that FITS Float32, and the SAME magnitude annotated Float64 (its
+        // finite range holds it), both compile clean.
+        assert!(reject_full("(module m (def (main) (: 3.0e38 Float32)) (export main))").is_none());
+        assert!(reject_full("(module m (def (main) (: 1.5 Float32)) (export main))").is_none());
+        assert!(reject_full("(module m (def (main) (: 1.0e300 Float64)) (export main))").is_none());
+    }
+
+    #[test]
     fn an_out_of_range_literal_carries_a_widen_the_annotation_fix() {
         // CDZ0302 now carries the rustc-style "value doesn't fit; use a wider type" repair: replace the
         // annotation with the SMALLEST aliased width of the same signedness the literal fits

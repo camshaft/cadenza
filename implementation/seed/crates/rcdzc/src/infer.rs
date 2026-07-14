@@ -474,6 +474,29 @@ fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntT
 /// unify (CDZ0203), and a deferred/Var width imposes no bound.
 fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
     let annot_ty = crate::eval::typeval_of(db, ty_expr)?;
+    // A FLOAT literal annotated to a NARROWER float width it cannot hold — `(: 1.0e300 Float32)`. The
+    // value is finite as `Float64` (the literal's default) but overflows `Float32` to `±inf`, a value with
+    // no written form (numeric-model.md §A Floating-Point Literal That Denotes No Representable Value Is
+    // Malformed) — the float analogue of an out-of-range integer literal (CDZ0302). Only `Float32` is
+    // narrow enough to catch here (a `Float64` overflow is a malformed bare literal, caught earlier); a
+    // non-literal value imposes no compile-time bound. `is_finite_f64` guards the default `Float64`; this
+    // is its `Float32` sibling, promised by that method's own doc-comment ("`(: 1e40 Float32)` … caught at
+    // the annotation").
+    if let Ty::Float(ft) = &annot_ty
+        && ft.ground_width() == 32
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(value)
+        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+        && !dec.fits_f32()
+    {
+        return Some(
+            Reject::coded(
+                Code::IntOutOfRange,
+                "float literal does not fit the annotated type Float32 (it overflows the Float32 \
+                 range to infinity — the largest finite Float32 is about 3.4e38)",
+            )
+            .at(ty_expr),
+        );
+    }
     let Ty::Int(it) = &annot_ty else { return None };
     let crate::ty::Width::Fixed(w) = it.width else {
         return None;
@@ -7491,6 +7514,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         ),
                     ));
                 }
+            }
+            // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`
+            // — is finite as the literal's default `Float64` but rounds to `±inf` in `Float32`, a value
+            // with no written form (CDZ0302, `numeric-model.md` §A Floating-Point Literal That Denotes No
+            // Representable Value Is Malformed) — the float analogue of an out-of-range integer literal.
+            // Checked independently of the annot-agreement branches above (a deferred float literal unifies
+            // fine with `Float32`, so the mismatch path never fires), via the shared `literal_width_fault`
+            // (the same fit-check the let-binder runs), so a value annotation surfaces it in `cdz check`.
+            if let Some(reject) = literal_width_fault(db, expr, ty_expr) {
+                out.push(reject);
             }
             collect(db, expr, out);
         }
