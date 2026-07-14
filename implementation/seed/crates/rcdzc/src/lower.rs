@@ -654,7 +654,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     if is_and {
                         if sat && is_trap_free(db, range_node) {
                             core_of(db, eq_node) // range redundant → keep the equality
-                        } else if !sat && is_trap_free(db, eq_node) && is_trap_free(db, range_node) {
+                        } else if !sat && is_trap_free(db, eq_node) && is_trap_free(db, range_node)
+                        {
                             Core::ConstBool(false) // contradiction
                         } else {
                             Core::And { lhs, rhs, is_and }

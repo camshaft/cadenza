@@ -15933,40 +15933,92 @@ mod match_engine {
         };
         let cmps = |c: &[Lir]| {
             c.iter()
-                .filter(|i| matches!(i, Lir::I64Eq | Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64Eq | Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS
+                    )
+                })
                 .count()
         };
         // `and` sat → equality kept (1 cmp); `and` contradiction → const false (0 cmp).
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 0)) Bool)")), 1, "and sat → (= x 5)");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 100)) Bool)")), 0, "and contradiction → false");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 0)) Bool)")),
+            1,
+            "and sat → (= x 5)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (= x 5) (> x 100)) Bool)")),
+            0,
+            "and contradiction → false"
+        );
         // `or` sat → range kept (1 cmp); `or` not-sat → both kept (2 cmp, x==c adds a point).
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (= x 5) (>= x 0)) Bool)")), 1, "or sat → (>= x 0)");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (= x 5) (> x 100)) Bool)")), 2, "or not-sat kept");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (= x 5) (>= x 0)) Bool)")),
+            1,
+            "or sat → (>= x 0)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (= x 5) (> x 100)) Bool)")),
+            2,
+            "or not-sat kept"
+        );
         // A DISTINCT variable is not folded.
-        assert_eq!(cmps(&lir("(: x Int64) (: y Int64)", "(: (and (= x 5) (> y 0)) Bool)")), 2, "distinct var kept");
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (= x 5) (> y 0)) Bool)"
+            )),
+            2,
+            "distinct var kept"
+        );
 
         // VALUE PARITY.
         use wasmtime::component::Val;
-        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: x Int64)) {body}) (export f))"
-        )))).expect("compile");
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         for (x, w) in [(5, true), (3, false), (200, false)] {
-            assert_eq!(run_returns_with::<bool>(&f("(and (= x 5) (> x 0))"), "f", &[Val::S64(x)]), w, "and-sat @{x}");
+            assert_eq!(
+                run_returns_with::<bool>(&f("(and (= x 5) (> x 0))"), "f", &[Val::S64(x)]),
+                w,
+                "and-sat @{x}"
+            );
         }
         for x in [5, 3, 200] {
-            assert!(!run_returns_with::<bool>(&f("(and (= x 5) (> x 100))"), "f", &[Val::S64(x)]), "contradiction @{x}");
+            assert!(
+                !run_returns_with::<bool>(&f("(and (= x 5) (> x 100))"), "f", &[Val::S64(x)]),
+                "contradiction @{x}"
+            );
         }
         for (x, w) in [(5, true), (3, true), (-5, false)] {
-            assert_eq!(run_returns_with::<bool>(&f("(or (= x 5) (>= x 0))"), "f", &[Val::S64(x)]), w, "or-subsume @{x}");
+            assert_eq!(
+                run_returns_with::<bool>(&f("(or (= x 5) (>= x 0))"), "f", &[Val::S64(x)]),
+                w,
+                "or-subsume @{x}"
+            );
         }
         // The not-subsumed `or` keeps the extra equality point.
-        assert!(run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(5)]), "or @5 = true (the point)");
-        assert!(!run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(50)]));
+        assert!(
+            run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(5)]),
+            "or @5 = true (the point)"
+        );
+        assert!(!run_returns_with::<bool>(
+            &f("(or (= x 5) (> x 100))"),
+            "f",
+            &[Val::S64(50)]
+        ));
         // TRAP SAFETY: a trapping operand in the contradiction case keeps its trap.
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: z Int64)) (if (and (= (/ 10 z) 5) (> (/ 10 z) 100)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping operand keeps its trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping operand keeps its trap"
+        );
     }
 
     #[test]
