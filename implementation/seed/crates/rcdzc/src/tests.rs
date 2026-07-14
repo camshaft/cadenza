@@ -32688,6 +32688,45 @@ mod stage1 {
         );
     }
 
+    #[test]
+    fn a_bare_type_constructor_in_type_position_names_the_missing_argument() {
+        // A bare type-CONSTRUCTOR name used as a type with no argument — `(: xs List)`, `(: m Map)`, `(: q
+        // Qty)` — is CDZ0203, but `List`/`Map`/`Qty` ARE types (constructors), so the generic "`List` is a
+        // value, not a type" MISLED. The message now names the missing argument + the fix, the bare-name
+        // twin of the `(List Int64 Int64)` wrong-arity message. A GENUINE value misused as a type keeps
+        // the "is a value, not a type" phrasing (it is not a constructor).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {src}"))
+                .message
+        };
+        for (name, placeholder) in [
+            ("List", "List Elem"),
+            ("Set", "Set Elem"),
+            ("Map", "Map Key Value"),
+            ("Qty", "Qty T u"),
+        ] {
+            let m = msg(&format!("(module m (def (f (: x {name})) x) (export f))"));
+            assert!(
+                m.contains(&format!("`{name}` is a type constructor"))
+                    && m.contains(&format!("`({placeholder})`")),
+                "bare `{name}` names the missing argument: {m}"
+            );
+            assert!(
+                !m.contains("is a value"),
+                "a type constructor is NOT called a value: {m}"
+            );
+        }
+        // NO REGRESSION: a genuine value misused as a type still gets "is a value, not a type".
+        let val = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
+        assert!(
+            val.contains("`helper` is a value, not a type"),
+            "a value keeps its own message: {val}"
+        );
+    }
+
     // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
 
     #[test]
