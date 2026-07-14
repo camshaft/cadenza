@@ -54,6 +54,12 @@ rcdzc = { path = "../rcdzc" }
 # uses (`sexpr::read` → `codec::encode` → `compile_component`).
 cadenza-syntax = { path = "../cadenza-syntax" }
 
+# The wasm-output ORACLE: every component the compiler emits MUST validate. rcdzc's own tests assert
+# this (`Validator::new_with_features(WasmFeatures::all()).validate_all`), so a fuzzer-found component
+# that FAILS validation is a genuine backend miscompile — a class the crash/hang oracle is blind to.
+# Same version rcdzc pins, so the validator matches exactly what the backend targets.
+wasmparser = "0.239"
+
 [dev-dependencies]
 # Same version the value-heap runtime already fuzzes with. `#[derive(TypeGenerator)]` +
 # `bolero::check!()` give shrinking and (under `cargo bolero`) coverage-guided engines for free.
