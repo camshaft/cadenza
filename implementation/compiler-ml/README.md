@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 112 tests total across 13 modules):
+top. Current `src/` modules (each with same-file `@test`s — 122 tests total across 14 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -106,6 +106,13 @@ top. Current `src/` modules (each with same-file `@test`s — 112 tests total ac
   (fold that over a tree). Stresses a `Map String Int64` keyed by a matched sum-payload String. 10
   `@test`s pass; the DEEP `paren-count` case is withheld (it hits the two-live-string-payloads
   miscompile — see the log).
+- `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
+  (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
+  runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
+  end to end at run time: `encode` then `decode` preserves the tree STRUCTURE and every Int/Bool value
+  exactly (node count + Int-leaf sum survive; verified on flat, deeply-nested, and empty trees). 10
+  `@test`s. So the port now runs a real `bytes → Ast → bytes` pipeline (Name/Str content still a
+  placeholder pending runtime `String.from-bytes`).
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
