@@ -2493,6 +2493,46 @@
             (def (main) (f (tuple 3 4))) (export main)))
   (output (: 7 Int64)))
 
+; The tuple-pattern-parameter cases here pass a CONSTANT tuple `(f (tuple 3 4))` from a nullary entry, so
+; the tuple folds and the destructure is compile-time. These pin the RUNTIME face: the argument tuple is
+; built from a boundary parameter (so it cannot fold — a real heap tuple), and the parameter pattern
+; destructures it at run time (a `tuple<…>` read back into its binders). The runtime companion of the
+; constant destructure, the shape a compiler pass takes when a callee receives a (node, cursor) pair.
+
+(case "a tuple-pattern parameter destructures a runtime-built tuple"
+  (doc    "`(def (add (tuple a b)) (+ a b))` applied to a tuple built from a boundary parameter
+           `(add (tuple x (+ x 1)))` — the tuple cannot fold, so `add`'s parameter destructures a real heap
+           tuple at run time, binding `a`=x and `b`=x+1. x=5 → 5+6 = 11; x=100 → 201. Pins the runtime face
+           of tuple-parameter destructuring, distinct from the constant `(f (tuple 3 4))` fold above.")
+  (input  (do
+            (def (add (tuple a b)) (+ a b))
+            (def (main (: x Int64)) (add (tuple x (+ x 1)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (call   main (: 100 Int64)) (output (: 201 Int64)))
+
+(case "a nested tuple-pattern parameter destructures a runtime tuple"
+  (doc    "The nested form: `(def (f (tuple a (tuple b c))) …)` destructures a runtime `(tuple x (tuple (+ x
+           1) (+ x 2)))` — the outer pair's second element is itself a pair, bound `b`=x+1, `c`=x+2. x=5 →
+           5 + (6 + 7) = 18. Pins that a nested destructuring parameter reads a nested heap tuple at run
+           time, its inner binders resolving down the extended access path.")
+  (input  (do
+            (def (f (tuple a (tuple b c))) (+ a (+ b c)))
+            (def (main (: x Int64)) (f (tuple x (tuple (+ x 1) (+ x 2))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 18 Int64)))
+
+(case "a tuple-pattern parameter over a tuple threaded from a helper call"
+  (doc    "The destructured tuple arrives from ANOTHER function's return, not built inline: `mk(x)` returns
+           `(tuple x (- 0 x))` and `sum`'s tuple parameter destructures it — `(sum (mk x))` = x + (-x) = 0
+           for every x. Pins that a callee's tuple-pattern parameter destructures a tuple produced by a
+           prior call (the (node, cursor)-pair-threaded-through-a-pass shape), the return-boundary companion
+           of the inline runtime destructure.")
+  (input  (do
+            (def (mk (: x Int64)) (tuple x (- 0 x)))
+            (def (sum (tuple a b)) (+ a b))
+            (def (main (: x Int64)) (sum (mk x))) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 40 Int64)) (output (: 0 Int64)))
+
 (case "an annotated tuple-pattern parameter binds its pattern's names"
   (doc    "`(def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b))` is a destructuring tuple parameter that
            ALSO carries a type annotation. Its binders `a`/`b` must be in scope in the body, exactly as the

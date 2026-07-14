@@ -15,6 +15,10 @@ export default function Numbers() {
         arithmetic works as you'd expect, and the result carries its exact type:
       </P>
       <Runnable source={`(* 1000000 1000000)`} />
+      <P>
+        That's a trillion, <C>1000000000000</C> — comfortably inside a 64-bit integer's range. Keep pushing,
+        though, and a product eventually won't fit.
+      </P>
 
       <H2>Overflow is caught, not wrapped</H2>
       <P>

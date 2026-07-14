@@ -21456,6 +21456,92 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_map_matches_by_key_directed_patterns() {
+        // RUNTIME map matching (the Inc-9 blocker, now unblocked): `(match m ((map ("a" v) .. rest) …) (_
+        // …))` over a map whose keys are NOT known at compile time (built by a conditional / a loop). The
+        // const-fold path declined "constant maps only"; now `desugar_runtime_map_match` rewrites the match
+        // to a nested presence-test `if`-chain (`(if (Map.lookup m "a" is Some) <body> <else>)`), and the
+        // body's value/rest binders lower to runtime reads (`lower_map_field_runtime`: `Map.lookup` unwrap
+        // for a value, a `Map.remove` chain for the rest). A key PRESENT selects the arm + binds its value;
+        // a key ABSENT falls through to the catch-all.
+        //
+        // The map is built by a CONDITIONAL so the compiler cannot fold which keys it has (a genuine runtime
+        // map). `pick true` → {"a": k}, so the `"a"` arm fires → binds v=k. `pick false` → {"b": 2}, so the
+        // `"a"` arm's key is absent → falls through to -1.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (pick (: b Bool) (: k Int64)) \
+                 (if b (Map.insert (Map.empty) \"a\" k) (Map.insert (Map.empty) \"b\" 2))) \
+               (def (look (: m (Map String Int64))) (match m ((map (\"a\" v) .. rest) v) (_ -1))) \
+               (def (main (: k Int64)) (look (pick true k))) (export main))",
+            vec!["7".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-map-match run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "a present key selects the arm and binds its runtime value"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool) (: k Int64)) \
+                     (if b (Map.insert (Map.empty) \"a\" k) (Map.insert (Map.empty) \"b\" 2))) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" v) .. rest) v) (_ -1))) \
+                   (def (main (: k Int64)) (look (pick false k))) (export main))",
+                vec!["7".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "an absent key falls through to the catch-all"
+        );
+        // MULTI-KEY: the arm fires only when EVERY named key is present. {"a":3,"b":4} → 3+4=7; {"a":3}
+        // (missing "b") → falls through to -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool)) \
+                     (if b (Map.insert (Map.insert (Map.empty) \"a\" 3) \"b\" 4) (Map.insert (Map.empty) \"a\" 3))) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" x) (\"b\" y) .. rest) (+ x y)) (_ -1))) \
+                   (def (main (: b Bool)) (look (pick b))) (export main))",
+                vec!["true".to_string()],
+            )
+            .unwrap(),
+            "7",
+            "a two-key arm fires when both keys are present, binding both values"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool)) \
+                     (if b (Map.insert (Map.insert (Map.empty) \"a\" 3) \"b\" 4) (Map.insert (Map.empty) \"a\" 3))) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" x) (\"b\" y) .. rest) (+ x y)) (_ -1))) \
+                   (def (main (: b Bool)) (look (pick b))) (export main))",
+                vec!["false".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a two-key arm falls through when one key is missing"
+        );
+        // The REST binder reads the map MINUS the named keys — `Map.size rest` over a 3-entry runtime map
+        // matching one key ("a") is 2. {"a":1,"b":2,"c":3} → v(1) + size(rest={"b","c"})(2) = 3.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool)) \
+                     (if b (Map.insert (Map.insert (Map.insert (Map.empty) \"a\" 1) \"b\" 2) \"c\" 3) (Map.empty))) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" v) .. rest) (+ v ((. Map size) rest))) (_ -1))) \
+                   (def (main (: b Bool)) (look (pick b))) (export main))",
+                vec!["true".to_string()],
+            )
+            .unwrap(),
+            "3",
+            "the rest binder reads the runtime map minus the named key (size 2)"
+        );
+    }
+
+    #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
         // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
         // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`
@@ -30469,6 +30555,56 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_form_keyword_head_suggests_the_grammar_keyword() {
+        // A misspelled GRAMMAR keyword in HEAD position (`(mtch …)` for `match`, `(le …)` for `let`) is an
+        // unbound name — but a correctly-spelled keyword is dispatched structurally, so the pool never
+        // offered the keywords and the typo got no suggestion (and often cascaded). In head position the
+        // GRAMMAR keywords now join the candidate set, so the CDZ0101 names the keyword AND carries a
+        // replace fix that clears the fault (verified by re-check).
+        for (src, want) in [
+            (
+                "(module m (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f))",
+                "match",
+            ),
+            (
+                "(module m (def (f (: b Bool)) (iff b 1 2)) (export f))",
+                "if",
+            ),
+            ("(module m (def (f) (le ((x 5)) x)) (export f))", "let"),
+            (
+                "(module m (def (f (: b Bool)) (annd b b)) (export f))",
+                "and",
+            ),
+        ] {
+            let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+            assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+            assert!(
+                d.message.contains(&format!("did you mean `{want}`?")),
+                "the head typo should suggest `{want}`: {}",
+                d.message
+            );
+        }
+        // NOT in head position: a keyword-shaped typo in ARGUMENT position gets NO grammar suggestion (it
+        // could not have been a keyword there). `(g mtch)` — `mtch` is an operand, not a form head.
+        let arg = "(module m (def (g x) x) (def (f) (g mtch)) (export f))";
+        let d = compile_component(&crate::codec::encode(&parse(arg))).expect_err("must reject");
+        assert!(
+            !d.message.contains("did you mean `match`?"),
+            "an argument-position typo must not suggest a grammar keyword: {}",
+            d.message
+        );
+        // NO OVERREACH: a real DEF the head typo is NEARER to still wins over a keyword — `matchee` is
+        // distance 1 from the def `matcher`, distance 3 from `match`, so the def is suggested.
+        let def = "(module m (def (matcher x) x) (def (f) (matchee 5)) (export f))";
+        let d = compile_component(&crate::codec::encode(&parse(def))).expect_err("must reject");
+        assert!(
+            d.message.contains("did you mean `matcher`?"),
+            "a nearer def wins over a grammar keyword: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
         // `True`/`False` (the cross-language habit) read as unbound NAMES (the lexer only classifies
         // lowercase `true`/`false` as `Leaf::Bool`), so the one-shot fix is the lowercase literal — which
@@ -31057,6 +31193,51 @@ mod stage1 {
             Some("height"),
             "message: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_rename() {
+        // The CONSTRUCTION twin of the member-access field typo: a record literal supplied to a variant
+        // constructor whose payload is a `(Record …)` type, with one field name a plausible typo of the
+        // expected one (`yy` for `y`). The reject now (a) carries the structural field-diff TAIL (which
+        // fields are missing/extra) so the reader is not left to diff two whole record renders, and (b)
+        // offers a heuristic RENAME fix on the misspelled KEY token — the same repair a `(. r yy)` typo
+        // gets. Previously it rendered both record types verbatim with no hint and no fix.
+        let src = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
+                   (def (f) (P.Mk (record (x 1) (yy 2)))) (export f))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("missing field `y`") && d.message.contains("no such field `yy`"),
+            "names the field-set difference: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("a rename fix is carried");
+        assert_eq!(
+            fix.replacement, "y",
+            "renames the typo'd key to the expected field"
+        );
+        assert!(!fix.verified, "a nearest-field guess is heuristic");
+        // The fix TARGETS the key token: applying `yy`→`y` clears the fault (the value now has the right
+        // field set). Demonstrated by construction — the corrected program compiles.
+        let fixed = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
+                     (def (f) (P.Mk (record (x 1) (y 2)))) (export f))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
+            "the renamed record compiles"
+        );
+        // AMBIGUOUS: two wrong fields is not a single mechanical rename → the field-diff hint still guides,
+        // but NO auto-fix (an ambiguous multi-field slip is not one confident edit).
+        let ambiguous = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
+                         (def (f) (P.Mk (record (aa 1) (bb 2)))) (export f))";
+        let d2 =
+            compile_component(&crate::codec::encode(&parse(ambiguous))).expect_err("must reject");
+        assert!(
+            d2.message.contains("missing fields") && d2.fix.is_none(),
+            "multi-field slip: hint but no confident fix: {} fix={:?}",
+            d2.message,
+            d2.fix
         );
     }
 
@@ -32927,13 +33108,32 @@ mod stage1 {
                 .find(|d| d.severity == crate::abi::Severity::Error)
                 .and_then(|d| d.code.clone())
         };
+        // The first error's MESSAGE (for asserting phrasing, not just the code).
+        let msg = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| d.message.clone())
+        };
         // Refutable: a multi-variant constructor / a literal → CDZ0210 (non-exhaustive).
         assert_eq!(
             code("(let (((Some x) (Some 5))) x)").as_deref(),
             Some("CDZ0210")
         );
         assert_eq!(code("(let ((0 5)) 42)").as_deref(), Some("CDZ0210"));
-        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201.
+        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201. The
+        // message DISTINGUISHES the two: an arity mismatch names both element counts; a non-tuple value
+        // says a tuple pattern needs a tuple (the earlier phrasing conflated them + called the bound value
+        // a "payload").
         assert_eq!(
             code("(let (((tuple a b c) (tuple 1 2))) a)").as_deref(),
             Some("CDZ0201")
@@ -32941,6 +33141,19 @@ mod stage1 {
         assert_eq!(
             code("(let (((tuple a b) 5)) a)").as_deref(),
             Some("CDZ0201")
+        );
+        let arity = msg("(let (((tuple a b c) (tuple 1 2))) a)").unwrap_or_default();
+        assert!(
+            arity.contains(
+                "this tuple pattern binds 3 elements, but the value is a tuple with 2 elements"
+            ),
+            "the arity mismatch names both counts: {arity}"
+        );
+        let nontuple = msg("(let (((tuple a b) 5)) a)").unwrap_or_default();
+        assert!(
+            nontuple.contains("this tuple pattern cannot destructure a value of type Int64")
+                && !nontuple.contains("payload"),
+            "a non-tuple value says a tuple pattern needs a tuple (no 'payload'): {nontuple}"
         );
         // Non-linear: a binder repeated across the pattern → CDZ0102.
         assert_eq!(

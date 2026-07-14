@@ -1243,6 +1243,25 @@
                 (+ (* (C.t) (C.t)) (* (C.t) (C.t))))) (export main)))
   (output (: 6 Int64)))
 
+(case "DOMINATOR CSE does not reuse a condition's perform-product in the taken branch"
+  (doc    "The conditional companion of the straight-line CSE pin above, against the backend's DOMINATOR CSE
+           (which hoists a subexpression computed in an `if` CONDITION into a branch it dominates). The
+           condition and the taken branch each contain the TEXTUALLY-IDENTICAL product `(* (C.t) (C.t))`, but
+           they are DISTINCT state-advancing reads — the branch must recompute, NOT reuse the condition's
+           value. `C` seeded 1, arm `(resume s (+ s 1))`: the condition `(* (C.t) (C.t))` reads 1 then 2 = 2,
+           and `2 > 0` is true; the taken then-branch `(* (C.t) (C.t))` reads 3 then 4 = 12. So the result is
+           12. Were dominator CSE to hoist the condition's product and reuse it in the branch (ignoring that
+           each `(C.t)` is a distinct effectful read), the branch would wrongly yield 2. Sound because the
+           fold discharges every perform to its own distinct read BEFORE the optimizer runs, so no effectful
+           node is ever shared for CSE to hoist — pinned at 12 across an `if` this time, not just a
+           straight-line spine.")
+  (input  (do
+            (effect C (op t (-> Unit Int64)))
+            (def (main)
+              (handle C 1 ((t (u) s (resume s (+ s 1))))
+                (if (> (* (C.t) (C.t)) 0) (* (C.t) (C.t)) 99))) (export main)))
+  (output (: 12 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the

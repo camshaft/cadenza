@@ -6417,6 +6417,24 @@
                 (_                   0))) (export main)))
   (output (: 1 Int64)))
 
+(case "a key-directed pattern matches a RUNTIME map by looking up its keys"
+  (doc    "The RUNTIME form of key-directed matching (core-semantics.md §A Map Is Matched By Key-Directed
+           Patterns): the scrutinee map is built by a CONDITIONAL, so its keys are not known at compile
+           time. `(match m ((map (\"a\" v) .. rest) …) (_ …))` desugars to a nested presence-test `if`-chain
+           — the arm matches iff every named key is present (a runtime `Map.lookup` yielding `Some`), binding
+           each value (a runtime `Map.lookup` unwrap) and the rest (a runtime `Map.remove` chain); an absent
+           key falls through to the catch-all. Here `pick true` builds `{\"a\": 5}`, so the `\"a\"` arm fires
+           → `v`=5 plus the rest size 0 = 5.")
+  (input  (do
+            (def (pick (: b Bool))
+              (if b (Map.insert (Map.empty) "a" 5) (Map.insert (Map.empty) "b" 9)))
+            (def (look (: m (Map String Int64)))
+              (match m
+                ((map ("a" v) .. rest) (+ v (Map.size rest)))
+                (_                     -1)))
+            (def (main) (look (pick true))) (export main)))
+  (output (: 5 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
