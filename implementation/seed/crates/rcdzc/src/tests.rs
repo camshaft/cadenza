@@ -24068,6 +24068,63 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handler_binding_the_same_operation_twice_is_rejected_with_a_delete_fix() {
+        // A handler's arms ARE its effect's operation set (a FIXED set, like a record's fields or an
+        // effect's op declarations), so binding one operation twice — `(handle E s ((emit …) (emit …)) …)`
+        // — is the same closed-set ill-formedness a duplicate record field / effect-op declaration is: the
+        // second arm is dead. Rejected CDZ0201 with a DELETE fix on the redundant arm (the handler analogue
+        // of the duplicate-field/op/export family). `emit` declared once, bound twice → rejected.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s)) (emit (m) s (resume unit s))) \
+                     (E.emit 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| {
+                d.code.as_deref() == Some("CDZ0201") && d.message.contains("handled more than once")
+            })
+            .expect("a duplicate handler arm is CDZ0201");
+        assert!(
+            d.message.contains("`emit`"),
+            "names the duplicated operation: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("carries a delete-the-duplicate-arm fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        // The anchor is a real USER node (the op-key occurrence), so the error carries file:line:col.
+        assert!(
+            db.is_user_node(crate::ast::StructId(
+                d.node.expect("CDZ0201 must carry a node")
+            )),
+            "the duplicate-arm fault anchors at a user node"
+        );
+
+        // NO false positive: two DISTINCT operations, and two SEPARATE effects each declaring `emit`
+        // (nested handlers) — neither is a duplicate (keyed by (effect-decl, op-name), not name alone).
+        let ok_distinct = "(do (effect E (op emit (-> Int64 Unit)) (op tick (-> Unit Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s)) (tick () s (resume unit s))) \
+                     (E.emit 5))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok_distinct)))
+                .iter()
+                .any(|d| d.message.contains("handled more than once")),
+            "two distinct ops in one handler is not a duplicate"
+        );
+        let ok_two_effects = "(do (effect E (op emit (-> Int64 Unit))) (effect F (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s))) \
+                     (handle F 0 ((emit (n) s (resume unit s))) (do (E.emit 1) (F.emit 2))))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok_two_effects)))
+                .iter()
+                .any(|d| d.message.contains("handled more than once")),
+            "two effects each with their own `emit` handler is not a duplicate"
+        );
+    }
+
+    #[test]
     fn an_undeclared_handler_op_anchors_to_a_user_node() {
         // CDZ0403's anchor must be a real USER node so the error carries `file:line:col`. The desugar
         // synthesizes the arm's op projection `(. E k)` (spanless), so anchoring there once lost the

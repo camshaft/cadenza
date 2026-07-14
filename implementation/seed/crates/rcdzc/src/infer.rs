@@ -5786,7 +5786,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // itself declines to run (E1a).
         Resolved::Handle { init, arms, body } => {
             collect(db, init, out);
+            // A HANDLER BINDS EACH OPERATION AT MOST ONCE. A handler's arms ARE its effect's operation set
+            // (like a record's fields or an effect's op declarations — a FIXED set), so binding the same
+            // operation twice — `(handle E s ((emit …) (emit …)) …)` — is the same closed-set
+            // ill-formedness a duplicate record field (CDZ0201) or duplicate effect-op declaration is:
+            // the second arm is dead (the first discharges the op), never reached. Reject CDZ0201 with a
+            // delete fix on the redundant arm, the effect-handler analogue of the duplicate-field/op/export
+            // family. Keyed by `(effect-decl, op-name)` (`arm_op_identity`) so two effects each declaring
+            // `emit` never false-collide; an UNDECLARED-op arm has no identity (its own CDZ0403 fires
+            // below), so it never participates here.
+            let mut seen_arm_ops: std::collections::HashSet<(u32, String)> =
+                std::collections::HashSet::new();
             for arm in arms.iter() {
+                if let Some(identity) = crate::effects::arm_op_identity(db, arm.op)
+                    && !seen_arm_ops.insert(identity.clone())
+                {
+                    // The op-key occurrence carries the arm's op-name source span (the desugar-synthesized
+                    // projection is spanless) — anchor there, like the CDZ0403 undeclared-op report.
+                    let anchor = crate::effects::arm_op_key_occ(db, arm.op).unwrap_or(arm.op);
+                    let mut reject = Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "operation `{}` is handled more than once in this handler (a handler binds \
+                             each of its effect's operations at most once)",
+                            identity.1
+                        ),
+                    )
+                    .at(anchor);
+                    // Delete the redundant `(op (params…) state body)` arm form — the enclosing list of the
+                    // op-key occurrence's projection. The op key is `k` in `(. E k)`; its projection's
+                    // parent is the arm form.
+                    if let Some(key_occ) = crate::effects::arm_op_key_occ(db, arm.op)
+                        && let Some(proj) = db.parent_of(key_occ)
+                        && let Some(arm_form) = db.parent_of(proj)
+                        && matches!(db.ast.get(arm_form), crate::ast::Struct::List(_))
+                    {
+                        reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+                            arm_form,
+                            format!("remove the duplicate `{}` arm", identity.1),
+                        ));
+                    }
+                    out.push(reject);
+                }
                 // A HANDLER ARM NAMES AN UNDECLARED OPERATION (CDZ0403). If the arm's op is `(. E k)`
                 // where `E` is an effect but `k` is not one of its declared operations, that is a
                 // closed-set violation (`capabilities-and-effects.md` §A Handler Arm Names An Operation
