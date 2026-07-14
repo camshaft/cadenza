@@ -1943,6 +1943,8 @@ pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
 pass	matching against zero probes the normalized narrow value, not the raw wide slot
 pass	matching falls through to else when no literal matches
+pass	matching on a function value is a type error
+pass	matching on a partial application is a type error
 pass	matching on a sliced string selects the literal arm
 pass	matching on a string produced by an expression
 pass	matching on integer literals
