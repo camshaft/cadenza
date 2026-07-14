@@ -29865,6 +29865,96 @@ mod stage1 {
             code("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
             None
         );
+        // A constant list-let read ONLY through its element binders now FOLDS to a scalar (no heap), so it
+        // runs via the scalar path with the CORRECT value — `a`+`b` = 10+20 = 30 (the binders fold to the
+        // constant elements via `SumPayload{Elem}` → `fold_sum_path`'s `ListNew` arm). See
+        // `a_constant_list_let_read_by_element_binders_folds_to_a_scalar` for the no-heap assertion.
+        assert_eq!(
+            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            30
+        );
+        assert_eq!(
+            run_main("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
+            3
+        );
+    }
+
+    #[test]
+    fn a_constant_list_let_read_by_element_binders_folds_to_a_scalar() {
+        // A CONSTANT list bound by a rest pattern and read ONLY through its element/rest PATTERN binders
+        // FOLDS to a scalar — no `vec-empty`/`vec-push` heap build — exactly as a constant tuple-`let`'s
+        // projections fold. Each `SumPayload{Elem(i)}`/`{RestFrom(k)}` reads a constant element/tail via
+        // `fold_sum_path`, so the list never needs to exist at run time. Before, 2+ leading-element reads
+        // tripped `should_keep_binding`'s ≥2-use rule and materialized the list (a `vec-*` heap build) for a
+        // value that never varies. The PROOF a fold happened: the emitted core reads NO value-heap op — its
+        // `MatchList`/`Let` collapsed to a `ConstInt` (`main`'s body folds to `Core::ConstInt(30)`).
+        let folds_to_const = |body: &str| -> Option<i64> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let mut db = crate::db::Db::load(parse(&src));
+            let d = db.def_by_name("main")?;
+            let m_body = db.defs[d].body?;
+            match crate::lower::core_of(&mut db, m_body) {
+                crate::core::Core::ConstInt(v) => v.to_i64(),
+                _ => None,
+            }
+        };
+        // Two leading element reads over a constant list — folds to the constant `30` (10+20), no heap.
+        assert_eq!(
+            folds_to_const("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            Some(30),
+            "a constant list-let read by element binders folds to a scalar constant"
+        );
+        // A nested tuple leading element folds too (1+2=3).
+        assert_eq!(
+            folds_to_const(
+                "(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"
+            ),
+            Some(3),
+            "a constant list-let with a nested tuple element folds"
+        );
+        // NO OVER-FOLD: the fold is confined to the SCALAR-result case (a `ConstInt` body). A body whose
+        // result is the LIST itself (the rest binder RETURNED) is not a scalar, so it does not fold to a
+        // constant — `binding_escapes_whole` sees the whole-value use and keeps the binding, so the list
+        // materializes on the heap (the escape path) exactly as before this fix.
+        assert_eq!(
+            folds_to_const("(let (((list a .. rest) (list 10 20 30))) rest)"),
+            None,
+            "a list-let whose result is a (sub)list escapes whole → not a scalar constant, still materialized"
+        );
+        // A materialized list emits the value-heap `resource-new`/`vec-*` ops, whose names appear verbatim
+        // in the component bytes; a folded scalar emits none. Confirm the escaping case DOES import the heap
+        // (byte-scan for the distinctive `resource-new` op — dependency-free).
+        let materializes = |body: &str| -> bool {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            let wasm = out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .expect("compiles")
+                .to_vec();
+            wasm.windows(b"resource-new".len())
+                .any(|w| w == b"resource-new")
+        };
+        assert!(
+            materializes("(let (((list a .. rest) (list 10 20 30))) rest)"),
+            "a constant list-let whose rest escapes as a whole value still materializes (heap ops present)"
+        );
+        assert!(
+            !materializes("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            "the element-only-read list-let does NOT materialize (folded, no heap ops)"
+        );
+        // And the folded value runs correctly via the scalar path (was un-runnable by `run_main` before,
+        // since the list-let materialized on the heap — now it folds, so `run_main`'s scalar path works).
+        assert_eq!(
+            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            30
+        );
     }
 
     #[test]

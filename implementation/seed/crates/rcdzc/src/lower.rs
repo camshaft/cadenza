@@ -6050,6 +6050,22 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     if is_compound_value(db, init) && !binding_escapes_whole(db, init, scope) {
         return false;
     }
+    // A CONSTANT list `let`-bound and read ONLY through its element/rest PATTERN binders — `(let (((list a
+    // b .. rest) (list 10 20 30))) (+ a b))` — need not be built on the heap: each binder resolves to a
+    // `SumPayload{Elem(i)}`/`{RestFrom(k)}` that FOLDS straight through to the constant element/tail
+    // (`fold_sum_path`'s `ListNew` arms), exactly as a constant tuple's projections fold. Keeping it would
+    // build a `vec-empty`+`vec-push` chain only to read it back (or drop it dead) — pure waste for a value
+    // that never varies. So a constant list NOT used as a WHOLE value (a `SumPayload` binder read is a
+    // PIECE read, `ref_escapes_whole`→false, like a projection) is not kept — it folds. This closes the gap
+    // where 2+ element binders tripped the ≥2-use rule below and materialized the list. (A RUNTIME list, or
+    // a constant list that ESCAPES whole — returned/passed/nested — genuinely needs materialization and IS
+    // kept: the old `ListNew`-is-always-whole reasoning still holds for those.)
+    if matches!(core_of(db, init), Core::ListNew { .. })
+        && is_constant_compound(db, init)
+        && !binding_escapes_whole(db, init, scope)
+    {
+        return false;
+    }
     // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
     let mut n = 0;
     for &region in scope {
@@ -6219,6 +6235,11 @@ pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
         Core::Tuple { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
         Core::Record { fields } => fields.values().all(|&v| is_constant_compound(db, v)),
+        // A `Core::ListNew` all of whose elements are constant is a constant compound too — a list-`let`
+        // read only through element/rest pattern binders folds each read to the constant element
+        // (`should_keep_binding`'s list short-circuit). (The tuple short-circuit in `is_runtime_computation`
+        // gates on `Core::Tuple` first, so this addition does not change that path.)
+        Core::ListNew { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
         _ => false,
     }
 }
