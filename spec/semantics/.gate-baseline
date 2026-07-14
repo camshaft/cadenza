@@ -316,6 +316,8 @@ pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
+pass	a conditional performs only the taken branch's effect — else
+pass	a conditional performs only the taken branch's effect — then
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
@@ -1411,6 +1413,8 @@ pass	an unused let-init that does not reduce to a value is eliminated, so it doe
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	and evaluates the right operand when the left is true
+pass	and performs the right operand's effect when the left is true
+pass	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
@@ -1717,6 +1721,8 @@ pass	one of several same-signature closure exports is made and called by the hos
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
 pass	or evaluates the right operand when the left is false
+pass	or performs the right operand's effect when the left is false
+pass	or short-circuit does not perform the right operand's effect
 pass	or short-circuits at run time: a true left operand skips the trapping right operand
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error

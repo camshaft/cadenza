@@ -756,3 +756,86 @@
   (host-responses (respond log.emit (: 10 Int64)) (respond log.emit (: 4 Int64)))
   (output (: 6 Int64))
   (host-calls (call log.emit (: "a" String)) (call log.emit (: "b" String))))
+
+; --- Control flow SELECTS which effects are observed ------------------------------------------------
+; The ordering cases above evaluate every sub-expression. Control flow instead makes only SOME
+; sub-expressions run: an `if` evaluates one branch, `and`/`or` skip the right operand when the left
+; decides (core-semantics.md #Conditionals Evaluate One Branch; #Boolean Connectives Short-Circuit). The
+; existing `if`/`and` cases witness this via a TRAP that does not fire (a negative — the run terminates
+; normally). These witness it POSITIVELY: each branch/operand is a host effect, so the `(host-calls …)`
+; observation records EXACTLY which effects ran — the taken branch's, and only it; the evaluated operand's,
+; and none on the skipped path (`(host-calls)` = no call). A runtime `Bool` parameter drives the choice, so
+; the selection happens at run time, not by a constant fold. This is the observable-effect complement of
+; the trap-shielding cases (02-binding-and-control): the wrong branch/operand does not merely avoid a trap,
+; its effect is genuinely never performed.
+
+(case "a conditional performs only the taken branch's effect — then"
+  (doc    "`(if b (log.emit \"then\") (log.emit \"else\"))` with `b`=true performs ONLY the then branch's
+           effect — `then` is emitted, `else` is not (core-semantics.md #Conditionals Evaluate One Branch).
+           The positive-observation companion of the trap-shielding conditional case: not only does the
+           unselected branch avoid a trap, its host effect is never performed. The condition is a runtime
+           parameter, so the selection is a run-time event.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (main (: b Bool)) (host (log) (if b (log.emit "then") (log.emit "else")))) (export main)))
+  (host-responses (respond log.emit (: 1 Int64)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (host-calls (call log.emit (: "then" String))))
+
+(case "a conditional performs only the taken branch's effect — else"
+  (doc    "The false-condition companion: with `b`=false only the ELSE branch's effect is performed —
+           `else` is emitted, `then` is not. Together with the `then` case, this pins that a runtime `if`
+           performs exactly one branch's effect, the one its condition selects.")
+  (input  (do
+            (effect log (op emit (-> String Int64)))
+            (def (main (: b Bool)) (host (log) (if b (log.emit "then") (log.emit "else")))) (export main)))
+  (host-responses (respond log.emit (: 2 Int64)))
+  (call   main (: false Bool)) (output (: 2 Int64))
+  (host-calls (call log.emit (: "else" String))))
+
+(case "and short-circuit does not perform the right operand's effect"
+  (doc    "`(and b (log.emit \"rhs\"))` with `b`=false short-circuits, so the right operand's host effect is
+           NOT performed — `(host-calls)` records NO call, and the `and` is false → 0 (core-semantics.md
+           #Boolean Connectives Short-Circuit). The positive-observation companion of the trap-based
+           short-circuit case (02-binding-and-control): the skipped operand's effect genuinely does not
+           occur, not merely a skipped trap.")
+  (input  (do
+            (effect log (op emit (-> String Bool)))
+            (def (main (: b Bool)) (host (log) (if (and b (log.emit "rhs")) 1 0))) (export main)))
+  (host-responses (respond log.emit (: true Bool)))
+  (call   main (: false Bool)) (output (: 0 Int64))
+  (host-calls))
+
+(case "and performs the right operand's effect when the left is true"
+  (doc    "The non-short-circuit path: with `b`=true the right operand IS evaluated, so its effect `rhs` is
+           performed (`(host-calls)` records the one call) and, its response being true, the `and` is true →
+           1. Pins that a `true` left operand reaches the right operand's effect — the observable complement
+           of the skip case above.")
+  (input  (do
+            (effect log (op emit (-> String Bool)))
+            (def (main (: b Bool)) (host (log) (if (and b (log.emit "rhs")) 1 0))) (export main)))
+  (host-responses (respond log.emit (: true Bool)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (host-calls (call log.emit (: "rhs" String))))
+
+(case "or short-circuit does not perform the right operand's effect"
+  (doc    "`(or b (log.emit \"rhs\"))` with `b`=true short-circuits, so the right operand's host effect is
+           NOT performed — `(host-calls)` records no call, and the `or` is true → 1. The `or` mirror of the
+           `and` short-circuit-effect case: a `true` left operand skips the right operand's effect.")
+  (input  (do
+            (effect log (op emit (-> String Bool)))
+            (def (main (: b Bool)) (host (log) (if (or b (log.emit "rhs")) 1 0))) (export main)))
+  (host-responses (respond log.emit (: false Bool)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (host-calls))
+
+(case "or performs the right operand's effect when the left is false"
+  (doc    "The non-short-circuit path: with `b`=false the right operand IS evaluated, so `rhs` is performed
+           (`(host-calls)` records the call) and, its response being true, the `or` is true → 1. Pins that a
+           `false` left operand reaches the right operand's effect.")
+  (input  (do
+            (effect log (op emit (-> String Bool)))
+            (def (main (: b Bool)) (host (log) (if (or b (log.emit "rhs")) 1 0))) (export main)))
+  (host-responses (respond log.emit (: true Bool)))
+  (call   main (: false Bool)) (output (: 1 Int64))
+  (host-calls (call log.emit (: "rhs" String))))
