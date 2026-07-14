@@ -5199,12 +5199,16 @@ fn pattern_constraints(
         let elem_ty = match ty {
             crate::ty::Ty::List(e) => (**e).clone(),
             crate::ty::Ty::Any => crate::ty::Ty::Any,
-            _ => {
+            other => {
+                // NAME the value's type + say a list pattern needs a LIST (not "does not match the payload
+                // type T" — "payload" is an internal term, misleading for a top-level `let`/`match` on a
+                // plain value; the list twin of the tuple/constructor shape messages).
                 return Err(Reject::coded(
                     Code::Malformed,
                     format!(
-                        "a list pattern does not match the payload type {}",
-                        ty.render_name()
+                        "this list pattern cannot destructure a value of type {} — a `(list …)` pattern \
+                         matches only a list value",
+                        other.render_name()
                     ),
                 )
                 .at(pat));

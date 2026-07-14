@@ -1036,6 +1036,7 @@ pass	a repeated let binding shadows the earlier one for what follows
 pass	a resume outside any handler arm is rejected
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
+pass	a returned lookup result consumed with a wildcard never inspects the payload
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
@@ -1180,6 +1181,7 @@ pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on

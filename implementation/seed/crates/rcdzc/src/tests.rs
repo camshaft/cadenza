@@ -3610,6 +3610,32 @@ fn a_let_bound_selfcall_then_perform_declines_cleanly_without_leaking_an_interna
     );
 }
 
+/// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
+/// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
+/// then the perform reads the recursion's OUT-state, which the single-return specialization does not carry.
+/// Before the `do`-sequencing arm of `selfcall_precedes_perform_in_operands`, this MISCOMPILED (folded the
+/// perform against the INCOMING state — the recursive-call thread arm returns `cur` unchanged as the
+/// out-state — giving 0 on BOTH backends where the answer is 2). It must DECLINE, not miscompile. The
+/// perform-BEFORE-self-call form `(do (Ctr.tick) (walk …))` still folds (the corpus case) — only self-call-
+/// THEN-perform in a `do` is the gap.
+#[test]
+fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (do (walk (- n 1)) (Ctr.tick)))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    // Must DECLINE (the out-state shape) rather than compile to the wrong value (2, computed against the
+    // incoming state as 0). A clean decline is the correct behavior until the out-state calling convention.
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "the out-state-observing do-sequence post-order shape must decline, not miscompile",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
@@ -17552,6 +17578,46 @@ mod match_engine {
                 .contains("more than one refutable constructor element"),
             "the decline names the multi-ctor-element limit: {}",
             decline.message
+        );
+    }
+
+    #[test]
+    fn a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload() {
+        // A `(list …)` pattern against a value that is NOT a list — a record, a tuple, a scalar — is a shape
+        // error (CDZ0201). The message NAMES the value's type + says a list pattern needs a list (the list
+        // twin of the tuple/constructor shape messages); it no longer leaks the internal "payload type" term
+        // ("a list pattern does not match the payload type T"), which misleads for a top-level `match`/`let`
+        // on a plain value that is not a variant payload.
+        let rec = reject_full(
+            "(module m (def (g (: r (Record (x Int64)))) (match r ((list a) a))) (export g))",
+        )
+        .expect("a list pattern on a record rejects");
+        assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
+        assert!(
+            rec.message.contains(
+                "this list pattern cannot destructure a value of type (Record (x Int64))"
+            ) && !rec.message.contains("payload"),
+            "names the type, no internal 'payload' term: {}",
+            rec.message
+        );
+        // A tuple value too — same clear wording.
+        let tup = reject_full(
+            "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((list a b) a))) (export g))",
+        )
+        .expect("a list pattern on a tuple rejects");
+        assert!(
+            tup.message
+                .contains("a `(list …)` pattern matches only a list value"),
+            "a tuple value gets the list-needs-a-list message: {}",
+            tup.message
+        );
+        // NO regression: a valid list pattern on a list value raises no shape fault.
+        assert!(
+            reject_full(
+                "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) (_ 0))) (export f))"
+            )
+            .is_none_or(|d| !d.message.contains("cannot destructure")),
+            "a valid list pattern raises no shape fault"
         );
     }
 
@@ -35765,6 +35831,26 @@ mod stage1 {
             "a genuine top-level stray resume is still flagged: {:?}",
             dstray.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (d) A STRAY resume that is ALSO malformed (missing next-state, or too many operands) reports the
+        // PLACEMENT error as the ONE primary — its placement is the root defect, so the misleading arity
+        // message ("has no next-state", which reads as if adding an argument would fix it) is suppressed.
+        for bad in [
+            "(module m (def (main) (resume 5)) (export main))", // missing next-state AND stray
+            "(module m (def (main) (resume 5 6 7)) (export main))", // too many AND stray
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
+            assert!(
+                d.iter()
+                    .any(|x| x.message.contains("no enclosing handler arm")),
+                "a stray+malformed resume reports the placement error: {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+            assert!(
+                !d.iter().any(|x| x.message.starts_with("this resume has")),
+                "the misleading arity message is suppressed for a STRAY resume: {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

@@ -3578,6 +3578,23 @@ fn selfcall_precedes_perform_in_operands(
             return true;
         }
     }
+    // A `do` sequences its items left-to-right (each runs for effect, the last is the value) — the same
+    // strict spine as operands / `let` inits. Once an ITEM contains a self-call, any LATER item that
+    // reaches a perform reads the recursion's OUT-state. Without this arm `(do (walk …) (E.op))` folds the
+    // `E.op` against the INCOMING state (the recursive-call thread arm returns `cur` unchanged as the
+    // out-state — "post-recursion state is not observed"), so the sequence-following perform MISCOMPILES to
+    // the wrong value (a source-fold miscompile both backends share). Decline it here instead.
+    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec()) {
+        let mut seen_self_call = false;
+        for &it in items.iter() {
+            if seen_self_call && contains_any_perform(db, it, ctx) {
+                return true;
+            }
+            if contains_self_call(db, it, callee_def) {
+                seen_self_call = true;
+            }
+        }
+    }
     // Recurse structurally — the shape can be nested inside a branch/let/operand.
     match db.ast.get(node).clone() {
         Struct::List(children) => children
