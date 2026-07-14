@@ -99,11 +99,35 @@ pub fn type_is_nominal(db: &mut Db, id: StructId) -> bool {
 /// inference (or, failing that, the backend) grounds later.
 fn compute(db: &mut Db, id: StructId) -> Ty {
     match resolved_of(db, id) {
-        // A bare integer literal is polymorphic in its width until something fixes it.
-        Resolved::Int(_) => Ty::int(),
+        // A bare integer literal is polymorphic in its width until something fixes it — UNLESS the module
+        // it is WRITTEN in declares `(pragma default-integer <T>)`, which fixes the type an otherwise-
+        // unconstrained literal STARTS as (`numeric-model.md` §A Module May Declare Its Default Integer
+        // Literal Type). `default_int_literals` (a load-time per-node map) records which literals it
+        // applies to — keyed by the ORIGINAL node, so it survives the β-copy that reparents an inlined
+        // literal. The default is the literal's starting type in unification, NOT a coercion: a mix with
+        // another numeric type still rejects CDZ0301 (no silent promotion), and an explicit annotation
+        // still wins (the `Annot` node fixes its own type regardless of the inner literal's).
+        //
+        // The map is keyed by literals WRITTEN in the pragma module (definition-site scoped), so an
+        // importer's literals are unaffected; the default only chooses the literal's starting type and
+        // introduces no conversion (no-silent-promotion is unchanged); and an explicit annotation/constraint
+        // takes precedence over the default.
+        //= spec/capabilities/numeric-model.md#a-declared-default-applies-at-the-definition-site
+        //# The default integer literal type in force for a literal MUST be the one declared by the module in which the literal is written, not one declared by any module that imports it, so that importing a module never changes the type its literals take.
+        //= spec/capabilities/numeric-model.md#a-declared-default-fixes-a-type-not-a-conversion
+        //# Declaring a default integer literal type MUST only determine the type an otherwise-unconstrained integer literal takes, and MUST NOT introduce any implicit conversion between numeric types, so that every no-silent-promotion rule applies unchanged to a literal whatever its declared default type.
+        //= spec/capabilities/numeric-model.md#a-declared-default-fixes-a-type-not-a-conversion
+        //# An explicit type annotation or other constraint on an integer literal MUST take precedence over the module's declared default integer literal type.
+        Resolved::Int(_) => module_default_int_ty(db, id).unwrap_or_else(Ty::int),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A CROSS-COMPONENT extern op (X4b): its type is its DECLARED monomorphic signature (the `(-> …)`
+        // contract), evaluated as a type. An application of it type-checks against this exactly like a
+        // call to a def of the same signature (cross-component-interop.md §The Exchanged Signature Is
+        // Monomorphic). `typeval_of` yields the `Ty::Fn`; an unresolvable declaration types `Any` (a
+        // malformed extern sig declines downstream, never a spurious mismatch here).
+        Resolved::Extern { ty, .. } => crate::eval::typeval_of(db, ty).unwrap_or(Ty::Any),
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
         // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
@@ -640,6 +664,22 @@ fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
         Some(Prim::Sub) => "subtracting",
         Some(Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq | Prim::Compare) => "comparing",
         _ => "combining",
+    }
+}
+
+/// The INNER-VALUE argument node of a `(Qty.of <value> <unit>)` application — the `<value>` a coercion fix
+/// retypes when two quantities of one dimension have mismatched inner numeric types (`(Qty.of 5 m) +
+/// (Qty.of 3.0 m)` → retype the `5`). `None` when `node` is not a directly-written `Qty.of` application
+/// (a quantity bound to a variable / returned from a call has no inner-value node to edit here).
+fn qty_of_value_arg(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf)
+                && args.len() == 2 =>
+        {
+            Some(args[0])
+        }
+        _ => None,
     }
 }
 
@@ -1470,6 +1510,26 @@ fn shape_fn_typed_params(
             shape_fn_typed_params(db, c, env, subst, fresh);
         }
     }
+}
+
+/// The declared default-integer type for the bare literal at `id`, or `None` if it is not written in a
+/// `(pragma default-integer <T>)` module. Reads the load-time `default_int_literals` map (keyed by the
+/// literal's ORIGINAL node, so it survives β-copy reparenting) and reduces the recorded `<T>` occurrence
+/// to a `Ty` via the ordinary evaluator (`typeval_of`, the same path an annotation's type takes). Only an
+/// INTEGER type is honored (a non-integer `<T>` is separately the CDZ0303 domain reject); anything that
+/// does not reduce to a concrete integer type is `None` (the literal keeps the deferred `Int64` default).
+///
+/// So a module MAY declare — through the `(pragma default-integer <T>)` directive — the integer type an
+/// otherwise-unconstrained literal takes within it; and when a module declares none, `None` here lets the
+/// caller fall back to the numeric model's default integer type (`Int64`).
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type
+//# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the integer type that an integer literal with no other constraint takes within that module.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type
+//# When a module declares no default integer literal type, an integer literal with no other constraint MUST take the numeric model's default integer type.
+fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    let ty_expr = *db.default_int_literals.get(&id)?;
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    matches!(ty, Ty::Int(_) | Ty::BigInt).then_some(ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the
@@ -3282,6 +3342,150 @@ fn deep_leaf_delta<'a>(want: &'a Ty, got: &'a Ty) -> Option<(String, &'a Ty, &'a
     }
 }
 
+/// A coercion FIX for a numeric leaf buried inside a directly-written COMPOUND value whose annotated type
+/// differs only at that leaf — `(record (x 5))` annotated `(Record (x Float64))` retypes the inner `5` →
+/// `5.0`, `(tuple 1 2)` vs `(Tuple Int64 Float64)` retypes the `2`, `(list 5)` vs `(List Float64)` retypes
+/// the `5`. The structural-delta hint NAMES the leaf (`field \`x\` should be Float64 …`); this gives it the
+/// same one-shot repair a bare `(: 5 Float64)` gets, anchored at the INNER value node. Drills the VALUE
+/// expression (`expr`) in lockstep with the type delta (record field / tuple position / list element),
+/// mirroring `deep_leaf_delta`'s type walk, to reach the leaf value node, then defers to
+/// `numeric_text_coercion_fix` (the same helper the bare annotation uses). `None` unless the value is a
+/// directly-written compound literal whose single differing leaf has a numeric coercion — a value bound to
+/// a name / returned from a call has no inner literal to edit, and a non-numeric leaf (Bool vs Int) has no
+/// coercion (its structural-delta message stands alone).
+fn compound_inner_coercion_fix(
+    db: &mut Db,
+    expr: StructId,
+    expected: &Ty,
+    actual: &Ty,
+) -> Option<Fix> {
+    match (expected, actual) {
+        (Ty::Record(w), Ty::Record(g))
+            if w.len() == g.len() && w.keys().all(|k| g.contains_key(k)) =>
+        {
+            // Find the first field (sorted key order) whose type differs, then the matching value node in
+            // the written record literal.
+            let (key, wt) = w
+                .iter()
+                .find(|(k, wt)| g.get(k).is_some_and(|gt| !wt.agrees_with(gt)))?;
+            let (gt, wt) = (g[key].clone(), (*wt).clone());
+            let value_node = *record_value_nodes(db, expr)?.get(key)?;
+            compound_inner_coercion_fix(db, value_node, &wt, &gt)
+                .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, value_node))
+        }
+        (Ty::Tuple(w), Ty::Tuple(g)) if w.len() == g.len() => {
+            let (i, (wt, gt)) = w
+                .iter()
+                .zip(g.iter())
+                .enumerate()
+                .find(|(_, (wt, gt))| !wt.agrees_with(gt))?;
+            let (gt, wt) = (gt.clone(), wt.clone());
+            let value_node =
+                *positional_value_nodes(db, expr, crate::resolved::Prim::TupleNew)?.get(i)?;
+            compound_inner_coercion_fix(db, value_node, &wt, &gt)
+                .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, value_node))
+        }
+        (Ty::List(we), Ty::List(ge)) if !we.agrees_with(ge) => {
+            // A list is homogeneous — retype the FIRST element whose inner numeric a coercion bridges (the
+            // fix an agent applies element-by-element; the message names the element axis).
+            let (we, ge) = ((**we).clone(), (**ge).clone());
+            positional_value_nodes(db, expr, crate::resolved::Prim::ListNew)?
+                .iter()
+                .find_map(|&e| {
+                    compound_inner_coercion_fix(db, e, &we, &ge)
+                        .or_else(|| numeric_text_coercion_fix(db, &we, &ge, e))
+                })
+        }
+        (Ty::Map(wk, wv), Ty::Map(gk, gv)) => {
+            // A map is homogeneous on each axis. Retype the FIRST entry's KEY (if the key axis differs) or
+            // VALUE (if the value axis differs) whose inner numeric a coercion bridges — mirroring the
+            // collection-axis hint (`collection_element_mismatch_hint` reports KEY before VALUE). The
+            // entries are `(key-occ, value-occ)` pairs of the written `(map (k v) …)` literal.
+            let key_diff = !wk.agrees_with(gk);
+            let (wt, gt) = if key_diff {
+                ((**wk).clone(), (**gk).clone())
+            } else if !wv.agrees_with(gv) {
+                ((**wv).clone(), (**gv).clone())
+            } else {
+                return None;
+            };
+            map_entry_nodes(db, expr)?.iter().find_map(|&(k, v)| {
+                let node = if key_diff { k } else { v };
+                compound_inner_coercion_fix(db, node, &wt, &gt)
+                    .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, node))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The ordered `(key-node, value-node)` entries of a directly-written MAP literal `expr` — both the
+/// `Resolved::Map` primitive form and the `map` NAME-alias application (`Apply` of `Prim::MapNew`, whose
+/// args are the `(k v)` entry-pair lists). `None` when `expr` is not a written map literal. Lets
+/// `compound_inner_coercion_fix` reach a map key/value leaf regardless of which map spelling was used.
+fn map_entry_nodes(db: &mut Db, expr: StructId) -> Option<Vec<(StructId, StructId)>> {
+    match resolved_of(db, expr) {
+        Resolved::Map { entries } => Some(entries.to_vec()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::MapNew) =>
+        {
+            // Each arg is a `(key value)` two-element entry list — read its two children.
+            args.iter()
+                .map(|&pair| match db.ast.get(pair) {
+                    crate::ast::Struct::List(kids) => match kids.as_slice() {
+                        [k, v] => Some((*k, *v)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => None,
+    }
+}
+
+/// The `label → value-node` map of a directly-written RECORD literal `expr` — both the `{}`/bare-string
+/// primitive form (`Resolved::Record`) and the `record` NAME-alias application (`Resolved::Apply` whose
+/// `(meta apply)` is `Prim::RecordNew`, read via the shared `read_record_fields`). `None` when `expr` is
+/// not a written record literal (a value bound to a name / returned from a call has no field-value nodes
+/// to edit). Lets `compound_inner_coercion_fix` reach the inner leaf regardless of which record spelling
+/// the author used.
+fn record_value_nodes(
+    db: &mut Db,
+    expr: StructId,
+) -> Option<std::collections::BTreeMap<crate::resolved::Symbol, StructId>> {
+    match resolved_of(db, expr) {
+        Resolved::Record { fields } => Some((*fields).clone()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordNew) =>
+        {
+            crate::resolve::read_record_fields(db, &args).ok()
+        }
+        _ => None,
+    }
+}
+
+/// The ordered element value-nodes of a directly-written TUPLE (`prim = TupleNew`) or LIST (`ListNew`)
+/// literal `expr` — both the `Resolved::Tuple`/`List` primitive form and the `tuple`/`list` NAME-alias
+/// application (`Resolved::Apply` of the matching `(meta apply)` prim, whose `args` ARE the elements).
+/// `None` when `expr` is not the requested written literal kind.
+fn positional_value_nodes(
+    db: &mut Db,
+    expr: StructId,
+    prim: crate::resolved::Prim,
+) -> Option<Vec<StructId>> {
+    match resolved_of(db, expr) {
+        Resolved::Tuple { elems } if prim == crate::resolved::Prim::TupleNew => {
+            Some(elems.to_vec())
+        }
+        Resolved::List { elems } if prim == crate::resolved::Prim::ListNew => Some(elems.to_vec()),
+        Resolved::Apply { head, args } if crate::eval::meta_apply_of(db, head) == Some(prim) => {
+            Some(args.to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// An actionable message TAIL when `expected` and `actual` are BOTH records that differ. Two shapes,
 /// each pointing at the SPECIFIC difference instead of leaving the reader to diff two full record renders:
 ///  • a FIELD-SET difference — the value is MISSING a field the type requires, and/or carries an EXTRA one
@@ -3898,6 +4102,59 @@ fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
     match resolved_of(db, node) {
         Resolved::Resume { value, .. } => Some(value),
         _ => None,
+    }
+}
+
+/// The NEXT-STATE of a tail `(resume value next-state)` in an arm body `node`. `None` if the arm does not
+/// tail-resume. The state-side twin of [`tail_resume_value`].
+fn tail_resume_next_state(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Resume { next_state, .. } => Some(next_state),
+        _ => None,
+    }
+}
+
+/// Check a handler arm's tail NEXT-STATE against the handler's SEED type — the state-side companion of
+/// [`check_resume_result_type`]. A handler threads a STATE fixed by its `init` seed; the next state in
+/// `(resume value next-state)` continues that fold, so it MUST have the seed's type. A mismatch —
+/// `(resume 5 "x")` under an Int64 seed — would change the state's type mid-fold (a type-confusion
+/// miscompile if accepted). CDZ0201, anchored at the next-state, with the same numeric/text coercion fix
+/// every expected-vs-actual site offers. GUARDED with `agrees_with` so an undetermined seed/state
+/// (`Any`/`Var` — a recursive handler whose state type inference has not fixed, or an unconstrained seed)
+/// is never falsely flagged; only a DEFINITE clash faults. Only a TAIL resume is checked (the shipping
+/// surface), matching `check_resume_result_type`.
+fn check_resume_next_state_type(
+    db: &mut Db,
+    init: StructId,
+    arm: &crate::resolved::HandleArm,
+    out: &mut Vec<Reject>,
+) {
+    let seed_ty = type_of(db, init);
+    // An undetermined seed type carries no constraint — skip (never a false reject). The `agrees_with`
+    // below would also pass, but bailing early keeps the common recursive-handler case cheap.
+    if matches!(seed_ty, Ty::Any | Ty::Var(_)) {
+        return;
+    }
+    let Some(next_state) = tail_resume_next_state(db, arm.body) else {
+        return; // no tail resume — out of scope
+    };
+    let next_ty = type_of(db, next_state);
+    if !next_ty.agrees_with(&seed_ty) {
+        trace!(target: "rcdzc::infer", next_state = next_state.0, "fault: resume next-state type does not match the handler's seed/state type (CDZ0201)");
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "a handler resumes with a next-state of type {} but the handler's state type is {} \
+                 (the seed fixes the state type; each resume threads a state of that type)",
+                next_ty.render_name(),
+                seed_ty.render_name()
+            ),
+        )
+        .at(next_state);
+        if let Some(fix) = numeric_text_coercion_fix(db, &seed_ty, &next_ty, next_state) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
     }
 }
 
@@ -4551,10 +4808,29 @@ fn check_application(
             )
         };
         let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
+        // A compound's STRUCTURAL KIND tag (Record/Tuple/List/Map/Set) — two compounds of DIFFERENT kinds
+        // (`(< (tuple …) (list …))`, `(= r m)` a record vs a map) are as cross-kind as a compound-vs-atom
+        // pair: there is no shared order/equality between a tuple and a list. Same-kind compounds (two
+        // records, two tuples) return the SAME tag, so they fall through to the generic path where their
+        // structural-delta hints (M91/M92, "field `x` should be …", "element 1 …") fire — this only pulls
+        // out the genuinely-incomparable DIFFERENT-kind case. A non-compound is `None` (not this test).
+        let compound_kind = |t: &Ty| match t {
+            Ty::Record(_) => Some(0u8),
+            Ty::Tuple(_) => Some(1),
+            Ty::List(_) => Some(2),
+            Ty::Map(..) => Some(3),
+            Ty::Set(_) => Some(4),
+            _ => None,
+        };
+        let different_compound_kinds = match (compound_kind(&a), compound_kind(&b)) {
+            (Some(ka), Some(kb)) => ka != kb,
+            _ => false,
+        };
         let cross_kind = (is_text(&a) && is_scalar(&b))
             || (is_scalar(&a) && is_text(&b))
             || (is_compound(&a) && is_atom(&b))
-            || (is_atom(&a) && is_compound(&b));
+            || (is_atom(&a) && is_compound(&b))
+            || different_compound_kinds;
         if cross_kind {
             trace!(target: "rcdzc::infer", head = head.0, "fault: operands of distinct kinds — not comparable/operable across the boundary (CDZ0201)");
             out.push(Reject::coded(
@@ -4563,6 +4839,42 @@ fn check_application(
                     "{} and {} are different types (this operation is not defined across that kind boundary)",
                     a.render_with_article(),
                     b.render_with_article()
+                ),
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+        // A `Bool` operand against a DIFFERENT scalar kind — a number or a `Char` — `(< true 5)`, `(+ 1
+        // true)`, `(= true #\a)`. Both are scalars (so the text/compound cross-kind guard above does not
+        // fire), but there is no shared order / arithmetic / equality between a boolean and a number or a
+        // character. The generic scheme-unify gives the opaque "type mismatch: Bool and Int64 must be the
+        // same type here" — an internal-clash read. Name the boundary instead. KEEP THE CODE `CDZ0203` (NOT
+        // the CDZ0201 the text/compound cases take): the corpus pins a two-scalar clash `(< 1 true)` at the
+        // general TypeMismatch. ONLY a `Bool`-vs-other-scalar pair — a `Bool` has NO conversion to a number
+        // or a char, so it is a genuine dead-end (honest no-fix). A `Char`-vs-number pair is DELIBERATELY
+        // excluded: `Char.to-int` is a total conversion, so `(+ #\a 1)` flows on to the numeric-coercion
+        // path below, which offers the `(Char.to-int …)` wrap fix (the M96 twin) — naming it a kind boundary
+        // here would rob it of that repair. Two different NUMERIC types (Int32 vs Int64, int vs float) are
+        // the separate no-promotion path (CDZ0301) handled by `unify::mismatch` below.
+        let scalar_kind = |t: &Ty| match t {
+            Ty::Bool => Some("a boolean"),
+            Ty::Char => Some("a character"),
+            Ty::Int(_) | Ty::Float(_) => Some("a number"),
+            _ => None,
+        };
+        if let (Some(ka), Some(kb)) = (scalar_kind(&a), scalar_kind(&b))
+            && ka != kb
+            && (a == Ty::Bool || b == Ty::Bool)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: a Bool against a different scalar kind — not comparable/operable across the boundary (CDZ0203)");
+            out.push(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "{} and {} are different types — this operation is not defined between {ka} and {kb}",
+                    a.render_with_article(),
+                    b.render_with_article(),
                 ),
             ));
             for &arg in args {
@@ -4749,7 +5061,26 @@ fn check_application(
                             // Same dimension — the INNER numeric types must still agree (no promotion
                             // under a unit): unify them and report a numeric mismatch as CDZ0301.
                             let mut subst = Subst::new();
-                            if let Err(reject) = crate::unify::unify(&mut subst, ia, ib) {
+                            if let Err(mut reject) = crate::unify::unify(&mut subst, ia, ib) {
+                                // The SAME numeric mismatch a bare `(+ 5 3.0)` gets — so it should offer the
+                                // SAME coercion fix (drop the `.0`, or `<Float>.of-int …`), just applied to
+                                // the INNER value of the offending quantity rather than the whole `(Qty.of
+                                // …)`. The inner value is the FIRST argument of each operand's `Qty.of`
+                                // application; retype whichever inner the coercion bridges (`(Qty.of 5 …) +
+                                // (Qty.of 3.0 …)` → `5` becomes `5.0`), mirroring the bare-numeric path's
+                                // one-shot repair. Only attaches when the inner value node is recoverable
+                                // (a directly-written `(Qty.of n u)` operand) and a coercion applies.
+                                let inner_a = qty_of_value_arg(db, args[0]);
+                                let inner_b = qty_of_value_arg(db, args[1]);
+                                let fix = inner_a
+                                    .and_then(|n| numeric_text_coercion_fix(db, ib, ia, n))
+                                    .or_else(|| {
+                                        inner_b
+                                            .and_then(|n| numeric_text_coercion_fix(db, ia, ib, n))
+                                    });
+                                if let Some(fix) = fix {
+                                    reject = reject.with_fix(fix);
+                                }
                                 out.push(reject);
                             }
                         }
@@ -4763,7 +5094,7 @@ fn check_application(
                     // dimensions). CDZ0501.
                     _ => {
                         trace!(target: "rcdzc::infer", head = head.0, "fault: combining a quantity with a non-quantity (CDZ0501)");
-                        out.push(Reject::coded(
+                        let mut reject = Reject::coded(
                             Code::DimensionMismatch,
                             format!(
                                 "{} a quantity and a plain number: {} and {} — a quantity has a \
@@ -4773,7 +5104,33 @@ fn check_application(
                                 a.render_name(),
                                 b.render_name(),
                             ),
-                        ));
+                        );
+                        // The mechanical repair: give the BARE number the SAME unit as the quantity operand,
+                        // `(Qty.of <n> <unit>)` — then both sides are quantities of one dimension and the
+                        // add is well-formed. The unit is recoverable from the quantity operand's type
+                        // (`Unit::render` is the re-parseable `(Unit.base #"…")` surface), and `Qty.of`
+                        // grounds the bare number to it. HEURISTIC — the author may instead have meant the
+                        // quantity's magnitude (`Qty.value`), but giving the bare number the sibling's unit
+                        // is the direct resolution of "these are not the same dimension". Fire only when
+                        // EXACTLY one operand is the quantity (the other the bare number this wraps).
+                        let bare_and_unit = match (&a, &b) {
+                            (Ty::Qty { unit, .. }, _) if !matches!(b, Ty::Qty { .. }) => {
+                                args.get(1).map(|&n| (n, unit.render()))
+                            }
+                            (_, Ty::Qty { unit, .. }) if !matches!(a, Ty::Qty { .. }) => {
+                                args.first().map(|&n| (n, unit.render()))
+                            }
+                            _ => None,
+                        };
+                        if let Some((bare, unit_src)) = bare_and_unit {
+                            reject = reject.with_fix(Fix::wrap_heuristic(
+                                bare,
+                                "(Qty.of ",
+                                format!(" {unit_src})"),
+                                format!("give the number the same unit: `(Qty.of … {unit_src})`"),
+                            ));
+                        }
+                        out.push(reject);
                         for &arg in args {
                             collect(db, arg, out);
                         }
@@ -5326,7 +5683,8 @@ fn check_application(
                     // anti-pattern. Say "`E` is an effect, not a function" (the apply-position analogue of
                     // the M74 export-a-type category message). A non-name head (a literal `(5 3)`, a value)
                     // keeps the type-named message — the type IS the useful fact there.
-                    let name_category = db.ast.as_name(head).and_then(|n| {
+                    let name = db.ast.as_name(head).map(str::to_string);
+                    let name_category = name.as_deref().and_then(|n| {
                         if db.type_decl_by_name(n).is_some() {
                             Some((n.to_string(), "a type"))
                         } else if db.effect_decl_by_name(n).is_some() {
@@ -5335,14 +5693,37 @@ fn check_application(
                             None
                         }
                     });
+                    // A bare name resolving to a NULLARY FUNCTION def — `(def (g) …)` applied `(g 5)`. A
+                    // nullary def resolves its name straight to its body VALUE (a `Ref`), so `g` IS that
+                    // value and `(g 5)` genuinely applies a non-function — but the author wrote `g` with a
+                    // `()` signature and CALLED it, so "cannot apply a value of type Int64" hides both the
+                    // name and the real cause (it takes no arguments). Distinguish it from a plain value def
+                    // `(def v …)` by its SIGNATURE shape: a nullary FUNCTION's `sig_occ` is a list `(g)`, a
+                    // value def's is a bare name. Name it + say it takes no arguments (the nullary companion
+                    // of the over-application naming — M99/M105). A value def keeps the type-named message
+                    // (its value IS the fact — `v` names nothing more useful than its type).
+                    let nullary_fn = name
+                        .as_deref()
+                        .filter(|_| name_category.is_none())
+                        .and_then(|n| {
+                            let idx = db.def_by_name(n)?;
+                            let sig = db.defs[idx].sig_occ;
+                            matches!(db.ast.get(sig), crate::ast::Struct::List(_))
+                                .then(|| n.to_string())
+                        });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
-                    let message = match name_category {
-                        Some((name, cat)) => {
+                    let message = match (name_category, nullary_fn) {
+                        (Some((name, cat)), _) => {
                             format!(
                                 "`{name}` is {cat}, not a function — it cannot be applied to arguments"
                             )
                         }
-                        None => format!(
+                        (None, Some(name)) => format!(
+                            "`{name}` takes no arguments, but {} {} applied — call it as `({name})`, without arguments",
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" }
+                        ),
+                        (None, None) => format!(
                             "{} {} — it is not a function",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             ht.render_name()
@@ -6101,6 +6482,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     ) {
         collect_quote_body_syntax(db, id, out);
         return;
+    }
+    // A bare integer literal defaulted to a NARROW fixed-width type by a `(pragma default-integer <T>)`
+    // must satisfy the SAME literal-fit range check an explicit `(: v T)` annotation runs — else the pragma
+    // silently admits an out-of-range value into a narrow-typed slot (`(pragma default-integer Int8) (def
+    // (x) 300)` gave `x : Int8 = 300`, a soundness hole the explicit `(: 300 Int8)` correctly rejects
+    // CDZ0302). The pragma records each such literal → its `<T>` type-expression occurrence in
+    // `default_int_literals` — the exact `(value, ty_expr)` pair `literal_width_fault` checks — so reuse it,
+    // giving the pragma default the annotation path's fit-check. A WIDENING default (Int64/BigInt) never
+    // faults (every literal fits); only a narrowing one (Int8/UInt8/…) rejects an out-of-range literal.
+    if let Some(&ty_expr) = db.default_int_literals.get(&id)
+        && let Some(reject) = literal_width_fault(db, id, ty_expr)
+    {
+        out.push(reject);
     }
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => {
@@ -7281,6 +7675,18 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // carries the arbitrary-precision magnitude; only the static type widens to
                     // `Ty::BigInt` (the annot node's type, from `type_of`'s `Annot` arm). No fault.
                     trace!(target: "rcdzc::infer", node = id.0, "integer literal annotated BigInt — grounds to BigInt (unbounded, always fits)");
+                } else if matches!(resolved_of(db, expr), Resolved::Int(_) | Resolved::Float(_))
+                    && matches!(annot_ty, Ty::Rational)
+                {
+                    // A numeric LITERAL annotated `Rational` is a GROUNDING — the same "Annotations
+                    // Constrain" rule as `(: 200 UInt8)` / `(: N BigInt)`, but with NO range check and
+                    // no truncation: an EXACT rational holds any literal. An integer `k` grounds to the
+                    // exact `k/1`; a decimal `significand·10^exp` grounds to the exact `significand /
+                    // 10^|exp|` (LOSSLESS — a `Decimal` is captured exactly, so `0.5` is precisely `1/2`,
+                    // never a rounded float). `lower`'s `Annot` arm folds the literal to the normalized
+                    // `Core::ConstRational`; here we only suppress the CDZ0203 the generic unify below
+                    // (`Rational` vs the literal's deferred int/float type) would otherwise report.
+                    trace!(target: "rcdzc::infer", node = id.0, "numeric literal annotated Rational — grounds to the exact rational (always fits)");
                 } else if let (
                     Ty::Qty {
                         inner: ai,
@@ -7513,15 +7919,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
-                                .or(record_tail)
+                                .or(record_tail.clone())
                                 .or(fn_tail)
-                                .or(collection_tail)
+                                .or(collection_tail.clone())
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
+                            } else if record_tail.is_some() || collection_tail.is_some() {
+                                // A same-shape compound whose single differing leaf is a numeric literal —
+                                // `(record (x 5))` vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple
+                                // Int64 Float64)`, `(list 5)` vs `(List Float64)`. The structural-delta tail
+                                // NAMES the leaf; give it the SAME one-shot coercion fix a bare `(: 5
+                                // Float64)` gets, anchored at the inner value node (`compound_inner_coercion_
+                                // fix` drills the written literal in lockstep with the type delta). Fix-parity
+                                // under a wrapper (M116's annotation-site twin): a directly-written compound
+                                // literal is editable; a non-literal / non-numeric leaf yields None (message
+                                // only).
+                                if let Some(fix) =
+                                    compound_inner_coercion_fix(db, expr, &annot_ty, &expr_ty)
+                                {
+                                    reject = reject.with_fix(fix);
+                                }
                             }
                             out.push(reject);
                         }
@@ -7697,6 +8118,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // result-type companion of the perform-argument check). Without this the fold silently
                 // substitutes the mistyped value as the perform's result (a type-confusion miscompile).
                 check_resume_result_type(db, arm, out);
+                // NEXT-STATE / SEED-TYPE CHECK. A handler folds a STATE across the operations its body
+                // performs, threading it purely (`capabilities-and-effects.md` §Discharging An Operation
+                // Produces … The Next State Carried Forward). The state's type is fixed by the handle's
+                // SEED (`init`); the NEXT state in `(resume value next-state)` continues that fold, so it
+                // MUST have the seed's type. A mismatch — `(resume 5 "x")` under an Int64 seed — would
+                // change the state's type mid-fold; it was SILENTLY ACCEPTED (the fold dropped the type
+                // discrepancy, a type-confusion miscompile), the state-side companion of the resume-VALUE
+                // check above. CDZ0201, anchored at the next-state.
+                check_resume_next_state_type(db, init, arm, out);
                 collect(db, arm.body, out);
             }
             // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405,
@@ -7811,19 +8241,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // A bare literal overflowing the signed-Int64 default that STILL FITS UNSIGNED 64 (`2^63 ..
                 // 2^64-1`, e.g. `18446744073709551615`) has a concrete fixed type — `UInt64` — it just is
                 // not the default a bare literal takes. The mechanical repair: ANNOTATE it `(: <lit>
-                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). Only the
-                // BARE case (`context.is_none()`) and only when the value fits unsigned 64 — a value past
-                // 2^64-1 has NO fixed type (BigInt is not literal-spellable), so no fix. When a fix applies,
-                // the message says UInt64 holds it rather than "Int64 is the widest".
-                let fits_u64 = context.is_none() && v.fits_width(false, 64);
+                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). A value
+                // PAST 2^64-1 fits no FIXED width — but `BigInt` holds an integer literal of ANY magnitude
+                // (`(: <lit> BigInt)` grounds the literal to the arbitrary-precision type, a TOTAL one-shot
+                // repair), so it gets a fix too. Both only in the BARE case (`context.is_none()` — a
+                // literal fixed by a UInt64/other operand has already picked its type). `fits_u64` chooses
+                // between the UInt64 and BigInt fix so the message names the tightest type that holds it.
+                let bare = context.is_none();
+                let fits_u64 = bare && v.fits_width(false, 64);
+                let past_fixed = bare && !fits_u64; // no fixed width holds it — BigInt does
+                // A literal that is the ARGUMENT of `BigInt.of` — `(BigInt.of 999…)`. `BigInt.of` widens a
+                // FIXED integer (`∀a. (Int a) → BigInt`), so a literal too big for every fixed width can
+                // NEVER be its argument — and the annotate-`(: … BigInt)` wrap would cascade (it produces
+                // `(BigInt.of (: … BigInt))`, a BigInt where a fixed int is wanted). The real repair is to
+                // DROP the redundant `BigInt.of` and write the value as a `BigInt`-annotated literal
+                // directly. We cannot cheaply spell that replacement here (the arbitrary-precision literal's
+                // decimal text is not reconstructable from the magnitude at this layer), so — honest-no-fix
+                // — we name the repair in the MESSAGE and offer NO cascading wrap fix.
+                let in_bigint_of = past_fixed
+                    && db.parent_of(id).is_some_and(|p| {
+                        matches!(resolved_of(db, p), Resolved::Apply { head, .. }
+                            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::BigIntOf))
+                    });
                 let msg = match int_width_range(signed, width) {
                     Some(range) if fits_u64 => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}) — \
                          it fits `UInt64`; annotate it `(: … UInt64)`"
                     ),
-                    Some(range) if context.is_none() => format!(
-                        "integer literal is out of range for {ty_name} (the valid range is {range}; \
-                         Int64 is the widest fixed-size integer)"
+                    Some(range) if in_bigint_of => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}) — \
+                         `BigInt.of` widens a fixed-size integer, so it cannot hold this value; write the \
+                         literal directly as a `BigInt` with `(: … BigInt)` instead of `(BigInt.of …)`"
+                    ),
+                    Some(range) if past_fixed => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}; no \
+                         fixed-size integer is wider) — it fits `BigInt`; annotate it `(: … BigInt)`"
                     ),
                     Some(range) => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range})"
@@ -7837,6 +8289,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         "(: ",
                         " UInt64)",
                         "annotate the literal `UInt64` (its range holds this value)",
+                    ));
+                } else if past_fixed && !in_bigint_of {
+                    // `BigInt` holds an integer literal of any magnitude — the total repair for a value no
+                    // fixed width can represent. The annotation grounds the literal to the big-integer type.
+                    // NOT offered inside `(BigInt.of …)`: there the wrap cascades (see `in_bigint_of`), so
+                    // that case carries the drop-the-wrapper message with no fix.
+                    reject = reject.with_fix(Fix::wrap_heuristic(
+                        id,
+                        "(: ",
+                        " BigInt)",
+                        "annotate the literal `BigInt` (it holds an integer of any magnitude)",
                     ));
                 }
                 out.push(reject);
@@ -7856,6 +8319,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)
+        // A cross-component extern reference carries no fault of its own — its declared signature is the
+        // contract (well-formed by construction) and a mismatched APPLICATION is caught by the ordinary
+        // apply check, exactly like a call to a def.
+        | Resolved::Extern { .. }
         | Resolved::Lambda { .. } => {}
     }
 }

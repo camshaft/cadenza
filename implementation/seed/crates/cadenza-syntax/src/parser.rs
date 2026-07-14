@@ -178,6 +178,22 @@ impl<'a> Parser<'a> {
         self.atom(Leaf::Name(name.into()), span)
     }
 
+    /// Classify a numeric token's text into a value node, DESUGARING a `100N`/`0.5R` type suffix to
+    /// the annotation `(: <literal> BigInt|Rational)` — the ML twin of the sexpr reader's suffix
+    /// desugar, so a suffixed literal reads to the SAME arena on both surfaces. A bare number stays a
+    /// plain atom. The `Suffixed` leaf is kept as the value child so the printer re-emits the suffix.
+    fn numeric_atom(&mut self, text: &str, span: Span) -> StructId {
+        match literal::classify_word(text) {
+            leaf @ Leaf::Suffixed { kind, .. } => {
+                let colon = self.name(":", span);
+                let value = self.atom(leaf, span);
+                let ty = self.name(kind.type_name(), span);
+                self.list(vec![colon, value, ty], span)
+            }
+            leaf => self.atom(leaf, span),
+        }
+    }
+
     /// An `Atom` of a STRING literal with source `span` — used as the HEAD of a compound-value literal
     /// so it desugars to the primitive CONSTRUCTOR (`[1 2]` → `("list" 1 2)`, `(a, b)` → `("tuple" a
     /// b)`). A string head is the unshadowable primitive: unlike a NAME head (`(list …)`), it is not a
@@ -658,8 +674,18 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
-                let num = self.atom(literal::classify_word(self.text(t)), span);
-                self.maybe_quantity_literal(num, span)
+                let text = self.text(t).to_string();
+                let num = self.numeric_atom(&text, span);
+                // A TYPE-SUFFIXED literal desugared to a `(: … …)` annotation is NOT a quantity magnitude
+                // (`100N feet` is meaningless — a suffix selects a numeric type, not a unit); only a BARE
+                // number takes the `<num> <unit>` quantity sugar. A suffix is glued (no space), so the
+                // two never both apply to one literal; guard on the suffix so a following name is not
+                // mis-eaten as a unit.
+                if matches!(literal::classify_word(&text), Leaf::Suffixed { .. }) {
+                    num
+                } else {
+                    self.maybe_quantity_literal(num, span)
+                }
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
@@ -725,11 +751,18 @@ impl<'a> Parser<'a> {
             Kind::Backtick => self.quasiquote(),
             Kind::Comma => self.unquote("unquote"),
             Kind::UnquoteSplice => self.unquote("unquote-splicing"),
-            // `#{` is a map literal; `#[` is the raw-list escape.
+            // `#{` is a map literal; `#(` is a set literal; `#[` is the raw-list escape.
             Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
                 self.bracketed_bars(Self::map_literal)
             }
+            Kind::Hash if self.nth_kind(1) == Kind::LParen => {
+                self.bracketed_bars(Self::set_literal)
+            }
             Kind::Hash => self.bracketed_bars(Self::hash_list),
+            // `b[ <segment>, … ]` — a binary literal, sugar for `(bin <segment> …)`. Each segment is an
+            // ordinary call-shaped expression (`u16(258)`, `bits(1, 1)`, `bytes(payload)`), so it parses
+            // like a list literal's elements and wraps under the `bin` grammar head.
+            Kind::BinOpen => self.bracketed_bars(Self::bin_literal),
             // A lexer ERROR token — an unterminated literal (`"…` / `b"…` / `#"…` / `` `… `` / `#\`) run
             // to end-of-input, or an otherwise-unrecognized character. The generic "expected an
             // expression" here misdirects (the token IS where an expression should start; the real defect
@@ -994,7 +1027,16 @@ impl<'a> Parser<'a> {
         let mut bindings = Vec::new();
         loop {
             let b_start = self.cur_span();
-            let n = self.binder();
+            // A `let` binder is normally a plain name, but a binder that OPENS a destructuring pattern
+            // (`(a, b)` / `[x, .. rest]` / `#{ k = p }` / `b[u16(n)]`) binds by pattern — the same
+            // irrefutable-in-a-binding-position patterns `param` accepts, so `let (a, b) = p in …` and
+            // `def f((a, b)) = …` agree. The compiler already lowers a pattern let-binder (it desugars
+            // to the same destructuring form); this lets the ML reader round-trip it.
+            let n = if self.at_pattern_param_start() {
+                self.pattern()
+            } else {
+                self.binder()
+            };
             self.expect(Kind::Eq, "`=`");
             // The bound value is a single expression (`PREC_SEQ + 1`), delimited by `in` (or the next
             // `,` binding). A `;` after it belongs to the enclosing sequence — `let x = a in b; c` is
@@ -1607,7 +1649,10 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
-                self.atom(literal::classify_word(self.text(t)), span)
+                let text = self.text(t).to_string();
+                // A suffixed literal pattern (`100N`) desugars to `(: 100 BigInt)` here too, so a match
+                // on a big/rational literal reads consistently with a value position.
+                self.numeric_atom(&text, span)
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
@@ -1732,6 +1777,13 @@ impl<'a> Parser<'a> {
                 self.expect(Kind::RBrace, "`}`");
                 let mspan = span.merge(self.prev_span());
                 self.list(items, mspan)
+            }
+            Kind::BinOpen => {
+                // `b[ <segment>, … ]` — a binary PATTERN, destructuring a Bytes scrutinee (the dual of
+                // the construction literal). Head is the `bin` NAME, and each segment is a sub-PATTERN
+                // (`u16(n)` binds `n`, `bytes(rest)` binds the tail), so the compiler's `(bin …)`
+                // pattern lowering matches it exactly — the same form the s-expr surface writes.
+                self.bin_form(Self::pattern)
             }
             _ => {
                 self.error("expected a pattern");
@@ -1927,6 +1979,79 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
+    /// `#( e, … )`  ->  `((. Set of) ("list" e …))` — a set literal, sugar for `Set.of([e, …])`. The
+    /// third built-in collection surface, completing the `#`-prefix family (`#{`=map, `#[`=raw-list,
+    /// `#(`=set). It desugars to a member-access APPLICATION of the ordinary prelude `Set.of` (not a
+    /// grammar primitive) applied to a list literal — so `#()` is the empty set `Set.of([])`, and a
+    /// shadowed `Set` binding correctly falls back to the user's `Set` (there is no unshadowable set
+    /// primitive; the printer round-trips this exact shape via `set_literal`). Elements are single
+    /// expressions (`PREC_SEQ + 1`), comma-separated; a sequence element parenthesizes.
+    fn set_literal(&mut self) -> StructId {
+        let start = self.cur_span();
+        self.bump(); // '#'
+        self.bump(); // '('
+        let list_head = self.ctor_head("list", start);
+        let mut elems = vec![list_head];
+        if !self.at(Kind::RParen) {
+            loop {
+                let before = self.pos;
+                elems.push(self.expr(crate::token::PREC_SEQ + 1));
+                if !self.sep_continue(Kind::RParen) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // element didn't consume — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        let span = start.merge(self.prev_span());
+        let list = self.list(elems, span);
+        let set_of = self.member_head("Set", "of", span);
+        self.list(vec![set_of, list], span)
+    }
+
+    /// `b[ <segment>, … ]`  ->  `(bin <segment> …)` — a binary literal, the structured sibling of the
+    /// `b"…"` byte string. In EXPRESSION position it CONSTRUCTS a Bytes value; in PATTERN position (via
+    /// [`Self::bin_pattern`]) it DESTRUCTURES a Bytes scrutinee — the same dual `bin` grammar form the
+    /// s-expr surface writes. Each segment is an ordinary call-shaped form (`u16(258)`, `bits(1, 1)`,
+    /// `bytes(payload)`); here they are single EXPRESSIONS (`PREC_SEQ + 1`, comma-separated, a sequence
+    /// element parenthesizes). `b[]` is the zero-length Bytes value `(bin)`. The head is the `bin` NAME
+    /// (a reserved grammar form, structurally dispatched like `match` — never a value a binding shadows).
+    fn bin_literal(&mut self) -> StructId {
+        self.bin_form(Self::bin_segment_expr)
+    }
+
+    /// A single construction-position bin segment: an ordinary expression, like a list element.
+    fn bin_segment_expr(&mut self) -> StructId {
+        self.expr(crate::token::PREC_SEQ + 1)
+    }
+
+    /// The shared `b[ … ]` skeleton for both construction ([`Self::bin_literal`]) and matching
+    /// ([`Self::bin_pattern`]): consume the `BinOpen`, read `segment`-parsed items separated by `,`
+    /// until `]`, and wrap them under the `bin` head. The cursor is on the `BinOpen` token (`b[`).
+    fn bin_form(&mut self, segment: fn(&mut Self) -> StructId) -> StructId {
+        let start = self.cur_span();
+        self.bump(); // `b[`
+        let head = self.name("bin", start);
+        let mut items = vec![head];
+        if !self.at(Kind::RBracket) {
+            loop {
+                let before = self.pos;
+                items.push(segment(self));
+                if !self.sep_continue(Kind::RBracket) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // segment didn't consume — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RBracket, "`]`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
     // ---- misc helpers ----
 
     /// A binder position: an identifier or backtick name; error placeholder otherwise.
@@ -1955,11 +2080,37 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
-        // A parameter is normally a plain binder name, but a `(`-led parameter is a destructuring
-        // PATTERN — a tuple pattern `(a, b)` or a literal-bearing one like `(1, x)` (which desugars
-        // to a refutable `let` binder, rejected as CDZ0210). Parse it as a pattern so the ML surface
-        // round-trips the pattern parameters the s-expr surface and the printer already support.
-        let binder = if self.at(Kind::LParen) {
+        // A `const`-prefixed parameter — an EXPLICIT compile-time parameter (`const d: T` / `const d`),
+        // wrapped `(const BINDER)` so the compiler's load-time strip records it. `const` is not a lexer
+        // keyword (a plain identifier), so treat it as the modifier ONLY when it heads a param AND is
+        // followed by another binder (an identifier or a `(`/`[`/`#{`-led pattern) — a bare param literally
+        // named `const` (no following binder) is left as an ordinary name. The inner binder parses
+        // recursively (so `const (a, b)` / `const d: T` / `const [x, .. r]` all work).
+        if self.at(Kind::Ident)
+            && self.cur_text() == "const"
+            && matches!(
+                self.nth_kind(1),
+                Kind::Ident
+                    | Kind::BacktickName
+                    | Kind::LParen
+                    | Kind::LBracket
+                    | Kind::BinOpen
+                    | Kind::Hash
+            )
+        {
+            self.bump(); // `const`
+            let kw = self.name("const", start);
+            let inner = self.param();
+            let span = start.merge(self.prev_span());
+            return self.list(vec![kw, inner], span);
+        }
+        // A parameter is normally a plain binder name, but a parameter that OPENS a destructuring
+        // PATTERN is parsed as a pattern: a tuple `(a, b)` (or a literal-bearing one like `(1, x)`
+        // desugaring to a refutable binder → CDZ0210), a list `[x, .. rest]`, a map `#{ k = p }`, or a
+        // binary `b[u16(n)]`. Each is irrefutable only in a form the compiler admits in a binding
+        // position; parsing it here lets the ML surface round-trip the pattern parameters the s-expr
+        // surface and the printer already support (a plain `name`/`name: Type` still takes `binder`).
+        let binder = if self.at_pattern_param_start() {
             self.pattern()
         } else {
             self.binder()
@@ -1973,6 +2124,16 @@ impl<'a> Parser<'a> {
         } else {
             binder
         }
+    }
+
+    /// True at a token that OPENS a destructuring pattern in a parameter (or `let`-binder) position:
+    /// `(` tuple, `[` list, `#{` map, `b[` binary. These are the compound patterns [`Self::pattern`]
+    /// deconstructs; a bare name/literal is NOT one (a name is an ordinary binder, a bare literal
+    /// param is not a destructure). Keyed here — not by delegating every token to `pattern` — so a
+    /// plain `name`/`name: Type` parameter keeps the fast [`Self::binder`] path and its diagnostics.
+    fn at_pattern_param_start(&self) -> bool {
+        matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen)
+            || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace)
     }
 
     /// A type reference in a binder/return/payload position (a parameter annotation, a function's
@@ -2028,31 +2189,52 @@ mod tests {
 
     #[test]
     fn deeply_nested_input_is_diagnosed_not_crashed() {
-        // The Pratt parser recurses through `expr` per nesting level; unguarded, a pathologically deep
-        // nest overflowed the native stack (SIGABRT) or — once a naive guard returned an error node
-        // without stopping — SPUN on the unconsumed deep tail (a hang). The depth guard records ONE
-        // error and POISONS the parser (`depth_exceeded` ⇒ `at_end`), so parsing TERMINATES with a
-        // clean diagnostic. The nest here exceeds `crate::sexpr::MAX_NESTING_DEPTH`.
-        let n = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
-        let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
-        let p = read_ml(&src);
-        assert!(
-            !p.ok()
-                && p.errors
-                    .iter()
-                    .any(|e| e.message.contains("nests too deeply")),
-            "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
-            p.errors
-        );
-        // A nest well under the limit still parses cleanly (no over-rejection).
-        let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
-        let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
-        let ps = read_ml(&shallow);
-        assert!(
-            ps.ok(),
-            "a nest just under the limit must parse: {:?}",
-            ps.errors
-        );
+        // The Pratt parser recurses through `expr` one native frame per nesting level, so DESCENDING to
+        // the depth guard (`MAX_NESTING_DEPTH` = 1024) itself needs more stack than a default `cargo test`
+        // worker (~2 MB on Linux, ~512 KB–1 MB on macOS) — the guard fires cleanly, but the recursion
+        // reaching it would overflow the worker's stack first (a spurious SIGABRT that is NOT what this
+        // test asserts). Run the body on a large-stacked thread so it exercises the depth guard, not the
+        // worker's stack limit. (The compiler's own deep walks use the same 64 MB guard-sized stack.)
+        run_deep(|| {
+            // Unguarded, a pathologically deep nest overflowed the native stack (SIGABRT) or — once a
+            // naive guard returned an error node without stopping — SPUN on the unconsumed deep tail (a
+            // hang). The depth guard records ONE error and POISONS the parser (`depth_exceeded` ⇒
+            // `at_end`), so parsing TERMINATES with a clean diagnostic. The nest exceeds the limit.
+            let n = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+            let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+            let p = read_ml(&src);
+            assert!(
+                !p.ok()
+                    && p.errors
+                        .iter()
+                        .any(|e| e.message.contains("nests too deeply")),
+                "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
+                p.errors
+            );
+            // A nest well under the limit still parses cleanly (no over-rejection).
+            let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
+            let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
+            let ps = read_ml(&shallow);
+            assert!(
+                ps.ok(),
+                "a nest just under the limit must parse: {:?}",
+                ps.errors
+            );
+        });
+    }
+
+    /// Run `f` on a thread with a stack large enough to reach the parser's depth guard (the same
+    /// 64 MB the compiler sizes its deep-walk worker at), re-raising a panic so an assertion failure
+    /// inside still fails the test. The default `cargo test` worker stack is too small to DESCEND to
+    /// the depth limit before overflowing (macOS especially), which would mask the guarded behavior.
+    fn run_deep(f: impl FnOnce() + Send + 'static) {
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn deep-parse worker");
+        if let Err(payload) = h.join() {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     #[test]
@@ -2382,12 +2564,167 @@ mod tests {
     }
 
     #[test]
+    fn set_literal_desugars() {
+        use crate::sexpr;
+        // `#(1, 2, 3)` desugars to `Set.of([1, 2, 3])` — a member-access application of the prelude
+        // `Set.of` over a `list` literal. The list head is the unshadowable STRING primitive `"list"`.
+        let a = parse_ok("#(1, 2, 3)");
+        assert_eq!(sexpr::print(&a), r#"((. Set of) ("list" 1 2 3))"#);
+        // The empty set is `Set.of([])`.
+        let e = parse_ok("#()");
+        assert_eq!(sexpr::print(&e), r#"((. Set of) ("list"))"#);
+        // A single-element set, and nested elements (an expression element parses fully).
+        assert_eq!(
+            sexpr::print(&parse_ok("#(x + 1)")),
+            r#"((. Set of) ("list" (+ x 1)))"#
+        );
+        // It composes as an ordinary operand: a call argument.
+        assert_eq!(
+            sexpr::print(&parse_ok("contains(#(1, 2), 1)")),
+            r#"(contains ((. Set of) ("list" 1 2)) 1)"#
+        );
+    }
+
+    #[test]
+    fn bin_literal_desugars() {
+        use crate::sexpr;
+        // `b[u16(258), u8(1)]` desugars to the `(bin …)` grammar form — each segment is an ordinary
+        // call-shaped expression wrapped under the `bin` head.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(258), u8(1)]")),
+            "(bin (u16 258) (u8 1))"
+        );
+        // `b[]` is the zero-length Bytes value `(bin)`.
+        assert_eq!(sexpr::print(&parse_ok("b[]")), "(bin)");
+        // The `le` modifier and a `bits(v, k)` field carry through as ordinary call args.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(258, le), bits(1, 1)]")),
+            "(bin (u16 258 le) (bits 1 1))"
+        );
+        // A dependent-size `bytes(payload)` segment and a computed size expression parse fully.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u16(Bytes.len(payload)), bytes(payload)]")),
+            "(bin (u16 ((. Bytes len) payload)) (bytes payload))"
+        );
+        // It composes as an ordinary operand: a call argument and an equality operand.
+        assert_eq!(
+            sexpr::print(&parse_ok("b[u8(1)] == other")),
+            "(= (bin (u8 1)) other)"
+        );
+    }
+
+    #[test]
+    fn a_def_parameter_may_be_a_destructuring_pattern() {
+        use crate::sexpr;
+        // A def parameter that STARTS a compound pattern is a destructuring binder, not just a bare name —
+        // the ML reader must accept every pattern shape the printer emits for a pattern parameter, or the
+        // corpus round-trip breaks (the regression this guards: `def head([x, .. rest]) = x` failed
+        // "expected a name" because `param` routed only `(`-led patterns to `pattern()`, not `[`/`#{`).
+
+        // A `(`-led TUPLE pattern parameter (the already-working case) — kept as a regression anchor.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, b)) = a")),
+            "(def (f (tuple a b)) a)"
+        );
+        // A `[`-led LIST pattern parameter — a fixed-arity and a rest form.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f([a, b]) = a")),
+            "(def (f (list a b)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
+            "(def (head (list x .. rest)) x)"
+        );
+        // A `#{`-led MAP pattern parameter.
+        assert_eq!(
+            sexpr::print(&parse_ok("def get(#{ 1 = v }) = v")),
+            "(def (get (map (1 v))) v)"
+        );
+        // Pattern parameters COMPOSE and mix with plain-name / annotated params.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f([(a, b), .. rest]) = a")),
+            "(def (f (list (tuple a b) .. rest)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x, [a, .. rest]) = x")),
+            "(def (f x (list a .. rest)) x)"
+        );
+    }
+
+    #[test]
+    fn bin_pattern_desugars() {
+        use crate::sexpr;
+        // In pattern position `b[u16(n), bytes(rest)]` desugars to the same `(bin …)` head, but its
+        // segments are sub-PATTERNS: `u16(n)` binds `n`, `bytes(rest)` binds the tail.
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[u16(n), bytes(rest)] => n")),
+            "(match x ((bin (u16 n) (bytes rest)) n))"
+        );
+        // The empty binary pattern and a `le` modifier in a pattern segment.
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[] => 0")),
+            "(match x ((bin) 0))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("match x with | b[u16(n, le)] => n")),
+            "(match x ((bin (u16 n le)) n))"
+        );
+    }
+
+    #[test]
     fn number_before_keyword_is_not_a_quantity() {
         use crate::sexpr;
         // Only a bare NON-keyword identifier attaches as a unit. A word-operator keeps its infix
         // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
         let a = parse_ok("5 and mask");
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
+    }
+
+    #[test]
+    fn a_destructuring_pattern_parameter_parses() {
+        use crate::sexpr;
+        // A `(`-led tuple, `[`-led list, `#{`-led map, or `b[`-led binary parameter is a destructuring
+        // PATTERN (`param` routes it to `pattern`); a plain `name` / annotated `name: Type` is not.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, b)) = a + b")),
+            "(def (f (tuple a b)) (+ a b))"
+        );
+        // The reported gap: a list-REST pattern parameter (`def head([x, .. rest]) = x`).
+        assert_eq!(
+            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
+            "(def (head (list x .. rest)) x)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def g(b[u8(n)]) = n")),
+            "(def (g (bin (u8 n))) n)"
+        );
+        // A plain-name and an annotated parameter keep the ordinary binder path.
+        assert_eq!(sexpr::print(&parse_ok("def h(x) = x")), "(def (h x) x)");
+        assert_eq!(
+            sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
+            "(def (s (: xs (List Int64))) xs)"
+        );
+    }
+
+    #[test]
+    fn a_destructuring_pattern_let_binder_parses() {
+        use crate::sexpr;
+        // A `let` binder that opens a destructuring pattern binds by pattern — the twin of the pattern
+        // parameter, so `let (a, b) = p in …` and `let [x, .. rest] = ys in …` parse.
+        assert_eq!(
+            sexpr::print(&parse_ok("let (a, b) = p in a + b")),
+            "(let (((tuple a b) p)) (+ a b))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("let [x, .. rest] = ys in x")),
+            "(let (((list x .. rest) ys)) x)"
+        );
+        // A plain-name binder is unchanged, and a `let` may MIX a name and a pattern binder.
+        assert_eq!(sexpr::print(&parse_ok("let x = 1 in x")), "(let ((x 1)) x)");
+        assert_eq!(
+            sexpr::print(&parse_ok("let x = 1, (a, b) = p in x + a")),
+            "(let ((x 1) ((tuple a b) p)) (+ x a))"
+        );
     }
 
     #[test]

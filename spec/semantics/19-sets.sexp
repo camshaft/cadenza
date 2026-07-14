@@ -15,11 +15,11 @@
 ; and so on — member access into a prelude record, not new core syntax. A self-hosting compiler
 ; keys its free-variable sets, visited sets, and declared-capability sets on this form.
 ;
-; Tagged `(needs sets)` — a fresh capability the seed does NOT realize (distinct from the realized
+; `sets` is a fresh capability the seed does NOT realize (distinct from the realized
 ; `collections`, exactly as `symbols` is distinct from it): a later generation realizes the
 ; persistent-set runtime (the same ordered persistent structure the map runtime targets, with the
-; value column dropped; options/realized-capability-set/). The seed does not realize `sets`, so its
-; behavior gate SKIPS these — they pin the contract the realization must meet, not seed declines.
+; value column dropped; options/realized-capability-set/). The seed does not realize `sets`, so it
+; DECLINES these — they pin the contract the realization must meet.
 ; (The tag must be a fresh capability, not `collections`: `collections` is realized, so the seed
 ; would RUN these and reject the unbound `Set` prelude name with a coded diagnostic — a gate FAIL —
 ; rather than skip. This is why `symbols`/`units-of-measure`/`binary-matching` each use their own

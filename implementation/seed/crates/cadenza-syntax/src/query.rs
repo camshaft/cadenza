@@ -2778,6 +2778,7 @@ pub mod hash {
     const TAG_CHAR: u8 = 0x08;
     const TAG_BAD_CHAR: u8 = 0x09;
     const TAG_SYM: u8 = 0x0a;
+    const TAG_SUFFIXED: u8 = 0x0b;
 
     /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
     pub fn hash_tree(t: &Tree) -> u64 {
@@ -2831,6 +2832,26 @@ pub mod hash {
                 update_bytes(h, TAG_CHAR, c.encode_utf8(&mut buf).as_bytes());
             }
             Leaf::BadChar(s) => update_bytes(h, TAG_BAD_CHAR, s.as_bytes()),
+            // A TYPE-SUFFIXED literal: the suffix kind byte, then the body hashed as its bare int/float
+            // would be — so `100N` hashes distinctly from a bare `100` yet stably across runs.
+            Leaf::Suffixed { value, kind } => {
+                h.update([TAG_SUFFIXED, *kind as u8]);
+                match value {
+                    crate::ast::SuffixBody::Int { value, radix } => {
+                        h.update([TAG_INT, radix_byte(*radix)]);
+                        let bytes = value.to_signed_bytes_le();
+                        h.update((bytes.len() as u64).to_be_bytes());
+                        h.update(&bytes);
+                    }
+                    crate::ast::SuffixBody::Float(d) => {
+                        h.update([TAG_FLOAT, d.negative as u8]);
+                        h.update(d.exponent.to_be_bytes());
+                        let sig = d.significand.to_signed_bytes_le();
+                        h.update((sig.len() as u64).to_be_bytes());
+                        h.update(&sig);
+                    }
+                }
+            }
         }
     }
 

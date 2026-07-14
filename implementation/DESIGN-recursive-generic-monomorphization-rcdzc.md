@@ -389,3 +389,213 @@ constructor … applied by ordinary application"; `:250` monomorphized before th
 Implicit ML-style quantification `(: l (Lst a))` with a bare `a` (the operator chose type-valued params
 INSTEAD); trait/constraint predicates (`:232`); dictionary-passing (`:240`). The UNANNOTATED polymorphic
 form already works via inference + monomorphization and is unaffected.
+
+---
+
+# ADDENDUM 2: ad-hoc polymorphism via dictionaries — inline a compile-time-known argument, drop the param
+
+Status: LANDED. Operator's framing (2026-07-14): ad-hoc polymorphism needs NO trait machinery — "just
+have a record passed as an argument with functions that operate on the data; the function uses the
+record; and remove the record argument from the runtime emission when we instantiate it." No global
+trait resolution, no orphan rule, no coherence — just compile-time β-folding. The generalized rule the
+operator then chose: "we shouldn't specialize on anything [special]; when we instantiate we look for
+const-known values and inline them into the function and remove the argument." So `Ty::Type` erasure and
+dictionary erasure are the SAME rule — inline any compile-time-known argument, drop its runtime param.
+
+## What already worked (zero new code)
+A record of functions passed as an argument, the body projecting `(. d op)` and calling it, works for
+BOTH non-recursive and recursive consumers — it is just records + functions + application. A
+NON-recursive consumer already fully ERASES the dict (β-fold inlines it away). A RECURSIVE consumer
+WORKED but kept the dict as a runtime heap record + `call_indirect` (a closure in the record), threaded
+through the recursion — correct, but unerased.
+
+## What this landed — recursive dictionary ERASURE
+`lower_recursive_call_or_decline` now specializes a recursive call when EITHER the callee scheme is
+generic (a type param) OR an argument is a compile-time-known DICTIONARY. `type_specialize` gained a
+third `ArgKind::ConstArg`: the dictionary's VALUE NODE is substituted into the specialized copy (so `(. d
+op) acc` β-folds to the concrete `(+ acc 10)` — no `call_indirect`, no runtime record) and the parameter
+is ERASED from the emitted signature. The self-call re-passes the (copied) dict, re-enters
+`type_specialize`, and hits the memo (keyed on a `subtree_fingerprint` — stable across the arg and its
+β-copy, distinguishing `+10` from `*2` while collapsing identical dicts). Verified: `fold-n` at one dict
+→ 30 with **0 `call_indirect`** and signature `(i64 i64)` (dict gone); two distinct dicts → 38, each op
+inlined; two identical dicts → one deduped function.
+
+## The scope guard (a regression caught + fixed)
+The predicate `arg_is_const_inlinable` fires ONLY for a record/tuple that CONTAINS A LAMBDA (a
+dictionary), and only when CLOSED (no field-lambda captures the consumer's own param / a runtime
+binding). It must NOT fire for a pure-DATA collection: a first pass inlined a const `(list 10 20 30)`
+argument to a recursive `sum`, unfolding the recursion at compile time without end → stack exhaustion
+(one gate FAIL). A data list/record is RUNTIME data whose per-call value drives the base case; only a
+value whose CONTENT is functions is worth (and safe to) inline. Requiring a lambda restricts erasure to
+the dictionary case; data flows as ordinary runtime args. Non-lambda dict fields must be closed constants
+(config alongside the ops). Conservative everywhere else → the value stays a runtime arg (the correct,
+pre-existing `call_indirect` path).
+
+Gate 1850/0, 1318 rcdzc tests + the new dictionary test (asserts no `call_indirect` via `wasmparser`),
++2 corpus cases (09-functions).
+
+---
+
+# ADDENDUM 3: EXPLICIT `const` parameters — the author declares what is compile-time
+
+Status: DESIGN → implementing. Operator's direction (2026-07-14): the IMPLICIT dict-sniffing of Addendum
+2 is "overly specific and inflexible" — the compiler guessing "is this arg a const dictionary" is what
+produced the const-data-list stack-overflow footgun. Replace it with an EXPLICIT `const` parameter: the
+FUNCTION declares which parameters are compile-time-known; the compiler obeys (inlines + erases them) and
+ERRORS if a `const` argument cannot fold. No detection heuristic, no specialization-guessing.
+
+## Surface (operator's choice)
+A parameter binder is wrapped `(const BINDER)` to mark it compile-time:
+```
+(def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+(fold-n (record (op (fn (x) (+ x 10)))) 3 0)   ; d is const → inlined + erased; n/acc runtime
+```
+- A `const` parameter MUST be compile-time-known at each call site: it is inlined into a specialized copy
+  (so `(. d op)` folds to the concrete op — no `call_indirect`, no runtime record) and ERASED from the
+  emitted signature. `n`/`acc` stay ordinary runtime parameters.
+- A non-foldable argument to a `const` param is a CODED COMPILE ERROR ("argument to const parameter must
+  be compile-time-known"), NOT a silent runtime fallback — the author declared the contract.
+- This SUBSUMES the type-valued parameter: `(: t Type)` is just a `const` param whose value is a type.
+  (Kept working for back-compat; the general `const` is the primary surface.)
+
+## Why this is cleaner than Addendum 2's heuristic
+- The trigger is a DECLARATION, not a guess. No `arg_is_const_inlinable` sniffing "is this a record of
+  lambdas"; no accidental inlining of a const data list (the stack-overflow footgun) — a data arg is
+  const only if the AUTHOR marks it, and then it must genuinely fold or it is an error.
+- More flexible: ANY value can be a const param (a config record, a comparator, a type, a tuning
+  constant), not just "a record containing a lambda".
+- One rule everywhere: at instantiation, a `const` param's argument is folded in and dropped.
+
+## Implementation — load-time strip + a const-param set (mirrors `strip_def_docs`)
+1. **`strip_const_params(&mut ast) -> FxHashSet<StructId>`** in `db.rs`, run in `Db::load` BEFORE
+   `scan_top_level` (exactly like `strip_def_docs`): for every `def`/`fn` signature, rewrite each
+   `(const BINDER)` child in place to `BINDER`, and record the stripped param's NAME occurrence
+   (`param_name_occ` of the inner binder) in the returned set. After this pass every downstream reader
+   (`param_name_occ`, `is_param_occurrence`, the 12 `(: name T)` unwraps, resolve, infer) sees a PLAIN
+   binder — ZERO changes to any of them. `const`-ness lives in `db.const_params`.
+2. **`type_specialize`** (`lower.rs`): DELETE the `arg_is_const_inlinable` heuristic + the `Ty::Type`
+   auto-detection. Classify a param as erased iff it is in `db.const_params` (or its solved type is
+   `Ty::Type` — the type-valued back-compat case). For a const param, fold its argument to a value
+   (`typeval_of` for a type, else the arg's value node) and substitute it into the copy; require the fold
+   to succeed or the call declines with the coded error. Same substitute-into-copy + drop-from-signature
+   machinery, now keyed on the DECLARATION.
+3. **The gate** in `lower_recursive_call_or_decline`: specialize when the scheme is generic OR the callee
+   has any `const` param (`db.const_params` intersects the callee's params). A non-const monomorphic call
+   is byte-identical to today.
+4. **The coded error**: a `const` param whose argument does not fold (references runtime data) →
+   `Code::Malformed` (CDZ0201) "argument to const parameter `d` must be compile-time-known".
+5. `const` joins the resolver `GRAMMAR` set only if a bare `const` name could otherwise be misread — but
+   since the strip runs at load before resolution and removes every `(const …)` wrapper, `const` never
+   reaches resolution as a head. (A `const` used as an ordinary NAME elsewhere is unaffected.)
+
+## Non-recursive const params
+A non-recursive call already β-reduces (inlines) the whole body at the call site, so a const param is
+folded away for free there too — the const marking additionally lets the compiler REJECT a non-foldable
+argument (the contract) rather than silently keeping it. The recursive case is where erasure needs the
+specialized copy (as before).
+
+## ML surface (both sides)
+`const` is a param modifier on BOTH surfaces. S-expr: `(const (: d T))` / `(const d)`. ML: `const d: T` /
+`const d` (the printer emits `const ` before the binder; the parser's `param` accepts a leading `const`
+identifier followed by a binder, wrapping it `(const …)`). `const` is NOT a lexer keyword — a bare param
+literally named `const` (with no following binder) stays an ordinary name. Verified: the corpus dict cases
+round-trip s-expr↔ML↔binary cleanly.
+
+## Landed
+Gate 1890/0; corpus: the two dict cases now use `(const (: d …))` + a new "a const parameter rejects an
+argument that depends on runtime data" (CDZ0201); +1 unit test (the const-contract reject) + the dict
+erasure test updated to `const`. The implicit dict-sniffing heuristic (`arg_is_const_inlinable` and its
+helpers) is DELETED — erasure is now driven purely by the `const` DECLARATION (`db.const_params`, filled
+by `strip_const_params` at load), which also subsumes the `Ty::Type` type-valued-parameter case. Soundness:
+`arg_captures_runtime_binding` rejects a `const` arg that captures ANY enclosing runtime param (not just
+the callee's own), closing the caller-capture gap the `own`-only check missed.
+
+---
+
+# ADDENDUM 4: `opaque` definitions — the INVERSE of inlining (emit once, don't inline)
+
+Status: DESIGN (operator: design now, build later — the compiler-port pivot takes priority). Operator's
+concern (2026-07-14): the compiler inlines EVERY non-recursive call unconditionally, so a helper called
+N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). `opaque`
+gives the author control over that — the inverse of `const`.
+
+## THE KEY INTENT (operator, 2026-07-14): `opaque` COMPOSES WITH `const`/generics
+`opaque` must be "avoid the inline but STILL get polymorphism." It is NOT mutually exclusive with `const`
+or generic monomorphization — it is orthogonal:
+- `const`/generic decides HOW a call is SPECIALIZED (a const dict / type erased into a per-instantiation
+  copy — the polymorphism).
+- `opaque` decides how the (specialized) callee is EMITTED — as one real function, called, not inlined.
+So an `opaque` def with a `const` dictionary parameter: the dict is STILL inlined into the specialized
+copy (polymorphism kept — direct op, no `call_indirect`, dict erased from the signature), and that copy is
+emitted ONCE and `Core::Call`ed at every site of that instantiation (inline avoided). You get monomorphic
+polymorphism WITHOUT the per-call-site body duplication. This falls out for free (see below).
+
+## The problem (measured)
+A non-recursive user call ALWAYS β-reduces at the call site (`lower.rs` ~943, `apply_lambda` → inline the
+reduced body). Great for folding, but code size grows with (call sites × body size), and there is no way
+to say "keep this a real function." (A recursive def is already emitted once — it CAN'T inline — so this
+is only about non-recursive defs.)
+
+## The surface — an `opaque` def marker
+`opaque` wraps a definition to mean "emit as ONE real wasm function; every call is a `Core::Call`, never
+inlined":
+```
+(opaque (def (big x) (+ (* x 7) …)))     ; s-expr
+opaque def big(x) = (x * 7) + …          ; ML
+```
+Chosen (over a call-site `(no-inline …)` or a full optimization barrier): a def-level marker is the common
+need, local, and SYMMETRIC with `const` — where `const` says "fold me away", `opaque` says "keep me a
+function". This addendum is code-LAYOUT control (emit-once), NOT an analysis barrier — the compiler may
+still reason about `big`'s type/result; it just does not duplicate its body. (A full black-box-to-analysis
+barrier is a heavier, separate feature; deferred.)
+
+## Why it's small — it REUSES the recursive-call emission path
+The `Core::Call` machinery already exists for recursion: `lower_recursive_call_or_decline` emits a
+`Core::Call { callee }`, `layout` reaches the callee and emits it once, `def_scheme` gives the callee its
+signature. An `opaque` NON-recursive def rides the SAME path. Seams (mirroring `const`/`strip_def_docs`):
+1. **`db.rs strip_opaque_defs`** — a load pass (like `strip_const_params`) unwraps `(opaque (def …))` →
+   `(def …)` in place and records the def's body occurrence in a new `db.opaque_defs: FxHashSet<StructId>`
+   (keyed by body occ, the identity `lower`/`layout` already use). Every downstream reader sees a plain
+   `(def …)`; opacity lives only in the set.
+2. **`lower.rs` the apply path (~943)** — BEFORE β-reducing a lambda head, if the callee's body is in
+   `db.opaque_defs` (via `callee_def_index`), route to the SAME code `lower_recursive_call_or_decline`
+   runs: it (a) reads `def_scheme(callee)` (an opaque def needs a determined signature, like a recursive
+   one; undetermined → the "annotate its parameters" decline), and (b) if the scheme is GENERIC or the
+   callee has a `const` param, calls `type_specialize` — which erases the const dict/type into a
+   per-instantiation copy and returns a `Core::Call` to it; else a plain `Core::Call { callee }`. 🎯 THIS
+   IS WHERE `opaque` + `const`/generics COMPOSES FOR FREE: routing an opaque call through the recursive
+   emit path means an opaque GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept)
+   AND emitted once + called (inline avoided) — no extra logic, the existing `type_specialize` branch does
+   both. Factor the generic/const/plain decision out of `lower_recursive_call_or_decline` into a shared
+   `emit_call_or_specialize(callee, args)` both the recursion decline and the opaque path call.
+3. **`layout`** — no change: a `Core::Call` to the opaque def already grows the reachable set + emits it
+   once. `def_params`/`select_function` emit its body once with its solved param types.
+4. **`cadenza-syntax` printer + parser** — emit/accept `opaque` before a `def` (mirrors the `const` param
+   work): the printer prefixes `opaque `, the parser accepts a leading `opaque` keyword on a def. Round-trip.
+
+## Interactions to pin at build time
+- **`const` + `opaque` — THE HEADLINE (operator: "avoid the inline but still get polymorphism")** — a
+  `const` dictionary param on an `opaque` def: the dict is STILL inlined into the specialized copy (so
+  `(. d op)` folds to a direct op — polymorphism kept, dict erased from the signature), and that copy is
+  emitted ONCE per instantiation and `Core::Call`ed everywhere it is used at that instantiation (inline
+  avoided). Monomorphic polymorphism without per-call-site body duplication — exactly the goal. One
+  emitted fn per DISTINCT const instantiation (the `type_specialize` memo already dedups); calls at the
+  same instantiation share it.
+- **Generics** — an `opaque` GENERIC def (a free scheme var) still monomorphizes per type — one real
+  emitted function per concrete type, called (not inlined) at each use. `opaque` stops the *inline*, not
+  the *specialize*.
+- **A NULLARY opaque def** — today a nullary non-exported def inlines at its (one) call; `opaque` keeps it
+  a function. Low value but consistent.
+- **Effects** — an opaque def that performs an effect still needs its handler in scope; opacity is about
+  emission, not effect routing. Likely a clean decline if it complicates the handler specialization
+  (`effects::specialize_recursive` already emits real functions).
+
+## Gate targets (when built)
+- `(opaque (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5 muls, not
+  15); an un-marked `big` stays fully inlined (byte-identical to today).
+- 🎯 `(opaque (def (fold-n (const (: d …)) n acc) …))` called at ONE const dict from several sites → ONE
+  emitted `fold-n#mono` with the dict INLINED (0 `call_indirect`, dict-less signature) + a `Core::Call`
+  at each site (not N inlined copies). At TWO distinct dicts → two emitted specializations. This is the
+  "avoid the inline but keep polymorphism" acceptance test.
+- `opaque` round-trips s-expr↔ML; an opaque generic still monomorphizes per type.

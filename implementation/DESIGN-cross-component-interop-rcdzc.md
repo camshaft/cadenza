@@ -188,29 +188,99 @@ used at every seam (`C-HOST-1 ORACLE`, round-trip oracle, distinct-sig oracle) �
 runtime-sharing mechanism *before* any compiler change. Scalar-arg/scalar-result first, then a `value`-arg
 variant. **This brick alone answers "does the shared-instance model actually work under wasmtime."**
 
-**X2 — external-symbol resolution (front-end + IR, backend declines).** Teach the resolver a cross-*
-component* `(import "comp" (f))`: `f` resolves to an **external symbol** carrying a monomorphized signature
-(supplied from the imported component's interface), NOT an inlined sibling `Def`. New `Core::ExternCall
-{ interface, op, args, result }` (mirror `Core::HostCall`). Every exhaustive `Core` match gets an arm
-(descend args; backends DECLINE initially). Byte-neutral where no cross-component import is present. Cyclic
-cross-component imports rejected (reuse `find_import_cycle` shape, `link.rs:536`). ⚠ This is exactly the
-external-symbol notion `DESIGN-package-linking.md §0` deliberately avoided — it does not exist yet.
+**X2 — the `Core::ExternCall` IR foundation. ✅ DONE (`spec`).** New `Core::ExternCall { interface, op,
+args, result }` (mirror of `Core::HostCall`), threaded through every exhaustive `Core` match: the six
+compiler-forced arg-descending sites (`compile.rs` reached-poisons, `layout.rs` closure-codes + callees,
+`select.rs` `binding_escapes` + `collect_used_ops`) descend into its args like a call; the wasm `select`
+emit and the Rust backend both DECLINE cleanly ("a cross-component call to `iface.op` is not yet emitted
+(X3/X4)"); `tail_positions_have_call` counts it as a call. The host-import collectors (`collect_host_imports`,
+`first_unrepresentable_host_op`, `collect_host_arg_strings`) and the `subtree_reaches_host_call` predicate
+correctly leave it out — a peer call is NOT a host effect. **Byte-neutral** (nothing constructs an
+`ExternCall` on the normal path yet — gate 1876 pass / 0 fail / 0 regressions / 0 newly-passing). The
+resolver front-end that CONSTRUCTS one — a cross-component `(import "comp" (f))` resolving to an external
+symbol (a `Resolved::Extern`, an external `link::Import`) rather than an inlined sibling `Def`, cyclic-import
+rejection reusing `find_import_cycle` — moves to **X4** alongside the runner (so the trigger, the envelope,
+and the composition land together and are testable end-to-end). ⚠ This is exactly the external-symbol notion
+`DESIGN-package-linking.md §0` deliberately avoided.
 
-**X3 — the IMPORT envelope shape (scalar first).** The **fourth** envelope shape: emit a component that
-IMPORTS a peer Cadenza interface (A's monomorphized exports) as a component-model instance import, aliased
-+ lowered into B's core, alongside the shared runtime import — fork `assemble_host_runtime`
-(`envelope.rs:625`), which already composes an interface import + the runtime. `select` emits an
-`ExternCall` as `call <imported-op-index>`. Scalar args/results only (like `C-HOST-1`). Boundary names
-kebab-normalized (`kebab_extern_name`, the recurring gotcha — `rcdzc-kebab-extern-name-gotcha.md`).
-Oracle-first: hand-build the envelope, diff bytes against X1's builder reference.
+**X3 — the peer-interface IMPORT envelope. ✅ DONE (`spec`).** The **fourth** envelope shape,
+`envelope::assemble_extern(core, exports, peer_iface, extern_fns)` — a fork of `assemble_host`
+(structurally identical: import an instance-type declaring each peer op, alias + lower each to a core
+func, bind them into the program core, export the consumer's own boundary), differing only in binding the
+core under module `"peer"` (new `PEER_MODULE` const, matching what a consumer core imports its peer ops
+from) and importing a peer Cadenza interface rather than a host effect. Index spaces documented in the
+fn. Boundary + op names kebab-normalized (`kebab_extern_name`). Peer ops carry monomorphic signatures.
+Proven by the X3 oracle: the consumer envelope is emitted by `assemble_extern` (not hand-built), composed
+with an interface-exporting provider, and RUN under wasmtime — `main(5) = f(5)*10 = 60`. Scalar
+args/result (a `value`-handle op is X5); no runtime fused yet (the `assemble_host_runtime` analogue is a
+later increment). 🔑 FINDING: a component-model interface import checks parameter NAMES structurally, so
+the peer's exported signature and the consumer's import declaration must AGREE on param names — X4's
+front-end must emit both sides with a consistent convention (`assemble_extern` uses `p0`, `p1`, … from
+`host_op_comp_functype`; the X3 provider lifts `f` with `p0` to match). Byte-neutral (new pub fn unused by
+production — gate 1881 pass / 0 fail / 0 regressions). `select`-emits-`ExternCall`-as-`call` is wired in
+X4 (it needs the front-end trigger + the layout's extern-import order, which land together).
 
-**X4 — cdz-run multi-component composition + first e2e.** `cdz-run` composes A + B + ONE runtime instance:
-instantiate the runtime once, bind B's import of A's export, bind both program cores' heap import to the
-one runtime instance. Run end-to-end. First case: B calls A's `(-> Int64 Int64)`, a scalar crosses. This
-needs the runner to move from "one program + fresh runtime" (`lib.rs:202,391`) to "a program graph + one
-shared runtime instance" — the shared-instance plumbing X1 proved. A gate/corpus shape for multi-component
-cases (the corpus is single-`(input)` today — `DESIGN-package-linking.md §8.1` names the same corpus-format
-gap; may need a Rust integration test first, like package-linking's 12 tests).
+**X4a — the cdz-run multi-component composition primitive. ✅ DONE (`spec`).** `cdz_run::run_with_peers(
+consumer, peers, opts)` + a `cdz_run::Peer { bytes, interface }` descriptor: instantiate each peer
+component, forward its exported interface's funcs (discovered off the peer instance type, never hard-coded
+— the `compose_runtime` discipline) into the consumer's like-named import, all in ONE shared `wasmtime`
+store; compose the consumer's runtime if it imports one. `bind_host_imports` gained a `skip: &[String]` so
+a peer interface bound as a peer is not ALSO bound as a host effect (a double-bind is a linker error — the
+bug this surfaced + fixed). Proven by the X4a test: the X3 provider and `assemble_extern` consumer, built
+as SEPARATE valid components, composed by `run_with_peers` → `main(5) = f(5)*10 = 60`. This is the shape
+the front-end (X4b) produces (each `.cdz` → its own component). Byte-neutral (new fn + a skip param passed
+`&[]` on the existing path; gate 1888 pass / 0 fail / 0 regressions). ⚠ the earlier "version header out of
+order" was a reused-`wasmparser::Validator` (one validator can't validate two components) — a fresh
+validator per component; `wasm-tools validate` confirmed both standalone. ⚠ stale-runtime false alarm on a
+fresh worktree — `cargo xtask build` before gating (515 false regressions → 0). SCOPE: scalar peer ops, a
+runtime-free peer; sharing ONE runtime instance across consumer + peers is X5.
+
+**X4b — the front-end trigger (source → `Core::ExternCall` → `assemble_extern` → run e2e), IN SUB-BRICKS.**
+🔑 SURFACE DECISION (operator, 2026-07-14): a DISTINCT form `(extern "iface" (op (-> …)) …)` — NOT an
+overload of `(import …)` (which means intra-package source splice) — with the peer's monomorphic
+signatures declared INLINE (the declared sig IS the contract; a peer whose export mismatches declines at
+composition; no wasmparser in the compile path, no external interface artifact needed). Sub-bricks:
+- **X4b-1 — the `extern` SCAN. ✅ DONE (`spec`).** `db::ExternDecl { interface, occ, ops: Vec<ExternOp{
+  name, name_occ, ty }> }` + `scan_extern_decl` (the `scan_effect_decl` analogue; each clause `(NAME
+  TYPE)`, no `op` keyword); `Db::extern_decls` populated at load; `extern` registered in
+  `TOP_LEVEL_FORMS`/`TOP_LEVEL_KEYWORDS`. Byte-neutral (table populated, nothing consumes it — gate 1894
+  pass / 0 fail / 0 regressions; tests `x4b1_*`).
+- **X4b-2 — resolve → `Core::ExternCall`. ✅ DONE (`spec`).** New `Resolved::Extern { interface: String,
+  op: String, ty: StructId }` variant; `resolve_name` step 3d resolves an extern op name to it via a new
+  `db.extern_op_by_name` query (after sum/effect/variant decls, before prelude); `infer::compute` types it
+  as its declared sig (`typeval_of(ty)`); `lower`'s `Apply` arm produces `Core::ExternCall` (result = the
+  sig's result after N args, via `fn_result_after`); a BARE (unapplied) extern declines (a first-class
+  extern-op value is later). Every exhaustive `Resolved` match got an arm (7 forced: eval collect_callees,
+  infer compute + type_errors, lower compute + ref_escapes_whole + uses_in, compile walk_for_dead_traps —
+  all leaf/no-op except compute). Byte-neutral: a program with `(extern …)` type-checks + lowers to
+  `Core::ExternCall`, which the backend DECLINES cleanly pending X4b-3 (never a type reject). Tests
+  `x4b2_*` (resolves to `Resolved::Extern`, lowers to `Core::ExternCall` w/ interface+op+result; a
+  well-typed application declines-at-emit not type-rejects). Gate 1911 pass / 0 fail / 0 regressions;
+  suite 1366; clippy clean.
+- **X4b-3 — backend emit. ✅ DONE (`spec`) — THE SOURCE→RUN MILESTONE.** `emit` collects the extern-import
+  set (`host::collect_extern_imports` → `host::ExternImport`), records `layout.extern_order` (the
+  `host_order` analogue + `with_extern_order`/`extern_index`), shifts `import_base` to include externs;
+  `select` emits `Core::ExternCall` → args + `Lir::CallExternImport(index)`; the core imports peer ops from
+  module `"peer"` (`serialize::core_module_with_extern` + `extern_import_functype`/`extern_import_item`);
+  `emit` routes an extern-only program to `assemble_extern` (X3) with `p0,p1,…` param names
+  (`extern_op_comp_functype`, matching the X3 finding). **Proven end-to-end: a SOURCE consumer `(extern
+  "cadenza:math/api" (neg (-> Int64 Int64))) (def (main (: x Int64)) (neg x))` compiles to a valid
+  component importing `cadenza:math/api`, and composed with a provider via `run_with_peers` → `main(5) =
+  neg(5) = -5`** (test `x4b3_*`). The first end-to-end cross-component call FROM SOURCE. SCOPE: an
+  extern-ONLY consumer (a single peer interface; no host/runtime fusion — those decline cleanly), scalar
+  args/result. Byte-neutral (only extern-using programs take the new path — gate 1924 pass / 0 fail / 0
+  regressions after `xtask build`; suite 1371; clippy clean). ⚠ stale-runtime false alarm again (536 →
+  0 after `xtask build`).
+- **X4b-provider — the component's OWN interface name.** 🔑 (operator, 2026-07-14): the PROVIDER must
+  publish its exports under the interface name the consumer's `(extern "cadenza:math/api" …)` binds to, so
+  the compile REQUEST needs to specify it — a `KIND_COMPONENT_NAME` input artifact (the `KIND_ENTRY`
+  pattern). Provider emit wraps its boundary exports as that named interface instance (the X3 provider
+  oracle's `provider_interface_component` shape) instead of bare top-level funcs.
+- **X4b-4 — runner/CLI delivery + e2e.** `cdz-run`/CLI delivers the peer set (a `Peer` per bound
+  interface) to `run_with_peers` (X4a). Then a SOURCE program calling a peer runs end-to-end. Multi-
+  component gate/corpus shape (corpus is single-`(input)` — `DESIGN-package-linking.md §8.1` names the same
+  gap; a Rust integration test first, like package-linking's 12 tests). Absorbs the resolver half deferred
+  from X2.
 
 **X5 — COMPOUND values cross as shared `value` handles (the payoff).** Extend X3/X4: a compound arg crosses
 as `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap, hands the

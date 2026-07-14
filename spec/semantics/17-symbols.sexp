@@ -32,10 +32,10 @@
 ; content-lexicographic order MAY be added additively by a later decision if a sorted symbol table
 ; needs it; it is deliberately not pinned here (the equality path is the compiler's hot path).
 ;
-; Tagged `(needs symbols)`: a later generation realizes the Symbol form (it is not on the ignition
+; A later generation realizes the Symbol form (it is not on the ignition
 ; path — the seed clears ignition with `Int64`, `Bytes`, and `String`; options/realized-capability-set/).
-; The seed does not realize it, so its behavior gate SKIPS these cases — they pin the contract the
-; realization must meet, they are not seed declines.
+; The seed does not realize it, so it DECLINES these cases — they pin the contract the
+; realization must meet.
 
 ; ============================================================================================
 ; Construction and identity — Symbol.of interns a String; equality is by content

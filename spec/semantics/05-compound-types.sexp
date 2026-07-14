@@ -3,8 +3,8 @@
 ; recorded oracle: a well-typed program's value or trap, or — for an ill-typed program — its
 ; (error <CODE>) rejection, because an ill-typed program has no run and therefore no terminal value.
 ; For a type rule a generation does not yet cover it DECLINES rather than running (reject-don't-
-; miscompile); the gate scores a decline as todo, not disagreement. (needs …) marks later
-; capabilities. Diagnostic codes are from options/diagnostics-schema/.
+; miscompile); the gate scores a decline as todo, not disagreement — so a case a generation has not
+; yet realized is not skipped, it runs and declines. Diagnostic codes are from options/diagnostics-schema/.
 
 (case "a record is constructed and a field is read"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field. The dotted
@@ -1241,7 +1241,7 @@
 ; (encode_ty/decode_ty) must handle EVERY leaf: an omitted arm collapsed the payload to `Unit`, so a
 ; `(Ch Char)` variant read as nullary and its `#\a` argument then failed to type ("Char and Unit must
 ; be the same type"). These pin that a Char and a Symbol payload construct, match, and bind exactly as
-; an Int64 payload does. Tagged `(needs chars)`/`(needs symbols)` — the leaf's own capability.
+; an Int64 payload does. A generation without the Char/Symbol leaf declines the corresponding case.
 
 (case "a variant carrying a Char payload constructs, matches, and binds it"
   (doc    "`(type Tok (Ch Char) (End))` declares a variant `Ch` whose payload is a `Char` — a leaf type
@@ -1848,6 +1848,60 @@
                                    ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
+
+(case "a list match arm may carry a guard on its element binders"
+  (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
+           arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
+           binders are in scope for). The guard reads the list pattern's LEADING/REST binders and gates the
+           arm: `((guard (list x .. rest) (> x 0)) …)` fires only when the head is positive; on a FALSE
+           guard the arm FALLS THROUGH to the next, exactly as a non-matching length does. A guarded arm
+           does NOT count toward the list's length-coverage exhaustiveness (its guard may fail), so an
+           unguarded catch-all is still required. `classify` returns 1 for a positive head, 2 for a
+           negative one, 0 for the empty list — over the runtime one-element list `(list -5)`, the first
+           guard `(> -5 0)` fails, the second `(< -5 0)` holds → 2. This is the list twin of the guarded
+           scalar/sum arms the corpus covers elsewhere.")
+  (input  (do
+            (def (one v) ((. List push) (list) v))
+            (def (classify (: xs (List Int64))) (match xs
+                                                  ((guard (list x .. rest) (> x 0)) 1)
+                                                  ((guard (list x .. rest) (< x 0)) 2)
+                                                  (_                                0)))
+            (def (main) (classify (one -5))) (export main)))
+  (output (: 2 Int64)))
+
+(case "a guarded list-match arm body reads its element binder"
+  (doc    "A guarded list arm's BODY may READ the list pattern's binders — the obvious reason to bind them.
+           `((guard (list x .. rest) (> x 0)) x)` on `[7]`: the guard holds (`x = 7 > 0`) and the body
+           returns the bound leading element `x` = 7. The guard machinery wires the guard CONDITION's binder
+           resolution (a guard `(> x 0)` reads `x`) and an UNGUARDED list arm body reads `x` fine — but a
+           GUARDED list arm's body reference to the same binder was spuriously rejected `CDZ0101 unbound
+           name x` (the guard-peel routed the pattern + cond occurrences but not the body occurrence), so
+           the guarded-list-arm feature was usable ONLY with constant bodies (the case above). Fix: route the
+           guarded arm body's list-binder occurrences through the same SumPayload path the guard cond and the
+           unguarded arm body use. Holds for every list shape (fixed / rest / leading+rest / nested body).")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (match xs
+                ((guard (list x .. rest) (> x 0)) x)
+                (_ 0)))
+            (def (main) (f (list 7)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a guarded list-match arm whose guard fails falls through to the catch-all"
+  (doc    "The fall-through companion of the body-binder case above: the SAME arm `((guard (list x .. rest)
+           (> x 100)) x)`, but the guard `(> 7 100)` is FALSE, so the guarded arm does NOT fire and the
+           match falls through to the `(_ 0)` catch-all → 0. Together they prove the guarded list arm reads
+           its binder in the body AND still gates on the guard (the body-binder routing did not disturb the
+           length/guard/fall-through machinery, which the constant-body twin already exercised).")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (match xs
+                ((guard (list x .. rest) (> x 100)) x)
+                (_ 0)))
+            (def (main) (f (list 7)))
+            (export main)))
+  (output (: 0 Int64)))
 
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
@@ -4588,7 +4642,6 @@
               (let ((pair (tuple W.Mk 5)))
                 (match ((. pair 0) (. pair 1)) ((W.Mk n) n) ((W.N) -1))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
 
@@ -4605,7 +4658,6 @@
             (def (pick (: s Sel)) (match s ((Sel.UseA) W.A) ((Sel.UseB) W.B)))
             (def (main (: k Int64)) (match ((pick (Sel.UseA)) k) ((W.A n) n) ((W.B n) (+ n 100))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -4621,7 +4673,6 @@
               (let ((pair (tuple W.N k)))
                 (match (. pair 0) ((W.Mk n) n) ((W.N) (. pair 1)))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4638,6 +4689,167 @@
             ((Sign.Zero _) 1)
             ((Sign.Pos _)  2)))
   (output (: 1 Int64)))
+
+(case "a named catch-all binder captures the whole sum and re-matches it"
+  (doc    "A match arm may be a bare BINDER (not `_`) that captures the WHOLE scrutinee value — `(match t
+           ((T.A n) n) (other …))` binds `other` to the un-matched sum value, which the arm then RE-MATCHES
+           on the remaining variants. The catch-all binder makes the first match total (covers `B`/`C` via
+           `other`), and re-matching `other` dispatches them. `(f (T.C))` falls to `other`, whose inner
+           match yields 30. Pins that a catch-all binder over a user-sum scrutinee binds the sum value (not
+           just a scalar) and that the bound value is a first-class sum re-matchable on its variants — the
+           user-sum companion of the BigInt single-binder-match case.")
+  (input  (do
+            (type T (A Int64) (B) (C))
+            (def (f (: t T))
+              (match t
+                ((T.A n) n)
+                (other  (match other ((T.B) 20) ((T.C) 30) ((T.A m) m)))))
+            (def (main (: k Int64)) (f (T.C)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64)))
+
+(case "a sum variant carrying a NARROW-int payload boxes and reads it at its width"
+  (doc    "A sum variant's payload is a NARROW integer `UInt8` — `(type Box8 (V UInt8) (Z))`. A narrow
+           width lives in an i32 slot (not the i64 sum-payload cell a full-width int uses), so the box/read
+           must reconcile the stored UInt8 with the payload cell. The match binds `u : UInt8`, adds 1 AT
+           UInt8 width (the `+` operands share the narrow slot), and the result is width-preserved. `(f (V
+           5))` = 5 + 1 = 6. Pins that a narrow-int payload rides in a sum variant and is read back at its
+           own width — the sum companion of the narrow-int TUPLE-element cases.")
+  (input  (do
+            (type Box8 (V UInt8) (Z))
+            (def (f (: b Box8)) (match b ((Box8.V u) (Int64.wrap (UInt8.wrap (+ u (UInt8.wrap 1))))) ((Box8.Z) 0)))
+            (def (main (: k Int64)) (f (Box8.V (UInt8.wrap k))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a sum variant carrying a Float64 payload boxes it and escapes it as a float"
+  (doc    "A sum variant carries a `Float64` payload — `(type FBox (F Float64) (Z))`. A float occupies the
+           sum-payload cell as an f64 (distinct from an integer's i64), and the match binds it and returns
+           it across the boundary as a float. `(f (F 3.5))` unwraps to `3.5`. Pins that a float rides in a
+           sum payload — boxed, read by the match binder, and rendered as a float at the boundary — the
+           float companion of the integer/compound-payload sum cases.")
+  (input  (do
+            (type FBox (F Float64) (Z))
+            (def (f (: b FBox)) (match b ((FBox.F x) x) ((FBox.Z) 0.0)))
+            (def (main) (f (FBox.F 3.5)))
+            (export main)))
+  (call   main)
+  (output (: 3.5 Float64)))
+
+(case "a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field"
+  (doc    "A single variant carries THREE heterogeneous payloads — `(Mk UInt8 Int64 Bool)` — a narrow int,
+           a full-width int, and a bool, boxed as ONE tuple whose elements have different machine widths
+           (i32 / i64 / i32-bool). The match binds all three (`a b p`) and each reads back at its own
+           width: `(+ (Int64.wrap a) (if p b 0))`. `(f (Mk 5 100 true))` = 5 + 100 = 105. Pins that a
+           multi-payload variant's heterogeneous-width payload tuple boxes and unboxes each field
+           correctly — the mixed-width companion of the uniform-Int64 multi-payload cases.")
+  (input  (do
+            (type Rec (Mk UInt8 Int64 Bool) (Z))
+            (def (f (: r Rec)) (match r ((Rec.Mk a b p) (+ (Int64.wrap a) (if p b 0))) ((Rec.Z) -1)))
+            (def (main (: k Int64)) (f (Rec.Mk (UInt8.wrap 5) k true)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 100 Int64))
+  (output (: 105 Int64)))
+
+(case "a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern"
+  (doc    "One arm-set over `(P Int64 (Option Int64)) | Q` mixes THREE pattern kinds at nested depths: a
+           LITERAL on the first payload + a nested `(Some n)` on the second (`(P 0 (Some n))`); a WILDCARD
+           on the first + the same nested `Some` (`(P _ (Some n))`); a nested `None` (`(P _ (None))`); and
+           the nullary `Q`. The decision tree probes the first payload against the literal `0`, falls to the
+           wildcard otherwise, and descends into the `Option` payload either way. `(f (P 0 (Some 7)))`
+           matches the literal-0 arm → 7. Pins that a literal test, a wildcard, and a nested-sum pattern
+           compose in one arm-set over a multi-payload variant — the decision tree orders the literal before
+           the wildcard and threads the nested Option match under both.")
+  (input  (do
+            (type T (P Int64 (Option Int64)) (Q))
+            (def (f (: t T))
+              (match t
+                ((T.P 0 (Option.Some n)) n)
+                ((T.P _ (Option.Some n)) (+ n 1000))
+                ((T.P _ (Option.None))   -1)
+                ((T.Q)                   -2)))
+            (def (main (: k Int64)) (f (T.P 0 (Option.Some k))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a sum with FOUR type parameters instantiates and matches each at a distinct type"
+  (doc    "A generic sum with FOUR type parameters — `(type Quad (Mk a b c d) (Z))` — whose one payload
+           variant uses ALL four, instantiated at MIXED types `(Quad Int64 Bool Int64 Bool)`. The match
+           binds `w x y z` at `Int64 Bool Int64 Bool` respectively and combines them (`+ w (if x 10 0) y (if
+           z 100 0)`). `(f (Mk 1 true 5 false))` = 1 + 10 + 5 + 0 = 16. Pins that a generic sum scales to
+           several type parameters, each instantiated independently (the existing generic-sum cases use one
+           or two params) — per-parameter payload typing tracks four distinct axes.")
+  (input  (do
+            (type Quad (Mk a b c d) (Z))
+            (def (f (: q (Quad Int64 Bool Int64 Bool)))
+              (match q ((Quad.Mk w x y z) (+ w (+ (if x 10 0) (+ y (if z 100 0))))) ((Quad.Z) -1)))
+            (def (main (: k Int64)) (f (Quad.Mk k true 5 false)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 1 Int64))
+  (output (: 16 Int64)))
+
+(case "a built-in Result whose two type arguments DIFFER is matched on both variants"
+  (doc    "A `Result Int64 Bool` — the Ok payload is `Int64`, the Err payload is `Bool`, so the sum's two
+           type arguments DIFFER (unlike a `Result Int64 Int64`). Both arms exercise their own type: the
+           `Ok n` arm yields the Int64, the `Err b` arm uses the Bool (`(if b 1 0)`). `(f 9)` builds `Some
+           (Ok 9)` → 9. Pins that a Result carries and deconstructs two DISTINCT payload types across its
+           variants — per-variant payload typing, not one shared type.")
+  (input  (do
+            (def (f (: k Int64))
+              (match (Option.Some (Result.Ok k))
+                ((Option.Some (Result.Ok n))  n)
+                ((Option.Some (Result.Err b)) (if b 1 0))
+                ((Option.None)                -1)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
+(case "a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches"
+  (doc    "A sum `W` has a variant `Bad` whose payload is the EMPTY sum `V` (zero variants, uninhabited) —
+           `(type V) (type W (Ok Int64) (Bad V))`. `V` is uninhabited so `Bad` can never be built, but the
+           enum must still LAY OUT its payload cell, and the `Bad v` arm's body `(match v)` is a zero-arm
+           match on the uninhabited `v` (vacuously exhaustive, unreachable). Only `Ok` is ever built, so
+           `(f (Ok 5))` = 5; the `Bad` arm never runs. Pins that an empty sum is a valid PAYLOAD type in a
+           live sum (its cell lays out though no value flows) and that the dead arm's zero-arm match over
+           the uninhabited payload is well-formed — the payload-position companion of the empty-sum
+           parameter case.")
+  (input  (do
+            (type V)
+            (type W (Ok Int64) (Bad V))
+            (def (f (: w W)) (match w ((W.Ok n) n) ((W.Bad v) (match v))))
+            (def (main (: k Int64)) (f (W.Ok k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a sum value is threaded through a multi-binding let chain, flipping variant each step"
+  (doc    "A state-machine idiom: a sum `St = (A Int64) | (B Int64)` is stepped through a chain of `let`
+           bindings, each `(step s)` MATCHING the current variant and building the OTHER — `A n → B (n+1)`,
+           `B n → A (n*2)`. Starting `(A k)`, `s1 = step s0`, `s2 = step s1`, then a final match reads it.
+           `(A 5) → (B 6) → (A 12)`, final match's `A` arm → 12. Pins that a sum value flows through
+           successive let bindings as an ordinary first-class value — constructed, matched-and-rebuilt into
+           a different variant, and re-bound — the state-machine shape a fold/interpreter loop uses.")
+  (input  (do
+            (type St (A Int64) (B Int64))
+            (def (step (: s St)) (match s ((St.A n) (St.B (+ n 1))) ((St.B n) (St.A (* n 2)))))
+            (def (main (: k Int64))
+              (let ((s0 (St.A k)))
+                (let ((s1 (step s0)))
+                  (let ((s2 (step s1)))
+                    (match s2 ((St.A n) n) ((St.B n) (+ n 1000)))))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 12 Int64)))
 
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
@@ -4907,8 +5119,8 @@
 ; each name at most once; a pattern that binds the same name more than once MUST be a compile-time
 ; error (CDZ0102)." So `(tuple x x)` — binding `x` twice — is rejected, rather than silently letting
 ; the second binder shadow the first (which would make `(tuple x x)` bind `x` to the second element)
-; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). A core
-; case (no `(needs …)` gate): the seed enforces pattern linearity, rejecting the repeated binder with
+; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). The
+; seed enforces pattern linearity, rejecting the repeated binder with
 ; CDZ0102.
 
 (case "a pattern that binds the same name twice is rejected"
@@ -4944,8 +5156,8 @@
 ; #Patterns Compose: the same "bind each name at most once" surface). So `(def (f x x) …)` — binding `x`
 ; twice in the signature — is the SAME CDZ0102 non-linear-binder error as `(tuple x x)`, rather than a
 ; last-wins shadow that makes the first parameter (and any argument passed to it, including a trap it
-; would raise) silently unreachable. The parameter companion of the pattern cases above; unlike them it
-; needs no `(needs …)` gate — the seed enforces parameter linearity.
+; would raise) silently unreachable. The parameter companion of the pattern cases above — the seed
+; enforces parameter linearity.
 
 (case "a function binding the same parameter name twice is rejected"
   (doc    "`(def (f x x) x)` declares the parameter `x` twice. A parameter list must be LINEAR, like a
@@ -5046,7 +5258,7 @@
 ; (a contiguous array for a small or literal one, a structurally-shared persistent tree for a grown one)
 ; and keep the choice invisible, so a `(list …)` literal and a pushed-onto list are the SAME type and
 ; render `(list …)` alike. The elements are runtime values (a parameter, a computed value), so the list
-; lives on the value heap, not folded. Tagged (needs list-growth).
+; lives on the value heap, not folded. A generation without list-growth declines it.
 
 (case "pushing an element onto a list appends it"
   (doc    "`List.push` is a functional constructor: it produces a NEW list with the element appended.
@@ -5225,8 +5437,8 @@
 ; cases above pin equality/homogeneity/key-set on the `(map (k v)…)` LITERAL; these pin the OPERATIONS
 ; that build and query a map — empty, insert/swap, lookup (fallible → Option), remove/take, size — and
 ; the canonical render. Keys here are VALUES (integers), compared by value (§Keys Are Compared By
-; Value). Gated `(needs maps)`: the compiler does not yet lower `Map.*` to the runtime's persistent map
-; ops, so they SKIP until that lands (then each moves to a real value).
+; Value). A generation that does not yet lower `Map.*` to the runtime's persistent map ops
+; declines these until that lands (then each runs to a real value).
 
 (case "inserting into the empty map then looking a key up yields the value"
   (doc    "`Map.empty` is the empty map; `Map.insert` adds an association and produces a NEW map
@@ -5431,7 +5643,7 @@
   (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
-; --- Map PATTERN matching (ask-61) — a SEPARATE phase, gated `(needs map-patterns)`. A map's key set is
+; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`
 ; matches when the map HAS key `k` bound to a value matching `p`, binding `rest` to the remaining map. This
 ; is a QUERY (lowering to `Map.lookup` per key + `Map.remove` for the rest), distinct from the structural

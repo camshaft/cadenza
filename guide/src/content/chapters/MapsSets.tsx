@@ -86,6 +86,37 @@ export default function MapsSets() {
         gives <C>0</C> — no crash, just "nothing under that key".
       </P>
 
+      <H2>Literal shorthand</H2>
+      <P>
+        Writing <C>Set.of</C> over a list, or a chain of <C>Map.insert</C>s, gets wordy. The conventional
+        surface has a shorthand for each, rounding out the <C>#</C>-prefixed literal family you've been
+        seeing: <C>[…]</C> is a list, <C>#(…)</C> is a <em>set</em>, and <C>{"#{…}"}</C> is a <em>map</em>.
+        They're pure sugar — the same programs underneath — so this set literal is exactly the{" "}
+        <C>Set.of</C> call from the top of the chapter, and it still collapses the duplicate:
+      </P>
+      <Runnable source={`(Set.len (Set.of (list 1 2 2 3)))`} />
+      <P>
+        Toggle to the conventional surface and that reads <C>Set.len(#(1, 2, 2, 3))</C> — and, in fact,
+        every <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the
+        toggle was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two
+        entries, so <C>Map.size</C> is <C>2</C>:
+      </P>
+      <Runnable source={`(Map.size (map (1 10) (2 20)))`} />
+      <P>
+        And it's an ordinary map, so <C>Map.lookup</C> works on it just the same — the value under key{" "}
+        <C>2</C> is <C>20</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (Option.expect (Map.lookup (map (1 10) (2 20)) 2) "missing"))`}
+      />
+      <Note>
+        These are the same three collections, not new ones — <C>#(…)</C> desugars to <C>Set.of</C> and{" "}
+        <C>{"#{…}"}</C> to a map, exactly the forms above. Reach for the literal when you're writing a
+        collection out by hand; reach for <C>Set.of</C> / <C>Map.insert</C> when you're building one from
+        values you already have.
+      </Note>
+
       <Why tenet="One question per collection">
         List, set, map — three shapes for three questions: order, membership, association. Picking the
         right one puts your intent in the type, and lets the compiler pick an efficient representation (a

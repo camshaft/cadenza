@@ -458,9 +458,9 @@
 ; The seed ALREADY destructures AST sums by the `Ast.*` constructors — the un-tagged
 ; `(match (quote (+ 1 2)) ((Ast.List elems) …))` cases above run on it. The one NEW piece is the
 ; reader/lowering that recognizes a backtick in PATTERN position and desugars it to those constructor
-; patterns. Tagged `(needs quote-patterns)`: a later generation realizes that lowering
-; (options/realized-capability-set/); the seed skips these — they pin the contract the realization must
-; meet, they are not seed declines.
+; patterns. A later generation realizes that lowering
+; (options/realized-capability-set/); the seed declines these — they pin the contract the realization
+; must meet.
 
 (case "a quote pattern binds an unquoted operand of a compound form"
   (doc    "`` `(+ ,a ,b) `` in pattern position IS `(Ast.List (list (Ast.Name \"+\") a b))` as a pattern

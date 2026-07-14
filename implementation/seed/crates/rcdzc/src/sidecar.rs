@@ -22,6 +22,21 @@
 //= spec/capabilities/tooling-and-lsp.md#tooling-shares-the-compiler-and-the-semantics
 //# A type, definition, or diagnostic the tooling reports MUST agree with the compiler and the executable semantics rather than be computed by a separate implementation.
 //!
+//! This IS the agent-authoring STRUCTURAL READ interface: a documented request vocabulary reads a
+//! program's canonical representation WITHOUT textual patching, addressing a node by its `StructId` — a
+//! deterministic function of the canonical representation — and reading a fact column directly rather than
+//! re-parsing unrelated code, so a query is a deterministic function of the canonical representation and
+//! an agent can target/re-target reproducibly. (The structural REWRITE half — the `Rewrite` request — is
+//! a later rung, so the well-formed-or-report edit obligation is not yet realized.)
+//= spec/capabilities/agent-authoring.md#a-structural-interface-exists
+//# The language MUST expose a documented interface to read a program's canonical representation without textual patching.
+//= spec/capabilities/agent-authoring.md#a-structural-interface-exists
+//# A structural query or edit MUST operate without re-parsing code unrelated to its target.
+//= spec/capabilities/agent-authoring.md#structural-addressing-is-deterministic
+//# The address by which the structural interface identifies a node MUST be a deterministic function of the canonical representation.
+//= spec/capabilities/agent-authoring.md#structural-addressing-is-deterministic
+//# A structural query MUST return a result that is a deterministic function of the canonical representation, so that an agent can target and re-target edits reproducibly.
+//!
 //! (`query-engine.md` §A Batch Compile And A Point Query Are The Same Reads Of The Same Columns.)
 //!
 //! **Why no effects, no mutable state.** A fact is a pure read, so a sidecar that branches on one —
@@ -88,6 +103,12 @@ pub enum Request {
 
 /// A read of a fact column — the query half of the request vocabulary. Each arm names the column it
 /// reads; the answer is total (a node with no answer yields a defined "unknown", never a crash).
+///
+/// The `TypeOf`/`TypeAt` queries expose the types the compiler INFERRED in a machine-readable form: a
+/// `cdz type`/`type-at` answers with the queried node's rendered type as an output artifact (data), not
+/// human-formatted prose — so an agent reads an inferred type programmatically.
+//= spec/capabilities/agent-authoring.md#every-compiler-output-is-machine-readable
+//# The compiler MUST expose the types it inferred in a machine-readable form.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Query {
     /// The solved type of a top-level definition, BY NAME — a read of the type column

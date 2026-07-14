@@ -532,8 +532,8 @@
 ; and Never UNIFIES WITH ANY EXPECTED TYPE (there is no value to be of the wrong type). The seed already
 ; carries this mechanism internally (a divergent expression's kind unifies with any expected kind, so a
 ; whole-body-trap function type-checks in any result position); these cases pin the SURFACE property.
-; Tagged `(needs never)` — a FRESH capability the seed does not surface by name — so the behavior gate
-; SKIPS them, pinning the contract a later generation binds (the `Never` prelude name and the zero-arm
+; `never` is a FRESH capability the seed does not surface by name — so the seed DECLINES them,
+; pinning the contract a later generation binds (the `Never` prelude name and the zero-arm
 ; exhaustive match) rather than forcing the seed to run them.
 
 (case "a diverging expression unifies with an integer position"

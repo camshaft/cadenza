@@ -42,6 +42,16 @@ use crate::resolved::Resolved;
 use crate::ty::Ty;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: total node-visits by [`Db::collect_reduced_callables`] since the last reset. A
+    /// deeply-nested inlining re-walked its growing reduced term per β-reduction = O(N²); the
+    /// `reduced_callable_walked` visited set makes it O(N). This counter is the noise-free regression signal
+    /// (a wall-clock ratio is diluted by the rest of `check`) — see the lock-in test.
+    pub(crate) static COLLECT_REDUCED_CALLABLES_VISITS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.
@@ -247,6 +257,37 @@ pub struct EffectDecl {
     pub synth: Option<StructId>,
 }
 
+/// One operation a cross-component `(extern "iface" (op (-> …)) …)` form binds: the operation NAME (the
+/// func the peer interface exports and this component imports) and its declared MONOMORPHIC type
+/// occurrence. The declared type IS the contract — a peer whose export does not match declines at
+/// composition (cross-component-interop.md §The Exchanged Value Is Structurally The Same On Both Sides;
+/// component-abi.md §Cross-Component Value Exchange).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ExternOp {
+    /// The operation name (`add` in `(extern "…" (add (-> …)))`) — the name it binds into scope AND the
+    /// component extern name it aliases out of the imported peer interface (kebab-normalized at emit).
+    pub name: String,
+    /// The name occurrence — the binder identity a reference resolves against.
+    pub name_occ: StructId,
+    /// The declared type occurrence (`(-> A B)`), or `None` for a malformed clause with no type.
+    pub ty: Option<StructId>,
+}
+
+/// A cross-component `(extern "cadenza:pkg/iface" (op (-> …)) …)` declaration — a CONSUMER binding a PEER
+/// Cadenza component's exported interface, distinct from an intra-package `(import "path" …)` (which
+/// splices a sibling source file). Each op resolves to a `Resolved::Extern` and, applied, lowers to a
+/// `Core::ExternCall` the backend imports across the live component boundary (X4b). Its identity is the
+/// declaration occurrence, like [`EffectDecl`].
+#[derive(Clone, PartialEq, Debug)]
+pub struct ExternDecl {
+    /// The peer interface name the ops are imported from (`cadenza:pkg/iface`).
+    pub interface: String,
+    /// The declaration occurrence — the anchor for a declaration-level diagnostic.
+    pub occ: StructId,
+    /// The bound operations in declaration order.
+    pub ops: Vec<ExternOp>,
+}
+
 /// A `(module NAME def…)` declaration reachable in a `do`-block — a namespace binding `NAME` to a record
 /// of its exported definitions (`core-semantics.md` §A Module Groups Definitions Under A Name). Its
 /// members are reached by member access `(. NAME field)`, exactly like a sum's variants or an effect's
@@ -263,6 +304,13 @@ pub struct ModuleDecl {
     /// ALWAYS `Some` once the `Db` exists. The module NAME resolves to a `Ref` to it, reached by the
     /// ordinary scope→lookup order like a `def`/`type` — no separate name map, nothing privileged by name.
     pub synth: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-integer <T>)` member, if the module declares
+    /// one — the type an otherwise-unconstrained bare integer literal WRITTEN in this module defaults to,
+    /// instead of `Int64` (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type).
+    /// `None` for a module with no such pragma. Kept as the un-reduced occurrence (registration runs
+    /// before the evaluator exists); the load-time `default_int_literals` map records which literals it
+    /// applies to (a per-node map, robust to the β-copy reparenting a parent-walk cannot follow).
+    pub default_int: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -363,6 +411,11 @@ pub struct Db {
     /// well-formedness time — a duplicate operation name is CDZ0201). The effect analogue of
     /// `type_decls`; identity is the declaration occurrence.
     pub effect_decls: Vec<EffectDecl>,
+    /// The top-level `(extern "iface" (op (-> …)) …)` cross-component declarations, from the scan (X4b).
+    /// Each binds a peer Cadenza component's operations; an op resolves to a `Resolved::Extern` and,
+    /// applied, lowers to a `Core::ExternCall`. Populated at load; empty for a program that binds no peer
+    /// (byte-neutral — the common case).
+    pub extern_decls: Vec<ExternDecl>,
     /// The nested `(module NAME …)` declarations reachable in a `do`-block, from the scan. Each is
     /// synthesized (`crate::modules`) to a record whose fields are its exported defs, so `NAME` resolves
     /// to that record (a `Ref` to it) and `(. NAME field)` is ordinary member access — the module analogue
@@ -385,6 +438,17 @@ pub struct Db {
     /// "which sums erase" decision is materialized; every type reader consults it via `decode_ty`, so the
     /// `Sum`↔`Nominal` choice is uniform across the compiler.
     pub newtype_inner: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
+
+    /// Each bare integer-LITERAL node WRITTEN inside a `(module … (pragma default-integer <T>) …)` → the
+    /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` instead of
+    /// `Int64` (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type). Built ONCE at
+    /// load by an ARENA walk of each pragma-module's member subtrees (`collect_default_int_literals`) —
+    /// keyed by the ORIGINAL source-literal node, so it is robust to the β-copy reparenting a parent-walk
+    /// cannot follow (an inlined body's literal keeps its original id, which stays in this map). DEFINITION-
+    /// SITE scoped: only literals written in the module carrying the pragma, never a caller's. `infer::
+    /// compute` consults it to give the literal its starting type; an explicit annotation still wins (the
+    /// `Annot` node fixes its own type) and no-promotion still holds (the default is a type, not a coercion).
+    pub default_int_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -971,6 +1035,26 @@ pub struct Db {
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
+    /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
+    /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
+    /// frame-free effect fold's `strongly_pure`/`pure_hole` classifiers call `subtree_performs` at MANY
+    /// nodes as they descend a handle body — `strongly_pure` re-ran the WHOLE-subtree walk at every node it
+    /// visited, so a deep body (an N-perform nested-`let` chain) was O(N²) in the scan and the fold O(N³).
+    /// The memo makes each node's verdict compute once, so repeat queries are O(1). Keyed on the context
+    /// so a node reused under a different discharged-op set is not conflated.
+    pub(crate) subtree_performs_cache: crate::fxhash::FxHashMap<(StructId, String), bool>,
+
+    /// Nodes already fully walked by [`Db::collect_reduced_callables`]. `register_reduced_callables` runs
+    /// after EVERY `apply_lambda` β-reduction to discover do-local recursive defs in the reduced term; the
+    /// walk descends the WHOLE reduced subtree. A deeply-nested reduction (each `apply_lambda` returns a
+    /// progressively-larger term — e.g. a `((. d op0) ((. d op1) … acc))` dictionary-projection chain) had
+    /// each of N reductions re-walk an O(N)-deep term = O(N²). A node's structure is immutable once built,
+    /// so once walked it yields no new candidates on a re-walk — skip an already-visited node. (A node id is
+    /// never reused with a different meaning; a synthesized node gets a fresh id, so the memo cannot
+    /// mislead. This is the fix-30 `reached_visited` pattern applied to the reduced-callable scan.)
+    pub(crate) reduced_callable_walked: crate::fxhash::FxHashSet<StructId>,
+
     /// Memo of TYPE MONOMORPHIZATIONS (`crate::lower`, recursive-generic monomorphization): a recursive
     /// GENERIC function called at concrete argument types is emitted ONCE per `(def-body-occ,
     /// instantiation-key)` as a synthesized copy whose parameters are re-annotated with the concrete
@@ -981,6 +1065,17 @@ pub struct Db {
     /// here); a monomorphic recursive def has no free scheme var (never specializes). Empty for a program
     /// with no recursive-generic call — byte-identical to before.
     pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
+
+    /// The NAME OCCURRENCES of parameters declared `const` — an EXPLICIT compile-time parameter (`(def (f
+    /// (const (: d T)) …) …)`, `DESIGN-…-monomorphization-rcdzc.md` Addendum 3). A `const` param MUST be
+    /// compile-time-known at each call: it is folded + inlined into a specialized copy and ERASED from the
+    /// emitted runtime signature (a non-foldable argument is a coded compile error). Populated ONCE by
+    /// `strip_const_params` at load (which also unwraps the `(const …)` binder in place, so every
+    /// downstream reader sees a plain binder), keyed by the inner binder's `param_name_occ` — the identity
+    /// `type_specialize` / the gate test against a def's params. Empty for a program with no `const` param
+    /// (byte-identical to before). This replaces the implicit dict-sniffing heuristic: the AUTHOR declares
+    /// what is compile-time, the compiler obeys.
+    pub(crate) const_params: crate::fxhash::FxHashSet<StructId>,
 
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
@@ -1020,6 +1115,13 @@ impl Db {
         // stripped text is CAPTURED (keyed by each def's signature occurrence) so the `DocOf`/`DocAt`
         // queries can still surface a definition's documentation after it leaves the body.
         let doc_by_sig = strip_def_docs(&mut ast);
+        // Normalize away a `(const BINDER)` PARAMETER wrapper on every `def`/`fn` signature BEFORE anything
+        // reads a parameter: `const` marks a COMPILE-TIME parameter (`DESIGN-…-monomorphization` Addendum
+        // 3), a declaration the specializer consumes — not part of the binder shape the resolver/typer
+        // walk. Unwrap `(const (: d T))` → `(: d T)` in place (ids of the inner binder unchanged) and
+        // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
+        // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
+        let const_params = strip_const_params(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1036,7 +1138,8 @@ impl Db {
         // snapshot, not the polluted map, is what keeps the two cases distinct.
         let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
             prelude.keys().cloned().collect();
-        let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
+        let (defs, exports, mut type_decls, effect_decls, mut modules, extern_decls) =
+            scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -1127,7 +1230,26 @@ impl Db {
             modules.iter().filter_map(|m| m.synth).collect();
         // Per-node lexical-scope skip pointer (nearest binding-candidate ancestor + entry child) so the
         // scope walk hops over non-binding forms — O(1) per binder instead of O(nesting depth).
-        let scope_skip = build_scope_skip(&ast, &parent, &module_records);
+        let mut scope_skip = build_scope_skip(&ast, &parent, &module_records);
+        // CHAIN each module's SYNTHESIZED RECORD out to the enclosing scope of its DECLARATION occurrence.
+        // A member body's scope walk ascends body → the module's synth `fn` → its synth RECORD (where Case
+        // R / `module_sibling_binds` resolves a SIBLING MEMBER of the SAME module). But the record is a
+        // load-appended node whose own parent chain dead-ends, so without this the walk STOPS there — a
+        // member body could not see a name bound in the module's ENCLOSING scope (a SIBLING MODULE `lib`
+        // declared beside `(module app …)` in the same `do`, or an enclosing `let`/`def` binding). Point
+        // the record's skip at whatever the module's DECLARATION `occ` sees (`scope_skip[occ]` — the
+        // nearest binding candidate above the `(module …)` form), so after the record's own members the
+        // walk continues into the module's lexical context, exactly as a top-level def's body does. The
+        // record stays a binding candidate itself (its members resolve when the walk LANDS on it via
+        // `binder_in`'s Case R); this only extends where it goes NEXT. Definition-site correct: it chains
+        // to where the module was WRITTEN, so `lib`'s own literals keep `lib`'s scope, not `app`'s.
+        for m in &modules {
+            if let (Some(record), occ) = (m.synth, m.occ)
+                && (record.0 as usize) < scope_skip.len()
+            {
+                scope_skip[record.0 as usize] = scope_skip[occ.0 as usize];
+            }
+        }
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
@@ -1213,14 +1335,26 @@ impl Db {
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
+        // Map each bare integer LITERAL written inside a `(pragma default-integer <T>)` module to its
+        // default type-expr — an ARENA walk of each pragma-module's member subtrees (before `ast` moves,
+        // before any β-copy), so a literal's default survives inlining that reparents it (the parent-walk
+        // a naive lookup would use is unusable post-copy). See `default_int_literals`.
+        let mut default_int_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_int {
+                collect_default_int_literals(&ast, m.occ, ty_expr, &mut default_int_literals);
+            }
+        }
         let mut db = Db {
             ast,
             defs,
             exports,
             type_decls,
             effect_decls,
+            extern_decls,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
+            default_int_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -1281,7 +1415,10 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+            subtree_performs_cache: crate::fxhash::FxHashMap::default(),
+            reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
+            const_params,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -1725,6 +1862,12 @@ impl Db {
     /// `None` if that definition carried no doc. The read behind the `DocOf`/`DocAt` queries: a definition
     /// keeps its documentation reachable even though `strip_def_docs` removes the doc form from its body.
     /// Key by `Def::sig_occ` — the same node a name lookup and a body lookup both resolve to.
+    ///
+    /// This is how the compiler EXPOSES a definition's documentation in a machine-readable form — the
+    /// `cdz doc`/`doc-at` queries read this column, returning the text as data rather than re-scanning
+    /// source, so an agent gets a definition's documentation as a first-class query result.
+    //= spec/capabilities/agent-authoring.md#documentation-is-machine-readable
+    //# The compiler MUST expose the documentation attached to a definition in a machine-readable form.
     pub fn doc_of_def(&self, sig_occ: StructId) -> Option<&str> {
         self.doc_by_sig.get(&sig_occ).map(String::as_str)
     }
@@ -1907,10 +2050,20 @@ impl Db {
     /// same shape the load-time scan registers), so a `(def …)` in any other position is not mistaken for
     /// one. Descends every child to reach a do-block nested at any depth in the copied body.
     fn collect_reduced_callables(
-        &self,
+        &mut self,
         node: StructId,
         out: &mut Vec<(StructId, Vec<StructId>, StructId)>,
     ) {
+        #[cfg(test)]
+        COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(c.get() + 1));
+        // Already fully walked (by an earlier `register_reduced_callables` on an overlapping reduced term)?
+        // A node's structure is immutable once built, so a re-walk yields exactly the same candidates — skip
+        // it. Without this, N β-reductions of a progressively-larger nested term each re-walked the whole
+        // O(N)-deep subtree = O(N²) (a `((. d op0) ((. d op1) … acc))` dictionary-projection chain: a
+        // depth-800 chain's callable scan alone was ~2.5M node-visits). `insert` returns false if present.
+        if !self.reduced_callable_walked.insert(node) {
+            return;
+        }
         // Is `node` a do-block? If so, register each direct `(def (f p…) BODY)` child with params.
         if let Some(forms) = self.ast.as_form(node, "do") {
             for &form in forms {
@@ -2055,6 +2208,23 @@ impl Db {
     pub fn effect_decl_by_name(&self, name: &str) -> Option<StructId> {
         // O(1) via `effect_decl_index` (built at load) — was a linear `effect_decls.iter().find`.
         self.effect_decl_index.get(name).copied()
+    }
+
+    /// A CROSS-COMPONENT extern operation bound by name (X4b) — `(interface, op-name, declared-type-occ)`
+    /// for the first `(extern "iface" (name (-> …)) …)` clause binding `name`, or `None`. An op with no
+    /// declared type (a malformed clause) is skipped (it binds nothing resolvable). Linear over
+    /// `extern_decls` (a program binds few peer interfaces); first-wins on a duplicate name.
+    pub fn extern_op_by_name(&self, name: &str) -> Option<(String, String, StructId)> {
+        for d in &self.extern_decls {
+            for o in &d.ops {
+                if o.name == name
+                    && let Some(ty) = o.ty
+                {
+                    return Some((d.interface.clone(), o.name.clone(), ty));
+                }
+            }
+        }
+        None
     }
 
     /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
@@ -2529,6 +2699,7 @@ type TopScan = (
     Vec<TypeDecl>,
     Vec<EffectDecl>,
     Vec<ModuleDecl>,
+    Vec<ExternDecl>,
 );
 
 /// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE, and RETURN the doc text
@@ -2548,6 +2719,25 @@ type TopScan = (
 /// Conservative: only a `(doc …)`-HEADED form BETWEEN the signature and the LAST tail element is dropped
 /// (the body is always last). A def with ≤1 tail element, or whose only post-sig element is the body, is
 /// untouched — byte-identical to before for every doc-less program.
+///
+/// The captured doc is carried in the canonical representation (this column, keyed off the AST node),
+/// NOT discarded as lexical trivia — and because it is stripped from the body it never lowers to Core, so
+/// it cannot change the program's runtime meaning. Every def KIND can carry a `(doc …)` (the affordance
+/// does not depend on whether the def is a value, function, or type), so every part of a program is
+/// documentable.
+//= spec/capabilities/agent-authoring.md#documentation-is-part-of-the-representation
+//# Documentation attached to a definition MUST be carried in the canonical representation rather than discarded as lexical trivia.
+//= spec/capabilities/agent-authoring.md#documentation-is-part-of-the-representation
+//# Any definition MUST be able to carry documentation, so that every part of a program can be documented.
+//= spec/capabilities/agent-authoring.md#documentation-is-machine-readable
+//# Documentation MUST NOT change the runtime meaning of a program.
+// The `(doc "…")` rides as an ordinary node of the binary AST attached to its def — the codec's generic
+// encode/decode round-trips it like any list node, and this load-time pass captures it into the doc
+// column (post-decode). So the AST carries documentation attached to a definition, per ast-encoding.
+// (The COMMENT half of that section — a comment as a tree node — is not realized: the codec has no
+// comment node.)
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
     let mut docs: crate::fxhash::FxHashMap<StructId, String> = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
@@ -2602,6 +2792,78 @@ fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String
     docs
 }
 
+/// Unwrap every `(const BINDER)` PARAMETER wrapper in a `def` signature or `fn` parameter list, in place,
+/// and return the set of the stripped params' NAME occurrences — the EXPLICIT compile-time parameters
+/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 3). A `const` param is inlined + erased
+/// at instantiation; `const` is a DECLARATION consumed by the specializer, not part of the binder shape
+/// the resolver/typer walk — so it is removed here (BEFORE `scan_top_level` / resolution), exactly as
+/// `strip_def_docs` removes a doc form, leaving every downstream reader a plain binder.
+///
+/// A `const` param may wrap a bare name `(const d)` or an annotated binder `(const (: d T))`; the inner
+/// node replaces the wrapper in the parameter list, and its NAME occurrence (the bare name, or the `(: name
+/// T)`'s first child) is recorded. Runs over ALL forms (a def OR an fn), so a lambda `(fn ((const d) …)
+/// …)` marks its const params too. Non-`const` params are untouched. A `(const …)` in a NON-parameter
+/// position (a value expression) is NOT a parameter and is left alone (only a direct child of a def
+/// signature / fn param list is unwrapped).
+fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
+    let mut const_params: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    // The NAME occurrence of a (already-unwrapped) binder: a bare name is itself; a `(: name T)` binder is
+    // its first child. Mirrors `param_name_occ` but over `&Arenas` (no `Db` yet at load).
+    fn name_occ_of(ast: &Arenas, binder: StructId) -> StructId {
+        if ast.as_name(binder).is_some() {
+            return binder;
+        }
+        if let Some(tail) = ast.as_form(binder, ":")
+            && let Some(&n) = tail.first()
+        {
+            return n;
+        }
+        binder
+    }
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        // The parameter list to scan: a `def`'s SIGNATURE (its first tail element, `[NAME, p…]` — params
+        // are indices 1..) or an `fn`'s PARAMETER LIST (its first tail element, `(p…)` — params are all).
+        let (list_occ, first_param_ix) = if let Some(tail) = ast.as_form(id, "def") {
+            match tail.first() {
+                Some(&sig) if matches!(ast.get(sig), Struct::List(_)) => (sig, 1usize),
+                _ => continue,
+            }
+        } else if let Some(tail) = ast.as_form(id, "fn") {
+            match tail.first() {
+                Some(&params) if matches!(ast.get(params), Struct::List(_)) => (params, 0usize),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let Struct::List(children) = ast.get(list_occ) else {
+            continue;
+        };
+        let children = children.clone();
+        let mut rewritten = children.clone();
+        let mut changed = false;
+        for (ix, &child) in children.iter().enumerate() {
+            if ix < first_param_ix {
+                continue; // the def NAME at index 0 is not a parameter
+            }
+            // A `(const BINDER)` wrapper — exactly one operand. Unwrap to BINDER, record its name occ.
+            if let Some(tail) = ast.as_form(child, "const")
+                && tail.len() == 1
+            {
+                let binder = tail[0];
+                const_params.insert(name_occ_of(ast, binder));
+                rewritten[ix] = binder;
+                changed = true;
+            }
+        }
+        if changed {
+            ast.structure[list_occ.0 as usize] = Struct::List(rewritten);
+        }
+    }
+    const_params
+}
+
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
 /// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
 /// `(do item…)`, or a lone item.
@@ -2611,6 +2873,7 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
     let mut types: Vec<TypeDecl> = Vec::new();
     let mut effects: Vec<EffectDecl> = Vec::new();
     let mut modules: Vec<ModuleDecl> = Vec::new();
+    let mut externs: Vec<ExternDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -2666,6 +2929,10 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
             && let Some(decl) = scan_effect_decl(ast, item)
         {
             effects.push(decl);
+        } else if ast.as_form(item, "extern").is_some()
+            && let Some(decl) = scan_extern_decl(ast, item)
+        {
+            externs.push(decl);
         }
     }
 
@@ -2681,6 +2948,19 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
     let top: std::collections::HashSet<StructId> = top_items(ast).into_iter().collect();
     for &body in defs.iter().filter_map(|d| d.body.as_ref()) {
         collect_nested_decls(ast, body, &top, &mut types, &mut effects, &mut modules);
+    }
+    // A `(module …)` that is a TOP-LEVEL ITEM — an element of a top-level `(do …)` sequence root, `(do
+    // (module m …) (def (main) …) (export main))`. The main scan loop above handles only def/export/type/
+    // effect items (no `module` branch), and `collect_nested_decls` SKIPS a `top`-set form (it treats it as
+    // "already scanned"), so such a module was registered by NEITHER path — its name stayed unbound and its
+    // members escaped type-checking (a bare `(module m …)` and a def-body-nested one both register + check).
+    // Register each top-level module item here via the shared `collect_module_decl` (which also descends its
+    // members for deeper nesting), matching the do-local / bare-module paths. A module reached as a def
+    // body's `(do …)` element is already handled by the `collect_nested_decls` descent above.
+    for &item in &top {
+        if ast.as_form(item, "module").is_some() {
+            collect_module_decl(ast, item, &top, &mut types, &mut effects, &mut modules);
+        }
     }
 
     // A DECLARED type name is NOT an implicit type parameter, even lowercase. `collect_type_params`
@@ -2715,7 +2995,7 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
         e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
-    (defs, exports, types, effects, modules)
+    (defs, exports, types, effects, modules, externs)
 }
 
 /// Scan an `(effect NAME (op f (-> A B)) …)` declaration at `item` into an [`EffectDecl`] — the effect
@@ -2755,6 +3035,42 @@ pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDec
     })
 }
 
+/// Scan an `(extern "iface" (op (-> A B)) …)` cross-component declaration at `item` into an
+/// [`ExternDecl`] — the peer interface name (a string literal) and each bound operation (its name
+/// occurrence + declared monomorphic type). The X4b analogue of `scan_effect_decl`, but each clause is
+/// `(NAME TYPE)` directly (no `op` keyword — an extern binds NAMES to signatures, it declares no effect).
+/// Returns `None` if `item` is not an `(extern …)` form or its interface is not a string literal. A
+/// malformed clause (not `(NAME TYPE)`) is skipped.
+pub(crate) fn scan_extern_decl(ast: &Arenas, item: StructId) -> Option<ExternDecl> {
+    let tail = ast.as_form(item, "extern")?;
+    // The first tail element is the peer interface — a STRING literal (`cadenza:pkg/iface`), never a
+    // name (a dotted interface name is not a valid bare atom; it is inert data the linker reads).
+    let interface = ast.as_str(*tail.first()?)?.to_string();
+    let mut ops = Vec::new();
+    for &clause in tail.iter().skip(1) {
+        // Each op is `(NAME TYPE)` — a list whose first element is the op name, second its type.
+        let Struct::List(parts) = ast.get(clause) else {
+            continue;
+        };
+        let Some(&name_occ) = parts.first() else {
+            continue;
+        };
+        let Some(op_name) = ast.as_name(name_occ) else {
+            continue;
+        };
+        ops.push(ExternOp {
+            name: op_name.to_string(),
+            name_occ,
+            ty: parts.get(1).copied(),
+        });
+    }
+    Some(ExternDecl {
+        interface,
+        occ: item,
+        ops,
+    })
+}
+
 /// Scan a `(type NAME variant…)` declaration at `item` into a [`TypeDecl`] — the name, each variant
 /// (its name occurrence + payload type occurrences), and the implicit type parameters (free lowercase
 /// payload names, first-appearance order). `synth` is left `None` (filled by `sums::synthesize`).
@@ -2769,6 +3085,13 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         .to_string();
     let mut variants = Vec::new();
     for &v in tail.iter().skip(1) {
+        // A leading `(doc "…")` metadata form (the ML reader attaches a `///` doc comment on a type as a
+        // `(doc …)` form after the type NAME — `parser.rs` `type_expr`) is NOT a variant: skip it, exactly
+        // as `strip_def_docs` drops a leading doc on a `(def …)`. Without this, `///`-documented type
+        // declarations mis-parse the doc as a bogus `doc` variant (CDZ0201 "declared more than once").
+        if ast.as_form(v, "doc").is_some() {
+            continue;
+        }
         let (name_occ, payloads) = match ast.get(v) {
             // A bare nullary variant name — no payloads.
             Struct::Atom(_) => (v, Vec::new()),
@@ -2929,13 +3252,31 @@ fn collect_module_decl(
         return;
     };
     let members = mod_tail.get(1..).unwrap_or(&[]).to_vec();
+    // A `(pragma default-integer <T>)` member is MODELED — its VALIDATION is built (CDZ0601/0602/0303,
+    // `compile::collect_faults`) and its EFFECT (a bare literal in this module defaults to `<T>`) is
+    // realized via `ModuleDecl::default_int` + the load-time literal map, so it is not an unmodeled
+    // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
+    // the modeled set is exactly the keys whose meaning the compiler realizes.
+    let is_default_int_pragma = |member: StructId| {
+        ast.as_form(member, "pragma")
+            .is_some_and(|t| t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+    };
     let modeled = |member: StructId| {
         matches!(
             ast.head_name(member),
             Some("def" | "effect" | "op" | "type" | "module" | "doc")
-        )
+        ) || is_default_int_pragma(member)
     };
     let all_modeled = members.iter().all(|&m| modeled(m));
+    // The type-expression of a well-formed `(pragma default-integer <T>)` member (the 2nd operand after
+    // the key). A malformed pragma (wrong arity) is caught by the CDZ0602 validation; here take the type
+    // occ when present.
+    let default_int = members.iter().find_map(|&m| {
+        let t = ast.as_form(m, "pragma")?;
+        (t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+            .then(|| t.get(1).copied())
+            .flatten()
+    });
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -2944,6 +3285,7 @@ fn collect_module_decl(
             name: name_str.to_string(),
             occ: form,
             synth: None,
+            default_int,
         });
     }
     for &member in &members {
@@ -2955,6 +3297,57 @@ fn collect_module_decl(
         {
             // A `(def …)` member whose body may itself carry a `(do …)` with declarations.
             collect_nested_decls(ast, def_body, top, types, effects, modules);
+        }
+    }
+}
+
+/// Record every bare integer-LITERAL node in the DEF-BODY subtrees of a `(pragma default-integer <T>)`
+/// module `mod_form` → the pragma's `<T>` occurrence, into `out`. DEFINITION-SITE scoped: it descends
+/// only the module's OWN `(def …)` member bodies (a literal in a NESTED `(module inner …)` member is
+/// governed by `inner`'s OWN pragma, not this one — so nested modules are NOT descended here; each is
+/// walked when `collect_default_int_literals` is called for it). Keyed by the ORIGINAL literal node, so a
+/// later β-copy that reparents the literal (moving it out of the module structurally) still finds its
+/// default via this map — the parent-walk a naive lookup would use is unusable post-copy.
+fn collect_default_int_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        // Only a `(def …)` member's BODY carries value literals to default; a nested `(module …)` has its
+        // own scope (skip), and `pragma`/`type`/`effect`/`doc` members carry no value literals.
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_int_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every integer-literal node reachable from `node` (recursively) with `ty_expr` in `out`, WITHOUT
+/// descending into a nested `(module …)` (its own scope). A literal already recorded is left as-is (the
+/// nearest enclosing pragma wins — the outer walk visits an inner module separately with its own type).
+fn mark_int_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_int(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    // A nested module carries its OWN default (or none) — do not leak this module's default into it.
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_int_literals(ast, c, ty_expr, out);
         }
     }
 }
@@ -3015,7 +3408,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -3023,7 +3416,9 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect"];
 /// (a grammar head, not in the scan set) and `pragma` (a directive validated separately), because a user
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
-pub const TOP_LEVEL_KEYWORDS: &[&str] = &["def", "export", "type", "effect", "module", "pragma"];
+pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "def", "export", "type", "effect", "extern", "module", "pragma",
+];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`
 /// (a declaration parameter's positional slot, planted by `infer::decode_payload_template`) with `args[i]`

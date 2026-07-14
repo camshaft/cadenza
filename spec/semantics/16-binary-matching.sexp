@@ -29,9 +29,9 @@
 ; a catch-all arm or it is rejected CDZ0210 (core-semantics.md #Matching Is Exhaustive Or Rejected) — no
 ; special case, exactly like a non-exhaustive sum match.
 ;
-; Tagged `(needs binary-matching)`: a later generation realizes the `bin` form (it subsumes the seed's
-; `bytes` value form; options/realized-capability-set/). The seed does not realize it, so its behavior
-; gate SKIPS these cases — they pin the contract the realization must meet, they are not seed declines.
+; A later generation realizes the `bin` form (it subsumes the seed's
+; `bytes` value form; options/realized-capability-set/). The seed does not realize it, so it
+; DECLINES these cases — they pin the contract the realization must meet.
 
 ; ============================================================================================
 ; Construction — `(bin …)` in expression position builds a Bytes value

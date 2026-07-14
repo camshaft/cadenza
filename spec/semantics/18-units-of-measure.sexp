@@ -44,11 +44,11 @@
 ; derived from well-dimensioned source with the capability included is byte-identical to one derived
 ; with it excluded — dimensional discharge does not change emitted bytes.
 ;
-; Tagged `(needs units-of-measure)`: dimensional analysis is an OPTIONAL verification layer
+; Dimensional analysis is an OPTIONAL verification layer
 ; (units-of-measure.md #This Capability Is Optional; not on the ignition path — the seed clears ignition
-; with the numeric core alone; options/realized-capability-set/). `(needs …)` is DOCUMENTATION of what a
-; case exercises; the behavior gate grades EVERY case by what the compiler DOES (it never skips a tagged
-; case). The dimensional CORE is now REALIZED over the numeric types the compiler has: construction/
+; with the numeric core alone; options/realized-capability-set/). The behavior gate grades EVERY case by
+; what the compiler DOES — a generation that has not realized units declines the case. The dimensional
+; CORE is now REALIZED over the numeric types the compiler has: construction/
 ; observation/erasure, `+`/`-`/`*`/`/`/comparison with dimensions composing, CDZ0501 on incompatible
 ; dimensions, named families + SI/IEC prefixes (`Unit.of`/`Unit.prefix`), automatic and explicit
 ; (`Unit.in`) conversion — all over `Int`/`Float` magnitudes (a conversion "los[es] precision only where

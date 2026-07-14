@@ -450,6 +450,20 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
+    // The CROSS-COMPONENT extern-import set (X4b) — the peer ops a `Core::ExternCall` names, collected
+    // over `layout.order` like the host set. X4b-3 scope: an extern-ONLY program (no host effect, no
+    // value-heap runtime); composing an extern import with host/runtime is a later increment.
+    let mut extern_imports: Vec<host::ExternImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_extern_imports(db, body, &mut extern_imports);
+    }
+    if !extern_imports.is_empty() && (!host_imports.is_empty() || !imports.is_empty()) {
+        return Err(Reject::decline(
+            "a cross-component extern import composed with a host effect or the value-heap runtime is \
+             not yet emitted (the extern + host/runtime import fusion is a later increment)",
+        ));
+    }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
     // (`envelope::assemble_host_runtime`, wired in the host block below). One remaining combination still
     // declines: a host op with a STRING parameter (needs the shared-memory shape) composed with the runtime
@@ -487,10 +501,16 @@ pub fn emit(
             }
         }
     }
+    // The extern-import order (X4b) — `(interface, op)` pairs a `Core::ExternCall` resolves against.
+    let extern_order: Vec<(String, String)> = extern_imports
+        .iter()
+        .map(|e| (e.interface.clone(), e.op.clone()))
+        .collect();
     let layout = layout
-        .with_import_base((imports.len() + host_imports.len()) as u32)
+        .with_import_base((imports.len() + host_imports.len() + extern_imports.len()) as u32)
         .with_host_order(host_order)
-        .with_host_strings(host_strings);
+        .with_host_strings(host_strings)
+        .with_extern_order(extern_order);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -542,7 +562,11 @@ pub fn emit(
     // A HOST-delegating program threads its host imports through the core module's import section (from
     // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
     // (byte-identical to before).
-    let mut core = if host_imports.is_empty() {
+    let mut core = if !extern_imports.is_empty() {
+        // X4b-3: an extern-ONLY program (guarded above) — the core imports its peer ops from `"peer"`.
+        serialize::core_module_with_extern(&funcs, &extern_imports, layout)
+            .map_err(Reject::decline)?
+    } else if host_imports.is_empty() {
         serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?
     } else {
         serialize::core_module_with_host(&funcs, &imports, &host_imports, layout)
@@ -735,6 +759,34 @@ pub fn emit(
         });
     }
 
+    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: the peer interface is a
+    // component INTERFACE, its operations imported funcs the composition resolves (bound under `"peer"`).
+    // X4b-3 scope: a SINGLE peer interface (every extern import shares one interface name); a consumer
+    // binding two distinct peer interfaces declines (the multi-interface shape is a later increment).
+    if !extern_imports.is_empty() {
+        let iface = extern_imports[0].interface.clone();
+        if extern_imports.iter().any(|e| e.interface != iface) {
+            return Err(Reject::decline(
+                "binding more than one peer interface is not yet emitted (one interface per envelope; \
+                 the multi-interface extern shape is a later increment)",
+            ));
+        }
+        let extern_fns: Vec<envelope::HostFn> = extern_imports
+            .iter()
+            .map(|e| envelope::HostFn {
+                op: e.op.clone(),
+                comp_functype: extern_op_comp_functype(e),
+                core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
+            })
+            .collect();
+        return Ok(envelope::assemble_extern(
+            &core,
+            &boundary,
+            &iface,
+            &extern_fns,
+        ));
+    }
+
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
     // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
     // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
@@ -789,6 +841,27 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
     match h.result {
+        Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
+        None => item.extend_from_slice(&[0x01, 0x00]),
+    }
+    item
+}
+
+/// The COMPONENT functype of a cross-component extern op (X4b) — the shape declared in the peer
+/// interface's instance-type AND in the boundary the consumer imports against. Param NAMES are `p0,p1,…`
+/// (the convention `assemble_extern` + a matching provider both use — a component-model interface import
+/// checks param names structurally). Scalar params/result this increment (a `value` handle is X5).
+fn extern_op_comp_functype(e: &host::ExternImport) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    for (i, p) in e.params.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&(pname.len() as u8).to_le_bytes());
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(p.comp_byte());
+    }
+    item.extend_from_slice(&encode::wasm_vec(e.params.len(), &param_items));
+    match e.result {
         Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
         None => item.extend_from_slice(&[0x01, 0x00]),
     }
@@ -1445,59 +1518,118 @@ fn fixed_shape_scalar_tuple_arg(
     }
     let mut comp_bytes = Vec::new();
     let mut core_vts = Vec::new();
-    let mut field_box_ops = Vec::new();
-    let mut field_extend_signed = Vec::new();
+    let mut rebuild_fields = Vec::new();
     for f in &fields {
         // Each field must be a genuine aliased-width scalar (Int/Bool/Float) — the only shapes the canonical
         // ABI flattens AND the cell rebuild boxes with a single op. A nested compound / collection → None.
         let cb = closure_boundary_byte(f)?;
         let vt = crate::backend::wasm::lir::valtype_of(f)?;
-        // The cell's box op + whether an integer field needs an i32→i64 extend before `box-int` (a NARROW
-        // int is an i32 core param → extend to the i64 `box-int` takes; a 64-bit int is already i64 → no
-        // extend). A bool/float boxes at its native width, no extend. Mirrors `select::box_op_ty` +
-        // `emit_box_i32_to_i64_extend`.
-        let (box_op, extend) = match f.strip_nominal() {
-            Ty::Int(it) => {
-                let signed = it.ground_signed();
-                let extend = if it.ground_width() < 64 {
-                    Some(signed)
-                } else {
-                    None
-                };
-                (Some("box-int"), extend)
-            }
-            Ty::Bool => (Some("box-bool"), None),
-            Ty::Float(ft) if ft.ground_width() == 64 => (Some("box-float"), None),
-            Ty::Float(ft) if ft.ground_width() == 32 => (Some("box-float32"), None),
-            _ => return None,
-        };
+        rebuild_fields.push(scalar_field_rebuild(f)?);
         comp_bytes.push(cb);
         core_vts.push(vt);
-        field_box_ops.push(box_op);
-        field_extend_signed.push(extend);
     }
     Some((
         comp_bytes,
         core_vts,
         crate::backend::wasm::serialize::TupleArgRebuild {
-            field_box_ops,
-            field_extend_signed,
-            base_param: 1, // the tuple is the SOLE closure arg → its fields start at core param 1 (after self)
+            fields: rebuild_fields,
+            base_param: 1, // the tuple is the SOLE closure arg → its leaves start at core param 1 (after self)
         },
     ))
 }
 
-/// The FIELD box-op + extend descriptor for ONE fixed-shape scalar tuple/record type (the per-field data
+/// A NESTED fixed-shape compound closure ARGUMENT (a tuple/record whose fields may THEMSELVES be fixed-shape
+/// tuples/records, recursively — all leaves aliased-width scalars). Returns the DEPTH-FIRST flattened leaf
+/// component bytes + leaf core valtypes (the canonical ABI flattens a nested `tuple<…, tuple<…>>` to its leaf
+/// scalars), the recursive [`serialize::FieldRebuild`] tree the core `call` rebuilds the nested cell from, and
+/// the [`envelope::TupleFieldShape`] tree the envelope mints the nested `tuple<…>` types from. `None` if `ty`
+/// is not a tuple/record, is empty, or any LEAF is not an aliased-width scalar. Companion to
+/// [`fixed_shape_scalar_tuple_arg`] (the all-scalar-fields case): a shape of only `Scalar` fields is that same
+/// flat case, so callers use this and check whether any field is `Nested`.
+#[allow(clippy::type_complexity)]
+fn nested_fixed_shape_tuple_arg(
+    ty: &crate::ty::Ty,
+) -> Option<(
+    Vec<u8>,
+    Vec<crate::backend::wasm::lir::ValType>,
+    Vec<crate::backend::wasm::serialize::FieldRebuild>,
+    Vec<crate::backend::wasm::envelope::TupleFieldShape>,
+)> {
+    use crate::backend::wasm::envelope::TupleFieldShape;
+    use crate::backend::wasm::serialize::FieldRebuild;
+    use crate::ty::Ty;
+    let fields: Vec<Ty> = match ty.strip_nominal() {
+        Ty::Tuple(elems) => elems.iter().cloned().collect(),
+        Ty::Record(map) => map.values().cloned().collect(), // sorted-key order
+        _ => return None,
+    };
+    if fields.is_empty() {
+        return None;
+    }
+    let mut leaf_bytes = Vec::new();
+    let mut leaf_vts = Vec::new();
+    let mut rebuild_fields = Vec::new();
+    let mut shape_fields = Vec::new();
+    for f in &fields {
+        if let Some(sfr) = scalar_field_rebuild(f) {
+            // A scalar leaf: one flattened core param.
+            let cb = closure_boundary_byte(f)?;
+            let vt = crate::backend::wasm::lir::valtype_of(f)?;
+            leaf_bytes.push(cb);
+            leaf_vts.push(vt);
+            rebuild_fields.push(sfr);
+            shape_fields.push(TupleFieldShape::Scalar(cb));
+        } else if let Some((sub_bytes, sub_vts, sub_rebuild, sub_shape)) =
+            nested_fixed_shape_tuple_arg(f)
+        {
+            // A nested fixed-shape compound field: its leaves flatten into the SAME depth-first sequence.
+            leaf_bytes.extend(sub_bytes);
+            leaf_vts.extend(sub_vts);
+            rebuild_fields.push(FieldRebuild::Nested(sub_rebuild));
+            shape_fields.push(TupleFieldShape::Nested(sub_shape));
+        } else {
+            return None; // a field that is neither an aliased-width scalar nor a fixed-shape compound
+        }
+    }
+    Some((leaf_bytes, leaf_vts, rebuild_fields, shape_fields))
+}
+
+/// The [`serialize::FieldRebuild::Scalar`] for one aliased-width scalar field (Int/Bool/Float, peeling a
+/// nominal): the box op + whether a NARROW int needs an i32→i64 extend before `box-int`. `None` if `f` is not
+/// an aliased-width scalar. Mirrors `select::box_op_ty` + `emit_box_i32_to_i64_extend`.
+fn scalar_field_rebuild(
+    f: &crate::ty::Ty,
+) -> Option<crate::backend::wasm::serialize::FieldRebuild> {
+    use crate::backend::wasm::serialize::FieldRebuild;
+    use crate::ty::Ty;
+    let (box_op, extend) = match f.strip_nominal() {
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            let extend = if it.ground_width() < 64 {
+                Some(signed)
+            } else {
+                None
+            };
+            ("box-int", extend)
+        }
+        Ty::Bool => ("box-bool", None),
+        Ty::Float(ft) if ft.ground_width() == 64 => ("box-float", None),
+        Ty::Float(ft) if ft.ground_width() == 32 => ("box-float32", None),
+        _ => return None,
+    };
+    Some(FieldRebuild::Scalar { box_op, extend })
+}
+
+/// The per-FIELD ABI for ONE fixed-shape scalar tuple/record type (the data
 /// [`fixed_shape_scalar_tuple_arg`] builds, minus the `base_param`). Returns `(comp_bytes, core_vts,
-/// field_box_ops, field_extend_signed)` or `None` if `ty` is not a tuple/record of aliased-width scalars.
+/// rebuild_fields)` or `None` if `ty` is not a tuple/record of aliased-width scalars.
 #[allow(clippy::type_complexity)]
 fn tuple_field_abi(
     ty: &crate::ty::Ty,
 ) -> Option<(
     Vec<u8>,
     Vec<crate::backend::wasm::lir::ValType>,
-    Vec<Option<&'static str>>,
-    Vec<Option<bool>>,
+    Vec<crate::backend::wasm::serialize::FieldRebuild>,
 )> {
     use crate::ty::Ty;
     let fields: Vec<Ty> = match ty.strip_nominal() {
@@ -1510,32 +1642,15 @@ fn tuple_field_abi(
     }
     let mut comp_bytes = Vec::new();
     let mut core_vts = Vec::new();
-    let mut field_box_ops = Vec::new();
-    let mut field_extend_signed = Vec::new();
+    let mut rebuild_fields = Vec::new();
     for f in &fields {
         let cb = closure_boundary_byte(f)?;
         let vt = crate::backend::wasm::lir::valtype_of(f)?;
-        let (box_op, extend) = match f.strip_nominal() {
-            Ty::Int(it) => {
-                let signed = it.ground_signed();
-                let extend = if it.ground_width() < 64 {
-                    Some(signed)
-                } else {
-                    None
-                };
-                (Some("box-int"), extend)
-            }
-            Ty::Bool => (Some("box-bool"), None),
-            Ty::Float(ft) if ft.ground_width() == 64 => (Some("box-float"), None),
-            Ty::Float(ft) if ft.ground_width() == 32 => (Some("box-float32"), None),
-            _ => return None,
-        };
+        rebuild_fields.push(scalar_field_rebuild(f)?);
         comp_bytes.push(cb);
         core_vts.push(vt);
-        field_box_ops.push(box_op);
-        field_extend_signed.push(extend);
     }
-    Some((comp_bytes, core_vts, field_box_ops, field_extend_signed))
+    Some((comp_bytes, core_vts, rebuild_fields))
 }
 
 /// The flattened `call`-boundary description for a compound closure argument on the direct-call path:
@@ -1548,6 +1663,17 @@ type CompoundArgBoundary = (
     Vec<u8>,
     Vec<u8>,
     crate::backend::wasm::serialize::TupleArgRebuild,
+);
+
+/// The boundary description for a SOLE fixed-shape compound closure argument with a NESTED compound field
+/// (the direct-call nested-compound path): `(depth-first flattened leaf component bytes, leaf core valtypes,
+/// the recursive rebuild, the recursive envelope type shape)`. The envelope mints the inner `tuple<…>` types
+/// from the `TupleFieldShape` tree; the core rebuilds the nested cell from the `TupleArgRebuild`.
+type NestedCompoundArgBoundary = (
+    Vec<u8>,
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::TupleArgRebuild,
+    Vec<crate::backend::wasm::envelope::TupleFieldShape>,
 );
 
 /// A per-GROUP direct-call compound-arg boundary (distinct-sig): the tuple's per-field component bytes +
@@ -1578,8 +1704,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         return None; // zero or >1 tuple, or the sole-tuple case (handled by `fixed_shape_scalar_tuple_arg`)
     }
     let tpos = tuple_positions[0];
-    let (field_bytes, field_vts, field_box_ops, field_extend_signed) =
-        tuple_field_abi(&arg_tys[tpos])?;
+    let (field_bytes, field_vts, rebuild_fields) = tuple_field_abi(&arg_tys[tpos])?;
     let mut prefix_bytes = Vec::new();
     let mut suffix_bytes = Vec::new();
     let mut all_vts = Vec::new(); // flattened core call params: prefix scalars, then tuple fields, then suffix
@@ -1598,7 +1723,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         }
         all_vts.push(vt);
     }
-    // The tuple's fields start at core param `1 + prefix.len()` (after `self`=0 + the prefix scalars).
+    // The tuple's leaves start at core param `1 + prefix.len()` (after `self`=0 + the prefix scalars).
     let base_param = 1 + prefix_bytes.len() as u32;
     Some((
         field_bytes, // the tuple's OWN field bytes → the `tuple<…>` defined type
@@ -1606,8 +1731,7 @@ fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundAr
         prefix_bytes,
         suffix_bytes,
         crate::backend::wasm::serialize::TupleArgRebuild {
-            field_box_ops,
-            field_extend_signed,
+            fields: rebuild_fields,
             base_param,
         },
     ))
@@ -1677,12 +1801,15 @@ fn emit_closure_resource(
     // of aliased-width scalars crosses as a NATIVE component `tuple<…>` the canonical ABI flattens into scalar
     // core params; the core `call` rebuilds the cell from the flat fields (`TupleArgRebuild`). Detected here
     // so the scalar `arg_bytes` decline below doesn't reject it. SCOPE this increment: EXACTLY one such
-    // compound arg, a scalar result, no build-time host effect (each a clean later widening). A collection /
-    // nested-compound field, or a compound arg ALONGSIDE other args, returns `None` and falls to the decline.
-    // `tuple_arg` = (full flattened field/scalar bytes, full flattened core vts, prefix scalar bytes, suffix
-    // scalar bytes, rebuild). The SOLE-tuple case (one compound arg, no scalars) has empty prefix/suffix and
-    // `base_param=1`; the AMONG-SCALARS case (one tuple + ≥1 scalar arg) carries the prefix/suffix + a shifted
-    // `base_param`. Both flatten the tuple into native `tuple<…>` fields the core `call` rebuilds.
+    // compound arg, a scalar result, no build-time host effect (each a clean later widening). The SOLE-tuple
+    // path (`fixed_shape_scalar_tuple_arg`) also accepts a NESTED fixed-shape compound FIELD, flattening its
+    // leaves depth-first and rebuilding the sub-cell recursively (brick 3). Still `None` (falls to the
+    // decline): a COLLECTION field, or the AMONG-SCALARS / multi-export path with a nested field (`tuple_field_abi`
+    // stays scalar-field-only). `tuple_arg` = (full flattened field/scalar bytes, full flattened core vts,
+    // prefix scalar bytes, suffix scalar bytes, rebuild). The SOLE-tuple case (one compound arg, no scalars)
+    // has empty prefix/suffix and `base_param=1`; the AMONG-SCALARS case (one tuple + ≥1 scalar arg) carries
+    // the prefix/suffix + a shifted `base_param`. Both flatten the tuple into native `tuple<…>` fields the
+    // core `call` rebuilds.
     let tuple_arg: Option<CompoundArgBoundary> = if host_imports.is_empty() {
         if arg_tys.len() == 1 {
             fixed_shape_scalar_tuple_arg(&arg_tys[0])
@@ -1693,11 +1820,40 @@ fn emit_closure_resource(
     } else {
         None
     };
+    // A SOLE fixed-shape compound arg with a NESTED compound FIELD (a tuple/record containing a tuple/record):
+    // `fixed_shape_scalar_tuple_arg` above returns `None` (it rejects a non-scalar field), so this catches it.
+    // The canonical ABI flattens the nested tuple RECURSIVELY into leaf scalar core params; the core `call`
+    // rebuilds the nested cell via the recursive `TupleArgRebuild`, and the envelope mints the inner `tuple<…>`
+    // types (`TupleFieldShape`). SCOPE this increment: the SINGLE-export SCALAR-result path only (a nested
+    // field alongside scalars, or with a list<u8>-crossing result, or on multi/mixed/distinct-sig, declines).
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if host_imports.is_empty() && tuple_arg.is_none() && arg_tys.len() == 1 {
+            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                // Only take this path when there IS a nested field (else the all-scalar case = `tuple_arg`).
+                let has_nested = shape.iter().any(|f| {
+                    matches!(
+                        f,
+                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                    )
+                });
+                has_nested.then_some((
+                    lb,
+                    lv,
+                    serialize::TupleArgRebuild {
+                        fields: rf,
+                        base_param: 1,
+                    },
+                    shape,
+                ))
+            })
+        } else {
+            None
+        };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
         arg_tys
             .iter()
@@ -1798,6 +1954,8 @@ fn emit_closure_resource(
         &tuple_arg
     {
         all_vts.clone()
+    } else if let Some((_, leaf_vts, _, _)) = &nested_tuple {
+        leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else {
         arg_tys
             .iter()
@@ -1888,8 +2046,21 @@ fn emit_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
+            }
+        }
+        // A NESTED tuple arg: the recursive rebuild also emits `arr-alloc`/`arr-set` (per cell level) + each
+        // leaf's box op.
+        if let Some((_, _, rebuild, _)) = &nested_tuple {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -1920,6 +2091,23 @@ fn emit_closure_resource(
     let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
+    // A fixed-shape tuple ARG threads through the LIST-result cores + envelope identically whether it is FLAT
+    // (`tuple_arg`) or NESTED (`nested_tuple`): the core rebuilds the cell from the same `TupleArgRebuild`, the
+    // envelope mints a flat `tuple<…>` (from `tuple_bytes`) OR a recursive nested one (from `tuple_shape`). A
+    // nested tuple carries `tuple_bytes = None` (its shape drives the mint) + `tuple_shape = Some`; a flat one
+    // the reverse; the scalar-result paths below use `tuple_arg`/`nested_tuple` directly.
+    let list_rebuild: Option<&serialize::TupleArgRebuild> = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, _, rb)| rb)
+        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _)| rb));
+    let list_tuple_bytes: Option<&[u8]> = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+    let list_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
+        .as_ref()
+        .map(|(_, _, _, shape)| shape.as_slice());
+    let (list_tpre, list_tsuf): (&[u8], &[u8]) = tuple_arg
+        .as_ref()
+        .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
+        .unwrap_or((&[], &[])); // a nested arg is the SOLE arg → no prefix/suffix scalars
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
     // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
     if ret_is_bytes {
@@ -1927,12 +2115,6 @@ fn emit_closure_resource(
         // reclaims the cell). The byte-rope copy path is unaffected; only the cell rep-recovery + release
         // change (rep passed directly, no self-drop). A fixed-shape tuple ARG is threaded via `tuple_arg`:
         // the bytes `call` rebuilds the cell from the flattened fields, the envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1942,7 +2124,7 @@ fn emit_closure_resource(
             lifted_type_idx,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -1953,9 +2135,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
@@ -1965,12 +2148,6 @@ fn emit_closure_resource(
         // C-HOST-6 borrow<t> `call` — the compound-walk path is unaffected; the cell is kept (repeatable). A
         // fixed-shape tuple ARG is threaded via `tuple_arg`: the value-form `call` rebuilds the arg cell from
         // the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -1981,7 +2158,7 @@ fn emit_closure_resource(
             template,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -1992,9 +2169,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
@@ -2004,12 +2182,6 @@ fn emit_closure_resource(
         // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable). A
         // fixed-shape tuple ARG is threaded via `tuple_arg`: the value-encode `call` rebuilds the arg cell
         // from the flattened fields before dispatch, and the shared list<u8> envelope emits the `tuple<…>` type.
-        let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
-        let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-        let (tpre, tsuf) = tuple_arg
-            .as_ref()
-            .map(|(_, _, pre, suf, _)| (pre.as_slice(), suf.as_slice()))
-            .unwrap_or((&[], &[]));
         let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
@@ -2020,7 +2192,7 @@ fn emit_closure_resource(
             descriptor,
             &layout,
             true,
-            rebuild,
+            list_rebuild,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_bytes_resource_borrow_tuple(
@@ -2031,9 +2203,10 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
-            tuple_bytes,
-            tpre,
-            tsuf,
+            list_tuple_bytes,
+            list_tpre,
+            list_tsuf,
+            list_shape,
         ));
     }
     // DIRECT-CALL COMPOUND ARG: a fixed-shape scalar tuple/record closure argument crosses as a native
@@ -2074,6 +2247,47 @@ fn emit_closure_resource(
             Some(field_bytes),
             tpre, // prefix scalar bytes (empty for a sole-tuple arg)
             tsuf, // suffix scalar bytes
+            None, // an all-scalar-field tuple — no nested shape
+        ));
+    }
+    // DIRECT-CALL NESTED COMPOUND ARG (single-export, SCALAR result): a SOLE fixed-shape compound arg with a
+    // NESTED compound field crosses as a nested `tuple<…, tuple<…>>` the canonical ABI flattens RECURSIVELY to
+    // leaf scalar core params. The core `call` rebuilds the nested cell via the recursive `TupleArgRebuild`;
+    // the envelope mints the inner `tuple<…>` types by index (`TupleFieldShape`). A nested arg with a
+    // list<u8>-crossing result (byte-rope / compound / collection) was already handled by the list-result
+    // routings above (which thread `nested_tuple`'s shape); only a SCALAR result reaches here.
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape)) = &nested_tuple {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: make_param_vts.clone(),
+            }],
+            &[],
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes, // empty — the flattened leaves are carried by the shape
+            result_byte,
+            false,
+            None, // the flat all-scalar path is unused here; the shape drives the mint
+            &[],  // sole tuple → no prefix/suffix scalars
+            &[],
+            Some(shape),
         ));
     }
     // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a
@@ -2336,8 +2550,33 @@ fn emit_multi_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    // A SOLE fixed-shape compound arg with a NESTED compound field (all exports share it): the shared `call`
+    // rebuilds the nested cell recursively, the envelope mints the inner `tuple<…>` types by index. Detected
+    // when `tuple_arg` (all-scalar-field) is None. Scoped like single-export: sole nested arg, any result.
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if tuple_arg.is_none() && arg_tys.len() == 1 {
+            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                let has_nested = shape.iter().any(|f| {
+                    matches!(
+                        f,
+                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                    )
+                });
+                has_nested.then_some((
+                    lb,
+                    lv,
+                    serialize::TupleArgRebuild {
+                        fields: rf,
+                        base_param: 1,
+                    },
+                    shape,
+                ))
+            })
+        } else {
+            None
+        };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
         arg_tys
             .iter()
@@ -2385,11 +2624,14 @@ fn emit_multi_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
+    // Core call-arg valtypes: the FLATTENED tuple fields when a (flat or nested) tuple arg, else each arg's
+    // own valtype.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
         all_vts.clone()
+    } else if let Some((_, leaf_vts, _, _)) = &nested_tuple {
+        leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else {
         arg_tys
             .iter()
@@ -2485,8 +2727,19 @@ fn emit_multi_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
+            }
+        }
+        if let Some((_, _, rebuild, _)) = &nested_tuple {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -2535,13 +2788,21 @@ fn emit_multi_closure_resource(
         })
         .collect();
     // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild the arg cell from
-    // the flattened fields, the shared list<u8> envelope emits the `tuple<…>` type. `None` on the scalar path.
-    let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
+    // the flattened fields, the shared list<u8> envelope mints a flat `tuple<…>` (from `tuple_bytes`) OR a
+    // recursive NESTED one (from `shape`). A flat arg carries `tuple_bytes = Some` + `shape = None`; a nested
+    // one the reverse (its shape is the SOLE arg → no prefix/suffix). `None` on the scalar-arg path.
+    let rebuild = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, _, rb)| rb)
+        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _)| rb));
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple. Both the SCALAR
-    // and the three LIST-result multi cores now interleave these around the rebuilt tuple (via the shared
-    // `serialize::emit_closure_call_args`); the shared `call` functype interleaves the scalar boundary bytes
-    // around the `tuple<…>` type (`assemble_multi_closure_bytes_resource_borrow_tuple` threads prefix/suffix).
+    let tuple_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
+        .as_ref()
+        .map(|(_, _, _, shape)| shape.as_slice());
+    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple (flat OR nested).
+    // Both the SCALAR and the three LIST-result multi cores now interleave these around the rebuilt tuple (via
+    // the shared `serialize::emit_closure_call_args`); the shared `call` functype interleaves the scalar
+    // boundary bytes around the `tuple<…>` type.
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
@@ -2581,6 +2842,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2614,6 +2876,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2646,6 +2909,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2681,6 +2945,42 @@ fn emit_multi_closure_resource(
             Some(field_bytes),
             tpre2, // prefix scalar bytes (empty for a sole-tuple arg)
             tsuf2, // suffix scalar bytes
+            None,  // an all-scalar-field tuple — no nested shape
+        ));
+    }
+    // DIRECT-CALL NESTED COMPOUND ARG (multi-export, SCALAR result): N same-sig closures share one `call`
+    // whose sole arg is a NESTED fixed-shape compound. The shared `call` rebuilds the nested cell recursively;
+    // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
+    // was handled by the list-result routings above.)
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape)) = &nested_tuple {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &[], // no plain exports on the pure multi-export path
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the flattened leaves are carried by the shape
+            result_byte,
+            &[], // no plain exports
+            false,
+            None, // the flat all-scalar path is unused; the shape drives the mint
+            &[],  // sole nested tuple → no prefix/suffix scalars
+            &[],
+            Some(shape),
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
@@ -2793,8 +3093,34 @@ fn emit_mixed_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    // A SOLE fixed-shape compound arg with a NESTED compound field (shared by all closure exports; the plain
+    // exports ride alongside): the shared `call` rebuilds the nested cell recursively, the envelope mints the
+    // inner `tuple<…>` types by index. Detected when `tuple_arg` (all-scalar-field) is None. Scoped: sole
+    // nested arg, any result.
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if tuple_arg.is_none() && arg_tys.len() == 1 {
+            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                let has_nested = shape.iter().any(|f| {
+                    matches!(
+                        f,
+                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                    )
+                });
+                has_nested.then_some((
+                    lb,
+                    lv,
+                    serialize::TupleArgRebuild {
+                        fields: rf,
+                        base_param: 1,
+                    },
+                    shape,
+                ))
+            })
+        } else {
+            None
+        };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
         arg_tys
             .iter()
@@ -2842,12 +3168,14 @@ fn emit_mixed_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    // Core call-arg valtypes: the FULL flattened core param list when a tuple arg (prefix scalars, tuple
-    // fields, suffix scalars), else each arg's own valtype.
+    // Core call-arg valtypes: the FULL flattened core param list when a (flat or nested) tuple arg, else each
+    // arg's own valtype.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
         all_vts.clone()
+    } else if let Some((_, leaf_vts, _, _)) = &nested_tuple {
+        leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else {
         arg_tys
             .iter()
@@ -2975,8 +3303,19 @@ fn emit_mixed_closure_resource(
         if let Some((_, _, _, _, rebuild)) = &tuple_arg {
             used.insert("arr-alloc");
             used.insert("arr-set");
-            for bop in rebuild.field_box_ops.iter().flatten() {
-                used.insert(bop);
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
+            }
+        }
+        if let Some((_, _, rebuild, _)) = &nested_tuple {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -3047,8 +3386,16 @@ fn emit_mixed_closure_resource(
     // from the flattened fields (interleaving prefix/suffix scalars via `emit_closure_call_args`), the shared
     // list<u8> tuple envelope emits the `tuple<…>` type; plain exports ride alongside. `None` on the scalar-arg
     // path. Prefix/suffix scalar bytes are empty for a sole tuple, non-empty when it sits among scalars.
-    let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
+    // Flat OR nested: a flat arg carries `tuple_bytes = Some` + `tuple_shape = None`; a nested one the reverse
+    // (its shape is the SOLE arg → no prefix/suffix). `rebuild` falls back from flat → nested.
+    let rebuild = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, _, rb)| rb)
+        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _)| rb));
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
+    let tuple_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
+        .as_ref()
+        .map(|(_, _, _, shape)| shape.as_slice());
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
@@ -3088,6 +3435,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -3121,6 +3469,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -3153,6 +3502,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -3188,6 +3538,42 @@ fn emit_mixed_closure_resource(
             Some(field_bytes),
             tpre2,
             tsuf2,
+            None, // an all-scalar-field tuple — no nested shape
+        ));
+    }
+    // DIRECT-CALL NESTED COMPOUND ARG (mixed, SCALAR result): a SOLE nested fixed-shape compound arg shared by
+    // the closure exports, with plain exports alongside. The shared `call` rebuilds the nested cell recursively;
+    // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
+    // was handled by the list-result routings above.)
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape)) = &nested_tuple {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the flattened leaves are carried by the shape
+            result_byte,
+            &abi_plain,
+            false,
+            None, // the flat all-scalar path is unused; the shape drives the mint
+            &[],  // sole nested tuple → no prefix/suffix scalars
+            &[],
+            Some(shape),
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across
@@ -3261,8 +3647,15 @@ fn emit_distinct_sig_resource(
         ret_descriptor: Option<Vec<u8>>,
         /// The direct-call compound ARG for this group (a single fixed-shape scalar tuple/record, SOLE or among
         /// scalar args): the tuple's per-field component bytes + prefix scalar bytes + suffix scalar bytes + the
-        /// `TupleArgRebuild` (with `base_param`). `None` = scalar args. Composes with EVERY result shape.
+        /// `TupleArgRebuild` (with `base_param`). Set for BOTH a flat AND a nested tuple arg (the rebuild is
+        /// recursive for nested); for a nested arg the `field_bytes` are unused (the `nested_shape` drives the
+        /// envelope mint). `None` = scalar args.
         tuple_arg: Option<GroupCompoundArg>,
+        /// `Some(shape)` when this group's sole arg is a NESTED fixed-shape compound (a tuple/record with a
+        /// tuple/record field): the recursive `TupleFieldShape` the per-group `call-<g>` envelope mints the
+        /// inner `tuple<…>` types from (by index). `None` for a flat all-scalar-field tuple (which uses the
+        /// flat `tuple_arg` field bytes). When `Some`, `tuple_arg` also carries the recursive rebuild.
+        nested_shape: Option<Vec<crate::backend::wasm::envelope::TupleFieldShape>>,
         /// The LIFTED lambda's OWN param valtypes for this group — used to match a representative lifted slot.
         /// For a scalar-arg group this equals `arg_vts`; for a TUPLE-arg group `arg_vts` is the FLATTENED
         /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
@@ -3289,8 +3682,33 @@ fn emit_distinct_sig_resource(
         } else {
             single_compound_among_scalars(arg_tys.as_slice())
         };
-        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() {
-            Vec::new() // the flattened tuple fields are carried by `tuple_arg`
+        // A SOLE NESTED fixed-shape compound arg (a tuple/record with a tuple/record field): detected when the
+        // flat `group_tuple_arg` is None. The per-group `call-<g>` rebuilds the nested cell recursively; the
+        // per-group envelope mints the inner `tuple<…>` types by index from `shape`.
+        let group_nested: Option<NestedCompoundArgBoundary> =
+            if group_tuple_arg.is_none() && arg_tys.len() == 1 {
+                nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                    let has_nested = shape.iter().any(|f| {
+                        matches!(
+                            f,
+                            crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                        )
+                    });
+                    has_nested.then_some((
+                        lb,
+                        lv,
+                        serialize::TupleArgRebuild {
+                            fields: rf,
+                            base_param: 1,
+                        },
+                        shape,
+                    ))
+                })
+            } else {
+                None
+            };
+        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() || group_nested.is_some() {
+            Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_shape`
         } else {
             arg_tys
                 .iter()
@@ -3333,6 +3751,8 @@ fn emit_distinct_sig_resource(
         // fields, suffix scalars), else each arg's own valtype.
         let arg_vts: Vec<ValType> = if let Some((_, all_vts, _, _, _)) = &group_tuple_arg {
             all_vts.clone()
+        } else if let Some((_, leaf_vts, _, _)) = &group_nested {
+            leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
         } else {
             arg_tys
                 .iter()
@@ -3364,10 +3784,19 @@ fn emit_distinct_sig_resource(
                     .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
                 })
                 .collect::<Result<_, _>>()?
+        } else if group_nested.is_some() {
+            // A sole nested tuple/record arg is ONE i32 cell handle to the lambda (the `call-<g>` wrapper
+            // rebuilds it recursively from the flattened leaves).
+            vec![ValType::I32]
         } else {
             arg_vts.clone()
         };
-        let tuple_arg = group_tuple_arg.map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb));
+        // A nested group carries its recursive rebuild in `tuple_arg` (field_bytes unused) + its shape in
+        // `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape` None.
+        let nested_shape = group_nested.as_ref().map(|(_, _, _, shape)| shape.clone());
+        let tuple_arg = group_tuple_arg
+            .map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb))
+            .or_else(|| group_nested.map(|(_, _, rb, _)| (Vec::new(), Vec::new(), Vec::new(), rb)));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -3377,6 +3806,7 @@ fn emit_distinct_sig_resource(
             ret_template,
             ret_descriptor,
             tuple_arg,
+            nested_shape,
             match_vts,
         });
     }
@@ -3493,11 +3923,19 @@ fn emit_distinct_sig_resource(
     let any_collection = ginfos.iter().any(|gi| gi.ret_descriptor.is_some());
     // A tuple-arg group's `call-<g>` rebuilds the flattened tuple cell (`arr-alloc` + per field box + `arr-set`
     // + `drop`). Collect the box ops the rebuilds actually reference (per field type) so they are imported.
-    let tuple_box_ops: std::collections::BTreeSet<&'static str> = ginfos
-        .iter()
-        .filter_map(|gi| gi.tuple_arg.as_ref())
-        .flat_map(|(_, _, _, rb)| rb.field_box_ops.iter().filter_map(|o| *o))
-        .collect();
+    let tuple_box_ops: std::collections::BTreeSet<&'static str> = {
+        let mut ops = std::collections::BTreeSet::new();
+        for gi in &ginfos {
+            if let Some((_, _, _, rb)) = gi.tuple_arg.as_ref() {
+                for f in &rb.fields {
+                    f.collect_box_ops(&mut |bop| {
+                        ops.insert(bop);
+                    });
+                }
+            }
+        }
+        ops
+    };
     let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
@@ -3624,6 +4062,7 @@ fn emit_distinct_sig_resource(
                 .as_ref()
                 .map(|(_, _, suf, _)| suf.clone())
                 .unwrap_or_default(),
+            tuple_shape: ginfos[gi].nested_shape.clone(),
         });
     }
 

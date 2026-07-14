@@ -2,8 +2,8 @@
 ; program's terminal value or trap, or — for an ill-typed program — its (error <CODE>) rejection, because
 ; an ill-typed program has no run and therefore no terminal value. For a type rule a generation does not
 ; yet cover it DECLINES rather than running the program (reject-don't-miscompile); the gate scores a
-; decline as todo, not disagreement. (needs numeric-model) marks the extended numerics a later generation
-; realizes (the seed realizes only the checked Int64 core and Float64 literals/equality —
+; decline as todo, not disagreement. A generation that has not yet realized the extended numerics
+; declines those cases (the seed realizes only the checked Int64 core and Float64 literals/equality —
 ; options/realized-capability-set/). Diagnostic codes are from options/diagnostics-schema/.
 
 (case "arithmetic within one integer type"
@@ -117,8 +117,8 @@
 ; `/` (truncates) and float `/` (rounds). A zero denominator denotes no number, so it traps. `Rational`
 ; is a DISTINCT numeric type opted into explicitly; no operation silently produces or consumes one (the
 ; old-Cadenza behavior where integer `/` yielded a rational is exactly the silent promotion this model
-; rejects). The written value form is `n/d` in lowest terms. `(needs numeric-model)`: the seed realizes
-; only the checked Int64 core and Float64 literals/equality.
+; rejects). The written value form is `n/d` in lowest terms. A generation realizing only the checked
+; Int64 core and Float64 literals/equality declines this until the extended numerics land.
 
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; reduced to lowest terms per
@@ -134,6 +134,92 @@
            function of the number, not of how it was written.")
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
+
+(case "an integer literal annotated Rational grounds to that integer over one"
+  (doc    "`(: 5 Rational)` grounds the bare integer literal 5 to the exact rational 5/1 — the same
+           "Annotations Constrain" rule that fixes `(: 200 UInt8)`, extended to Rational with no range
+           check (an exact rational holds any integer). The annotation is what SELECTS Rational; the
+           literal keeps its exact value. Being explicit (an annotation), not an implicit widening.")
+  (input  (: 5 Rational))
+  (output (: 5/1 Rational)))
+
+(case "a decimal literal annotated Rational grounds to its exact fraction"
+  (doc    "`(: 0.5 Rational)` grounds the decimal literal to the EXACT rational 1/2 — a decimal literal is
+           captured exactly as significand*10^exp (0.5 = 5*10^-1), so it converts to 5/10 = 1/2 with NO
+           float rounding. This is why the annotation, not `/`, is the rational spelling: `(/ 1 2)` is
+           integer division (= 0), while `(: 0.5 Rational)` is the exact one-half.")
+  (input  (: 0.5 Rational))
+  (output (: 1/2 Rational)))
+
+(case "a decimal literal annotated Rational is exact for a value no float rounds cleanly"
+  (doc    "`(: 0.1 Rational)` is EXACTLY 1/10 — the classic value a binary float cannot represent. The
+           exact-Decimal capture (1*10^-1) makes the rational grounding lossless where a Float64 would
+           round, witnessing that the annotation grounds from the exact literal, not an f64.")
+  (input  (: 0.1 Rational))
+  (output (: 1/10 Rational)))
+
+(case "a negative decimal literal annotated Rational normalizes its sign onto the numerator"
+  (doc    "`(: -0.75 Rational)` grounds to -3/4: 75*10^-2 = 75/100, reduced to 3/4 with the sign on the
+           numerator (the canonical normalized form — the denominator is strictly positive).")
+  (input  (: -0.75 Rational))
+  (output (: -3/4 Rational)))
+
+(case "a scientific-notation literal annotated Rational scales the numerator"
+  (doc    "`(: 12e2 Rational)` grounds to 1200/1: a non-negative decimal exponent multiplies the
+           significand (12*10^2 = 1200), the whole being an exact integer-valued rational.")
+  (input  (: 12e2 Rational))
+  (output (: 1200/1 Rational)))
+
+(case "a Rational-annotated literal composes with exact rational arithmetic"
+  (doc    "The grounding is a real Rational value, so it flows into the exact `+ - * /` arithmetic: `(+ (:
+           0.5 Rational) (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly. The annotated literal and the
+           explicit constructor produce the same kind of value; math "just works" over both.")
+  (input  (+ (: 0.5 Rational) (Rational.of 1 3)))
+  (output (: 5/6 Rational)))
+
+(case "an N-suffixed integer literal is a BigInt"
+  (doc    "The `N` type suffix (`100N`) selects `BigInt` per-literal — the Rust-style opt-in that reads
+           as a terse `(: 100 BigInt)` annotation. Being EXPLICIT: a bare `100` stays a fixed-width
+           default; you write `N` to ask for the unbounded integer. `100N` is exactly 100 as a BigInt.")
+  (input  100N)
+  (output (: 100 BigInt)))
+
+(case "an N suffix lets a huge literal need no annotation"
+  (doc    "`100000000000000000000N` — a value no fixed width holds — is a BigInt via the suffix alone,
+           no `(: … BigInt)` wrapper. The suffix is the concise spelling of the annotation grounding.")
+  (input  100000000000000000000N)
+  (output (: 100000000000000000000 BigInt)))
+
+(case "N-suffixed literals compose under BigInt arithmetic"
+  (doc    "`(+ 100N 1N)` = 101 as a BigInt: each suffixed literal is a real BigInt value, so the exact
+           `+` runs over them — the math 'just works' over the suffixed spelling exactly as over
+           `(BigInt.of …)`.")
+  (input  (+ 100N 1N))
+  (output (: 101 BigInt)))
+
+(case "an R-suffixed integer literal is that integer over one"
+  (doc    "The `R` type suffix (`5R`) selects `Rational`: an integer body grounds to `5/1`, the terse
+           form of `(: 5 Rational)`.")
+  (input  5R)
+  (output (: 5/1 Rational)))
+
+(case "an R-suffixed decimal literal is its exact fraction"
+  (doc    "`0.5R` is EXACTLY 1/2 — the `R` suffix over a decimal body grounds to the exact rational
+           (the decimal is captured exactly, so no float rounding). `0.5R` reads as `(: 0.5 Rational)`.")
+  (input  0.5R)
+  (output (: 1/2 Rational)))
+
+(case "an R-suffixed literal composes with exact rational arithmetic"
+  (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
+           exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
+  (input  (+ 0.5R (Rational.of 1 3)))
+  (output (: 5/6 Rational)))
+
+(case "a decimal literal annotated Rational equals its explicit constructor form"
+  (doc    "`(= (: 1.25 Rational) (Rational.of 5 4))` is true — the decimal grounding 1.25 -> 5/4 is the
+           SAME normalized value the constructor builds, so the two spellings denote one rational.")
+  (input  (= (: 1.25 Rational) (Rational.of 5 4)))
+  (output (: true Bool)))
 
 (case "two rationals denoting the same number are equal regardless of how they were written"
   (doc    "`(= (Rational.of 2 4) (Rational.of 1 2))` is true: because both normalize to 1/2, rational
@@ -203,7 +289,7 @@
 ; factorial, a cryptographic modulus, an exact accumulator. `(BigInt.of x)` converts a fixed-width
 ; integer up; `Int64.of`/`(UInt N).of` convert back CHECKED (trap out of range). It is a DISTINCT type
 ; opted into explicitly: no operation silently produces or consumes one (a BigInt/Int64 mix is CDZ0301).
-; `(needs numeric-model)`: the seed realizes only the checked Int64 core.
+; A generation realizing only the checked Int64 core declines this until the extended numerics land.
 
 (case "an arbitrary-precision integer multiplication does not overflow"
   (doc    "`(* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))` multiplies two values
@@ -216,6 +302,23 @@
            the `value-encode` walker (`Shape::BigInt`, a variable-length KIND_INT leaf).")
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
+
+(case "a beyond-i64 constant BigInt is an operand of a runtime bigint op"
+  (doc    "`(: 100000000000000000000 BigInt)` is a constant BigInt = 1e20, BEYOND i64::MAX (~9.2e18). As an
+           OPERAND of a runtime bigint op it must materialize a heap leaf: an i64-fitting constant widens via
+           `bigint-of-i64`, but a beyond-i64 one has no i64 to feed it — so the compiler bakes its canonical
+           sign-magnitude bytes as a Bytes leaf and re-tags them via `bigint-of-bytes`. Compared against
+           `(BigInt.of 1e10)²` = 1e20 (computed on the runtime limb library), the `=` is true. Before the
+           `bigint-of-bytes` op the beyond-i64 constant operand declined 'not yet materialized as a heap leaf
+           (B4)', while an in-i64 constant operand + a beyond-i64 constant as the sole export body both
+           worked — the arbitrary-magnitude constant-operand leaf was the remaining B4 gap. THE defining
+           BigInt use case: exact arithmetic/comparison against a literal larger than i64 holds.")
+  (input  (do
+            (def (main)
+              (if (= (: 100000000000000000000 BigInt) (* (BigInt.of 10000000000) (BigInt.of 10000000000)))
+                  1 0))
+            (export main)))
+  (output (: 1 Int64)))
 
 (case "a runtime-computed BigInt result crosses the host boundary"
   (doc    "`(+ (BigInt.of 40) (BigInt.of 2))` is a RUNTIME BigInt add (the compiler does not fold BigInt
@@ -453,7 +556,8 @@
 ; Declared Default Fixes A Type, Not A Conversion). DEFINITION-SITE scoped (the module the literal is
 ; WRITTEN in, never a module that imports it — #A Declared Default Applies At The Definition Site), so
 ; importing a module never changes the type of its literals. An explicit annotation wins over the
-; default. Resolved at compile time, then types erase — zero ABI impact. `(needs numeric-model)`.
+; default. Resolved at compile time, then types erase — zero ABI impact. A generation without the
+; extended numerics declines it.
 
 (case "a default-integer pragma makes a bare literal take the declared integer type"
   (doc    "The `crypto` module declares `(pragma default-integer BigInt)`, so the bare literal 2 in
@@ -520,6 +624,23 @@
             ((. m x) unit)))
   (error  CDZ0303))
 
+(case "a bare literal exceeding the default-integer pragma's narrow type is rejected"
+  (doc    "`(pragma default-integer Int8)` makes bare literals Int8. A bare `300` is out of Int8's range
+           (-128..=127), so it must be REJECTED with the SAME literal-fit check an explicit `(: 300 Int8)`
+           runs (CDZ0302) — not silently accepted at its full value. Without this, the pragma applied the
+           type TAG (`x : Int8`, it feeds an Int8 param) but SKIPPED the fit-check, so `(Int64.of x)` read
+           back 300: an Int8 holding an out-of-range value, a soundness hole the explicit annotation
+           correctly rejects (numeric-model.md #A Bare Integer Literal Is Grounded By Its Annotation,
+           Subject To A Range Check — the pragma default is a grounding, so the same range check applies).
+           A WIDENING default (BigInt/Int64) never faults (every literal fits); only a narrowing one
+           (Int8/UInt8/…) catches an out-of-range literal.")
+  (input  (do
+            (module m
+              (pragma default-integer Int8)
+              (def (x) 300))
+            (Int64.of ((. m x) unit))))
+  (error  CDZ0302))
+
 (case "a default-integer pragma naming an unbound type is rejected as unbound, like an annotation"
   (doc    "`(pragma default-integer Nope)` names a type `Nope` that does not exist — no prelude type, no
            declared type. The SAME name in a type-annotation position (`(: x Nope)`) is CDZ0101 'unbound
@@ -538,7 +659,7 @@
             ((. m x) unit)))
   (error  CDZ0101))
 ; (The general pragma mechanism — an unrecognized key rejected CDZ0601, malformed args CDZ0602 — is
-;  witnessed in 11-modules.sexp under `needs module-pragmas`; here we pin only the numeric-domain
+;  witnessed by the module-pragma cases in 11-modules.sexp; here we pin only the numeric-domain
 ;  behavior of the `default-integer` key.)
 
 (case "floating-point uses the fixed rounding mode"
@@ -1416,7 +1537,7 @@
 ; cases run each operator over runtime Int64 operands and pin that the emitted path AGREES with the
 ; folded constant cases above (`/ % & | ^ << >>`, and the ordering comparisons). A self-hosted compiler
 ; runs exactly this — its LEB128/section arithmetic operates on section sizes and operands computed at
-; run time, not on literals. CORE cases (no `(needs …)`): the seed realizes runtime Int64 operators.
+; run time, not on literals. The seed realizes runtime Int64 operators, so it runs these.
 
 (case "a runtime division truncates toward zero"
   (doc    "`(def (main (: a Int64) (: b Int64)) (/ a b))` called with (-7, 2). The division cannot fold
@@ -1496,10 +1617,10 @@
 ; are ALIASES for the eight aliased widths (`Int64` ≡ `(Int 64)`), not separate primitives; those eight
 ; are the ones with a boundary representation, so a non-aliased width like `(UInt 48)` is internal-only.
 ; `Int64` stays the type a bare literal takes (the cases above); these witness the other widths, the
-; alias equivalence, the width constraint (CDZ0302), and the two explicit conversion forms. All carry
-; (needs numeric-model): the seed realizes only the 64-bit checked Int64 core
-; (options/realized-capability-set/) and lowers every integer as an i64 with no width-indexed types, so
-; it SKIPS these; the M4 generation that realizes width-indexed integers (riding on generics —
+; alias equivalence, the width constraint (CDZ0302), and the two explicit conversion forms. A
+; generation realizing only the 64-bit checked Int64 core
+; (options/realized-capability-set/) lowers every integer as an i64 with no width-indexed types, so
+; it DECLINES these; the M4 generation that realizes width-indexed integers (riding on generics —
 ; a compile-time width as a type-constructor argument) runs them. A compiler needs UInt8 (a module's
 ; bytes) and UInt32 (section sizes, LEB128 operands, table and memory indices); an unusual width like
 ; `(UInt 48)` (a packed timestamp) is a first-class type the compiler COMPUTES rather than a wrapper the
@@ -1903,9 +2024,8 @@
            naturals rather than dependent types — no runtime value ever determines a type. A width the
            compiler cannot resolve to a compile-time natural — negative, non-natural, OR runtime — reduces
            to the invalid sentinel width 0 and is rejected at the annotation (CDZ0302), never dropped so
-           the literal falls back to its default type. (Previously `(needs numeric-model)`-gated, which
-           SKIPPED the case and hid the miscompile — the seed ran `(mk 8)` to 5; ungated + fixed, it
-           rejects.)")
+           the literal falls back to its default type. (An earlier annotation SKIPPED this case and hid
+           the miscompile — the seed ran `(mk 8)` to 5; run unconditionally + fixed, it rejects.)")
   (input  (do
             (def (mk n) (: 5 (UInt n)))
             (def (main) (mk 8)) (export main)))

@@ -111,11 +111,18 @@ pub enum ListArmCond {
     Any,
 }
 
-/// One arm of a runtime list match: its length [`ListArmCond`] and the body occurrence to emit when the
-/// condition holds. Binders (leading elements, the rest sublist) resolve independently via `SumPayload`.
+/// One arm of a runtime list match: its length [`ListArmCond`], an optional GUARD, and the body occurrence
+/// to emit when the condition holds. Binders (leading elements, the rest sublist) resolve independently via
+/// `SumPayload`. A `guard: Some(cond)` arm fires only when its length condition holds AND `cond` (a boolean
+/// the arm's binders are in scope for, resolve Case 6lg) evaluates true; on a false guard, matching FALLS
+/// THROUGH to the next arm — so the backend tests `length-cond AND guard` and the existing `else` chain
+/// handles the fall-through. A guarded arm does NOT count toward length-coverage exhaustiveness (its guard
+/// may fail), exactly as a guarded scalar/sum arm does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ListArm {
     pub cond: ListArmCond,
+    /// The arm's guard condition (a boolean expression occurrence), or `None` for an unguarded arm.
+    pub guard: Option<StructId>,
     pub body: StructId,
 }
 
@@ -882,6 +889,22 @@ pub enum Core {
     //# An expression evaluated only for the host call it makes MUST yield the value that host call returns, which is the unit value when the call's WIT signature returns unit.
     HostCall {
         effect: String,
+        op: String,
+        args: Vec<StructId>,
+        result: crate::ty::Ty,
+    },
+    /// A CROSS-COMPONENT call — an application of a definition a PEER Cadenza component exports, bound
+    /// across a live component boundary (component-abi.md §Cross-Component Value Exchange;
+    /// cross-component-interop.md). `interface` is the peer interface the call is imported from and `op`
+    /// the exported operation's boundary name; `args` are the argument occurrences and `result` the
+    /// operation's monomorphic declared result type. It is the peer analogue of `HostCall`: the backend
+    /// records the (interface, op) in a deterministic import set and resolves the pair to the imported
+    /// core-function index once the set is laid out; unlike a `Core::Call` it is NEVER inlined (the peer
+    /// is a separate artifact, not a sibling def in this arena). This variant is the IR foundation
+    /// (X2) — the emit envelope (X3) and the front-end binding surface (X4) arrive in later increments,
+    /// so for now every backend DECLINES it (decline-don't-miscompile).
+    ExternCall {
+        interface: String,
         op: String,
         args: Vec<StructId>,
         result: crate::ty::Ty,

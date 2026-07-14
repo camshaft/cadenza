@@ -1016,6 +1016,21 @@ pub enum Resolved {
     /// Generic Projection That Does Not Inspect Its Key). The projection resolves the field against
     /// the operand's type/value downstream.
     Member { operand: StructId, key: Symbol },
+    /// A reference to a CROSS-COMPONENT operation bound by an `(extern "iface" (op (-> …)) …)` form
+    /// (X4b). Unlike a `Ref` (which names a value node to follow/inline) an extern op has NO body in this
+    /// arena — it is a PEER component's export, bound across the live component boundary. Its declared
+    /// monomorphic type (`ty`, the `(-> …)` occurrence) is the contract used to type-check its uses; an
+    /// application of it lowers to `Core::ExternCall { interface, op, args, result }`
+    /// (component-abi.md §Cross-Component Value Exchange; cross-component-interop.md).
+    Extern {
+        /// The peer interface the op is imported from (`cadenza:pkg/iface`) — a string, not a label
+        /// (a dotted interface name is inert data the linker reads, never a resolvable name).
+        interface: String,
+        /// The operation name (the peer's exported func).
+        op: String,
+        /// The declared monomorphic type occurrence (`(-> A B)`) — the boundary contract.
+        ty: StructId,
+    },
     /// A TUPLE literal `(tuple e0 e1 …)` — a fixed-arity POSITIONAL product. The elements are AST
     /// occurrences in order (resolved on demand); the tuple's ARITY and per-position element types ARE
     /// its type (a tuple of different arity or a differently-typed position is a different type —

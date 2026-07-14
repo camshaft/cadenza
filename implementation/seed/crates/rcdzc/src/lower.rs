@@ -157,6 +157,21 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     result
 }
 
+/// Peel `n` curried argument domains off a function type, returning the RESULT type after applying `n`
+/// arguments (`Ty::Fn` is right-nested `A -> (B -> R)`). Used to read a cross-component extern op's
+/// result type from its declared signature after `n` args (X4b). A non-function or under-applied type
+/// yields the type as-is (a malformed extern application declines downstream).
+fn fn_result_after(ty: &crate::ty::Ty, n: usize) -> crate::ty::Ty {
+    let mut cur = ty.clone();
+    for _ in 0..n {
+        match cur {
+            crate::ty::Ty::Fn(_, r) => cur = *r,
+            other => return other,
+        }
+    }
+    cur
+}
+
 fn compute(db: &mut Db, id: StructId) -> Core {
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
     // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
@@ -261,8 +276,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         // A type annotation ERASES to its expression's core — `(: e T)` runs exactly as `e` (the
-        // annotation's force is entirely on inference; it has no runtime trace).
-        Resolved::Annot { expr, .. } => core_of(db, expr),
+        // annotation's force is entirely on inference; it has no runtime trace). The ONE exception is a
+        // numeric LITERAL annotated `Rational`: the annotation is what GROUNDS the literal to the exact
+        // rational (`(: 5 Rational)` = 5/1, `(: 0.5 Rational)` = 1/2), so it must fold to a
+        // `Core::ConstRational` here rather than pass through as the inner `ConstInt`/`ConstFloat` (which
+        // would carry the wrong value type). Inference already grants the grounding (no CDZ0203).
+        Resolved::Annot { expr, ty_expr } => {
+            if matches!(
+                crate::eval::typeval_of(db, ty_expr),
+                Some(crate::ty::Ty::Rational)
+            ) && let Some(folded) = rational_from_literal(db, expr)
+            {
+                folded
+            } else {
+                core_of(db, expr)
+            }
+        }
         // A sum-variant pattern's payload binder — read the scrutinee's payload. If the scrutinee is a
         // CONSTANT sum (`Core::SumNew` with a single payload), FOLD to that payload's core directly — a
         // constant `(match (Some 5) ((Some x) x))` yields the constant `5`, no heap build/read (the sum
@@ -749,6 +778,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
+        // A bare CROSS-COMPONENT extern op NOT in application position — passing the peer op as a
+        // first-class value. It has no in-arena closure to lift, so it declines (X4b handles the applied
+        // `(f args…)` case, which lowers to `Core::ExternCall` in the `Apply` arm); a first-class extern-op
+        // value is a later increment.
+        Resolved::Extern { .. } => Core::Poison(Reject::decline(
+            "a cross-component extern op used as a value (not applied) is not yet lowered",
+        )),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
@@ -784,6 +820,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
                 return Core::Poison(Reject::decline(crate::diag::NO_HOME_STANDALONE_DECLINE));
+            }
+            // A CROSS-COMPONENT extern op applied `(f args…)` (X4b) — the head resolves to a
+            // `Resolved::Extern` (bound by an `(extern "iface" (f (-> …)) …)` form). It has no in-arena
+            // body to inline; it is a PEER component's export, so it lowers to a `Core::ExternCall` the
+            // backend imports across the live component boundary (component-abi.md §Cross-Component Value
+            // Exchange). The result type is the declared signature's RESULT (the peer returns exactly it).
+            if let Resolved::Extern { interface, op, ty } = resolved_of(db, head) {
+                let result = crate::eval::typeval_of(db, ty)
+                    .map(|t| fn_result_after(&t, args.len()))
+                    .unwrap_or(crate::ty::Ty::Any);
+                trace!(target: "rcdzc::lower", node = id.0, %interface, %op, "apply: cross-component extern → Core::ExternCall");
+                return Core::ExternCall {
+                    interface,
+                    op,
+                    args: args.to_vec(),
+                    result,
+                };
             }
             // CASE-OF-CASE (commuting conversion): a head that reduces to a runtime `if` —
             // `((if c a b) args…)` — pushes the application into each branch: `(if c (a args…)
@@ -2574,10 +2627,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // Each arm's length condition + an optional GUARD (a boolean the arm's binders are in scope for). A
+    // guarded arm fires only when its length holds AND the guard is true; on a false guard it FALLS THROUGH
+    // to the next arm, and it does NOT count toward length-coverage exhaustiveness (its guard may fail) —
+    // exactly as a guarded scalar/sum arm behaves.
     enum Arm {
-        Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
-        Rest(usize, StructId), // a rest `(list p0 … p_{k-1} .. rest)` — matches length ≥ k (lead = k)
-        Wild(StructId),        // a bare binder / `_` — matches any length
+        Fixed(usize, Option<StructId>, StructId), // a fixed-arity `(list …)` of this exact arity
+        Rest(usize, Option<StructId>, StructId), // a rest `(list p… .. rest)` — matches length ≥ k (lead=k)
+        Wild(Option<StructId>, StructId),        // a bare binder / `_` — matches any length
     }
     // The list's element type (from the scrutinee), used to classify each element sub-pattern's shape
     // (`Any` when unsolved — permissive, the same treatment a binding position gets).
@@ -2587,8 +2644,20 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     };
     let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
     for &(pat, body) in arms {
+        // Peel a `(guard <inner-pattern> <cond>)` wrapper: the arm's list/binder pattern is `<inner>`, and
+        // `<cond>` is the guard (a boolean the pattern's binders are in scope for, resolve Case 6lg / 5g).
+        let (pat, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            Some(_) => {
+                return Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
+            }
+            None => (pat, None),
+        };
         if db.ast.as_name(pat).is_some() {
-            classified.push(Arm::Wild(body));
+            classified.push(Arm::Wild(guard, body));
             continue;
         }
         match db
@@ -2629,7 +2698,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 return Core::Poison(r);
                             }
                         }
-                        classified.push(Arm::Rest(i, body));
+                        classified.push(Arm::Rest(i, guard, body));
                     }
                     None => {
                         // Fixed arity: each element sub-pattern must be IRREFUTABLE (composes to any depth).
@@ -2638,7 +2707,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 return Core::Poison(r);
                             }
                         }
-                        classified.push(Arm::Fixed(es.len(), body));
+                        classified.push(Arm::Fixed(es.len(), guard, body));
                     }
                 }
             }
@@ -2655,10 +2724,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     // If there is no `Wild`/`Rest` arm at all, no arm covers the infinite tail → non-exhaustive. Otherwise
     // lengths [m, ∞) are covered by that arm; the finite prefix 0..m must be covered by `Fixed` arms (no
     // `Rest(j)` with j < m exists, since m is the minimum). Else CDZ0210.
+    //
+    // A GUARDED arm covers NOTHING unconditionally (its guard may fail), so it does not contribute to
+    // coverage — only UNGUARDED arms count (`guard.is_none()`), exactly as a guarded scalar/sum arm is
+    // excluded from exhaustiveness. So a guarded rest/wild does not close the tail, and a guarded fixed arm
+    // does not cover its length.
     let tail_start = classified.iter().filter_map(|a| match a {
-        Arm::Wild(_) => Some(0),
-        Arm::Rest(k, _) => Some(*k),
-        Arm::Fixed(_, _) => None,
+        Arm::Wild(None, _) => Some(0),
+        Arm::Rest(k, None, _) => Some(*k),
+        _ => None,
     });
     let Some(m) = tail_start.min() else {
         // NO catch-all arm → no arm covers the infinite tail. The mechanical repair is a WILDCARD `_` arm
@@ -2677,12 +2751,12 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             None => reject,
         });
     };
-    // Every length in 0..m must have a matching `Fixed` arm.
+    // Every length in 0..m must have a matching UNGUARDED `Fixed` arm (a guarded one may not fire).
     let missing: Vec<usize> = (0..m)
         .filter(|&n| {
             !classified
                 .iter()
-                .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
+                .any(|a| matches!(a, Arm::Fixed(k, None, _) if *k == n))
         })
         .collect();
     if !missing.is_empty() {
@@ -2716,20 +2790,53 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             None => reject,
         });
     }
+    // The runtime `Core::MatchList` arms built from the classified arms (each an `(cond, guard, body)`).
+    // Used both when the scrutinee is a runtime list AND when a constant fold aborts because a guard reads
+    // a runtime value (so it cannot be decided at compile time).
+    let build_match_list = |classified: &[Arm]| -> Core {
+        Core::MatchList {
+            scrutinee,
+            arms: classified
+                .iter()
+                .map(|arm| {
+                    let (cond, guard, body) = match arm {
+                        Arm::Fixed(k, g, body) => (crate::core::ListArmCond::LenEq(*k), *g, *body),
+                        Arm::Rest(lead, g, body) => {
+                            (crate::core::ListArmCond::LenGe(*lead), *g, *body)
+                        }
+                        Arm::Wild(g, body) => (crate::core::ListArmCond::Any, *g, *body),
+                    };
+                    crate::core::ListArm { cond, guard, body }
+                })
+                .collect(),
+        }
+    };
     // A CONSTANT scrutinee FOLDS: the length selects the arm; the body's element binders read the
     // constant elements via their `SumPayload` `Elem`/`RestFrom` folds, so lowering the SELECTED body is
-    // all that is needed (no β-substitution).
+    // all that is needed (no β-substitution). A GUARDED arm folds only if its guard folds to a constant
+    // bool: `true` selects it, `false` falls through to the next arm; a guard that does NOT fold to a const
+    // (reads a runtime value) ABORTS the fold to the runtime probe chain (like the scalar guard fold).
     match core_of(db, scrutinee) {
         Core::ListNew { elems } => {
             let n = elems.len();
             for arm in &classified {
-                let (matches, body) = match arm {
-                    Arm::Fixed(k, body) => (*k == n, *body),
-                    Arm::Rest(lead, body) => (n >= *lead, *body), // rest: length ≥ leading count
-                    Arm::Wild(body) => (true, *body),
+                let (len_matches, guard, body) = match arm {
+                    Arm::Fixed(k, g, body) => (*k == n, *g, *body),
+                    Arm::Rest(lead, g, body) => (n >= *lead, *g, *body), // rest: length ≥ leading count
+                    Arm::Wild(g, body) => (true, *g, *body),
                 };
-                if matches {
-                    return core_of(db, body);
+                if !len_matches {
+                    continue; // this arm's length doesn't match the constant — try the next
+                }
+                match guard {
+                    None => return core_of(db, body),
+                    Some(g) => match core_of(db, g) {
+                        Core::ConstBool(true) => return core_of(db, body),
+                        Core::ConstBool(false) => continue, // guard fails → fall through to the next arm
+                        // The guard did not fold to a const bool (reads a runtime value) → we cannot decide
+                        // this arm at compile time; emit the runtime dispatch chain instead.
+                        _ => return build_match_list(&classified),
+                    },
                 }
             }
             Core::Poison(Reject::decline(
@@ -2740,23 +2847,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         // A RUNTIME list scrutinee — emit `Core::MatchList`, which dispatches on `vec-len` at run time.
         // Each arm's length condition drives the dispatch; the leading element binders + rest binder read
         // the runtime list on their own (`SumPayload` `Elem`/`RestFrom` → `vec-get`/`vec-split`).
-        _ => {
-            let match_arms: Vec<crate::core::ListArm> = classified
-                .iter()
-                .map(|arm| {
-                    let (cond, body) = match arm {
-                        Arm::Fixed(k, body) => (crate::core::ListArmCond::LenEq(*k), *body),
-                        Arm::Rest(lead, body) => (crate::core::ListArmCond::LenGe(*lead), *body),
-                        Arm::Wild(body) => (crate::core::ListArmCond::Any, *body),
-                    };
-                    crate::core::ListArm { cond, body }
-                })
-                .collect();
-            Core::MatchList {
-                scrutinee,
-                arms: match_arms,
-            }
-        }
+        _ => build_match_list(&classified),
     }
 }
 
@@ -3419,12 +3510,59 @@ pub(crate) fn check_binding_pattern(
             "a record binding pattern is not yet supported (Increment B)",
         ));
     }
-    // A `(list …)` binding pattern (length-constrained → refutable; rest-binder → irrefutable) is out of
-    // scope with all list patterns — DECLINE (not reject), so the irrefutable form is not mis-rejected.
-    if db.ast.as_form(pat, "list").is_some() {
-        return Err(Reject::decline(
-            "a list binding pattern is not yet supported",
-        ));
+    // A `(list …)` binding pattern. A binding position is IRREFUTABLE, and a list pattern is irrefutable
+    // ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥ the leading count, and the empty
+    // prefix `(list .. rest)` matches every list. A FIXED-ARITY `(list a b)` matches only length-2 lists, so
+    // it is REFUTABLE → CDZ0210, the same non-exhaustiveness the equivalent single-arm match raises
+    // (`core-semantics.md §A Binding Position Accepts An Irrefutable Pattern`). Each leading element position
+    // + the rest binder is itself a *Patterns Compose* binder position, so a nested element must ALSO be
+    // irrefutable (recursed via `check_binding_pattern`), and the whole pattern must be LINEAR (CDZ0102).
+    //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+    //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`).
+    if let Some(elems) = db
+        .ast
+        .as_form(pat, "list")
+        .or_else(|| db.ast.as_ctor_form(pat, "list"))
+        .map(<[_]>::to_vec)
+    {
+        // Linearity across the WHOLE list pattern (CDZ0102) — the same check the tuple case runs.
+        check_pattern_linear(db, pat)?;
+        let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+        let Some(dd) = dd else {
+            // No `..` — a FIXED-ARITY list pattern, refutable (matches only its exact length). CDZ0210.
+            return Err(Reject::coded(
+                Code::NonExhaustive,
+                "a fixed-arity list pattern is refutable — it matches only lists of that exact length, \
+                 not every list, so it cannot appear in a binding position (use `(list p… .. rest)`, \
+                 which matches any length, or a `match`)",
+            )
+            .at(pat));
+        };
+        // A rest pattern needs EXACTLY one binder after `..`, and that binder must be a bare name / `_`
+        // (it binds the tail SUBLIST — a nested rest pattern is a later increment).
+        if dd + 2 != elems.len() {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+            )
+            .at(pat));
+        }
+        if db.ast.as_name(elems[dd + 1]).is_none() {
+            return Err(Reject::decline(
+                "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
+            ));
+        }
+        // The list's element type (for the leading sub-patterns' shape check); `Any` when unsolved.
+        let elem_ty = match value_ty {
+            crate::ty::Ty::List(e) => (**e).clone(),
+            _ => crate::ty::Ty::Any,
+        };
+        // Each LEADING element sub-pattern must itself be IRREFUTABLE (composes to any depth). A refutable
+        // leading element (a literal, a multi-variant ctor) is CDZ0210 exactly as a top-level binder.
+        for &elem in &elems[..dd] {
+            check_binding_pattern(db, elem, &elem_ty)?;
+        }
+        return Ok(());
     }
     // Otherwise a constructor-headed pattern `(Some x)` / `((. Sum V) x)` — classify by variant count.
     classify_binding_ctor(db, pat, value_ty)
@@ -5483,19 +5621,48 @@ fn lower_recursive_call_or_decline(
     //# The compiler MUST monomorphize every exported and imported signature to concrete types before emitting the component interface.
     //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
     //# A generic definition MUST NOT appear in a component's interface.
-    if !scheme.ty_vars.is_empty() {
+    // SPECIALIZE this call when either (a) the callee scheme is GENERIC (a type parameter to erase), or
+    // (b) some argument is CONST-INLINABLE (a compile-time-known value — a constant or an ad-hoc-poly
+    // DICTIONARY of functions — to inline + drop). Both go through `type_specialize`, which substitutes
+    // the erased args into a specialized copy and returns the dropped positions. A monomorphic callee
+    // called with only plain runtime args takes the byte-identical `Core::Call { callee }` path below.
+    //
+    // AD-HOC POLYMORPHISM with NO trait machinery: a "trait" is an ordinary record type whose fields are
+    // its operations, an "instance" is an ordinary value of that record, and a def polymorphic over it
+    // receives that dictionary as an ordinary EXPLICIT parameter (resolved by ordinary lexical binding —
+    // there is no ambient/global trait-resolution engine, so which implementation a use site gets is the
+    // explicit argument, visible at the call). A const-known dictionary is MONOMORPHIZED into the use site
+    // here (inlined by `type_specialize`, the argument erased from the runtime call) — no runtime
+    // dictionary lookup, no dispatch the manifest did not declare.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# A trait MUST be an ordinary record type whose fields are the operations it declares, and an instance MUST be an ordinary value of that record type, so that ad-hoc polymorphism reuses records and first-class values rather than a separate trait construct.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# A definition that is polymorphic over a trait MUST receive the instance as an ordinary explicit parameter, so that ad-hoc polymorphism is the existing type-valued-and-value-valued parameter mechanism rather than a separate resolution engine.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# The compiler MUST NOT resolve a trait instance from ambient or global scope, so that which implementation a use site gets is visible at the call and no orphan rule or global-coherence assumption is needed for ad-hoc polymorphism to compose with content-addressed modules.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# An explicitly passed instance MUST be monomorphized into the use site, so that a component carries no runtime dictionary lookup and no dispatch the manifest did not declare.
+    // Does the callee declare any `const` parameter (an EXPLICIT compile-time parameter — Addendum 3)?
+    // A `const` param is inlined + erased at instantiation; the AUTHOR declared it, so no heuristic
+    // detection. Specialize this call when the scheme is GENERIC (a type param) OR the callee has a
+    // `const` param. A non-`const` monomorphic call is byte-identical to the plain `Core::Call` below.
+    let callee_params = db.defs[callee].params.clone();
+    let has_const_param = callee_params.iter().any(|&p| {
+        db.const_params
+            .contains(&crate::eval::param_name_occ(db, p))
+    });
+    if !scheme.ty_vars.is_empty() || has_const_param {
         return match type_specialize(db, callee, args) {
-            Some((spec, type_arg_positions)) => {
-                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "recursive-generic call → monomorphized Core::Call");
-                // DROP the TYPE-VALUED arguments from the runtime call: a `(: t Type)` argument is
-                // compile-time-only (consumed by the specialization, which substituted its concrete
-                // type-value into the copy's body), so it carries no runtime slot and is not passed. The
-                // remaining args are the runtime ones, in order — matching the specialized def's erased
-                // signature (`type_specialize` omits the type-valued params).
+            Some((spec, erased_positions)) => {
+                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "specialized call → monomorphized Core::Call (type/const args erased)");
+                // DROP the ERASED arguments from the runtime call: a `(: t Type)` type-value OR a
+                // `const` param's value (a dictionary / constant) is compile-time-only (substituted into
+                // the copy's body), so it carries no runtime slot. The remaining args are the runtime
+                // ones, in order — matching the specialized def's signature (which omits the erased params).
                 let runtime_args: Vec<StructId> = args
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| !type_arg_positions.contains(i))
+                    .filter(|(i, _)| !erased_positions.contains(i))
                     .map(|(_, &a)| a)
                     .collect();
                 Core::Call {
@@ -5503,9 +5670,18 @@ fn lower_recursive_call_or_decline(
                     args: runtime_args,
                 }
             }
-            None => Core::Poison(Reject::decline(
-                "a recursive generic function could not be monomorphized at this call (an argument type is undetermined)",
-            )),
+            None => {
+                // `type_specialize` returns `None` only when a `const` argument does NOT fold to a
+                // compile-time value (or a generic scheme's type arg is undetermined). For a `const`
+                // param this is a CONTRACT VIOLATION the author declared — a coded compile error, NOT a
+                // silent runtime fallback (Addendum 3: the author says the arg is compile-time; a runtime
+                // arg is rejected). `type_specialize` reported the specific coded reject; surface it.
+                trace!(target: "rcdzc::lower", head = head.0, callee, "specialization declined (a const arg is not compile-time-known / a type arg is undetermined)");
+                Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    "an argument to a `const` parameter must be compile-time-known (it depends on runtime data), or a generic type argument is undetermined",
+                ))
+            }
         };
     }
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
@@ -5513,6 +5689,103 @@ fn lower_recursive_call_or_decline(
         callee,
         args: args.to_vec(),
     }
+}
+
+/// A CANONICAL STRUCTURAL FINGERPRINT of the subtree at `id` — a string that is EQUAL for two subtrees of
+/// identical shape+leaves regardless of their `StructId`s. The specialization memo needs a key stable
+/// across an argument and its β-COPY (the self-call re-passes a copied node, a fresh `StructId`): node
+/// identity would miss, re-specializing without end. For a CONST arg (a dictionary record of lambdas) this
+/// fingerprint distinguishes `(record (op (fn (x) (+ x 10))))` from `(record (op (fn (x) (* x 2))))` (so
+/// they get distinct copies) while collapsing two identical dicts (so they dedup). Bounded by the arg's
+/// size (a const dict is small); walks the raw AST (leaves + child order), NOT resolutions.
+fn subtree_fingerprint(db: &Db, id: StructId, out: &mut String) {
+    match db.ast.get(id) {
+        crate::ast::Struct::Atom(l) => {
+            use crate::ast::Leaf;
+            match db.ast.leaf(*l) {
+                Leaf::Name(n) => {
+                    out.push('n');
+                    out.push_str(n);
+                }
+                Leaf::Int { value, .. } => {
+                    out.push('i');
+                    out.push_str(&value.to_decimal_string());
+                }
+                Leaf::Float(d) => {
+                    out.push('f');
+                    out.push_str(&d.to_f64_bits().to_string());
+                }
+                Leaf::Str(s) => {
+                    out.push('s');
+                    out.push_str(s);
+                }
+                Leaf::Bool(b) => out.push(if *b { 'T' } else { 'F' }),
+                Leaf::Sym(s) => {
+                    out.push('y');
+                    out.push_str(s);
+                }
+                Leaf::Char(c) => {
+                    out.push('c');
+                    out.push(*c);
+                }
+                Leaf::Bytes(bs) => {
+                    out.push('b');
+                    out.push_str(&bs.len().to_string());
+                }
+                other => {
+                    // A defect leaf (BadChar/BadEscape/…) — a non-const arg would not reach here; fingerprint
+                    // by its debug form defensively so two distinct defects do not collide.
+                    out.push('?');
+                    out.push_str(&format!("{other:?}"));
+                }
+            }
+            out.push(';');
+        }
+        crate::ast::Struct::List(kids) => {
+            out.push('(');
+            for &k in kids {
+                subtree_fingerprint(db, k, out);
+            }
+            out.push(')');
+        }
+    }
+}
+
+/// Whether the argument subtree at `arg` CAPTURES A RUNTIME BINDING — a name resolving to a `Param`
+/// (or a `Ref` to one) whose binder lies OUTSIDE `arg` itself. Such an argument depends on runtime data
+/// (the captured param's per-call value), so it is NOT compile-time-known and a `const` parameter cannot
+/// accept it — the specialization declines and the gate raises the coded "must be compile-time-known"
+/// error. A capture of the arg's OWN internal lambda param (`(fn (x) (+ x 1))`'s `x`) is fine (it is bound
+/// WITHIN `arg`); only a binder outside `arg` is a runtime capture. A reference to a top-level def /
+/// prelude is not a param, so it is fine (re-resolves in the copy). This is the general closedness check
+/// (replaces the earlier `own`-params-only test, which missed a capture of a CALLER's param).
+fn arg_captures_runtime_binding(db: &mut Db, arg: StructId) -> bool {
+    fn go(db: &mut Db, id: StructId, root: StructId) -> bool {
+        if db.ast.as_name(id).is_some()
+            && let Resolved::Ref { value } | Resolved::Param { binder: value } = resolved_of(db, id)
+            && !db.is_within(value, root)
+        {
+            // A param binder OUTSIDE the arg subtree — a runtime capture. (A `Ref` to a top-level def's
+            // lambda body is also `!is_within`, but a def resolves to `Lambda`, not `Param`/`Ref`-to-param;
+            // only a genuine param/local ref matches the pattern above.)
+            return matches!(
+                resolved_of(db, id),
+                Resolved::Param { .. } | Resolved::Ref { .. }
+            ) && is_param_or_local_binder(db, value);
+        }
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            return kids.clone().iter().any(|&k| go(db, k, root));
+        }
+        false
+    }
+    // Whether `binder` is a PARAMETER or a runtime `let`-local binder occurrence (a runtime binding),
+    // as opposed to a top-level def / type / prelude node (compile-time-resolvable, re-resolves in a copy).
+    fn is_param_or_local_binder(db: &mut Db, binder: StructId) -> bool {
+        // A param/local binder is a user NAME node that is not a top-level def head. A top-level def's
+        // body/name resolves to a `Lambda`, never reaching here as a bare `Param`/local `Ref` target.
+        db.ast.as_name(binder).is_some() && db.def_index_by_body(binder).is_none()
+    }
+    go(db, arg, arg)
 }
 
 /// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
@@ -5538,15 +5811,30 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
     // runtime call). Every OTHER argument's concrete TYPE re-annotates its (kept) parameter. Both the
     // type-VALUE (for a type arg) and the type (for a value arg) must be DETERMINED — a loose `Any`/free
     // `Var` would mistype the copied body.
+    // EXPLICIT `const` rule (operator, 2026-07-14; Addendum 3): a parameter the AUTHOR marked `const`
+    // (recorded in `db.const_params`) is compile-time-known — its argument is inlined into the specialized
+    // copy and the parameter ERASED from the runtime signature. No heuristic detection; the declaration is
+    // the trigger. A `Ty::Type`-typed argument is the type-valued special case (a type is a const value),
+    // erased the same way for back-compat even without an explicit `const`. Every OTHER argument is an
+    // ordinary runtime value, kept + re-annotated with its concrete type. A `const` argument that does NOT
+    // reduce to a closed compile-time value → `None` (the gate raises the coded "must be
+    // compile-time-known" error). All arg/param types must be DETERMINED (a loose `Any`/`Var` mistypes the
+    // copy).
     enum ArgKind {
         // A runtime value param, kept, re-annotated with this concrete type.
         Value(crate::ty::Ty),
-        // A type-valued param: its concrete type-VALUE, substituted into the copy's body (the param is
-        // ERASED from the signature).
+        // A type-valued param: its concrete type-VALUE, substituted into the copy's body (param ERASED).
         TypeArg(crate::ty::Ty),
+        // A `const` param's argument (a dictionary / constant): the arg's VALUE NODE is substituted into
+        // the copy's body (so `(. d op)` folds to the concrete op) and the param ERASED. `String` = a
+        // structural fingerprint of the arg (the memo/dedup key, stable across the arg and its β-copy).
+        ConstArg(StructId, String),
     }
     let mut kinds: Vec<ArgKind> = Vec::with_capacity(args.len());
-    for &a in args {
+    for (&a, &p) in args.iter().zip(orig_params.iter()) {
+        let is_const = db
+            .const_params
+            .contains(&crate::eval::param_name_occ(db, p));
         if matches!(crate::infer::type_of(db, a), crate::ty::Ty::Type) {
             // A type-valued argument — reduce it to the concrete type it names (`Int64` → `Ty::Int`).
             let tv = crate::eval::typeval_of(db, a)?;
@@ -5554,6 +5842,16 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                 return None; // an undetermined type-value cannot monomorphize
             }
             kinds.push(ArgKind::TypeArg(tv));
+        } else if is_const {
+            // A `const` parameter — its argument MUST be a closed compile-time value (capturing no runtime
+            // binding, from THIS def or an enclosing one). If it captures a runtime param, the contract is
+            // violated → decline (the gate raises the coded error). Otherwise inline the arg's value node.
+            if arg_captures_runtime_binding(db, a) {
+                return None; // the const arg depends on runtime data — not compile-time-known
+            }
+            let mut fp = String::new();
+            subtree_fingerprint(db, a, &mut fp);
+            kinds.push(ArgKind::ConstArg(a, fp));
         } else {
             let t = crate::infer::type_of(db, a);
             if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
@@ -5562,10 +5860,11 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             kinds.push(ArgKind::Value(t));
         }
     }
+    // The positions dropped from the runtime call — a type arg OR a const-inlined arg (both erased).
     let type_arg_positions: Vec<usize> = kinds
         .iter()
         .enumerate()
-        .filter(|(_, k)| matches!(k, ArgKind::TypeArg(..)))
+        .filter(|(_, k)| matches!(k, ArgKind::TypeArg(..) | ArgKind::ConstArg(..)))
         .map(|(i, _)| i)
         .collect();
 
@@ -5577,6 +5876,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         .map(|k| match k {
             ArgKind::Value(t) => t.render_name(),
             ArgKind::TypeArg(tv) => format!("@{}", tv.render_name()), // `@` marks a type ARG slot
+            ArgKind::ConstArg(_, fp) => format!("#{fp}"), // `#` marks a const-inlined slot
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -5627,6 +5927,15 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                 let name_occ = crate::eval::param_name_occ(db, orig_p);
                 let ty_expr = crate::eval::encode_typeval(db, tv);
                 arg_of.insert(name_occ, ty_expr);
+            }
+            ArgKind::ConstArg(arg_node, _) => {
+                // Substitute the arg's VALUE NODE for the param's references (`d` → `(record (op (fn …)))`),
+                // so a body `(. d op)` projects the const record → the concrete lambda → and its application
+                // β-folds to a direct op (no `call_indirect`, no runtime record). The param is dropped from
+                // the signature (erased). The substituted node is the caller-side arg subtree, spliced into
+                // the copy — the same mechanism `beta_reduce` uses for a substituted lambda argument.
+                let name_occ = crate::eval::param_name_occ(db, orig_p);
+                arg_of.insert(name_occ, *arg_node);
             }
         }
     }
@@ -5739,6 +6048,22 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     // runtime binding — a shared scalar computation — keeps the multi-use rule below: naming avoids a
     // recompute.)
     if is_compound_value(db, init) && !binding_escapes_whole(db, init, scope) {
+        return false;
+    }
+    // A CONSTANT list `let`-bound and read ONLY through its element/rest PATTERN binders — `(let (((list a
+    // b .. rest) (list 10 20 30))) (+ a b))` — need not be built on the heap: each binder resolves to a
+    // `SumPayload{Elem(i)}`/`{RestFrom(k)}` that FOLDS straight through to the constant element/tail
+    // (`fold_sum_path`'s `ListNew` arms), exactly as a constant tuple's projections fold. Keeping it would
+    // build a `vec-empty`+`vec-push` chain only to read it back (or drop it dead) — pure waste for a value
+    // that never varies. So a constant list NOT used as a WHOLE value (a `SumPayload` binder read is a
+    // PIECE read, `ref_escapes_whole`→false, like a projection) is not kept — it folds. This closes the gap
+    // where 2+ element binders tripped the ≥2-use rule below and materialized the list. (A RUNTIME list, or
+    // a constant list that ESCAPES whole — returned/passed/nested — genuinely needs materialization and IS
+    // kept: the old `ListNew`-is-always-whole reasoning still holds for those.)
+    if matches!(core_of(db, init), Core::ListNew { .. })
+        && is_constant_compound(db, init)
+        && !binding_escapes_whole(db, init, scope)
+    {
         return false;
     }
     // Count references to this binding across its scope. Naming is worth it only at >= 2 uses.
@@ -5855,6 +6180,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Param { .. }
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. }
+        | Resolved::Extern { .. }
         | Resolved::Poison(_) => false,
     }
 }
@@ -5909,6 +6235,11 @@ pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
         Core::Tuple { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
         Core::Record { fields } => fields.values().all(|&v| is_constant_compound(db, v)),
+        // A `Core::ListNew` all of whose elements are constant is a constant compound too — a list-`let`
+        // read only through element/rest pattern binders folds each read to the constant element
+        // (`should_keep_binding`'s list short-circuit). (The tuple short-circuit in `is_runtime_computation`
+        // gates on `Core::Tuple` first, so this addition does not change that path.)
+        Core::ListNew { elems } => elems.iter().all(|&e| is_constant_compound(db, e)),
         _ => false,
     }
 }
@@ -7582,6 +7913,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         | Resolved::Param { .. }
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. }
+        | Resolved::Extern { .. }
         | Resolved::Poison(_) => 0,
     }
 }
@@ -8131,6 +8463,47 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
         d = d.neg();
     }
     Core::ConstRational(n, d)
+}
+
+/// Fold a numeric LITERAL to a normalized `Core::ConstRational` — the value an annotation `(: lit
+/// Rational)` (and, later, the `R` literal suffix) grounds to. An integer `k` is the exact `k/1`; a
+/// decimal `significand·10^exp` is the exact `significand / 10^|exp|` (LOSSLESS — a `Decimal` captures
+/// the source exactly, so `0.5` is precisely `1/2`, never a rounded `f64`): a non-negative exponent
+/// scales the numerator (`12·10^2 / 1`), a negative one is the denominator `10^|exp|` (`5 / 10^1` for
+/// `0.5`). `normalized_rational` reduces to lowest terms + puts the sign on the numerator. Returns
+/// `None` for a non-literal expression (the annotation then erases normally). Only reached when the
+/// annotation type is `Rational` (checked by the `Annot` arm).
+fn rational_from_literal(db: &mut Db, expr: StructId) -> Option<Core> {
+    use crate::ast::IntValue;
+    // 10^k as an IntValue (k ≥ 0), by repeated multiply — no bignum dep, and `k` is a literal's decimal
+    // digit count, so it is small.
+    fn ten_pow(k: u64) -> IntValue {
+        let ten = IntValue::from_i64(10);
+        let mut acc = IntValue::from_i64(1);
+        for _ in 0..k {
+            acc = acc.mul(&ten);
+        }
+        acc
+    }
+    match crate::resolve::resolved_of(db, expr) {
+        // An integer literal `k` grounds to `k/1`.
+        crate::resolved::Resolved::Int(v) => Some(normalized_rational(v, IntValue::from_i64(1))),
+        // A decimal `significand·10^exp` grounds to the exact fraction. The significand shares
+        // `IntValue`'s big-endian magnitude representation, so it lifts directly (its sign is on `d.negative`).
+        crate::resolved::Resolved::Float(d) => {
+            let sig = IntValue {
+                negative: d.negative,
+                magnitude: d.significand.clone(),
+            };
+            let (num, den) = if d.exponent >= 0 {
+                (sig.mul(&ten_pow(d.exponent as u64)), IntValue::from_i64(1))
+            } else {
+                (sig, ten_pow((-d.exponent) as u64))
+            };
+            Some(normalized_rational(num, den))
+        }
+        _ => None,
+    }
 }
 
 /// Lower `Rational.of n d` — fold a constant numerator/denominator pair to a normalized
@@ -9926,7 +10299,10 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
 /// shielded in the connective's guarded rhs exactly as in the `if`'s branch).
 fn tail_positions_have_call(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::Call { .. } | Core::CallClosure { .. } | Core::HostCall { .. } => true,
+        Core::Call { .. }
+        | Core::CallClosure { .. }
+        | Core::HostCall { .. }
+        | Core::ExternCall { .. } => true,
         Core::If { then_, else_, .. } => {
             tail_positions_have_call(db, then_) || tail_positions_have_call(db, else_)
         }

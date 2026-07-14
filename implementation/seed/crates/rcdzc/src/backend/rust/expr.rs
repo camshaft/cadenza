@@ -899,10 +899,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::Closure { .. }
         | Core::CallClosure { .. }
         | Core::Captured { .. }
-        // A host call crosses the component boundary — the Rust backend emits no component imports, so it
-        // declines (the wasm backend is the host-boundary target). A sequencing block only ever holds a
-        // host-call statement today, so the Rust backend declines it too.
+        // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
+        // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
+        // only ever holds a host-call statement today, so the Rust backend declines it too.
         | Core::HostCall { .. }
+        | Core::ExternCall { .. }
         | Core::Seq { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
@@ -1989,8 +1990,14 @@ fn emit_sum_expect(
     }
     let scrut = emit(db, scrutinee, env, ctx)?;
     // The payload binds to `__expect` and is the match's value directly (a single-payload present arm).
+    // The absent-case panic message is `"unreachable"` (NOT `"expect"`): requiring the value of an absent
+    // optional is a trap whose canonical KIND is `unreachable` — the SAME kind the wasm backend produces
+    // (its `SumExpect` absent branch is an `unreachable`) and the SAME literal `Core::Trap` emits. The gate
+    // classifies a trap by its reason (`trap_kind`); `"expect"` classifies as nothing, so a `(trap
+    // "unreachable")` expect-on-absent case graded todo on rust though it correctly halts. Matching the
+    // literal makes rust agree with wasm.
     Ok(format!(
-        "match {scrut} {{ {vpath}(__expect) => __expect, _ => panic!(\"expect\") }}"
+        "match {scrut} {{ {vpath}(__expect) => __expect, _ => panic!(\"unreachable\") }}"
     ))
 }
 

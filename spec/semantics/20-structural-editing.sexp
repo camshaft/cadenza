@@ -12,10 +12,10 @@
 ; Ordinary Sum Type). So "edit a program structurally" is not a bespoke external protocol — it is
 ; "write a recursive function that maps a syntax-tree value to a syntax-tree value," exactly the shape
 ; a compiler's own passes take (compiler.cdz's `resolve`/`fold`/`lower` are each such a walk). The
-; CORE cases below (no `(needs …)`) demonstrate the realization the seed already runs: a transformation
+; CORE cases below demonstrate the realization the seed already runs: a transformation
 ; over a user-declared syntax-tree sum, walked across function calls, that preserves meaning while it
 ; rewrites — the peephole/simplifier idiom an agent scripts to refactor code. The ASPIRATIONAL cases
-; (tagged `(needs …)`, skipped until a later generation realizes them) pin the fuller surface: the same
+; (declined until a later generation realizes them) pin the fuller surface: the same
 ; walk over the BUILT-IN `Ast` composed across calls, and a rewrite RULE written with a quote pattern
 ; that reads in the shape of the code it rewrites.
 ;
@@ -237,10 +237,10 @@
 ; ============================================================================================
 ; ASPIRATIONAL — the fuller structural-editing surface (a later generation realizes these)
 ; ============================================================================================
-; These pin the contract the realization must meet; they are NOT seed declines. The seed skips a case
-; whose `(needs …)` capability it does not realize (conformance-gate.md §A Generation Is Judged Against
-; The Capabilities It Realizes), so these document the target without gating on it — exactly as the
-; `(needs quote-patterns)` cases in 12-metaprogramming.sexp do.
+; These pin the contract the realization must meet. The seed declines a case whose capability it does
+; not realize (conformance-gate.md §A Generation Is Judged Against The Capabilities It Realizes), so
+; these document the target and are scored todo until realized — exactly as the quote-pattern cases in
+; 12-metaprogramming.sexp are.
 
 ; The CORE cases walk a USER sum across calls (the seed's realized path). The built-in `Ast` is an
 ; ordinary sum type of the same shape (type-system.md §The Abstract Syntax Tree Type Is An Ordinary Sum
@@ -257,7 +257,7 @@
            every other node; applied to `(quote 7)` through a call it yields `(Ast.Int 8)`. This is the
            built-in-`Ast` realization of program-transformation-is-a-program; the seed realizes the
            built-in `Ast` only inline (core case above), so composing it across a boundary is the
-           increment a later generation lands. `(needs builtin-ast-across-calls)`.")
+           increment a later generation lands; until then the seed declines it.")
   (input  (do
             (def (main) (= (bump (quote 7)) (Ast.Int 8)))
             (def (bump node)
@@ -272,7 +272,7 @@
 ; 12-metaprogramming.sexp), but an agent writes it in the surface shape of the arithmetic identity it
 ; encodes — so the paren-bookkeeping is READ ONCE by the reader, never counted against a live buffer.
 ; This is the "scriptable editing" sweet spot: a peephole rule set that looks like the algebra it
-; performs. Tagged `(needs quote-patterns)` (the pattern-position quote lowering) — and it also relies
+; performs. It requires quote-patterns (the pattern-position quote lowering) — and it also relies
 ; on the built-in `Ast` flowing across a call, so it is realized no earlier than the companion above.
 
 (case "a peephole rewrite rule reads in the shape of the code it rewrites"
@@ -282,7 +282,7 @@
            `(Ast.Int 0)` by equality; `,x` binds the sub-tree — metaprogramming.md §A Quasiquote In
            Pattern Position Destructures An AST). So `simp` rewrites `(+ x 0) ⇒ x` and `(* x 1) ⇒ x`;
            applied to `(quote (+ x 0))` it yields `(quote x)`. The rule set looks like the algebra it
-           performs — the agent authors intent, not delimiter bookkeeping. `(needs quote-patterns)`;
+           performs — the agent authors intent, not delimiter bookkeeping. It requires quote-patterns;
            also relies on the built-in `Ast` composing across a call (companion above).")
   (input  (do
             (def (main) (= (simp (quote (+ x 0))) (quote x)))
