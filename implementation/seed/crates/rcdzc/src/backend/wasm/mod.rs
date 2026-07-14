@@ -1425,6 +1425,32 @@ fn emit_closure_resource(
             ));
         }
     }
+    // A MAKE-TIME host call in the EXPORT BODY (not the lifted closure) — the build-time-delegated case
+    // `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`: `ask.ask` is discharged WHILE the delegation
+    // is in scope and the closure merely captures the plain result `v` (NOT an escape — the CDZ0406 scan
+    // above correctly left it alone). But the closure-resource emit path does not yet build the host-import
+    // boundary (`resource_escape_build` fixes `import_base` from runtime ops + resource intrinsics only, and
+    // `assemble_closure_resource` imports no `host` interface), so the make-time `Core::HostCall` would fall
+    // through to `select`'s internal "not in the host-import set" message (documented "a compiler bug").
+    // Decline HONESTLY instead, naming the feature — the closure-export host-import composition is a later
+    // increment (it needs the same host+runtime fusion `assemble_host_runtime` applied to the closure
+    // resource envelope). Scans the export body's make-time code for a discharged host call.
+    {
+        let mut make_time = Vec::new();
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            host::collect_host_imports(db, body, &mut make_time);
+        }
+        if let Some(h) = make_time.first() {
+            return Err(Reject::decline(format!(
+                "a closure export whose build-time code delegates a host effect ({}.{}) is not yet emitted \
+                 (the closure resource envelope does not import the host interface yet — a later \
+                 increment); the effect is discharged in scope and the closure captures only the plain \
+                 result, so this is valid, just unimplemented",
+                h.effect, h.op
+            )));
+        }
+    }
     // Boundary bytes (component valtypes) for the `call` method's ARGS — always aliased scalar widths (a
     // compound closure arg is the host→guest DECODE direction, not yet supported).
     let arg_bytes: Vec<u8> = arg_tys

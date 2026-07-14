@@ -36691,6 +36691,53 @@ mod closure_host_resource {
         );
     }
 
+    /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
+    /// (fn (x) (+ x v))))` — is VALID (the `ask.ask` is discharged while the delegation is in scope; the
+    /// returned closure is effect-free, capturing only the plain result). It is NOT the CDZ0406 escape (the
+    /// perform is make-time, not in the lifted body). But the closure-resource emit path does not yet import
+    /// the host interface, so it declines — now HONESTLY, naming the feature, NOT with the internal "not in
+    /// the host-import set" message (documented "a compiler bug"). A plain capturing closure (no host) still
+    /// emits, and the CDZ0406 escape (perform IN the closure body) still fires — the make-time decline must
+    /// not swallow either.
+    #[test]
+    fn a_closure_export_delegating_a_build_time_effect_declines_honestly() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure export with a build-time host effect is not yet emitted — must decline",
+        );
+        assert!(
+            err.message.contains("ask.ask")
+                && err.message.contains("closure export")
+                && err.message.contains("not yet emitted"),
+            "expected an honest feature-limitation decline naming the op, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("not in the host-import set"),
+            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
+            err.message
+        );
+        // A PLAIN capturing closure (no host) still emits.
+        let plain = "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(plain)))
+            .expect("a plain capturing closure still emits (the make-time decline is host-gated)");
+        // The CDZ0406 ESCAPE (perform INSIDE the closure body) still fires — not swallowed by the make-time
+        // decline (which scans the EXPORT body; the escape scans the LIFTED body).
+        let escape = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
+        let esc_err = crate::compile::compile_component(&crate::codec::encode(&parse(escape)))
+            .expect_err("a closure whose body performs must still reject CDZ0406");
+        assert_eq!(
+            esc_err.code.as_deref(),
+            Some("CDZ0406"),
+            "the escape case must still be CDZ0406, got: {:?} / {}",
+            esc_err.code,
+            esc_err.message
+        );
+    }
+
     /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler
     /// emits yet — its result was collected as `result: None` (indistinguishable from a Unit result), then
     /// selection hit the INTERNAL "not in the host-import set" path, a message documented as "a compiler
