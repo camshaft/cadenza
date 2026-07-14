@@ -101,23 +101,24 @@ export default function Lists() {
 (def (main) (count (list 10 20 30 40)))`}
       />
       <P>
-        To visit <em>every</em> element, walk the list by index with recursion (the loop you met in{" "}
-        <em>Control flow</em>): <C>List.at</C> hands back <C>(Some v)</C> while there's an element and{" "}
-        <C>(None _)</C> once you step past the end — which is exactly the base case. Here <C>sum-from</C>{" "}
-        adds up a list of numbers:
+        To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two
+        cases: the empty list <C>(list)</C>, and a non-empty one <C>(list x .. rest)</C> — which binds the
+        first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C>{" "}
+        and you fold over the whole list. Here <C>sum</C> adds the elements:
       </P>
       <Runnable
-        source={`(def (sum-from xs i)
-  (match (List.at xs i)
-    ((Some v) (+ v (sum-from xs (+ i 1))))
-    ((None _) 0)))
-(def (main) (sum-from (list 10 20 30) 0))`}
+        source={`(def (sum xs)
+  (match xs
+    ((list) 0)
+    ((list x .. rest) (+ x (sum rest)))))
+(def (main) (sum (list 10 20 30)))`}
       />
       <P>
-        The <C>None</C> arm ends the recursion the moment the index runs off the end — no separate length
-        check, no way to read past the end, because the missing element <em>is</em> the stopping signal.
-        And you didn't have to tell it the elements are numbers: the type flows from <C>List.at</C>'s
-        result through the <C>+</C>, so <C>sum-from</C> is inferred to work on a list of <C>Int64</C>.
+        The empty case is the base case — <C>0</C>, the sum of nothing — and each step peels off one
+        element and sums the rest, so <C>(list 10 20 30)</C> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>.
+        Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>, the shape spelled out. You
+        didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over
+        a list of <C>Int64</C>.
       </P>
 
       <H2>Your turn</H2>
@@ -171,25 +172,25 @@ export default function Lists() {
         id="lists:3"
         prompt={
           <>
-            Complete the recursive step of <C>sum-from</C> so it adds every element. The <C>None</C> base
-            case is done; in the <C>Some</C> arm, add this element to the sum of the rest. Over{" "}
+            Complete the recursive step of <C>sum</C> with a list pattern. The empty case is done; in the
+            non-empty arm, add the first element <C>x</C> to the sum of the <C>rest</C>. Over{" "}
             <C>(list 1 2 3 4)</C> the total is <C>10</C>.
           </>
         }
-        starter={`(def (sum-from xs i)
-  (match (List.at xs i)
-    ((Some v) (+ v ?))
-    ((None _) 0)))
-(def (main) (sum-from (list 1 2 3 4) 0))`}
-        solution={`(def (sum-from xs i)
-  (match (List.at xs i)
-    ((Some v) (+ v (sum-from xs (+ i 1))))
-    ((None _) 0)))
-(def (main) (sum-from (list 1 2 3 4) 0))`}
+        starter={`(def (sum xs)
+  (match xs
+    ((list) 0)
+    ((list x .. rest) (+ x ?))))
+(def (main) (sum (list 1 2 3 4)))`}
+        solution={`(def (sum xs)
+  (match xs
+    ((list) 0)
+    ((list x .. rest) (+ x (sum rest)))))
+(def (main) (sum (list 1 2 3 4)))`}
         expected="10"
         hint={
           <>
-            "The sum of the rest" is the same function on the next index: <C>(sum-from xs (+ i 1))</C>.
+            "The sum of the rest" is <C>sum</C> applied to the <C>rest</C> binder: <C>(sum rest)</C>.
           </>
         }
       />

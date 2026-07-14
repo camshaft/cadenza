@@ -572,7 +572,7 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
 /// site (the bare unbound Poison `resolve_name` emits carries only the node; the suggestion is attached
 /// there so the O(scope) candidate scan runs at most once per surfaced fault, never per resolve). See
 /// [`nearest_name_suggestion`].
-pub(crate) fn nearest_unbound_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> {
+pub(crate) fn nearest_unbound_suggestion(db: &mut Db, id: StructId, name: &str) -> Option<String> {
     nearest_name_suggestion(db, id, name)
 }
 
@@ -587,7 +587,7 @@ pub(crate) fn nearest_unbound_suggestion(db: &Db, id: StructId, name: &str) -> O
 /// Determinism (`spec/capabilities/diagnostics.md` §A Fix Is A Deterministic Function Of The Source):
 /// candidates are considered in a fixed order and ties break on the lexicographically-smaller name, so
 /// the suggestion is a pure function of the program — never dependent on hash-map iteration order.
-fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> {
+fn nearest_name_suggestion(db: &mut Db, id: StructId, name: &str) -> Option<String> {
     // (A one-char name has no meaningful typo neighbour — that guard now lives in `suggest::nearest`, so
     // every suggestion site shares it, and this path need not repeat it.)
     // CONTEXT-AWARE candidate pool: the syntactic POSITION of the typo constrains which names could have
@@ -610,16 +610,88 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
     // Positions that admit only NON-VALUE names drop the value tiers (lexical binders, value defs) — a
     // member operand and a type expression are each such a position.
     let non_value_position = member_operand || type_expr;
-    let mut candidates: Vec<String> = Vec::new();
+    // Tier 1 — lexical scope: every binder visible where the reference sits. This is the ONLY per-NODE
+    // tier (a param/`let`/pattern binder near THIS reference), and it is small, so it is collected fresh.
+    let mut tier1: Vec<String> = Vec::new();
     if !non_value_position {
-        // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
-        // pattern binders). Only meaningful in value position — a type/member position takes no local.
         for (n, _occ) in visible_bindings(db, id) {
-            candidates.push(n);
+            tier1.push(n);
         }
+    }
+    // The PROGRAM-WIDE winner (defs / variants / effects / types / prelude) is MEMOIZED per (name, class):
+    // its edit-distance scan over the whole pool is O(pool), and N call sites of the SAME missing name
+    // re-ran the identical scan → O(N²) (a forgotten import / renamed helper referenced from N sites).
+    // Combining the memoized pool winner with the tiny per-node tier-1 scan reproduces the global result
+    // EXACTLY: `nearest` prefers lower edit distance, ties broken lexicographically, so re-running it over
+    // `tier1 ∪ {pool_winner}` picks the same name `tier1 ∪ pool` would (a pool candidate that lost to the
+    // pool winner — farther, or equal-distance-but-lexicographically-larger — could never have beaten it
+    // against tier1 either).
+    let pool_winner = pool_suggest_winner(db, member_operand, type_expr, name);
+    crate::diag::suggest::nearest(
+        name,
+        tier1
+            .iter()
+            .map(String::as_str)
+            .chain(pool_winner.as_deref()),
+    )
+}
+
+/// The program-wide typo-suggestion winner (the nearest name in the position-class pool to `name`),
+/// MEMOIZED per `(name, class)` in `db.suggest_pool_winner` — so N unbound references to the SAME missing
+/// name share one O(pool) edit-distance scan instead of re-running it each (the O(N²) fix). Builds the
+/// class pool once (`program_suggest_pool`, itself cached), scans it via `suggest::nearest`, and caches
+/// the winner. A pure function of the program + query.
+fn pool_suggest_winner(
+    db: &mut Db,
+    member_operand: bool,
+    type_expr: bool,
+    name: &str,
+) -> Option<String> {
+    let class = if member_operand {
+        1u8
+    } else if type_expr {
+        2
+    } else {
+        0
+    };
+    let key = (name.to_string(), class);
+    if let Some(hit) = db.suggest_pool_winner.get(&key) {
+        return hit.clone();
+    }
+    let pool = program_suggest_pool(db, member_operand, type_expr);
+    let winner = crate::diag::suggest::nearest(name, pool.iter().map(String::as_str));
+    db.suggest_pool_winner.insert(key, winner.clone());
+    winner
+}
+
+/// The PROGRAM-WIDE typo-suggestion candidate names for a position class (the def / variant / effect /
+/// type / prelude tiers of [`nearest_name_suggestion`], everything EXCEPT the per-node lexical tier) —
+/// built once per class and CACHED in `db.suggest_pool`, so N unbound occurrences do not each re-clone
+/// every def name (the O(N²) that "N call sites of one missing name" hit). A pure function of the program:
+/// the same three position classes `nearest_name_suggestion` distinguishes (value / member-operand /
+/// type-expression) select which tiers appear, exactly as the inline build did — the produced set is
+/// byte-identical, only its construction is amortized.
+fn program_suggest_pool(
+    db: &mut Db,
+    member_operand: bool,
+    type_expr: bool,
+) -> std::rc::Rc<Vec<String>> {
+    let class = if member_operand {
+        1
+    } else if type_expr {
+        2
+    } else {
+        0
+    };
+    if let Some(pool) = &db.suggest_pool[class] {
+        return pool.clone();
+    }
+    let non_value_position = member_operand || type_expr;
+    let mut pool: Vec<String> = Vec::new();
+    if !non_value_position {
         // Tier 2 — this module's top-level value definitions (value position only).
         for d in &db.defs {
-            candidates.push(d.name.clone());
+            pool.push(d.name.clone());
         }
         // Tier 2b — the boolean LITERALS `true`/`false` (value position only). They are lexer literals
         // (`Leaf::Bool`), not bound names, so they are NOT in scope/defs/prelude — yet a mis-cased
@@ -628,23 +700,23 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
         // "did you mean `true`?" (edit distance 1, within the cutoff), the same did-you-mean an unbound
         // name gets — a literal is a valid replacement here exactly as a name is. (`TRUE` is distance 4,
         // beyond the cutoff, so only the common single-case-slip is suggested — no baseless guess.)
-        candidates.push("true".to_string());
-        candidates.push("false".to_string());
+        pool.push("true".to_string());
+        pool.push("false".to_string());
     }
     // Tier 3 — `(type …)` names (a type name fits BOTH a member operand `Int64.max` AND a type expr `(: x
     // Int64)`) + their variant CONSTRUCTORS (a value, so kept ONLY in value position) — and `(effect …)`
     // names (member-accessible, so a member-operand candidate; NOT a type, so excluded from a type expr).
     for t in &db.type_decls {
-        candidates.push(t.name.clone());
+        pool.push(t.name.clone());
         if !non_value_position {
             for v in &t.variants {
-                candidates.push(v.name.clone());
+                pool.push(v.name.clone());
             }
         }
     }
     if !type_expr {
         for e in &db.effect_decls {
-            candidates.push(e.name.clone());
+            pool.push(e.name.clone());
         }
     }
     // Tier 4 — the prelude's built-in names. In a NON-VALUE position drop the prelude's VARIANT
@@ -664,9 +736,11 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
         if non_value_position && variant_names.contains(key.as_str()) {
             continue;
         }
-        candidates.push(key.clone());
+        pool.push(key.clone());
     }
-    crate::diag::suggest::nearest(name, candidates)
+    let rc = std::rc::Rc::new(pool);
+    db.suggest_pool[class] = Some(rc.clone());
+    rc
 }
 
 /// Every lexical binding visible where node `id` sits, as `(name, binder-occurrence)` pairs,
@@ -745,18 +819,25 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
                         }
                     }
                 }
-                // A match ARM `(pattern body)` ascended from `body`, pattern a bare binder → it binds.
+                // A match ARM `(pattern body)` ascended from `body` → the names its PATTERN binds. A bare
+                // binder (`n`) binds itself; a COMPOUND pattern — `(Some p)`, `(tuple a b)`, `(list x ..
+                // rest)` — binds every bare-name leaf inside it. Without the compound case a typo of an
+                // element/rest binder (`rst` for `rest`) had NO in-scope candidate and mis-suggested a
+                // far prelude name (`Ast`); collecting the pattern's binders makes it suggest `rest`. The
+                // pool is generous (a ctor name inside the pattern may slip in), which is harmless for a
+                // did-you-mean — a wrong candidate only surfaces if it is the NEAREST, and a pattern's
+                // own names are exactly what is in scope in the arm body.
                 if let Struct::List(arm) = db.ast.get(form)
                     && arm.len() == 2
                     && Some(from) == arm.get(1).copied()
-                    && let Some(n) = db.ast.as_name(arm[0])
-                    && n != "_"
                     && db
                         .parent_of(form)
                         .and_then(|p| db.ast.as_form(p, "match"))
                         .is_some()
                 {
-                    push(n, arm[0], &mut out);
+                    for (n, occ) in arm_pattern_binders(db, arm[0]) {
+                        push(&n, occ, &mut out);
+                    }
                 }
             }
         }
@@ -764,6 +845,44 @@ fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
         cursor = db.parent_of(form);
     }
     out
+}
+
+/// The `(name, occurrence)` binders a match-arm PATTERN introduces — used to seed `visible_bindings`'s
+/// did-you-mean candidate pool for a reference in the arm body. A bare name binds itself; a COMPOUND
+/// pattern (`(Some p)`, `(tuple a b)`, `(list x .. rest)`, `(map (k v) .. rest)`) binds every bare-name
+/// LEAF inside it. Deliberately SYNTACTIC and immutable (`&Db`) — it does NOT resolve ctor-vs-binder (a
+/// `&mut Db` operation `collect_pattern_binders` in `lower` does that for linearity), so a nullary-ctor
+/// name inside the pattern may slip into the pool; that is harmless for a suggestion (a candidate only
+/// surfaces if it is the NEAREST to the typo, and the arm's own names are exactly what is in scope). The
+/// separators `_` (wildcard) and `..` (rest marker) bind nothing and are skipped. Bounded recursion over
+/// the pattern tree; a pattern is shallow, so no depth guard is needed.
+fn arm_pattern_binders(db: &Db, pat: StructId) -> Vec<(String, StructId)> {
+    let mut out: Vec<(String, StructId)> = Vec::new();
+    collect_arm_binder_leaves(db, pat, &mut out);
+    out
+}
+
+fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, StructId)>) {
+    match db.ast.get(pat) {
+        // A bare name is a binder unless it is a separator (`_`/`..`). A literal atom has no name, so
+        // `as_name` yields `None` and it is skipped.
+        Struct::Atom(_) => {
+            if let Some(n) = db.ast.as_name(pat)
+                && n != "_"
+                && n != ".."
+            {
+                out.push((n.to_string(), pat));
+            }
+        }
+        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `.`
+        // member / `guard`), recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the
+        // recursion reaches its `k`/`v` leaves naturally.
+        Struct::List(children) => {
+            for &arg in children.iter().skip(1) {
+                collect_arm_binder_leaves(db, arg, out);
+            }
+        }
+    }
 }
 
 /// Walk parents from `id` to the nearest enclosing binding of `name`, returning the value occurrence

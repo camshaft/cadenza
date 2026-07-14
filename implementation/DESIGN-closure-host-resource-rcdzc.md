@@ -739,14 +739,26 @@ the component type. The new work:
   now compiles + runs. +4 corpus (a compound-arg + a scalar-arg closure of distinct sigs; two compound-arg
   closures of distinct sigs — a Tuple-arg + a Record-arg). **A compound closure ARGUMENT is now supported on
   BOTH round-trip paths (single-sig + distinct-sig).**
-- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path (host→guest
-  decode — harder, needs a `value-decode` runtime op that does not exist); a closure-TYPED arg (recursion
-  into the resource machinery); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
+- **✅ ARGUMENT surface widened to EVERY machine-representable type on the round trip `@79ada1f3` (corpus +
+  doc; no compiler change).** The `valtype_of` relaxation reaches not just fixed-shape compounds but a SUM
+  (Option/Result), a NESTED compound, a String/Bytes, AND — most notably — a CLOSURE-TYPED argument. A
+  HIGHER-ORDER closure `(-> (-> A B) R)` handed back and applied to a guest-built inner closure needs NO extra
+  resource machinery: the inner closure is an ordinary in-guest funcref-table value (an i32 slot,
+  `valtype_of(Ty::Fn)`), applied by the outer via the usual `call_indirect`; only the OUTER handle crosses the
+  host boundary. Verified sound (a captured + twice-applied inner closure → 90; two distinct inner closures
+  kept distinct → 504) on BOTH round-trip paths. +7 corpus (sum/nested/String arg; higher-order single-sig +
+  distinct-sig; captured-twice; two-distinct-inner) + a closure-typed-arg DIRECT-CALL decline. (An inner
+  closure whose OWN parameter is a compound still declines — a separate lifted-lambda-param fence, orthogonal.)
+- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
+  (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
+  a closure needs a closure-resource passed INTO a call); an inner closure whose OWN param is a compound (a
+  lifted-lambda-param fence); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
   wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result
   surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND the variable-length
   collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape — single-export +
   multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete closure-RESULT
-  matrix is closed. A COMPOUND closure ARGUMENT is now supported on BOTH round-trip paths.**
+  matrix is closed. Every MACHINE-REPRESENTABLE closure ARGUMENT (scalar, compound, sum, nested, String,
+  closure-typed) is now supported on BOTH round-trip paths (built in-guest).**
 
 ## Risks / open questions
 
@@ -757,10 +769,12 @@ the component type. The new work:
    contract is a callable method, distinct from the value-escape's `encode`).
 3. **Arg/result boundary types** — the DIRECT-CALL path restricts `call` args + result to the
    aliased scalar widths (same restriction as host-call `abi_val_type`), because the host supplies
-   the argument over the boundary. RESOLVED for the ROUND-TRIP path (`@3f9ff427`): there the closure
-   is applied in-guest, so a COMPOUND arg is built guest-side and need only be machine-representable
-   (an i32 heap handle). A compound arg on the direct-call path (host→guest decode) + a closure-typed
-   arg (recursion into the resource machinery) remain later increments.
+   the argument over the boundary. RESOLVED for the ROUND-TRIP path (`@3f9ff427` single-sig,
+   `@4e8df79f` distinct-sig, `@79ada1f3` widened to every machine type): there the closure is applied
+   in-guest, so ANY machine-representable arg — a compound, sum, nested, String, OR a closure-typed
+   (higher-order) arg — is built guest-side and need only be machine-representable (an i32 handle /
+   funcref slot). A compound/closure-typed arg on the direct-call path (host→guest decode) + an inner
+   closure whose own param is a compound (a lifted-lambda-param fence) remain later increments.
 4. **Lifetime / RC** — who drops the closure cell and its captures? Tied to own vs borrow;
    the general Perceus drop work (`a_runtime_closure_leaks_exactly_one_cell_known_gap`)
    and the resource dtor converge here.
