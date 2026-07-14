@@ -42498,14 +42498,16 @@ mod closure_host_resource {
     fn a_fixed_shape_scalar_tuple_arg_emits_but_a_collection_bearing_one_declines() {
         use crate::testkit::parse;
         // (a) a fixed-shape SCALAR tuple arg → emits a valid component (was a decline before the emit vertical).
-        let ok_src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
+        let ok_src =
+            "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
         crate::compile::compile_component(&crate::codec::encode(&parse(ok_src)))
             .expect("a fixed-shape scalar tuple closure arg now emits (native tuple flattening)");
         // (b) a tuple whose field is a variable-length LIST → still declines (no fixed flattened form).
-        let bad_src =
-            "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
+        let bad_src = "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_src)))
-            .expect_err("a tuple arg with a variable-length List field must DECLINE (needs runtime decode)");
+            .expect_err(
+                "a tuple arg with a variable-length List field must DECLINE (needs runtime decode)",
+            );
         assert!(
             err.message
                 .contains("no scalar host-boundary representation")

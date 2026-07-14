@@ -1535,12 +1535,15 @@ fn emit_closure_resource(
     // so the scalar `arg_bytes` decline below doesn't reject it. SCOPE this increment: EXACTLY one such
     // compound arg, a scalar result, no build-time host effect (each a clean later widening). A collection /
     // nested-compound field, or a compound arg ALONGSIDE other args, returns `None` and falls to the decline.
-    let tuple_arg: Option<(Vec<u8>, Vec<crate::backend::wasm::lir::ValType>, serialize::TupleArgRebuild)> =
-        if arg_tys.len() == 1 && host_imports.is_empty() {
-            fixed_shape_scalar_tuple_arg(&arg_tys[0])
-        } else {
-            None
-        };
+    let tuple_arg: Option<(
+        Vec<u8>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        serialize::TupleArgRebuild,
+    )> = if arg_tys.len() == 1 && host_imports.is_empty() {
+        fixed_shape_scalar_tuple_arg(&arg_tys[0])
+    } else {
+        None
+    };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
@@ -1637,7 +1640,8 @@ fn emit_closure_resource(
     // tuple arg the canonical ABI FLATTENS the tuple into its scalar fields, so the core `call` receives the
     // FIELD valtypes (not one i32 handle) — the `call` body rebuilds the cell from them. Otherwise each arg's
     // own machine valtype (a scalar; a `Bytes` result is an i32 heap handle).
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) = &tuple_arg
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+        &tuple_arg
     {
         field_vts.clone()
     } else {

@@ -4111,7 +4111,11 @@ fn resource_inner_component_closure_borrow_tuple(
             call_export_ty_idx = tup_ty + 1; // 11
             n_items = 3;
         } else {
-            items.extend_from_slice(&closure_call_functype(call_handle_ty, arg_bytes, result_byte));
+            items.extend_from_slice(&closure_call_functype(
+                call_handle_ty,
+                arg_bytes,
+                result_byte,
+            ));
             call_export_ty_idx = call_handle_ty + 1; // 9
             n_items = 2;
         }

@@ -1899,7 +1899,9 @@ fn emit_sum_payload(
     // typed scrutinee (a `Payload`/`RestFrom` here is a different shape). Without this, a tuple built by a
     // runtime `if` (or returned from a branchy fn) and matched declined "no bound match arm" (wasm reads it
     // via `arr-get`, which needs no bind).
-    if path.iter().all(|s| matches!(s, crate::core::PathStep::Elem(_)))
+    if path
+        .iter()
+        .all(|s| matches!(s, crate::core::PathStep::Elem(_)))
         && matches!(type_of(db, scrutinee).strip_nominal(), Ty::Tuple(_))
     {
         let mut expr = emit(db, scrutinee, env, ctx)?;
