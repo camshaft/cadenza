@@ -3636,6 +3636,33 @@ fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
     );
 }
 
+/// TWO SIBLING self-recursive calls in one arm, `let`-sequenced (`(let ((a (walk l))) (let ((b (walk r)))
+/// (+ a b)))`) under a STATE-threading handler, SILENTLY MISCOMPILED (found by the compiler-ml port, iter
+/// 38): the second sibling `(walk r)` threaded against the INCOMING state, not the state `(walk l)`
+/// advanced — `walk (Node Leaf Leaf)` returned 0 (both leaves drew id 0) where the answer is 1 (ids 0, 1).
+/// The out-state guard's `let` arm now also flags a LATER init that is itself a recursive call
+/// (`contains_recursive_call`) — a nested `let` obscured the perform from `contains_any_perform`, so the
+/// guard didn't fire and the fold accepted a shape it could not thread. It now DECLINES cleanly. A SINGLE
+/// recursive call in the arm still folds; a constant-handback handler still counts the draws correctly.
+#[test]
+fn two_sibling_self_recursive_calls_in_a_let_decline_not_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do (type T (Leaf) (Node T T)) (effect Fresh (op next (-> Int64))) \
+               (def (walk (: t T)) (match t ((T.Leaf) (Fresh.next)) \
+                 ((T.Node l r) (let ((a (walk l))) (let ((b (walk r))) (+ a b)))))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (walk (T.Node (T.Leaf) (T.Leaf))))) (export main))";
+    // Must DECLINE (the out-state shape) rather than compile to the wrong value (0 where the answer is 1).
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "the sibling-recursive-calls out-state shape must decline, not miscompile to 0",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
 /// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
 /// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of

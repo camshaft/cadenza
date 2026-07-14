@@ -3528,6 +3528,34 @@ fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
     }
 }
 
+/// Whether `node` contains a call that RE-ENTERS the recursion — a self-call to `callee_def` OR a call to
+/// a MUTUAL-recursive PARTNER (a DIFFERENT def whose own body is recursive, so it cycles back), anywhere.
+/// Used by the out-state spine-order guard: a LATER `let` init / `do` item that is itself a recursive call
+/// reads the recursion's OUT-state exactly as a perform would — the SIBLING-recursive-calls shape `(let ((a
+/// (walk l))) (let ((b (walk r))) …))`, where the second `(walk r)` would thread against the INCOMING state
+/// (a silent state-reset miscompile). `contains_any_perform` misses this because a nested `let` obscures
+/// the perform from its reachability walk, so the guard checks this too.
+fn contains_recursive_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node) {
+        if let Some(other) = callee_def_index_of(db, head) {
+            if other == callee_def {
+                return true;
+            }
+            if let Some(other_body) = db.defs[other].body
+                && crate::eval::is_recursive(db, other_body)
+            {
+                return true;
+            }
+        }
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| contains_recursive_call(db, c, callee_def)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Whether `node` reaches ANY perform — discharged by `ctx` OR foreign — anywhere in the subtree.
 /// `arg_reaches_any_perform` already detects both (a bare `effect_op_of` head is a perform regardless of
 /// which handler owns it), so it is the precise detector reused for the spine-order guard.
@@ -3582,7 +3610,17 @@ fn selfcall_precedes_perform_in_operands(
             if let Struct::List(kv) = db.ast.get(pair).clone()
                 && kv.len() == 2
             {
-                if seen_self_call && contains_any_perform(db, kv[1], ctx) {
+                // A LATER init that reaches a perform OR is itself (contains) a recursive/mutual call reads
+                // the recursion's out-state. Checking `contains_recursive_call` alongside the perform reach
+                // is what catches the SIBLING-recursive-calls shape `(let ((a (walk l))) (let ((b (walk r)))
+                // (+ a b)))`: the second init `(walk r)` is a recursive call whose specialization would
+                // thread against the INCOMING state, not the state `(walk l)` advanced — a silent state-reset
+                // miscompile. (`contains_any_perform` alone misses it: the nested `let` obscures the perform
+                // from the reachability walk.)
+                if seen_self_call
+                    && (contains_any_perform(db, kv[1], ctx)
+                        || contains_recursive_call(db, kv[1], callee_def))
+                {
                     return true;
                 }
                 if contains_self_call(db, kv[1], callee_def) {
@@ -3590,7 +3628,10 @@ fn selfcall_precedes_perform_in_operands(
                 }
             }
         }
-        if seen_self_call && contains_any_perform(db, form[1], ctx) {
+        if seen_self_call
+            && (contains_any_perform(db, form[1], ctx)
+                || contains_recursive_call(db, form[1], callee_def))
+        {
             return true;
         }
     }
