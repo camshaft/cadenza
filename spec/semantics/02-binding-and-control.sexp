@@ -1077,6 +1077,22 @@
             (def (main) (g (Ok 99))) (export main)))
   (output (: 99 Int64)))
 
+(case "expect traps on the err case of a RUNTIME result"
+  (doc    "The Result absent companion (the Err twin of the Option-None expect-trap): a runtime `Result
+           Int64 Int64` that is always `Err` feeds `(Result.expect r \"…\")`, which sees the Err
+           discriminant AT RUN TIME and traps (core-semantics.md #Requiring The Value Of An Optional Traps
+           On Absence, extended to Result's Err). The trap's canonical KIND is `unreachable` on every
+           backend — wasm's `SumExpect` absent branch is an `unreachable` instruction and the Rust backend
+           panics with a reason classifying the same way. Pins that `Result.expect` on Err traps
+           consistently across backends, the two-variant-Result companion of the Option-None trap.")
+  (input  (do
+            (def (g (: r (Result Int64 Int64))) (Result.expect r "boom"))
+            (def (main (: k Int64)) (g (if (> k 0) (Result.Err 1) (Result.Err 2))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
+
 (case "matching falls through to else when no literal matches"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected: when no literal pattern
            matches, the else (wildcard) catches it. Without else, a non-exhaustive match traps.")
