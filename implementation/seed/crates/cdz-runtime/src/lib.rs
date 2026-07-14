@@ -1253,6 +1253,12 @@ struct DocBuilder {
     /// dominated by these per-node child Vecs). Children of DIFFERENT lists never interleave: each `list`
     /// call appends its children contiguously and the walk completes one struct before the next.
     child_pool: Vec<u32>,
+    /// Name → leaf-index, so `name_leaf`'s dedup is O(log N) not a linear scan of ALL leaves. Without it,
+    /// a value with K DISTINCT names (a WIDE record's fields, a many-variant sum's heads) makes the K-th
+    /// `name_leaf` scan ~K prior leaves → O(K²) encode (measured: a 3200-field record took ~183 ms vs the
+    /// linear ~9 ms). Repeated names (the `Cons`/`tuple` heads in a long list) were already O(1) — the
+    /// scan short-circuits on the first match near the front — but DISTINCT names were the quadratic case.
+    name_index: alloc::collections::BTreeMap<String, u32>,
 }
 enum DocLeaf {
     Name(String),
@@ -1271,15 +1277,16 @@ enum DocStruct {
 
 impl DocBuilder {
     fn name_leaf(&mut self, name: &str) -> u32 {
-        for (i, l) in self.leaves.iter().enumerate() {
-            if let DocLeaf::Name(n) = l
-                && n == name
-            {
-                return i as u32;
-            }
+        // Dedup via the `name_index` map (O(log N)); a linear scan of `self.leaves` was O(N) per call and
+        // O(N²) over a value with many DISTINCT names. Byte-identical output: same leaf, same index (a
+        // repeated name still resolves to its FIRST-inserted index, since the map records that index).
+        if let Some(&i) = self.name_index.get(name) {
+            return i;
         }
+        let i = self.leaves.len() as u32;
         self.leaves.push(DocLeaf::Name(String::from(name)));
-        (self.leaves.len() - 1) as u32
+        self.name_index.insert(String::from(name), i);
+        i
     }
     fn int_leaf(&mut self, v: i64) -> u32 {
         // Big-endian magnitude with leading zeros stripped (empty for zero) — the codec's canonical Int.
@@ -6668,6 +6675,59 @@ mod tests {
             op_drop(h);
         }
         assert_eq!(live_nodes(), before, "no leak: every boxed int dropped");
+    }
+
+    /// A WIDE record (many DISTINCT field names) encodes byte-identically to the recursive oracle. This is
+    /// the shape whose `name_leaf` dedup was O(N²) (each distinct field name missed the linear scan and
+    /// walked all prior leaves — a 3200-field record took ~183 ms; after the `name_index` map it is O(N),
+    /// ~14 ms). Byte-identity here proves the map-based dedup produces the SAME leaf pool + indices as the
+    /// scan did (a repeated name still resolves to its first index). A moderate N keeps the test fast while
+    /// exercising the many-distinct-name path the small fixed-shape tests never reach.
+    #[test]
+    fn value_encode_wide_record_matches_recursive_reference() {
+        reset();
+        let before = live_nodes();
+        const N: usize = 300;
+        // Descriptor: table [0]=Int, [1]=Record with N fields "f0".."f{N-1}", each field → 0 (Int). root=1.
+        fn leb(o: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                o.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 2);
+        d.push(0); // [0] Int
+        d.push(8); // [1] Record
+        leb(&mut d, N as u64);
+        for i in 0..N {
+            let name = alloc::format!("f{i}");
+            leb(&mut d, name.len() as u64);
+            d.extend_from_slice(name.as_bytes());
+            leb(&mut d, 0); // field type → Int
+        }
+        leb(&mut d, 1); // root = the Record
+
+        let rec = op_arr_alloc(N as u32);
+        for i in 0..N {
+            op_arr_set(rec, i as u32, op_box_int(i as i64));
+        }
+        let iter_doc = op_value_encode_form(rec, &d).expect("wide record encodes");
+        // Differential: the recursive oracle (shares `name_leaf`, so this also confirms the map-dedup and a
+        // hypothetical scan-dedup agree) must produce byte-identical output.
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0).expect("recursive");
+        assert_eq!(iter_doc, b.finish(root), "wide-record iterative and recursive encode must agree");
+        op_drop(rec);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     /// A String nested inside a recursive sum encodes (the real use — a value form like an AST node with

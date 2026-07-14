@@ -4653,6 +4653,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     format!("if condition must be Bool, found {}", cond_ty.render_name()),
                 ));
             }
+            // Both branches are type-checked HERE (each `type_of`'d, and they must agree) EVEN THOUGH only
+            // the condition-selected branch runs — so an unevaluated branch can never carry a deferred type
+            // error, exactly as a boolean connective's shielded operand is still checked.
+            //= spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch
+            //# Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
             let then_ty = type_of(db, then_);
             let else_ty = type_of(db, else_);
             if !then_ty.agrees_with(&else_ty) {
@@ -4985,20 +4990,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // well-formed so an ill-formed one faults instead of silently miscompiling.)
                 let value_ty = type_of(db, value);
                 if let Err(mut r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
-                    // An ANNOTATED let-binder whose annotation is a different integer width than the init
-                    // value — `(let (((: x Int64) n)) …)` with `n : Int8` — is the let-binding analogue of
-                    // the value/param annotation mismatch (D33) and the argument mismatch: it has the same
-                    // one-shot repair, wrapping the INIT VALUE in the annotation type's checked `(<T>.of …)`.
-                    // Attach it HERE (where the init `value` node is in hand — `check_binding_pattern`
-                    // recurses over patterns without it), keyed on the binder's annotation type.
+                    // An ANNOTATED let-binder whose annotation mismatches the init value — `(let (((: x
+                    // T) v)) …)` — is the let-binding analogue of the value/param annotation mismatch
+                    // (D33) and the argument mismatch: it has the SAME one-shot repair whenever a total
+                    // conversion bridges the gap. Use the SHARED `numeric_text_coercion_fix` (not just
+                    // `int_coercion_wrap`) so ALL its cases fire here as at the other 5 sites: int-width
+                    // `(<T>.of …)`, int→float `(<Float>.of-int …)`, int-valued-float-literal drop / int-
+                    // literal→float retype, and String→Bytes `(String.to-bytes …)`. Attached HERE, where
+                    // the init `value` node is in hand (`check_binding_pattern` recurses over patterns
+                    // without it), keyed on the binder's annotation type.
                     if r.code == Some(Code::TypeMismatch)
                         && let Some(ann) = db.ast.as_form(lhs, ":")
                         && ann.len() == 2
                         && let Some(annot_ty) = crate::eval::typeval_of(db, ann[1])
-                        && let Some((prefix, suffix, verb)) =
-                            int_coercion_wrap(&annot_ty, &value_ty)
+                        && let Some(fix) =
+                            numeric_text_coercion_fix(db, &annot_ty, &value_ty, value)
                     {
-                        r = r.with_fix(Fix::wrap_heuristic(value, prefix, suffix, verb));
+                        r = r.with_fix(fix);
                     }
                     out.push(r);
                 }
