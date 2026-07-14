@@ -149,21 +149,18 @@ export default function Lists() {
         id="lists:2"
         prompt={
           <>
-            Join <C>(list 1 2)</C> and <C>(list 3 4 5)</C>, then pull out the element at index <C>3</C> with{" "}
-            <C>List.at</C>. Counting from zero, that's the <C>4</C>.
+            Add the single element <C>99</C> to the end of <C>(list 10 20 30)</C>, then ask its length — a
+            three-element list grows to <C>4</C>. Which operation appends <em>one element</em>,{" "}
+            <C>push</C> or <C>concat</C>? Fill in the blank.
           </>
         }
-        starter={`(match (List.at (List.concat (list 1 2) (list 3 4 5)) ?)
-  ((Some x) x)
-  ((None _) 0))`}
-        solution={`(match (List.at (List.concat (list 1 2) (list 3 4 5)) 3)
-  ((Some x) x)
-  ((None _) 0))`}
+        starter={`(List.len (List.? (list 10 20 30) 99))`}
+        solution={`(List.len (List.push (list 10 20 30) 99))`}
         expected="4"
         hint={
           <>
-            The joined list is <C>1 2 3 4 5</C>. Index <C>0</C> is the <C>1</C>, so index <C>3</C> is the{" "}
-            <C>4</C>.
+            <C>push</C> adds a single element to the end; <C>concat</C> joins two <em>lists</em> (and would
+            reject the bare <C>99</C>). Pushing one element onto three gives length <C>4</C>.
           </>
         }
       />
