@@ -291,13 +291,24 @@ composition; no wasmparser in the compile path, no external interface artifact n
   `DESIGN-package-linking.md §8.1` names the same gap). The RESOLVER + EMIT + RUNNER are all done (the
   two-source e2e passes as a Rust integration test); X4b-4 is the CLI ergonomics layer over them.
 
-**X5 — COMPOUND values cross as shared `value` handles (the payoff).** Extend X3/X4: a compound arg crosses
-as `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap, hands the
-handle to A as `borrow<value>`; A reads it via the runtime accessors as its statically-known `(List
-Int64)`; A returns a `value` B receives. **Reuses the round-trip rep/borrow mechanics wholesale** (§3). This
-is where "any runtime value crosses multiple Cadenza components without serialization" actually lands.
-Widen across the value matrix (String/Bytes/Map/Set/Tuple/Record/Sum/BigInt/Rational/nested) the way the
-closures result-matrix was widened — each a small corpus/coverage brick once the mechanism is in.
+**X5 — COMPOUND values cross as shared `value` handles (the payoff). IN SUB-BRICKS.**
+- **X5a — share ONE runtime instance across consumer + peers. ✅ DONE (`spec`).** `run_with_peers` (X4a)
+  gave each peer its own fresh linker/instance; now it instantiates the value-heap runtime ONCE
+  (`instantiate_runtime`, split out of `compose_runtime`) and binds it (`bind_runtime_into`) into EVERY
+  component that imports it — the consumer AND each peer (they all pin the same content hash → same import
+  name). So a handle one produces indexes the ONE shared heap the other reads (component-abi.md §A
+  Cross-Component Handle Is Meaningful Only In The Shared Runtime Instance). **Proven (`x5a_*`): a peer
+  builds `[42]` on the shared heap and returns the u32 handle; a consumer (also importing the runtime)
+  reads element 0 back through the shared instance → 42.** cdz-run refactor + test-only; gate 1932 pass / 0
+  fail / 0 regressions (the ordinary single-component run path is unchanged). This is the prerequisite for
+  a `value` handle crossing.
+- **X5b — a compound value crosses as a `value` handle (NEXT).** Extend X3/X4b: a compound arg crosses as
+  `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap (X5a), hands the
+  handle to A as `borrow<value>`; A reads it via the runtime accessors as its statically-known `(List
+  Int64)`; A returns a `value` B receives. **Reuses the round-trip rep/borrow mechanics wholesale** (§3) +
+  the shared instance (X5a). This is where "any runtime value crosses multiple Cadenza components without
+  serialization" lands. Then widen across the value matrix (String/Bytes/Map/Set/Tuple/Record/Sum/BigInt/
+  Rational/nested) as the closures result-matrix was widened — each a small coverage brick.
 
 **X6+ — widenings (optional, non-blocking):** own-vs-borrow policy corners; N-component graphs (a diamond
 import); a value's lifetime across a multi-hop call chain (A→B→C sharing one heap); the outermost

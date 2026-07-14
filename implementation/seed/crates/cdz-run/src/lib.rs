@@ -250,9 +250,11 @@ pub struct Peer {
 ///
 /// Each peer is instantiated first; the consumer's import of `peer.interface` is then bound by
 /// forwarding every function the peer's exported interface offers (discovered off the peer instance's
-/// type, never a hard-coded list — the same discipline `compose_runtime` uses for the runtime). SCOPE
-/// (X4a): scalar peer ops, a runtime-free peer (a peer that itself imports the runtime, and sharing ONE
-/// runtime instance across consumer + peers, is X5). A peer op returning/taking a `value` handle is X5.
+/// type, never a hard-coded list — the same discipline `compose_runtime` uses for the runtime). When the
+/// consumer OR any peer imports the value-heap runtime, ONE runtime instance is composed and bound into
+/// EVERY component that imports it (X5), so a `value` handle one produces is meaningful to another (they
+/// index the same heap — component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared
+/// Runtime Instance). SCOPE: scalar peer ops today; a `value`-handle op rides this shared instance.
 pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -261,21 +263,58 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
     let mut store = Store::new(&engine, ());
     let mut linker: Linker<()> = Linker::new(&engine);
 
-    // Compose the value-heap runtime into the CONSUMER if it imports one (X4a: the consumer's own runtime;
-    // sharing one instance with the peers is X5).
-    if let Some(req) = find_runtime_req(&engine, &consumer) {
-        compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
+    // The runtime import each component may declare — the consumer and each peer. They all pin the SAME
+    // runtime (same content hash → same import name), so ONE runtime instance serves them all. Instantiate
+    // it once here (if anyone needs it), then bind it into every importing component's linker below.
+    let peer_components: Vec<Component> = peers
+        .iter()
+        .map(|p| {
+            Component::new(&engine, &p.bytes)
+                .map_err(|e| anyhow!("invalid peer component `{}`: {e}", p.interface))
+        })
+        .collect::<Result<_>>()?;
+    let consumer_req = find_runtime_req(&engine, &consumer);
+    let any_req = consumer_req.clone().or_else(|| {
+        peer_components
+            .iter()
+            .find_map(|c| find_runtime_req(&engine, c))
+    });
+    let shared_runtime = match &any_req {
+        Some(req) => Some(instantiate_runtime(&engine, &mut store, req, opts)?),
+        None => None,
+    };
+
+    // Bind the shared runtime into the CONSUMER's import (if it declares one).
+    if let (Some(req), Some((rt_instance, names))) = (&consumer_req, &shared_runtime) {
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            rt_instance,
+            names,
+        )?;
     }
 
     // Instantiate each peer and forward its exported interface funcs into the consumer's like-named
-    // import. A peer is instantiated with a FRESH linker (X4a peers are self-contained/runtime-free);
-    // its funcs live in the SHARED store, so they can be forwarded into the consumer's import.
-    for peer in peers {
-        let peer_component = Component::new(&engine, &peer.bytes)
-            .map_err(|e| anyhow!("invalid peer component `{}`: {e}", peer.interface))?;
-        let peer_linker: Linker<()> = Linker::new(&engine);
+    // import. A peer that imports the runtime gets the SAME shared instance bound into its linker (so its
+    // handles index the one shared heap); its funcs live in the SHARED store.
+    for (peer, peer_component) in peers.iter().zip(peer_components.iter()) {
+        let mut peer_linker: Linker<()> = Linker::new(&engine);
+        if let (Some(req), Some((rt_instance, names))) =
+            (find_runtime_req(&engine, peer_component), &shared_runtime)
+        {
+            bind_runtime_into(
+                &engine,
+                &mut store,
+                &mut peer_linker,
+                &req.import_name,
+                rt_instance,
+                names,
+            )?;
+        }
         let peer_instance = peer_linker
-            .instantiate(&mut store, &peer_component)
+            .instantiate(&mut store, peer_component)
             .map_err(|e| anyhow!("instantiate peer `{}`: {e}", peer.interface))?;
         let iface_idx = peer_instance
             .get_export_index(&mut store, None, &peer.interface)
@@ -502,6 +541,28 @@ fn compose_runtime(
     req: &RuntimeReq,
     opts: &RunOpts,
 ) -> Result<()> {
+    let (rt_instance, heap_func_names) = instantiate_runtime(engine, store, req, opts)?;
+    bind_runtime_into(
+        engine,
+        store,
+        linker,
+        &req.import_name,
+        &rt_instance,
+        &heap_func_names,
+    )
+}
+
+/// Instantiate the value-heap runtime component ONCE in `store`, returning its instance + the heap-op
+/// function names (read off its own type). Split out of [`compose_runtime`] so a SHARED runtime instance
+/// can be bound into SEVERAL components' imports (X5: consumer + peers share one heap so a `value` handle
+/// one produces is meaningful to another — component-abi.md §A Cross-Component Handle Is Meaningful Only
+/// In The Shared Runtime Instance).
+fn instantiate_runtime(
+    engine: &Engine,
+    store: &mut Store<()>,
+    req: &RuntimeReq,
+    opts: &RunOpts,
+) -> Result<(wasmtime::component::Instance, Vec<String>)> {
     let runtime_bytes = opts.runtime.as_deref().ok_or_else(|| {
         anyhow!(
             "component requires the value-heap runtime {} but none was provided (the host resolves \
@@ -510,25 +571,35 @@ fn compose_runtime(
         )
     })?;
     let runtime = load_runtime_component(engine, runtime_bytes, &req.hash, opts)?;
-
-    // Discover the heap functions the runtime exports (name-by-name), off its component type. The
-    // runtime component exports the interface under its plain, un-pinned name `cadenza:runtime/heap`.
     let heap_func_names = heap_interface_funcs(engine, &runtime)?;
-
     let rt_linker: Linker<()> = Linker::new(engine);
     let rt_instance = rt_linker
         .instantiate(&mut *store, &runtime)
         .map_err(|e| anyhow!("instantiate runtime: {e}"))?;
+    Ok((rt_instance, heap_func_names))
+}
+
+/// Forward each heap-op function of an already-instantiated runtime instance into `linker` under
+/// `import_name` (the exact hashed name the importing component declared). Reused to bind ONE runtime
+/// instance into multiple components' imports (X5).
+fn bind_runtime_into(
+    engine: &Engine,
+    store: &mut Store<()>,
+    linker: &mut Linker<()>,
+    import_name: &str,
+    rt_instance: &wasmtime::component::Instance,
+    heap_func_names: &[String],
+) -> Result<()> {
+    let _ = engine;
     let heap_idx = rt_instance
         .get_export_index(&mut *store, None, RUNTIME_IFACE)
         .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
-
     // Bind under the program's exact (hashed) import name, not the bare interface — that is the name
     // the program declared, and the linker matches names verbatim.
     let mut iface = linker
-        .instance(&req.import_name)
-        .map_err(|e| anyhow!("linker instance {}: {e}", req.import_name))?;
-    for fname in &heap_func_names {
+        .instance(import_name)
+        .map_err(|e| anyhow!("linker instance {import_name}: {e}"))?;
+    for fname in heap_func_names {
         let fidx = rt_instance
             .get_export_index(&mut *store, Some(&heap_idx), fname)
             .ok_or_else(|| anyhow!("runtime missing `{fname}`"))?;
