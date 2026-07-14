@@ -4309,8 +4309,9 @@ fn op_vec_concat(a: Handle, b: Handle) -> Handle {
     let m = children.len(); // ≤ 64 (each root has ≤32 children after growth)
     let (new_root, new_shift) = if m <= cap {
         if max_shift == 0 {
-            // Leaf merge: elements fit one leaf → keep it STRICT (uniform size-1, no table needed).
-            (alloc(children, Vec::new()), 0)
+            // Leaf merge: elements fit one leaf. PACK it when all-bool (a `List Bool` concat stays
+            // dense), else a STRICT leaf (uniform size-1, no table needed).
+            (vec_leaf_from_handles(children), 0)
         } else {
             // One relaxed node (level `max_shift`) holds every gathered child; no height increase.
             (vec_relaxed_node(children, max_shift), max_shift)
@@ -4322,7 +4323,8 @@ fn op_vec_concat(a: Handle, b: Handle) -> Handle {
         let right = children.split_off(k);
         let left = children;
         let (g_left, g_right) = if max_shift == 0 {
-            (alloc(left, Vec::new()), alloc(right, Vec::new())) // two strict leaves (level 0)
+            // Two leaves (level 0): packed when all-bool, else strict.
+            (vec_leaf_from_handles(left), vec_leaf_from_handles(right))
         } else {
             (
                 vec_relaxed_node(left, max_shift),
@@ -4422,7 +4424,7 @@ fn vec_split_subtree(node: Handle, level: u32, idx: u32) -> (Handle, Handle) {
                 op_dup(e);
                 hs.push(e);
             }
-            alloc(hs, Vec::new()) // strict leaf
+            vec_leaf_from_handles(hs) // packed when all-bool, else strict
         };
         let right = if idx >= arity {
             Handle::NULL
@@ -4433,7 +4435,7 @@ fn vec_split_subtree(node: Handle, level: u32, idx: u32) -> (Handle, Handle) {
                 op_dup(e);
                 hs.push(e);
             }
-            alloc(hs, Vec::new()) // strict leaf
+            vec_leaf_from_handles(hs) // packed when all-bool, else strict
         };
         return (left, right);
     }
@@ -4501,7 +4503,7 @@ fn vec_take_tail(node: Handle, level: u32, idx: u32) -> Handle {
             op_dup(e);
             hs.push(e);
         }
-        return alloc(hs, Vec::new()); // strict leaf — kept tail elements
+        return vec_leaf_from_handles(hs); // kept tail elements — packed when all-bool, else strict
     }
     let arity = vec_arity(node);
     let (sub, loc) = if vec_is_relaxed(node) {
@@ -14351,6 +14353,106 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak across the defensive unpack");
     }
 
+    /// Assert every level-0 leaf under `v`'s root is a PACKED-bool leaf (the density invariant a
+    /// `List Bool` should hold after any op). A bool vector built ANY way — push, of-arr, concat,
+    /// split — must satisfy this: packing is never lost.
+    fn assert_all_bool_leaves_packed(v: Handle) {
+        fn rec(node: Handle, level: u32) {
+            if level == 0 {
+                assert!(
+                    vec_leaf_is_packed(node),
+                    "every bool leaf stays packed after the op"
+                );
+                return;
+            }
+            for i in 0..vec_arity(node) {
+                rec(vec_child(node, i), level - VEC_BITS);
+            }
+        }
+        let (count, shift, root) = vec_read_header(v);
+        if count == 0 {
+            return; // empty vector has no leaf
+        }
+        rec(root, shift);
+    }
+
+    #[test]
+    fn packed_bool_concat_stays_packed_and_matches_oracle() {
+        reset();
+        let before = live_nodes();
+        // Concat two `List Bool`s across leaf-boundary sizes; the result reads back as the concatenation
+        // AND every leaf stays packed (Inc 2 density — the leaf-merge and overflow-split rebuild pack).
+        for &(na, nb) in &[
+            (0usize, 5usize),
+            (5, 0),
+            (1, 1),
+            (16, 16),   // fits one leaf → leaf-merge path
+            (20, 20),   // > 32 → overflow-split into two packed leaves
+            (31, 33),
+            (32, 32),
+            (100, 50),  // multi-level relaxed join, boundary leaves packed
+            (33, 100),
+        ] {
+            let ba = bool_pattern(na, 0x11 ^ na as u64);
+            let bb = bool_pattern(nb, 0x22 ^ nb as u64);
+            let a = vec_of_bools(&ba);
+            let b = vec_of_bools(&bb);
+            let c = op_vec_concat(a, b); // consumes a, b
+            let mut want = ba.clone();
+            want.extend(bb.iter().copied());
+            assert_eq!(op_vec_len(c) as usize, want.len(), "concat len ({na},{nb})");
+            assert_eq!(vec_to_bools(c), want, "concat elements ({na},{nb})");
+            assert_vec_invariants(c);
+            assert_all_bool_leaves_packed(c);
+            op_drop(c);
+        }
+        assert_eq!(live_nodes(), before, "no leak across bool concats");
+    }
+
+    #[test]
+    fn packed_bool_split_stays_packed_and_matches_oracle() {
+        reset();
+        let before = live_nodes();
+        // Split a `List Bool` at various indices; BOTH halves read back correctly and keep packed leaves.
+        for &n in &[1usize, 8, 32, 33, 64, 100] {
+            let bs = bool_pattern(n, 0x33 ^ n as u64);
+            for &idx in &[0usize, 1, n / 2, n.saturating_sub(1), n] {
+                let idx = idx.min(n);
+                let v = vec_of_bools(&bs);
+                let (l, r) = op_vec_split(v, idx as u32); // consumes v
+                assert_eq!(op_vec_len(l) as usize, idx, "left len n={n} idx={idx}");
+                assert_eq!(op_vec_len(r) as usize, n - idx, "right len n={n} idx={idx}");
+                assert_eq!(vec_to_bools(l), bs[..idx].to_vec(), "left elems n={n} idx={idx}");
+                assert_eq!(vec_to_bools(r), bs[idx..].to_vec(), "right elems n={n} idx={idx}");
+                assert_vec_invariants(l);
+                assert_vec_invariants(r);
+                assert_all_bool_leaves_packed(l);
+                assert_all_bool_leaves_packed(r);
+                op_drop(l);
+                op_drop(r);
+            }
+        }
+        assert_eq!(live_nodes(), before, "no leak across bool splits");
+    }
+
+    #[test]
+    fn packed_bool_split_reconcat_roundtrips_packed() {
+        reset();
+        let before = live_nodes();
+        // split then concat the halves back = the original (persistent-collection identity), still packed.
+        let bs = bool_pattern(120, 0xBEEF);
+        for &idx in &[1usize, 40, 64, 90] {
+            let v = vec_of_bools(&bs);
+            let (l, r) = op_vec_split(v, idx as u32);
+            let back = op_vec_concat(l, r); // consumes both halves
+            assert_eq!(vec_to_bools(back), bs, "split/reconcat identity at idx={idx}");
+            assert_vec_invariants(back);
+            assert_all_bool_leaves_packed(back);
+            op_drop(back);
+        }
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn vec_fbip_unique_chain_bounded_peak() {
         reset();
@@ -17723,6 +17825,120 @@ mod tests {
         bolero::check!()
             .with_type::<Vec<VecOp>>()
             .for_each(|ops| run_vec_op_sequence(ops));
+    }
+
+    // ── PACKED-BOOL vector randomized differential vs `Vec<bool>` ───────────────────────────────
+    // The same random push/update/split/concat/fork harness as the int vector, but over a `List Bool`
+    // whose leaves are bit-packed. It pins the FULL contract for the packed representation under an
+    // arbitrary op history: (1) elements match a `Vec<bool>` reference through every op, (2) RRB
+    // invariants hold, (3) the value-encode equals a fresh push-built twin (packing is unobservable at
+    // the boundary), (4) forks stay undisturbed, no leak — PLUS the density invariant unique to bools:
+    // after EVERY op, every leaf is still a packed-bool leaf (packing is never lost — the operator's
+    // "one representation" requirement, enforced structurally, not just observationally).
+    fn run_bool_vec_op_sequence(ops: &[VecOp]) {
+        let before = live_nodes();
+        let mut v = op_vec_empty();
+        let mut reference: Vec<bool> = Vec::new();
+        let mut forks: Vec<(Handle, Vec<bool>)> = Vec::new();
+        // Map the shared `VecOp` byte payloads onto bools: an element byte's low bit is the value; a
+        // range appends a deterministic bool pattern. Every leaf must stay packed after each op.
+        for op in ops {
+            match *op {
+                VecOp::Push { elem } => {
+                    let b = elem & 1 != 0;
+                    v = op_vec_push(v, op_box_bool(b));
+                    reference.push(b);
+                }
+                VecOp::Update { index, elem } => {
+                    if !reference.is_empty() {
+                        let i = (index as usize) % reference.len();
+                        let b = elem & 1 != 0;
+                        v = op_vec_update(v, i as u32, op_box_bool(b));
+                        reference[i] = b;
+                    }
+                }
+                VecOp::SplitKeepLeft { at } => {
+                    let n = reference.len();
+                    let idx = if n == 0 { 0 } else { (at as usize) % (n + 1) };
+                    let (l, r) = op_vec_split(v, idx as u32);
+                    op_drop(r);
+                    v = l;
+                    reference.truncate(idx);
+                }
+                VecOp::SplitKeepRight { at } => {
+                    let n = reference.len();
+                    let idx = if n == 0 { 0 } else { (at as usize) % (n + 1) };
+                    let (l, r) = op_vec_split(v, idx as u32);
+                    op_drop(l);
+                    v = r;
+                    reference = reference.split_off(idx);
+                }
+                VecOp::PushRange { n } => {
+                    let count = (n as usize) % 40 + 1;
+                    for j in 0..count {
+                        let b = (reference.len() + j) % 3 == 0;
+                        v = op_vec_push(v, op_box_bool(b));
+                        reference.push(b);
+                    }
+                }
+                VecOp::ConcatRange { n } => {
+                    let count = (n as usize) % 40 + 1;
+                    let tail: Vec<bool> = (0..count).map(|j| j % 2 == 0).collect();
+                    let tv = vec_of_bools(&tail);
+                    v = op_vec_concat(v, tv);
+                    reference.extend(tail);
+                }
+                VecOp::Fork => {
+                    op_dup(v);
+                    forks.push((v, reference.clone()));
+                }
+                VecOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+            // DENSITY INVARIANT: every leaf is packed after each individual op — packing is never lost.
+            assert_all_bool_leaves_packed(v);
+        }
+        // (1) element equivalence + length.
+        assert_eq!(op_vec_len(v) as usize, reference.len(), "bool vector length matches reference");
+        assert_eq!(vec_to_bools(v), reference, "bool vector elements match reference");
+        // (2) RRB structural invariants.
+        assert_vec_invariants(v);
+        // (3) value-encode equals a fresh push-built twin — packing is unobservable at the boundary.
+        let twin = vec_of_bools(&reference);
+        let list_desc: &[u8] = &[0x02, 0x01, 0x07, 0x00, 0x01]; // count=2 [0]=Bool [1]=List(elem→0); root=1
+        let enc_v = op_value_encode_form(v, list_desc);
+        let enc_twin = op_value_encode_form(twin, list_desc);
+        assert_eq!(
+            enc_v, enc_twin,
+            "the packed bool vector's value-encode equals a fresh push-built twin's — packing and any \
+             RRB shape difference are UNOBSERVABLE at the boundary"
+        );
+        op_drop(twin);
+        // (4) forks undisturbed + no leak.
+        for (h, snap) in &forks {
+            assert_eq!(op_vec_len(*h) as usize, snap.len(), "forked bool snapshot length intact");
+            assert_eq!(vec_to_bools(*h), *snap, "forked bool snapshot elements intact");
+            assert_vec_invariants(*h);
+        }
+        op_drop(v);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole bool vector sequence"
+        );
+    }
+
+    #[test]
+    fn prop_packed_bool_vector_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<VecOp>>()
+            .for_each(|ops| run_bool_vec_op_sequence(ops));
     }
 
     // ── BYTES ROPE randomized differential vs `Vec<u8>` ─────────────────────────────────────────

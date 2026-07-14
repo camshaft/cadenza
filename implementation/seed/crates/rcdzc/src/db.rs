@@ -133,8 +133,22 @@ pub(crate) struct FileScopeTable {
 impl FileScopeTable {
     /// The file whose demux range contains `id`, or `None` for a node in no file (synthesized /
     /// β-copied / prelude / the `(do …)` root).
+    ///
+    /// BINARY SEARCH over the file ranges, not a linear `position`: files are appended sequentially at link
+    /// (each `struct_base = structure.len()` at its turn), so `self.files` is sorted by `struct_base` with
+    /// non-overlapping contiguous `[struct_base, struct_base+struct_count)` ranges. This is called on EVERY
+    /// file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`), so a linear scan made a package
+    /// of N files O(files) per lookup → O(N²) over the package's resolutions (N libraries each imported +
+    /// used: `file_of` was ~27% of a 800-file compile). Find the rightmost file whose `struct_base <= id`
+    /// (the only candidate range that can contain `id`), then confirm `contains` (an `id` in a gap — the
+    /// link-synthesized `(do …)` root, which sits outside every file's range — matches no file).
     fn file_of(&self, id: StructId) -> Option<usize> {
-        self.files.iter().position(|f| f.contains(id))
+        // `partition_point` gives the count of files with `struct_base <= id.0`; the last of those is the
+        // only range that can contain `id` (ranges are ascending + non-overlapping). Subtract one for its
+        // index; 0 means `id` precedes every file's base (no file).
+        let after = self.files.partition_point(|f| f.struct_base <= id.0);
+        let idx = after.checked_sub(1)?;
+        self.files[idx].contains(id).then_some(idx)
     }
 }
 
@@ -565,6 +579,15 @@ pub struct Db {
     /// common case) → exports cross as top-level component funcs (byte-identical to before). Set AFTER
     /// `Db::load`/`load_linked` by the caller (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
+    /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
+    /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping
+    /// effect `Math` to the peer interface `cadenza:math/api` (rather than the generic host). An escaping
+    /// perform of a bound effect's op emits through the PEER envelope (`assemble_extern`) with this
+    /// interface, exactly as an `(extern …)` op did. An in-program `(handle Math …)` discharges the effect
+    /// BEFORE it escapes (so it overrides the binding — a test mock), and a compile-request `--bind`
+    /// override (U3) is merged in AFTER load (so it wins over the source default). Empty for a program
+    /// that binds no effect to a peer (the common case — an effect escapes to the host, byte-neutral).
+    pub effect_bindings: std::collections::BTreeMap<String, String>,
     /// The nested `(module NAME …)` declarations reachable in a `do`-block, from the scan. Each is
     /// synthesized (`crate::modules`) to a record whose fields are its exported defs, so `NAME` resolves
     /// to that record (a `Ref` to it) and `(. NAME field)` is ordinary member access — the module analogue
@@ -722,6 +745,15 @@ pub struct Db {
     /// N sum types (measured: 3200 sum types ≈ 590ms, `resolve_name`+`memcmp` ~50% self). O(1) lookup;
     /// first-wins matches the old scan. A pure accelerator over `type_decls`, never a source of truth.
     type_decl_index: crate::fxhash::FxHashMap<String, StructId>,
+
+    /// SAME-NAME-NEWTYPE name → its ctor occurrence — a load-time index for [`same_name_newtype_ctor`]
+    /// (`(type UserId (UserId Int64))`: name `UserId` → its single variant's ctor). That lookup was a
+    /// linear `type_decls.iter().find(|t| t.name == name && one-variant && variant.name == name)`, and the
+    /// linked-package resolve path (`resolve_name`'s file-scoped type/ctor head-position steps) probes it
+    /// per type-name reference → O(N²) for a package with N types (measured: N libraries each imported +
+    /// used, `resolve_name`+`memcmp` ~29% self at N=1600). O(1) lookup; first-declared wins, matching the
+    /// scan's first-hit. A pure accelerator over `type_decls`.
+    same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
 
     /// For each sum's DECLARATION OCCURRENCE, its index in [`type_decls`] — the O(1) reverse of the nominal
     /// identity a `Ty::Sum { decl }` carries, backing [`type_decl_by_occ`]. That was a linear
@@ -1272,8 +1304,8 @@ pub struct Db {
     /// non-recursive call β-reduces); `inline-never` forces the def to be EMITTED as ONE real wasm
     /// function, every call a `Core::Call` (routed through `emit_call_or_specialize`, so a generic /
     /// `const`-param `inline-never` def still SPECIALIZES — "avoid the inline but keep polymorphism").
-    /// Populated ONCE by `strip_inline_policy` at load (which unwraps the `(inline-never (def …))` wrapper
-    /// in place, so every downstream reader sees a plain `(def …)`), keyed by the def's BODY occ — the
+    /// Populated ONCE by `strip_inline_policy` at load (which unwraps the `(@ inline-never (def …))`
+    /// annotation in place, so every downstream reader sees a plain `(def …)`), keyed by the def's BODY occ — the
     /// identity `lower`/`layout` (`def_index_by_body`) already use. Empty for a program with none.
     pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
 
@@ -1328,9 +1360,9 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
-        // Normalize away an `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper on
-        // a definition BEFORE `scan_top_level`: the policy is a declaration the emitter consumes, not part
-        // of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
+        // Normalize away an `(@ inline-never (def …))` / `(@ inline-always (def …))` INLINE-POLICY
+        // annotation on a definition BEFORE `scan_top_level`: the policy is a declaration the emitter
+        // consumes, not part of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
         // the `inline_never` / `inline_always` set (Addendum 4). Done here like `strip_def_docs`, so every
         // downstream reader sees a plain `(def …)` and the policy lives only in the sets.
         let (inline_never, inline_always) = strip_inline_policy(&mut ast);
@@ -1497,6 +1529,10 @@ impl Db {
         // O(1) lookup, replacing an O(types) `find` per name resolution (O(N²) for N sum types).
         let mut type_decl_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
+        // Index each SAME-NAME NEWTYPE's name → its ctor occurrence (see the loop body) — O(1)
+        // `same_name_newtype_ctor`, replacing an O(types) `find` per type-name resolution.
+        let mut same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         for decl in &type_decls {
             for v in &decl.variants {
                 // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
@@ -1520,6 +1556,20 @@ impl Db {
             }
             if let Some(synth) = decl.synth {
                 type_decl_index.entry(decl.name.clone()).or_insert(synth);
+            }
+            // A SAME-NAME NEWTYPE — a single-variant sum whose ONE variant shares the type's name
+            // (`(type UserId (UserId Int64))`) — indexed name → its ctor occurrence, for
+            // `same_name_newtype_ctor`'s O(1) lookup. That was a linear `type_decls.iter().find(name ==
+            // && one-variant && variant.name == name)` per type-name resolution → O(N²) in a package of N
+            // types (the file-scoped resolve path probes it per type-name reference). First-declared wins,
+            // matching `find`'s first-hit.
+            if decl.variants.len() == 1
+                && decl.variants[0].name == decl.name
+                && let Some(ctor) = decl.variants[0].ctor
+            {
+                same_name_newtype_ctor_index
+                    .entry(decl.name.clone())
+                    .or_insert(ctor);
             }
         }
         // Sum DECLARATION OCCURRENCE → its index in `type_decls` — `type_decl_by_occ`'s O(1) reverse (was
@@ -1555,6 +1605,8 @@ impl Db {
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
+        // Scan `(bind Effect "iface")` top-level directives → the effect→peer-contract default map (U2).
+        let effect_bindings = scan_effect_bindings(&ast);
         // Map each bare integer LITERAL written inside a `(pragma default-integer <T>)` module to its
         // default type-expr — an ARENA walk of each pragma-module's member subtrees (before `ast` moves,
         // before any β-copy), so a literal's default survives inlining that reparents it (the parent-walk
@@ -1586,6 +1638,7 @@ impl Db {
             effect_decls,
             extern_decls,
             component_name: None,
+            effect_bindings,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
@@ -1601,6 +1654,7 @@ impl Db {
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
+            same_name_newtype_ctor_index,
             type_decl_by_occ_index,
             effect_decl_index,
             scope_binders,
@@ -2189,6 +2243,37 @@ impl Db {
         Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
+    /// Whether the sum type whose DECLARATION OCCURRENCE is `decl` is ABSTRACT in the file containing
+    /// node `at` — its handle is visible there but NONE of its constructors are (imported handle-only).
+    /// A value of such a type may be named and held but not constructed, matched, stripped, or compared
+    /// with a built-in `=`/`compare` in this file (the representation is the declaring module's private
+    /// business). `false` for a concretely- or partially-imported type (≥1 ctor visible), a file's own
+    /// type, a single-file program, or a node with no file (β-copied / prelude / synthesized).
+    pub(crate) fn is_abstract_type_at(&self, at: StructId, decl: StructId) -> bool {
+        let Some(fs) = self.file_scope.as_ref() else {
+            return false;
+        };
+        let Some(file) = fs.file_of(at) else {
+            return false;
+        };
+        let Some(td) = self.type_decl_by_occ(decl) else {
+            return false;
+        };
+        // The handle must be visible in this file (otherwise it is simply not this type here — a value
+        // of it could not have been produced), and NO constructor of it visible (else it is concrete /
+        // partial here, and comparison of the visible-ctor value is the module's own business).
+        let handle_visible = fs.visible_types[file]
+            .values()
+            .any(|&synth| td.synth == Some(synth));
+        if !handle_visible {
+            return false;
+        }
+        !td.variants.iter().any(|v| {
+            v.ctor
+                .is_some_and(|c| fs.visible_ctors[file].values().any(|&vc| vc == c))
+        })
+    }
+
     /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.
     pub(crate) fn is_linked_package(&self) -> bool {
         self.file_scope.is_some()
@@ -2455,11 +2540,9 @@ impl Db {
     /// `list`/`tuple`), never by a name special-case. Cadenza's one namespace makes the two meanings
     /// collide otherwise (the type decl shadows the bare variant, so the ctor is unreachable by name).
     pub fn same_name_newtype_ctor(&self, name: &str) -> Option<StructId> {
-        let decl = self
-            .type_decls
-            .iter()
-            .find(|t| t.name == name && t.variants.len() == 1 && t.variants[0].name == name)?;
-        decl.variants[0].ctor
+        // O(1) via the load-time index (was a linear `type_decls.iter().find` → O(N²) when the linked
+        // resolve path probes it per type-name reference in an N-type package).
+        self.same_name_newtype_ctor_index.get(name).copied()
     }
 
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
@@ -2576,13 +2659,29 @@ impl Db {
                 continue;
             }
             for &s in tail {
-                if self.ast.as_name(s).is_none() {
+                // A bare NAME `(export g)` is well-formed; so is a CONSTRUCTOR-EXPORT `(. T A)` / `(. T *)`
+                // (the opaque-types surface — the handle plus a named constructor, or the wildcard). A
+                // non-name element that is NOT a well-formed ctor-export is the malformed case.
+                if self.ast.as_name(s).is_none() && !is_ctor_export_shape(&self.ast, s) {
                     out.push((item, Some(s)));
                 }
             }
         }
         out
     }
+}
+
+/// Whether `s` is a well-formed CONSTRUCTOR-EXPORT element — the opaque-types export surface `(. T A)`
+/// (the handle + the named constructor `A`) or `(. T *)` (the handle + ALL constructors, the wildcard).
+/// A `(. type ctor)` list whose BOTH segments are names (the ctor may be the reserved `*`). Mirrors
+/// `link::as_ctor_export`'s shape recognition, shared so `db::malformed_exports` treats a valid
+/// ctor-export as well-formed (not the misleading "an export names a definition") while the linker reads
+/// its visibility. A `(. T)` / `(. T A B)` / a non-name segment is NOT this shape (a genuinely malformed
+/// export element).
+fn is_ctor_export_shape(ast: &Arenas, s: StructId) -> bool {
+    ast.as_form(s, ".").is_some_and(|tail| {
+        tail.len() == 2 && ast.as_name(tail[0]).is_some() && ast.as_name(tail[1]).is_some()
+    })
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
@@ -3144,18 +3243,21 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// Unwrap every `(inline-never (def …))` / `(inline-always (def …))` INLINE-POLICY wrapper in place, and
-/// return `(inline_never, inline_always)` — the sets of the wrapped defs' BODY occurrences
-/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). The policy is a declaration the
-/// emitter consumes (not part of the def shape every reader walks), so it is removed here BEFORE
-/// `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers — leaving every
-/// downstream reader a plain `(def …)`.
+/// Unwrap every INLINE-POLICY annotation `(@ inline-never (def …))` / `(@ inline-always (def …))` in
+/// place, and return `(inline_never, inline_always)` — the sets of the annotated defs' BODY occurrences
+/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the two
+/// inline-policy names and leaves any other annotation for a later pass / reject. The policy is a
+/// declaration the emitter consumes (not part of the def shape every reader walks), so it is removed here
+/// BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers —
+/// leaving every downstream reader a plain `(def …)`.
 ///
-/// The wrapper NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's children),
-/// so its `StructId` now identifies the def and every parent that already pointed at the wrapper needs no
-/// update — the inner def node is left orphaned (harmless; unreferenced). The recorded key is the def's
-/// BODY occurrence (`def` tail index 1 = child index 2), the identity `lower`/`layout` key on
-/// (`def_index_by_body`). A wrapper around a NON-def (or a malformed def) is left untouched.
+/// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
+/// children), so its `StructId` now identifies the def and every parent that already pointed at the
+/// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
+/// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
+/// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
+/// one whose name is not an inline-policy name, is left untouched.
 fn strip_inline_policy(
     ast: &mut Arenas,
 ) -> (
@@ -3166,18 +3268,22 @@ fn strip_inline_policy(
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
-        // `(inline-never INNER)` / `(inline-always INNER)` — exactly one operand, an inner `(def …)`.
-        let (never, inner) = if let Some(tail) = ast.as_form(id, "inline-never") {
-            (true, tail.first().copied())
-        } else if let Some(tail) = ast.as_form(id, "inline-always") {
-            (false, tail.first().copied())
-        } else {
+        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only the two
+        // inline-policy names are consumed here; every other `@` annotation is left in place.
+        let Some(tail) = ast.as_form(id, "@") else {
             continue;
         };
-        let Some(inner) = inner else { continue };
+        let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
+            continue;
+        };
+        let never = match ast.as_name(name_occ) {
+            Some("inline-never") => true,
+            Some("inline-always") => false,
+            _ => continue,
+        };
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
-            continue; // a wrapper around a non-def — leave untouched (a well-formedness concern elsewhere)
+            continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
         };
         // The def's BODY occurrence: `def_tail = [SIG, BODY, …]`, so index 1 (a well-formed def has ≥2).
         let Some(&body) = def_tail.get(1) else {
@@ -3772,6 +3878,26 @@ fn scan_unit_defines(ast: &Arenas) -> Vec<(String, StructId, i128, i128)> {
     out
 }
 
+/// Scan the program's `(bind Effect "cadenza:pkg/iface")` top-level directives into the effect→peer-
+/// contract default map (U2, the effects-unification of cross-component interop). Each binds an escaping
+/// effect NAME to a peer interface STRING — the component-scope default route for that effect. A malformed
+/// `(bind …)` (wrong arity, non-name effect, non-string interface) is skipped (a diagnostic elsewhere);
+/// first-wins on a duplicate effect name. Empty for a program with no `(bind …)`.
+fn scan_effect_bindings(ast: &Arenas) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for item in top_items(ast) {
+        if let Some(tail) = ast.as_form(item, "bind")
+            && tail.len() == 2
+            && let Some(effect) = ast.as_name(tail[0])
+            && let Some(iface) = ast.as_str(tail[1])
+        {
+            out.entry(effect.to_string())
+                .or_insert_with(|| iface.to_string());
+        }
+    }
+    out
+}
+
 /// The argument list of a `((. Unit KEY) arg…)` member-access call at `item`, or `None` if `item` is not
 /// that shape. Recognizes the reader's desugaring of `(Unit.KEY arg…)` — the head is a `(. Unit KEY)`
 /// list. Used to scan `Unit.define` top-level forms (and to recognize them as modeled forms so they
@@ -3806,7 +3932,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", "bind"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -3815,7 +3941,7 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern"];
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
 pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "def", "export", "type", "effect", "extern", "module", "pragma",
+    "def", "export", "type", "effect", "extern", "bind", "module", "pragma",
 ];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`

@@ -1277,10 +1277,15 @@ pub fn collect_used_ops(
             collect_used_ops(db, rhs, out);
         }
         // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
-        // temporary operand after the borrowing compare — see the `Core::ValueEq` emit).
+        // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING operand is
+        // canonicalized with `bytes-compact` before the compare (a rope vs its flat twin — see the emit), so
+        // import `bytes-compact` when either operand is a String.
         Core::ValueEq { lhs, rhs } => {
             out.insert(OP_VALUE_EQ);
             out.insert(OP_DROP);
+            if operand_is_string(db, lhs) || operand_is_string(db, rhs) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -5430,8 +5435,31 @@ fn emit(
         // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
         // a double-free.
         Core::ValueEq { lhs, rhs } => {
+            // `value-eq` is `champ_eq` — a PHYSICAL-byte compare (the map-key contract). A runtime String
+            // operand can be a ROPE (a `String.concat` lowers to `bytes-concat`), whose bytes differ from a
+            // flat leaf of IDENTICAL content — so comparing a rope directly would return the WRONG answer.
+            // CANONICALIZE a String operand with `bytes-compact` (a content-equal flat leaf; a no-op-shaped
+            // pass on an already-flat string) before the compare, so a rope and its flat twin compare equal.
+            // The compacted handle is a fresh OWNED temporary (dropped after the borrowing compare). A
+            // non-String operand (a tuple/sum/map compound handle) is NOT compacted — it is passed as-is (a
+            // String NESTED inside such a compound is a separate, rarer case `ty_heap_walkable` still admits;
+            // only a DIRECT String operand is canonicalized here). `bytes-compact` consumes its input, so an
+            // owned operand's handle is consumed by the compact (no separate drop); a borrowed operand
+            // (a `LocalRef`) the compact reads without owning — but `bytes-compact` DOES consume, so we must
+            // pass it an owned copy: for a borrowed String we skip the compact-consume by treating the
+            // compacted result as the owned handle to drop. Since the fix targets the common DIRECT
+            // string `=`, both operands are emitted then compacted, and the compacted result is always Owned.
             let lo = heap_operand_ownership(db, lhs)?;
             let ro = heap_operand_ownership(db, rhs)?;
+            // Compact only an OWNED String operand: `bytes-compact` CONSUMES its input, so a BORROWED
+            // String (a `let`-binding / a sum/tuple projection like `h` in `(match n ((NPrim (tuple h ..))
+            // (= h "+")))` — owned by the enclosing structure) must NOT be consumed here, or the borrow is
+            // freed under its owner → a runtime trap. A borrowed String reaching `=` is a FLAT leaf in
+            // practice (a literal stored in a structure; `String.concat` yields an OWNED rope result, which
+            // IS compacted), so leaving a borrow un-compacted compares correctly. The rope miscompile this
+            // fixes is a fresh OWNED concat result (`(= (rep …) "…")`), exactly the reported shape.
+            let lhs_str = operand_is_string(db, lhs) && lo == HandleOwnership::Owned;
+            let rhs_str = operand_is_string(db, rhs) && ro == HandleOwnership::Owned;
             // Two i32 scratch slots for the operand handles, above the running high-water (they must not
             // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
             let slot_l = *high;
@@ -5441,15 +5469,28 @@ fn emit(
             scratch_ty.insert(slot_r, ValType::I32);
             let op_base = *high;
             emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?;
+            // A borrowed String operand must be COPIED before `bytes-compact` consumes it (else the borrow —
+            // a `let`-binding / param the caller still owns — would be freed). `bytes-compact` already
+            // produces independent storage, but it CONSUMES its input; on a borrow we have no handle to
+            // consume, so compact copies-and-canonicalizes and the RESULT is the owned temporary we drop.
+            // (On an owned operand the compact consumes the owned handle directly — net one owned result.)
+            if lhs_str {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope/flat → canonical flat leaf (owned)
+            }
             out.push(Lir::LocalTee(slot_l));
             emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?;
+            if rhs_str {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT));
+            }
             out.push(Lir::LocalTee(slot_r));
             out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both handles (borrowed) → [bool]
-            if lo == HandleOwnership::Owned {
+            // Drop each operand handle the compare borrowed but we own: a compacted String is ALWAYS a fresh
+            // owned leaf (drop it); a non-compacted operand is dropped only if it was Owned to begin with.
+            if lhs_str || lo == HandleOwnership::Owned {
                 out.push(Lir::LocalGet(slot_l));
                 out.push(Lir::CallImport(OP_DROP));
             }
-            if ro == HandleOwnership::Owned {
+            if rhs_str || ro == HandleOwnership::Owned {
                 out.push(Lir::LocalGet(slot_r));
                 out.push(Lir::CallImport(OP_DROP));
             }
@@ -5784,6 +5825,22 @@ fn emit(
         Core::HostCall {
             effect, op, args, ..
         } => {
+            // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract
+            // (`db.effect_bindings`) is a PEER call — resolve it against the extern-import set and emit a
+            // `CallExternImport`, exactly as a `Core::ExternCall` did. An unbound effect stays a host call.
+            if let Some(iface) = db.effect_bindings.get(&effect).cloned() {
+                let index = layout.extern_index(&iface, &op).ok_or_else(|| {
+                    Reject::decline("a peer-bound effect op is not in the extern-import set")
+                })?;
+                for &arg in &args {
+                    if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
+                        continue;
+                    }
+                    emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+                }
+                out.push(Lir::CallExternImport(index));
+                return Ok(());
+            }
             let index = layout.host_index(&effect, &op).ok_or_else(|| {
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;
@@ -6187,6 +6244,21 @@ enum HandleOwnership {
 /// operands). A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/
 /// `match`/`let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a
 /// mixed owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
+/// Whether operand `id`'s solved type is a `String` (possibly through a nominal/symbol wrapper) — the
+/// type whose runtime rep can be a NON-CANONICAL rope (`String.concat` → `bytes-concat`). Such an operand
+/// of `value-eq`/`champ_eq` (a physical-byte compare) is canonicalized with `bytes-compact` before the
+/// compare so a rope and its flat twin compare equal. A `Symbol` is a nominal over a String leaf (same
+/// rope-capable rep); peel nominals so a `Symbol`/String-newtype operand is compacted too.
+fn operand_is_string(db: &mut Db, id: StructId) -> bool {
+    fn peel(ty: &Ty) -> &Ty {
+        match ty {
+            Ty::Nominal { inner, .. } => peel(inner),
+            other => other,
+        }
+    }
+    matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol)
+}
+
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
         // Constructors and calls produce a fresh owned reference (ownership transfers out). A map

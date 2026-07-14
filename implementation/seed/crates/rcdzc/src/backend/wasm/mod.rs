@@ -462,12 +462,33 @@ pub fn emit(
         host::collect_host_imports(db, body, &mut host_imports);
     }
     // The CROSS-COMPONENT extern-import set (X4b) — the peer ops a `Core::ExternCall` names, collected
-    // over `layout.order` like the host set. X4b-3 scope: an extern-ONLY program (no host effect, no
-    // value-heap runtime); composing an extern import with host/runtime is a later increment.
+    // over `layout.order` like the host set.
     let mut extern_imports: Vec<host::ExternImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
         host::collect_extern_imports(db, body, &mut extern_imports);
+    }
+    // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract (`(bind Math "cadenza:math/api")`
+    // → `db.effect_bindings`) is a PEER call, not a host call. Move each such host import into the extern
+    // set, retargeted to its bound interface — so `Math.add` reaching the boundary emits through the peer
+    // envelope exactly as an `(extern …)` op did. A host import whose effect is NOT bound stays a host call.
+    // (An in-program `(handle Math …)` discharged the effect before it escaped, so a bound effect that a
+    // handler intercepts contributes no import here — the test-override for free.)
+    if !db.effect_bindings.is_empty() {
+        let bindings = db.effect_bindings.clone();
+        host_imports.retain(|h| {
+            if let Some(iface) = bindings.get(&h.effect) {
+                extern_imports.push(host::ExternImport {
+                    interface: iface.clone(),
+                    op: h.op.clone(),
+                    params: h.params.iter().filter_map(host_param_abi).collect(),
+                    result: h.result,
+                });
+                false // remove from the host set
+            } else {
+                true
+            }
+        });
     }
     // An extern import composed with a HOST effect is not yet emitted (a consumer that both binds a peer
     // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
@@ -931,6 +952,18 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
         None => item.extend_from_slice(&[0x01, 0x00]),
     }
     item
+}
+
+/// Convert a host-op boundary parameter to the peer-boundary `AbiValType` (U2) — a scalar crosses by its
+/// scalar rep; a `value`-handle (a compound) already carries its `AbiValType::U32`. A host STRING param
+/// (`HostParam::Str`, the `(ptr,len)` shared-memory shape) has no peer form yet → `None` (a String-param
+/// peer op declines this increment, like the extern side; a compound String crosses as a `u32` handle,
+/// which `collect_host_imports` already records as a scalar-ABI param when the type is a heap value).
+fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
+    match p {
+        host::HostParam::Scalar(v) => Some(*v),
+        host::HostParam::Str => None,
+    }
 }
 
 /// The COMPONENT functype of a cross-component extern op (X4b) — the shape declared in the peer

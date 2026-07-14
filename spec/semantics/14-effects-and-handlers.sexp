@@ -388,6 +388,22 @@
   (call   main (: 3 Int64))
   (output (: true Bool)))
 
+(case "a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)"
+  (doc    "The soundness half of the short-circuit connective: when the LEFT operand short-circuits, the
+           RIGHT operand's perform MUST NOT run — short-circuit evaluation elides it. `(or (> 5 3)
+           (> (Amb.flip) 0))` — the left `(> 5 3)` is true, so `or` short-circuits to true and the right
+           operand `(> (Amb.flip) 0)` never evaluates, so `Amb.flip` is never performed. With `Amb`
+           HOST-DELEGATED, that elision is OBSERVABLE: the run makes NO host call. The empty `(host-calls)`
+           fixture pins it — a perform in a skipped operand produces no observable effect. (Contrast the
+           existing right-operand-RUNS case where the left selects the right; here the left short-circuits
+           past it.)")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (host (Amb) (or (> 5 3) (> (Amb.flip) 0)))) (export main)))
+  (output (: true Bool))
+  (host-calls))
+
 (case "an abortive perform in a conditional let binding abandons the computation"
   (doc    "The abortive early-exit from a `let` INITIALIZER — the 'bind the validated value or bail' shape.
            `(let ((k (if (< x 5) (Bail.bail 7) 0))) (+ 1 k))`: the binding's init aborts when `x < 5`. An

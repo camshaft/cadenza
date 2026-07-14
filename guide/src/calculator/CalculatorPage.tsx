@@ -13,6 +13,29 @@ import { Link } from "react-router-dom";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { Calculator, type Eval } from "./engine.ts";
 
+/// Track the VISUAL viewport height — the area actually visible, EXCLUDING the on-screen keyboard. On
+/// mobile the software keyboard shrinks `window.visualViewport` but NOT `100dvh` (which stays the full
+/// screen), so a `100dvh` container is pushed partly behind the keyboard and the user has to scroll up
+/// and down to reach the input. Sizing the calculator to `visualViewport.height` instead makes it scale
+/// down when the keyboard opens (and back up when it closes) — no awkward scrolling. Returns `null` until
+/// measured / when the API is absent (older browsers, SSR), so the caller falls back to the CSS `100dvh`.
+function useVisualViewportHeight(): number | null {
+  const [h, setH] = useState<number | null>(null);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => setH(vv.height);
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+  return h;
+}
+
 /// One line of the tape: what the user entered and what it produced.
 interface TapeEntry {
   input: string;
@@ -55,6 +78,8 @@ export default function CalculatorPage() {
   const [recall, setRecall] = useState(-1);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Size the page to the VISIBLE viewport so the mobile keyboard shrinks it (no scroll-to-reach-input).
+  const vvHeight = useVisualViewportHeight();
 
   // On a surface change, start a fresh session in the new surface (a stored source was typed in the old
   // one, so it can't be reinterpreted). The tape is kept but marked stale by a one-time notice.
@@ -132,7 +157,12 @@ export default function CalculatorPage() {
   }
 
   return (
-    <div className="mx-auto flex h-[100dvh] max-w-3xl flex-col px-4 py-4">
+    <div
+      className="mx-auto flex max-w-3xl flex-col px-4 py-4"
+      // Bind to the visual viewport (shrinks with the mobile keyboard); fall back to 100dvh when the
+      // VisualViewport API is unavailable so desktop / older browsers still fill the screen.
+      style={{ height: vvHeight != null ? `${vvHeight}px` : "100dvh" }}
+    >
       {/* Header */}
       <div className="mb-3 flex items-baseline justify-between">
         <div>

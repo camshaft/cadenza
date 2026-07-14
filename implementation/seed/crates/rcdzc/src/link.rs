@@ -58,6 +58,15 @@ pub const KIND_ENTRY: &str = "entry";
 /// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).
 pub const KIND_COMPONENT_NAME: &str = "component-name";
 
+/// The input-artifact kind that OVERRIDES effect→peer bindings at COMPILE time (U3, the effects-unification
+/// of cross-component interop). Its bytes are newline-separated `Effect=cadenza:pkg/iface` lines that WIN
+/// over a program's in-source `(bind …)` defaults: `Effect=<iface>` rebinds an effect to a different peer;
+/// `Effect=` (empty value) UNBINDS it (so the effect escapes to the host, or a test's in-program `(handle
+/// Effect …)` handles it locally). The precedence — in-source default < compile-request override <
+/// in-program handler — lets the same source be a real build (source/request binding) or a unit test (drop
+/// the binding + handle it). Absent → the in-source bindings stand.
+pub const KIND_EFFECT_BIND: &str = "effect-bind";
+
 /// The OUTPUT-artifact kind carrying the diagnostics DEMUX table for a linked package
 /// (`DESIGN-package-linking.md` §6). A cross-file diagnostic's `node` is a GLOBAL merged `StructId`;
 /// with several files spliced into one arena, that global id no longer maps to a single file's span
@@ -1136,6 +1145,40 @@ mod tests {
         assert!(
             !out.has_error(),
             "a wildcard-exported type's constructor should be reachable; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// A built-in `=` on a value of an ABSTRACT type (imported handle-only) observes the module's
+    /// private representation → CDZ0202 (nominal boundary). The module exports a comparison FUNCTION if
+    /// it wants its abstract type compared; the built-in structural `=` is not published by the handle.
+    #[test]
+    fn a_builtin_comparison_on_an_abstract_type_is_rejected() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export Color mk))",
+            "(do (import \"lib\" (Color mk)) (def (main) (= (mk) (mk))) (export main))",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0202")),
+            "a built-in comparison on an abstract type's value should be CDZ0202; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// The concrete companion: with the type exported `Color.*`, its representation is public in the
+    /// importing file, so a built-in `=` on its values is allowed (compiles clean).
+    #[test]
+    fn a_builtin_comparison_on_a_concrete_imported_type_is_allowed() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export (. Color *) mk))",
+            "(do (import \"lib\" (Color mk)) (def (main) (= (mk) (mk))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a built-in comparison on a concretely-imported type should be allowed; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());

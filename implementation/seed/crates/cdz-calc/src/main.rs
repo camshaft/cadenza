@@ -35,6 +35,11 @@ struct Cli {
     /// integer division (0). By DEFAULT exact mode is ON (forced rationals) — `1 / 3` is `1/3`.
     #[arg(long = "no-exact")]
     no_exact: bool,
+
+    /// Print results as the BARE value (`1/3`, `1500 meter`, `42`) — stripping the `: Type` suffix, and
+    /// showing a whole rational `5/1` as `5`. The launcher-facing shape (Raycast/Alfred, `--once --plain`).
+    #[arg(long)]
+    plain: bool,
 }
 
 fn main() -> ExitCode {
@@ -43,16 +48,16 @@ fn main() -> ExitCode {
     let exact = !cli.no_exact;
 
     match &cli.once {
-        Some(expr) => run_once(expr, surface, exact),
-        None => run_interactive(surface, exact),
+        Some(expr) => run_once(expr, surface, exact, cli.plain),
+        None => run_interactive(surface, exact, cli.plain),
     }
 }
 
 /// One-shot: evaluate `expr` against an empty binding set, print the value to stdout (a trap/error to
 /// stderr), and exit — success only when the expression produced a value. The shape a Raycast/Alfred
 /// launcher consumes: clean value on stdout, non-zero + message on stderr otherwise.
-fn run_once(expr: &str, surface: Format, exact: bool) -> ExitCode {
-    let mut calc = Calculator::new_with_exact(surface, exact);
+fn run_once(expr: &str, surface: Format, exact: bool, plain: bool) -> ExitCode {
+    let mut calc = Calculator::new_with_exact(surface, exact).with_plain(plain);
     match calc.eval(expr) {
         Eval::Value(v) | Eval::Bound { value: v, .. } => {
             println!("{v}");
@@ -71,8 +76,8 @@ fn run_once(expr: &str, surface: Format, exact: bool) -> ExitCode {
 
 /// The interactive loop: read a line, evaluate it, print the result, repeat. Reads plain lines from
 /// stdin (EOF / an empty `:q` line quits). A blank line is skipped. `:help` prints a short reminder.
-fn run_interactive(surface: Format, exact: bool) -> ExitCode {
-    let mut calc = Calculator::new_with_exact(surface, exact);
+fn run_interactive(surface: Format, exact: bool, plain: bool) -> ExitCode {
+    let mut calc = Calculator::new_with_exact(surface, exact).with_plain(plain);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
 
