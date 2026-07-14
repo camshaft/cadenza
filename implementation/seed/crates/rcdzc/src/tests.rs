@@ -14389,6 +14389,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_compound_operand_against_a_scalar_names_the_kind_boundary() {
+        // A COMPOUND value (record/tuple/list/map/set) held against a SCALAR or TEXT operand is the same
+        // cross-kind clash the text-vs-scalar case is — `(= r 5)` compares a record to an integer. It now
+        // names the kind boundary (CDZ0201) instead of the generic "type mismatch: (Record …) and Int64
+        // must be the same type here" that reads like an internal unify clash. The compound analogue of
+        // the text-vs-scalar message.
+        for (src, what) in [
+            (
+                "(module m (def (g (: r (Record (a Int64)))) (= r 5)) (export g))",
+                "record vs int",
+            ),
+            (
+                "(module m (def (g (: t (Tuple Int64 Int64))) (< t 5)) (export g))",
+                "tuple vs int",
+            ),
+            (
+                "(module m (def (g (: xs (List Int64))) (= xs 5)) (export g))",
+                "list vs int",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{what} must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{what}: {}", d.message);
+            assert!(
+                d.message.contains("different types") && d.message.contains("kind boundary"),
+                "{what} names the kind boundary: {}",
+                d.message
+            );
+        }
+        // NO false positive: a valid SAME-KIND comparison (record = record, tuple = tuple) still compiles;
+        // a compound-vs-DIFFERENT-compound keeps the generic structural mismatch (its own delta hints fire).
+        assert!(
+            reject_code("(module m (def (g (: r (Record (a Int64)))) (= r r)) (export g))")
+                .is_none(),
+            "record = record of the same shape is a valid comparison"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (g (: r (Record (a Int64))) (: s (Record (b Int64)))) (= r s)) (export g))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "two different record shapes keep the generic structural mismatch"
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its

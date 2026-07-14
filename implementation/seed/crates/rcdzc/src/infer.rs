@@ -4070,8 +4070,27 @@ fn check_application(
         let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
         let is_text = |t: &Ty| matches!(t, Ty::String | Ty::Bytes);
         let is_scalar = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char);
-        if (is_text(&a) && is_scalar(&b)) || (is_scalar(&a) && is_text(&b)) {
-            trace!(target: "rcdzc::infer", head = head.0, "fault: text operand against a scalar operand — distinct kinds (CDZ0201)");
+        // A COMPOUND value — a record, a tuple, a list, a map/set — held against a SCALAR or TEXT operand
+        // is the same cross-KIND clash the text-vs-scalar case is: `(= r 5)` compares a heap record to an
+        // unboxed integer, `(< t 5)` a tuple to an integer — no shared order/arithmetic/equality across
+        // that boundary. The generic scheme-unify would report the opaque "type mismatch: (Record …) and
+        // Int64 must be the same type here" (reads like an internal clash); name the kind boundary instead,
+        // the compound analogue of the text-vs-scalar message. Only a DEFINITE compound (not an unsolved
+        // var/`Any`) against a definite scalar/text — a compound-vs-compound mismatch (two different record
+        // shapes) keeps the generic path (its own structural-delta hints, M91/M92, fire there).
+        let is_compound = |t: &Ty| {
+            matches!(
+                t,
+                Ty::Record(_) | Ty::Tuple(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_)
+            )
+        };
+        let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
+        let cross_kind = (is_text(&a) && is_scalar(&b))
+            || (is_scalar(&a) && is_text(&b))
+            || (is_compound(&a) && is_atom(&b))
+            || (is_atom(&a) && is_compound(&b));
+        if cross_kind {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: operands of distinct kinds — not comparable/operable across the boundary (CDZ0201)");
             out.push(Reject::coded(
                 Code::Malformed,
                 format!(
