@@ -694,6 +694,7 @@ pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of a nullary sum written in the bare-member form is exhaustive across every variant
 pass	a list of a sum is exhaustive when the empty and every variant's first-element arm are covered
 pass	a list of bools is exhaustive when the empty and both first-element values are covered
 pass	a list of closures each keeps its own capture, selected by a runtime index

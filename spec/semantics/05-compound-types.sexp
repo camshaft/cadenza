@@ -3391,6 +3391,29 @@
             (def (main) (f (mk 2))) (export main)))
   (output (: 99 Int64)))
 
+(case "a list of a nullary sum written in the bare-member form is exhaustive across every variant"
+  (doc    "The BARE-MEMBER spelling of the list-of-sum saturation: `(match xs ((list) …) ((list C.R .. r) …)
+           ((list C.G .. r) …) ((list C.B .. r) …))` over `(List C)` for `(type C R G B)` is exhaustive
+           WITHOUT a `_`, exactly as the applied `(Some x)` / paren-nullary `(R)` spellings are — the empty
+           arm covers length 0 and the three variant arms saturate the first element's variant set. The
+           bare-member `C.R` (= `(. C R)`) lead element is NORMALIZED to the paren-applied form `((. C R))`
+           so it resolves as a nullary-variant pattern (the bare member alone would re-lower as member
+           access). `mk 2` builds `[C.B]`, whose first element selects the (last, now unconditional) `C.B`
+           arm → 3.")
+  (input  (do
+            (type C R G B)
+            (def (mk (: n Int64))
+              (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B))))
+            (def (f (: xs (List C)))
+              (match xs
+                ((list) 0)
+                ((list C.R .. r) 1)
+                ((list C.G .. r) 2)
+                ((list C.B .. r) 3)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64)))
+
 (case "a sum variant's list payload split across empty and rest arms is exhaustive and dispatches"
   (doc    "A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
            `((Some (list)) …) [len 0] + ((Some (list x .. r)) …) [len ≥ 1] + ((None) …)` — is exhaustive
