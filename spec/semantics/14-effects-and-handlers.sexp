@@ -1090,6 +1090,23 @@
                 (. (record (x (Ask.get)) (y 3)) x))) (export main)))
   (output (: 7 Int64)))
 
+(case "a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator"
+  (doc    "The value and state columns of the effect fold are TYPE-AGNOSTIC: an operation whose result and
+           whose handler state are both Float64 thread through the same machinery as the Int64 cases, and the
+           `+` in the continuation — which now dispatches on operand TYPE (float `+`, no separate `+.`) —
+           resolves to the float add inside the folded body. `Rng.next : Unit -> Float64`, arm `(next (u) s
+           (resume s (+ s 2.0)))`, seeded 1.5: `(Rng.next)` reads 1.5 (state → 3.5), the second reads 3.5
+           (state → 5.5), so `(+ 1.5 3.5)` = 5.0. Pins that (i) a non-Int64 SCALAR result/state slot threads
+           correctly (the fold copies values by identity, indifferent to their type) and (ii) the unified
+           numeric `+` picks the Float64 add within a folded continuation — the float companion of the
+           two-lets / operator-operand Int64 sequencing cases.")
+  (input  (do
+            (effect Rng (op next (-> Unit Float64)))
+            (def (main)
+              (handle Rng 1.5 ((next (u) s (resume s (+ s 2.0))))
+                (+ (Rng.next) (Rng.next)))) (export main)))
+  (output (: 5.0 Float64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
