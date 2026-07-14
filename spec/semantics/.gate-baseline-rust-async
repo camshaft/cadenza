@@ -1142,7 +1142,7 @@ todo	concatenating byte sequences built at run time appends their bytes in order
 todo	concatenating tuples preserves each element's type
 todo	concatenating two tuples appends their elements
 todo	constructing a rational with a zero denominator traps
-todo	converting a BigInt back to a fixed width is checked and traps when out of range
+pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a scalar-valued integer to a char yields Some
 todo	converting a surrogate code point to a char yields None
@@ -1290,5 +1290,5 @@ todo	updating a list index replaces that element, leaving others
 pass	updating a record field changes its type to the new value's
 pass	updating a record field replaces its value
 todo	updating an absent record field is rejected
-todo	wrapping arithmetic uses the distinct wrapping type
+pass	wrapping arithmetic uses the named wrapping form of the operator
 pass	a module in a top-level do sequence type-checks its members

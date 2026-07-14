@@ -14472,6 +14472,66 @@ mod match_engine {
         );
     }
 
+    /// A WELL-FORMED `(pragma default-integer <T>)` written at the PROGRAM'S TOP LEVEL — the root module's
+    /// own member, or a bare `(do …)` item — has NO effect: the load-time pass collects a pragma's literals
+    /// only from a NESTED `(module NAME …)` declaration (one inside a `(do …)`), not the root. Before, such
+    /// a top-level pragma hit the generic "unbound name `pragma`" decline (a misleading typo read, since
+    /// `pragma` is a recognized directive). Now `unknown_top_forms`' `pragma` case names the real situation
+    /// — a pragma is effective only inside a nested module — coded CDZ0601, so the author wraps the module
+    /// in a `(do …)` rather than chasing a phantom typo. A MALFORMED top-level pragma keeps its more-
+    /// specific registry reject (unknown key CDZ0601 / arity CDZ0602 / domain CDZ0303), not the placement
+    /// message.
+    #[test]
+    fn a_top_level_pragma_names_its_ineffective_placement_not_an_unbound_name() {
+        use crate::testkit::parse;
+        // A well-formed top-level `default-integer` pragma → the placement message (not "unbound name").
+        for src in [
+            "(module m (pragma default-integer Int32) (def (main) 1) (export main))",
+            "(do (pragma default-integer BigInt) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has effect only inside a nested"))
+                .unwrap_or_else(|| panic!("a top-level pragma names its placement: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0601"), "got: {}", d.message);
+            // NOT the old misleading "unbound name `pragma`".
+            let all = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                !all.iter()
+                    .any(|d| d.message.contains("unbound name `pragma`")),
+                "no misleading unbound-pragma: {src} -> {:?}",
+                all.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        // A MALFORMED top-level pragma keeps the MORE-SPECIFIC registry message, not the placement one:
+        // unknown key → names the key; wrong arity → CDZ0602; non-integer type → CDZ0303.
+        let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (pragma nonesuch 5) (def (main) 1) (export main))",
+        )));
+        assert!(
+            unknown
+                .iter()
+                .any(|d| d.message.contains("`nonesuch` is not a module directive"))
+                && !unknown
+                    .iter()
+                    .any(|d| d.message.contains("has effect only inside a nested")),
+            "an unknown top-level pragma key keeps the registry message, not the placement one: {:?}",
+            unknown.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reject_code("(module m (pragma default-integer) (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0602"),
+            "a wrong-arity top-level pragma keeps CDZ0602"
+        );
+        assert_eq!(
+            reject_code("(module m (pragma default-integer String) (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0303"),
+            "a non-integer top-level default keeps CDZ0303"
+        );
+    }
+
     #[test]
     fn a_default_integer_pragma_naming_a_non_integer_type_is_cdz0303() {
         // 06-numeric-model "a default-integer pragma naming a non-integer type is rejected" +
@@ -25887,6 +25947,42 @@ mod diagnostics {
             "no spurious suggestion for a far bare typo: {}",
             bare_far.message
         );
+        // A ctor that IS a valid variant, but of a DIFFERENT sum (`D.Gamma` matched against a `C`
+        // scrutinee) — the wrong-sum case (CDZ0203, "not a variant of the matched type C"). It now ALSO
+        // lists C's variants (a far miss) / suggests the nearest (a near miss), the wrong-sum twin of the
+        // typo enrichment — the author reached for one of the MATCHED type's variants.
+        let wrong_sum = first_error(
+            "(module m (type C (Alpha) (Beta)) (type D (Gamma)) \
+               (def (main) (match (C.Alpha) ((D.Gamma) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            wrong_sum.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            wrong_sum.message
+        );
+        assert!(
+            wrong_sum
+                .message
+                .contains("not a variant of the matched type C")
+                && wrong_sum.message.contains("closest matches:")
+                && wrong_sum.message.contains("`Alpha`")
+                && wrong_sum.message.contains("`Beta`"),
+            "the wrong-sum ctor lists the matched type's variants: {}",
+            wrong_sum.message
+        );
+        // A wrong-sum ctor that is a NEAR miss of a real variant of the matched sum (`D.Alph` vs C's
+        // `Alpha`) → a confident "did you mean" + replace fix.
+        let wrong_near = first_error(
+            "(module m (type C (Alpha) (Beta)) (type D (Alph Int64)) \
+               (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            wrong_near.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Alpha"),
+            "a near-miss wrong-sum ctor suggests + fixes to the matched sum's variant: {}",
+            wrong_near.message
+        );
     }
 
     #[test]
@@ -28327,24 +28423,18 @@ mod stage1 {
     }
 
     #[test]
-    fn a_parameterized_compound_return_export_declines() {
-        // A tuple returned from an export that TAKES A PARAMETER cannot cross as the resource escape:
-        // the resource's constructor is `make : () -> own<t>` (NULLARY), so the escaping export must be
-        // nullary. A parameterized compound-returning export therefore still DECLINES here (its
-        // component functype would need a compound RESULT with parameters, which the boundary does not
-        // carry — reject-don't-miscompile). The runtime-compound escape (R2) covers the NULLARY case: a
-        // recursive/heap-built tuple returned from a nullary export now crosses (see
-        // `a_recursive_runtime_tuple_escapes_to_the_host`). Pins the nullary-only escape boundary.
+    fn a_parameterized_compound_return_export_compiles_via_the_resource_escape() {
+        // A tuple returned from an export that TAKES A PARAMETER now crosses as the resource escape: the
+        // resource's constructor `make` FORWARDS the export's scalar params (`make(n) -> own<t>`), so the
+        // host computes the compound from its argument, then `encode()` walks the live handle to the
+        // value form. This closed the last cross-cutting heap-return decline (a `List`/`BigInt`/`Rational`
+        // from a parameterized export declined identically); the end-to-end value is corpus-gated
+        // ("a parameterized export returns a … computed from its argument"). Previously DECLINED
+        // "a heap value escapes … only from a NULLARY export".
         let src = "(module m (def (pair (: n Int64)) (tuple n 1)) (export pair))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a parameterized compound-return export declines");
-        // The message names the ACTUAL trigger — a NULLARY-only resource escape, and this export takes a
-        // parameter — NOT the misleading "multi-export boundary" (there is one export). See the emit-side
-        // diagnosis in `backend::wasm::emit`.
         assert!(
-            err.message.contains("NULLARY export") && err.message.contains("takes a parameter"),
-            "the parameterized-compound decline must name the nullary-export trigger, got: {}",
-            err.message
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized compound-return export must compile via the param-forwarding resource escape"
         );
     }
 
@@ -34433,6 +34523,67 @@ mod stage1 {
     }
 
     #[test]
+    fn a_const_collection_recursively_folded_rejects_rather_than_hanging() {
+        // 🔴 MISCOMPILE GUARD: a `const` COLLECTION param consumed by a SELF-RECURSIVE fold used to compile
+        // to an INFINITE LOOP — the const erasure and the tail-loop transform composed to emit a
+        // `loop { … br 0 }` with no exit test (the `(list)`-nil / length check was const-folded away). A
+        // valid program HUNG. `type_specialize` now DECLINES the composition (decline-don't-miscompile),
+        // so it rejects (coded CDZ0201) rather than hanging.
+        let reject_code = |src: &str| {
+            crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|e| e.code)
+        };
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (s (const (: xs (List Int64))) (: acc Int64)) \
+                     (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
+                   (def (main) (s (list 1 2 3) 0)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a const list consumed by a tail fold must be rejected, not compiled to an infinite loop"
+        );
+        // The RUNTIME-list version (no `const`) compiles cleanly — the list is an ordinary runtime value the
+        // tail-loop iterates with its real `br_if` length/nil exit. So the reject is specific to the
+        // const-erasure × tail-loop composition, NOT to tail-folding a list.
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (s (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
+                   (def (main) (s (list 1 2 3) 0)) (export main))"
+            ),
+            None,
+            "the runtime-list tail fold (no const) compiles — only the const-collection composition rejects"
+        );
+        // NO REGRESSION: a `const` DICTIONARY consumer that recurses driven by a RUNTIME counter (the dict
+        // passed UNCHANGED) still compiles — the const value is not a collection folded down a spine, so
+        // the guard does not fire. (The `is_collection_ty` predicate distinguishes them.)
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0)) (export main))"
+            ),
+            None,
+            "a const-dictionary recursive consumer (runtime-counter-driven) still compiles"
+        );
+        // NO REGRESSION: a const SCALAR recursion compiles (a scalar is not a collection).
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (cd (const (: n Int64)) (: acc Int64)) (if (= n 0) acc (cd (- n 1) (+ acc 1)))) \
+                   (def (main) (cd 5 0)) (export main))"
+            ),
+            None,
+            "a const-scalar recursion compiles (only a const collection folded recursively rejects)"
+        );
+    }
+
+    #[test]
     fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
         // REGRESSION (perf): `Db::register_reduced_callables` runs after EVERY `apply_lambda` β-reduction to
         // discover do-local recursive defs in the reduced term, and its `collect_reduced_callables` helper
@@ -35370,18 +35521,17 @@ mod stage1 {
     }
 
     #[test]
-    fn a_parameterized_sum_returning_export_declines() {
-        // A sum crosses the host boundary ONLY as a single NULLARY export's result (the resource escape
-        // path, `emit`). A PARAMETERIZED sum-returning export (`mk` takes `a`) is not that shape — it has
-        // no scalar boundary form — so it DECLINES cleanly (not a miscompile). The nullary escape is
-        // exercised by `a_nullary_sum_export_escapes_to_the_host` below.
+    fn a_parameterized_sum_returning_export_escapes_via_param_forwarding_make() {
+        // A PARAMETERIZED sum-returning export (`mk` takes `a`) now crosses as the resource escape: `make`
+        // forwards the export's scalar param (`make(a) -> own<t>`), so the host builds `(Option.Some a)`
+        // from its argument and `encode()` renders it. Previously DECLINED "only from a NULLARY export".
+        // The nullary escape is still exercised by `a_nullary_sum_export_escapes_to_the_host` below.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (mk (: a Int64)) (Option.Some a)) (export mk))";
-        let result = compile_component(&crate::codec::encode(&parse(src)));
         assert!(
-            result.is_err(),
-            "a parameterized sum-returning export must decline (not the nullary escape shape)"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized sum-returning export must compile via the param-forwarding resource escape"
         );
     }
 
@@ -39763,7 +39913,7 @@ mod r2_runtime_resource {
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
         let ops: Vec<&RtOp> = walker_ops().to_vec();
-        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name);
+        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name, &[]);
         let oracle = oracle_runtime_resource_component(&core, import_name);
         assert_eq!(
             ours, oracle,
@@ -39785,7 +39935,7 @@ mod r2_runtime_resource {
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
         let ops: Vec<&RtOp> = methods_ops().to_vec();
-        let ours = assemble_runtime_resource_with_len(&core, &dtor, &ops, import_name);
+        let ours = assemble_runtime_resource_with_len(&core, &dtor, &ops, import_name, &[]);
         let oracle = oracle_tuple_methods(&core, import_name);
         assert_eq!(
             ours, oracle,

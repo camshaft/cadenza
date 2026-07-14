@@ -5759,3 +5759,26 @@
             (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0))
             (export main)))
   (output (: 0 Int64)))
+
+(case "a parameterized export returns a list computed from its argument"
+  (doc    "A `main` that TAKES a parameter and RETURNS a heap List crosses the host boundary as a
+           resource whose `make` forwards the argument, so the host builds the list from its input:
+           `main(7) = (list 7 14)`. Previously a heap value escaped only from a NULLARY export; `make`
+           now forwards scalar params, so a computed-from-input collection crosses.")
+  (input  (do (def (main (: a Int64)) (list a (* a 2))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: (list 7 14) (List Int64))))
+
+(case "a parameterized export returns a tuple computed from its argument"
+  (doc    "The tuple companion: `main(100) = (tuple 100 101 102)`, a fixed-shape compound built from the
+           argument crossing via the param-forwarding resource escape.")
+  (input  (do (def (main (: a Int64)) (tuple a (+ a 1) (+ a 2))) (export main)))
+  (call   main (: 100 Int64))
+  (output (: (tuple 100 101 102) (Tuple Int64 Int64 Int64))))
+
+(case "a parameterized export returns a sum value computed from its argument"
+  (doc    "The sum companion: `main(9) = (Some 81)` over a user `(type Option …)` — the runtime
+           disc-switch encoder renders the variant the host built from the argument.")
+  (input  (do (type Option (Some Int64) None) (def (main (: a Int64)) (Option.Some (* a a))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: (Some 81) Option)))

@@ -102,10 +102,15 @@
   (input  (+. (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
-(case "wrapping arithmetic uses the distinct wrapping type"
-  (doc    "Witnesses numeric-model.md #Overflow Is Defined via the distinct wrapping type.")
-  (input  (+% Wrapping64.max 1))
-  (output (: -9223372036854775808 Wrapping64)))
+(case "wrapping arithmetic uses the named wrapping form of the operator"
+  (doc    "Witnesses numeric-model.md #A Wrapping Operation Has A Defined Modular Outcome: the wrapping
+           overflow behavior is a NAMED FORM of the operator on the integer type, opted into at the call
+           (`Int64.wrapping-add`), NOT a distinct wrapping type. `(Int64.wrapping-add Int64.max 1)` wraps
+           to Int64.min in two's complement rather than trapping — the defined modular outcome the model
+           admits alongside the trapping default `+`. (See the dedicated checked/wrapping section below
+           for the full add/mul coverage.)")
+  (input  (Int64.wrapping-add Int64.max 1))
+  (output (: -9223372036854775808 Int64)))
 
 ; --- Exact rationals: a normalized pair of big-integers, opted into explicitly ------------
 ; The exact rational type `Rational` (options/numeric-model/) is a numerator/denominator pair kept in
@@ -361,13 +366,18 @@
   (input  (BigInt.of 42))
   (output (: 42 BigInt)))
 
-(case "converting a BigInt back to a fixed width is checked and traps when out of range"
-  (doc    "`((UInt 8).of (BigInt.of 300))` converts a BigInt down to `(UInt 8)`, whose range is 0..=255,
-           so 300 does not fit and it TRAPS (numeric-model.md #A Conversion Between Integer Types Is
-           Explicit — the checked form), exactly as `((UInt 8).of 300)` on an Int64 does. Pins that
-           narrowing OUT of BigInt is checked, not a silent truncation.")
-  (input  ((UInt 8).of (BigInt.of 300)))
-  (trap   "integer overflow"))
+(case "converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected"
+  (doc    "`(UInt8.of (BigInt.of 300))` converts a BigInt down to `UInt8`, whose range is 0..=255, so 300
+           does not fit. The conversion is CHECKED (numeric-model.md #A Conversion Between Integer Types Is
+           Explicit — the range-checked form, never a silent truncation): the narrowing that overflows is
+           a fault, not an accepted value. Here BOTH operands are constants, so the overflow is provable at
+           compile time and the compiler REJECTS it (CDZ0302 — the checked conversion cannot fit the
+           target), exactly as the constant-fold overflow of `+`/`*` is rejected rather than run to a trap
+           (the runtime companion — a checked narrowing of a RUNTIME BigInt that overflows — traps at run
+           time; a constant is caught earlier). Pins that narrowing OUT of BigInt is checked, and that a
+           compile-provable out-of-range narrowing fails the build.")
+  (input  (UInt8.of (BigInt.of 300)))
+  (error  CDZ0302))
 
 (case "a BigInt operation does not silently promote a fixed-width operand"
   (doc    "`(+ (BigInt.of 1) 1)` mixes a BigInt and an Int64 — two distinct numeric types — rejected
@@ -2319,3 +2329,19 @@
   (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
   (output (: 2 Int64)))
 
+(case "a parameterized export returns a runtime BigInt computed from its argument"
+  (doc    "A `main` that TAKES a parameter and RETURNS a BigInt crosses the host boundary as a resource
+           whose `make` forwards the argument (`make(a) -> own<t>`), so the host computes the value from
+           its input: `main(5000000000) = 5000000000 * 3 = 15000000000`, a value beyond Int64 that no
+           constant fold could produce. Closes the last cross-cutting heap-return limit (a List/BigInt/
+           Rational from a parameterized export all declined identically before).")
+  (input  (do (def (main (: a Int64)) (* (BigInt.of a) (BigInt.of 3))) (export main)))
+  (call   main (: 5000000000 Int64))
+  (output (: 15000000000 BigInt)))
+
+(case "a parameterized export returns a runtime Rational computed from its argument"
+  (doc    "The Rational companion: `main(1) = 1/6 + 1/6 = 1/3` exactly, the runtime rational built from
+           the argument crossing the boundary via the param-forwarding resource escape.")
+  (input  (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1/3 Rational)))

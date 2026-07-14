@@ -90,17 +90,18 @@ export default function Data() {
         id="data:2"
         prompt={
           <>
-            A tuple is reached by <em>position</em>, not name. Use the <C>.</C> accessor with an index to
-            pull the middle element out of <C>(tuple 7 8 9)</C> — counting from zero, that's <C>8</C>.
+            Now both ways at once, reaching into a nested shape. This record's <C>point</C> field holds a
+            tuple; the field is already reached by name, so finish the chain with the <em>index</em> that
+            pulls out the <em>last</em> element, <C>9</C>.
           </>
         }
-        starter={`(. (tuple 7 8 9) ?)`}
-        solution={`(. (tuple 7 8 9) 1)`}
-        expected="8"
+        starter={`(. (. (record (point (tuple 7 8 9))) point) ?)`}
+        solution={`(. (. (record (point (tuple 7 8 9))) point) 2)`}
+        expected="9"
         hint={
           <>
-            Tuple indices start at <C>0</C>, so the middle of three elements is index <C>1</C> — a{" "}
-            <em>number</em>, where the record above used a name.
+            The field access <C>point</C> used a name; the tuple step uses a <em>number</em>. Indices start
+            at <C>0</C>, so the last of three elements is index <C>2</C>.
           </>
         }
       />

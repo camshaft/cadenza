@@ -1094,7 +1094,12 @@ the component type. The new work:
   `nested_fixed_shape_tuple_arg`); `NestedCompoundArgBoundary` gained prefix/suffix; the recursive rebuild's
   `base_param` shifts past the prefix + the interleaved envelope functype already surrounds the minted types.
   Also witnessed a record-with-a-tuple-field + a triply-nested record (already worked). e2e: prefix→1113,
-  prefix+suffix→1114, × List. (Multi/mixed/distinct-sig nested stay SOLE-arg — a mechanical follow-on.)
+  prefix+suffix→1114, × List.
+- **✅ NESTED compound ARG AMONG scalars on the MULTI-EXPORT + MIXED paths** (`8b6fc532`, scalar + list results).
+  Extracted a shared `nested_sole_or_among_scalars` classifier all 3 emit paths' `nested_tuple` binding calls;
+  the multi/mixed `tpre`/`tsuf` + nested scalar branches thread the nested prefix/suffix. No new serializer/
+  envelope. e2e: multi scalar-then-nested (mk-a→1113, mk-b→887), mixed × List. (Distinct-sig nested-among-scalars
+  still declines — its per-group detector doesn't yet take the among-scalars variant; sole-nested works.)
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65

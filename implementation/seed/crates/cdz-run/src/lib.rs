@@ -255,6 +255,13 @@ pub struct Peer {
 /// EVERY component that imports it (X5), so a `value` handle one produces is meaningful to another (they
 /// index the same heap — component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared
 /// Runtime Instance). SCOPE: scalar peer ops today; a `value`-handle op rides this shared instance.
+///
+/// This is the host binding every composed component's value-heap runtime import to the ONE shared
+/// instance: the consumer and each peer all pin the same runtime (same content hash → same import name),
+/// so their handles index one heap and none is handed a handle into a heap it does not share. (The
+/// `value`-handle crossing that USES this shared heap is X5b; X5a establishes the shared instance.)
+//= spec/contracts/component-abi.md#a-cross-component-handle-is-meaningful-only-in-the-shared-runtime-instance
+//# A host that composes Cadenza components which exchange values by handle MUST bind every such component's value-heap runtime import to the one shared runtime instance, so that the components' handles index one heap and a component cannot be handed a handle into a heap it does not share.
 pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -415,7 +422,7 @@ fn run_export(
             .map(|name| !names_a_top_level_func(&mut *store, name))
             .unwrap_or(true)
     {
-        return run_resource_escape(&mut *store, &instance);
+        return run_resource_escape(&mut *store, &instance, &opts.args);
     }
 
     // The CLOSURE ESCAPE (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a program whose result is a
@@ -1153,6 +1160,7 @@ fn run_closure_resource(
 fn run_resource_escape(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
+    args: &[String],
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, RUN_INTERFACE)
@@ -1170,8 +1178,17 @@ fn run_resource_escape(
         .get_func(&mut *store, encode_idx)
         .ok_or_else(|| anyhow!("resource escape: `encode` is not a function"))?;
 
+    // `make` forwards the escaping export's parameters: a NULLARY export takes no args (`make()`); a
+    // PARAMETERIZED export (`(def (main (: a Int64)) …)`) takes the `(call …)` args, so the host computes
+    // the heap value from its inputs. Coerce the raw arg strings to `make`'s declared param types.
+    let make_param_types: Vec<Type> = make
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    let make_args = coerce_args(args, &make_param_types)?;
     let mut handle = [Val::Bool(false)];
-    if let Err(e) = make.call(&mut *store, &[], &mut handle) {
+    if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
         return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = make.post_return(&mut *store);
