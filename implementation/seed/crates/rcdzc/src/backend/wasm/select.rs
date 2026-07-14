@@ -8909,6 +8909,19 @@ fn operand_src(
     ot: IntTy,
     slots: &HashMap<StructId, u32>,
 ) -> Result<Option<OperandSrc>, Reject> {
+    // A node MATERIALIZED into a slot (CSE / LICM / a match-scrutinee) is read back as a `local.get` of
+    // THAT slot — an operand-source in its own right, no copy. Honor the node's own slot BEFORE the
+    // core-kind dispatch: without this, a CSE-hoisted `Core::Arith` operand (`(+ (& x 7) (& x 7))`, both
+    // uses reading the one CSE slot) fell to the copy path (`emit_operand_into` did `local.get src ;
+    // local.set slot2`), spilling the already-slotted value into a fresh scratch slot for nothing. Reading
+    // the CSE slot directly drops that copy (and its dead slot). Same slot-machine-type guard as the
+    // Param/LocalRef arm — a slot of a different width takes the copy path (where `emit_operand` widens).
+    if let Some(&slot) = slots.get(&id) {
+        if valtype_of(&type_of(db, id)) == Some(m_slot(ot)) {
+            return Ok(Some(OperandSrc::Slot(slot)));
+        }
+        return Ok(None);
+    }
     match core_of(db, id) {
         Core::Param { binder } | Core::LocalRef { binder } => {
             let Some(&slot) = slots.get(&binder) else {
@@ -11588,6 +11601,48 @@ mod tests {
             2,
             "value-equal `(* a b)` across ops is computed once (2 muls), got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn a_cse_slotted_operand_is_read_directly_not_recopied() {
+        // A CSE-hoisted subexpression used as an ARITHMETIC OPERAND is read straight from its CSE slot —
+        // `operand_src` honors the node's own slot, so no spurious copy into a fresh scratch slot. Before
+        // this, `(+ (& x 7) (& x 7))` emitted `local.tee <cse> ; local.tee <scratch> ; local.get <scratch>`
+        // (the operand path spilled the already-slotted value again); now it is `local.tee <cse> ;
+        // local.get <cse> ; add` — identical to the explicit `(let ((y (& x 7))) (+ y y))`. Assert the two
+        // lower to the SAME local count and the SAME emitted code.
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cse = lir(
+            "(module m (def (f (: x Int64)) (+ (& x 7) (& x 7))) (def (main) 0) (export main))",
+        );
+        let via_let = lir(
+            "(module m (def (f (: x Int64)) (let ((y (& x 7))) (+ y y))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            cse, via_let,
+            "a CSE'd operand emits identically to an explicit let (no extra copy), got: {cse:?}"
+        );
+        // Concretely: exactly ONE `i64.and` (computed once) and the shared value read straight from its
+        // CSE slot — `[get x ; const 7 ; and ; tee <cse> ; get <cse> ; add ; tee <ret>]`. The redundant
+        // `local.tee/set <scratch>` that spilled the already-teed value is GONE (was a distinct middle
+        // slot); the only two tees are the shared-value store and the result store.
+        assert_eq!(
+            cse.iter().filter(|i| **i == Lir::I64And).count(),
+            1,
+            "the shared `(& x 7)` is computed once, got: {cse:?}"
+        );
+        assert!(
+            !cse.iter().any(|i| matches!(i, Lir::LocalSet(_))),
+            "no redundant local.set spilling the already-teed CSE value, got: {cse:?}"
         );
     }
 

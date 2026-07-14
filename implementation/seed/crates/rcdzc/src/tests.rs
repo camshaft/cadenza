@@ -21637,6 +21637,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nullary_variant_list_element_dispatches_by_discriminant() {
+        // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
+        // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary
+        // `(. C R)` IS the whole element, sitting in list-element position where resolve marks the
+        // occurrence INERT — so `variant_owner_decl` read no scheme and it fell to a spurious CDZ0201 "not a
+        // constructor". `refutable_ctor_element_head` now resolves the head via a FRESH clone (out of
+        // element context), so a nullary variant dispatches like any refutable ctor element.
+        //
+        // A runtime list built internally (nullary variant elements), dispatched by the head's tag: mk(0) →
+        // [C.R] → arm 1; mk(1) → [C.G] → arm 2; mk(2) → [C.B] → catch-all 0.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m (type C R G B) \
+                   (def (mk (: n Int64)) (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B)))) \
+                   (def (f (: xs (List C))) (match xs ((list C.R .. r) 1) ((list C.G .. r) 2) (_ 0))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping nullary-variant-list-element run");
+            return;
+        }
+        assert_eq!(run("0"), "1", "[C.R] matches the C.R arm");
+        assert_eq!(run("1"), "2", "[C.G] matches the C.G arm");
+        assert_eq!(run("2"), "0", "[C.B] matches no listed arm → catch-all");
+    }
+
+    #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
         // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
         // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant
@@ -32136,6 +32166,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
+        // The ARGUMENT-position twin of the variant-ctor record typo (and the `(. r yy)` member-access
+        // did-you-mean): a record LITERAL passed to a `(: r (Record …))` PARAMETER with one field a
+        // plausible typo of the expected one — `(g (record (fooo 1)))` for a `(Record (foo Int64))` param —
+        // names the field-set difference AND offers the RENAME fix on the misspelled key. Previously the
+        // argument site named the difference but declined the fix the variant-ctor site already gave.
+        let src = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
+                   (def (main) (g (record (fooo 1)))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("missing field `foo`") && d.message.contains("no such field `fooo`"),
+            "names the field-set difference: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("a rename fix is carried");
+        assert!(
+            fix.replacement.contains("foo"),
+            "the fix renames the typo'd field to `foo`: {:?}",
+            fix.replacement
+        );
+        // The renamed argument compiles.
+        let fixed = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
+                     (def (main) (g (record (foo 1)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
+            "the renamed record argument compiles"
+        );
+        // NO false rename: a genuinely-MISSING field (not a typo of a supplied one) gets the message, no fix.
+        let missing = "(module m (def (g (: r (Record (x Int64) (y Int64)))) (. r x)) \
+                       (def (main) (g (record (x 1)))) (export main))";
+        let dm =
+            compile_component(&crate::codec::encode(&parse(missing))).expect_err("must reject");
+        assert!(
+            dm.message.contains("missing field `y`") && dm.fix.is_none(),
+            "a genuinely-missing field gets no rename fix: {} fix={:?}",
+            dm.message,
+            dm.fix
+        );
+    }
+
+    #[test]
     fn a_field_with_no_close_match_lists_the_available_fields() {
         // No field is within the edit-distance cutoff of `zzzzzz` — so instead of a CONFIDENT "did you
         // mean?" (which would be a baseless guess) OR a bare dead-end "no field" message, the diagnostic
@@ -37242,6 +37314,19 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
             "a mutual group with the perform in a different branch from the mutual call must specialize, \
              not leak an internal ev#eff…$s0 name"
+        );
+        // The MATCH-dispatch analogue: the cycle dispatches on a `match` (perform in one arm, mutual call in
+        // another) rather than an `if`. The `match` thread arm had the SAME shared-state-ref bug as the `if`
+        // arm (each arm threaded under one shared `cur`); copying the state-refs per arm fixes it. Same
+        // recursion `ev 2 -> od 1 -> ev 0` fires `Fresh.next`, seed 42, resumes 43.
+        let sep_match = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (match n (0 (Fresh.next)) (_ (od (- n 1))))) \
+                   (def (od (: n Int64)) (match n (0 0) (_ (ev (- n 1))))) \
+                   (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(sep_match))).is_ok(),
+            "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
+             must specialize, not leak an internal ev#eff…$s0 name"
         );
     }
 

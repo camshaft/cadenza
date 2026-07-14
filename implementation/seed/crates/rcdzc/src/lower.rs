@@ -3226,8 +3226,9 @@ fn desugar_refutable_literal_list_elements(
 /// elements`). A SINGLE-variant ctor is IRREFUTABLE (handled inline by `list_element_irrefutable_or_decline`
 /// / Inc-1), so it returns `None` here. A non-ctor element (literal, tuple, bare binder) returns `None`.
 fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<StructId> {
-    // The ctor head: a bare name / member `(. Sum V)` used whole, or a `(head arg…)` application's head —
-    // the same head extraction `classify_binding_ctor` performs.
+    // The ctor head: a bare name / member `(. Sum V)` used whole (a NULLARY variant — `C.R`), or a `(head
+    // arg…)` application's head (a payload variant — `Op.Add`). The same head extraction
+    // `classify_binding_ctor` performs.
     let head = match db.ast.get(elem_pat) {
         crate::ast::Struct::Atom(_) => elem_pat,
         crate::ast::Struct::List(children) => match children.first().copied() {
@@ -3236,7 +3237,15 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
             None => return None,
         },
     };
-    let decl = crate::eval::variant_owner_decl(db, head)?;
+    // Resolve the head's owning sum via a FRESH copy of it. A NULLARY-variant head that IS the whole
+    // element (`(. C R)` / a bare `Red`) sits in LIST-ELEMENT position, where resolve classifies the
+    // occurrence INERT (`Resolved::Unit`, like any list-element binder) — so `variant_owner_decl` on the
+    // in-place node reads no variant scheme and returns None, and the element fell through to a spurious
+    // CDZ0201 "not a constructor". A fresh clone (`clone_ctor_head`, out of element context) re-resolves as
+    // an ordinary variant reference — the same node the desugar's guard/body will use. (An APPLIED head
+    // `(. Op Add)` is already a distinct non-element node, so cloning it is harmless.)
+    let resolve_head = clone_ctor_head(db, head);
+    let decl = crate::eval::variant_owner_decl(db, resolve_head)?;
     let variant_count = db.type_decl_by_occ(decl).map(|d| d.variants.len())?;
     (variant_count > 1).then_some(head)
 }
@@ -3262,9 +3271,11 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 /// fail). Three distinct occurrences of the fresh name `__lc{arm}` (the Inc-11 two-parents lesson): the
 /// inert PATTERN-position element binder, the guard-cond match scrutinee, and the body-rematch scrutinee.
 ///
-/// Scope: ONE refutable-ctor element per arm (the overwhelmingly common tree-walk shape). An arm with ≥2
-/// refutable-ctor elements DECLINES honestly (its body-rematch nesting + payload-scope interleaving is a
-/// later increment). NO new IR, NO backend change. Returns `Some(Core)` iff the rewrite fired.
+/// N refutable-ctor elements per arm (N ≥ 1, `c5d45540`): each gets a fresh binder in the list pattern,
+/// all their discriminant tests are ANDed into the arm guard, and the body re-matches NEST inside-out
+/// (the innermost holds the original body, so every ctor's payload sub-patterns are in scope). The
+/// single-ctor case is exactly N == 1, so the loop generalizes it uniformly. NO new IR, NO backend
+/// change. Returns `Some(Core)` iff the rewrite fired.
 fn desugar_refutable_ctor_list_elements(
     db: &mut Db,
     scrutinee: StructId,

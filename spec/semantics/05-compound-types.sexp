@@ -2369,6 +2369,24 @@
             (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
   (output (: -5 Int64)))
 
+(case "a nullary variant list element dispatches by its discriminant"
+  (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
+           whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor
+           `(Op.Add n)` does. (A nullary variant IS the whole element, sitting in list-element position; it
+           dispatches via the same fresh-binder + discriminant-guard desugar, no payload to bind.) Here the
+           runtime list built by `mk 1` is `[C.Green]`, so it falls past the `C.Red` arm to the `C.Green` arm
+           → 2; `C.Blue` would fall to the catch-all.")
+  (input  (do
+            (type C Red Green Blue)
+            (def (mk (: n Int64)) (if (< n 1) (list C.Red) (if (< n 2) (list C.Green) (list C.Blue))))
+            (def (f (: xs (List C)))
+              (match xs
+                ((list C.Red .. r) 1)
+                ((list C.Green .. r) 2)
+                (_                   0)))
+            (def (main) (f (mk 1))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a nested list element composes over a runtime list of lists"
   (doc    "A list element MAY itself be a nested LIST pattern (`core-semantics.md §A List Is Deconstructed`:
            an element MAY itself be a nested element pattern, matched recursively). Over a runtime `List
@@ -3730,6 +3748,20 @@
   (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64)))
 
+(case "a list of records: a runtime index then reads a field of the found record"
+  (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned
+           record handle is then projected `(. r v)` at run time. i=0 → 10, i=1 → 20, out of bounds → -1.
+           Pins that a list ELEMENT that is itself a record round-trips through `List.at` as a usable record
+           handle whose field projects — the symbol-table-as-a-VECTOR idiom (a list of entry records indexed
+           by position), the record companion of the list-of-maps case above.")
+  (input  (do (def (main (: i Int64))
+                (match (List.at (list (record (v 10) (tag 1)) (record (v 20) (tag 2))) i)
+                  ((Some r) (. r v))
+                  (None -1))) (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 1 Int64)) (output (: 20 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
 (case "a set as a map value: runtime membership tested through the lookup"
   (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
            returned set at run time. k=1,e=10 → present (1); k=1,e=99 → absent (0); an absent key → -1. Pins
@@ -3839,6 +3871,37 @@
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
   (input  (= (map ("a" 1) ("b" 2)) (map ("b" 2) ("a" 1))))
   (output (: true Bool)))
+
+; The order-independence case above compares two constant `(map …)` literals (they fold). These pin it at
+; RUN TIME: two maps built by `Map.insert` in DIFFERENT insertion orders (a runtime value in one entry, so
+; neither folds) compare equal by CONTENT via the `value-eq` CHAMP walk — the order-independent, canonical-
+; by-construction persistent structure means the two runtime handles are byte-identical. Comparing two
+; environments / symbol tables for equality is the idiom; both operands are runtime handles (the CHAMP
+; walk), distinct from the runtime-vs-constant map-equality concern the comment below discusses.
+
+(case "two runtime maps built in different insertion orders compare equal by content"
+  (doc    "`m1` inserts key 1 (a runtime value `a`) then key 2; `m2` inserts key 2 THEN key 1 — the same
+           associations `{1↦a, 2↦20}` in the opposite order. Built at run time (a parameter in one entry),
+           they compare EQUAL for every `a` (a=10 → 1, a=5 → 1): the CHAMP is order-independent and canonical
+           by construction, so the two runtime handles are byte-identical. Pins runtime map equality's
+           order-independence (the environment-comparison idiom), the runtime companion of the constant
+           literal case above.")
+  (input  (do
+            (def (m1 (: a Int64)) (Map.insert (Map.insert Map.empty 1 a) 2 20))
+            (def (m2 (: a Int64)) (Map.insert (Map.insert Map.empty 2 20) 1 a))
+            (def (main (: a Int64)) (if (= (m1 a) (m2 a)) 1 0)) (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "two runtime maps with the same keys but a different value are unequal"
+  (doc    "The discriminator that runtime map equality is a genuine per-value compare, not order-only:
+           `{1↦a, 2↦20}` vs `{1↦99, 2↦20}` — same key set, differing at key 1. a=99 → equal (1); a=10 →
+           unequal (0). Pins that the runtime CHAMP walk compares VALUES at each key, so two same-shape maps
+           differing in one value are unequal (the environment-changed check).")
+  (input  (do
+            (def (main (: a Int64)) (if (= (Map.insert (Map.insert Map.empty 1 a) 2 20) (Map.insert (Map.insert Map.empty 1 99) 2 20)) 1 0)) (export main)))
+  (call   main (: 99 Int64)) (output (: 1 Int64))
+  (call   main (: 10 Int64)) (output (: 0 Int64)))
 
 ; Map equality is STRUCTURAL and must not depend on whether a map's key was a compile-time constant or
 ; computed at run time (core-semantics.md #Equality Is Structural — two values equal exactly when their

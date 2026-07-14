@@ -3107,7 +3107,14 @@ fn thread_bounded(
                 // The pattern binds names for the arm body (a binder position) — copy it structurally so it
                 // is self-contained, exactly as a `let` binder name is copied (never substituted/threaded).
                 let rpat = copy_pure(db, pat);
-                let rbody = thread_branch_local_abort(db, body, cur.clone(), ctx, inline_depth)?;
+                // Each arm gets its OWN FRESH COPY of the incoming state-refs — the same single-parent-arena
+                // reason as the `if` branches: an arm body EMBEDS the state (a perform substitutes it into a
+                // resume value; a recursive/mutual call appends it as a trailing state arg), so sharing one
+                // state-ref node across arms orphans whichever is parented second, leaking the internal
+                // `f#ctx$s0` name (a mutual group dispatched by `match` with the perform in one arm and the
+                // mutual call in another). Copying per arm gives each its own node.
+                let arm_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+                let rbody = thread_branch_local_abort(db, body, arm_states, ctx, inline_depth)?;
                 children.push(db.push_list(vec![rpat, rbody]));
             }
             Some((db.push_list(children), cur))
