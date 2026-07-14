@@ -2591,6 +2591,49 @@
   (call   mk (: (tuple 100 23) (Tuple Int32 Int32)))
   (output (: 123 Int32)))
 
+(case "a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)"
+  (doc    "A `(Tuple Int32 Bool)` closure arg — a Bool field beside an int. Each field crosses flattened; the
+           cell rebuild boxes the Bool field with `box-bool` (the int with `box-int`). This exercises a box op
+           OTHER than `box-int`: the `TupleArgRebuild` `field_box_ops` list names `box-bool` for the Bool
+           field, and the closure `call`'s import-collection pass must register it — an all-int tuple worked
+           only because `box-int` was pulled in elsewhere, so a Bool/Float field's box op was ABSENT from the
+           import index and `emit_tuple_rebuild`'s `imp(bop)` PANICKED the compiler ('rebuild op imported',
+           serialize.rs). Now imports are keyed off `field_box_ops`, so every field-type mix compiles.
+           `call(handle, (42, true))` → `(if (. p 1) (. p 0) 0)` = 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
+              (export mk)))
+  (call   mk (: (tuple 42 true) (Tuple Int32 Bool)))
+  (output (: 42 Int32)))
+
+(case "a BOOL-field Tuple closure ARG, false discriminant"
+  (doc    "The discriminant control for the box-bool case above: with the flag false, `(if (. p 1) (. p 0) 0)`
+           takes the else arm → 0. Together they prove the rebuilt Bool field carries its real value across the
+           boundary (not a constant), on the same `(Tuple Int32 Bool)` closure arg.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
+              (export mk)))
+  (call   mk (: (tuple 42 false) (Tuple Int32 Bool)))
+  (output (: 0 Int32)))
+
+(case "a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)"
+  (doc    "A `(Tuple Float64 Float64)` closure arg — two Float fields. The cell rebuild boxes each with
+           `box-float` (a native-width float box, not `box-int`), so the closure `call`'s imports must include
+           `box-float`; without it the compiler PANICKED exactly as the Bool case. `call(handle, (2.5, 9.0))`
+           → `(. p 0)` = 2.5. Pins the Float-field box op alongside the Bool one.")
+  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (. p 0)))
+              (export mk)))
+  (call   mk (: (tuple 2.5 9.0) (Tuple Float64 Float64)))
+  (output (: 2.5 Float64)))
+
+(case "a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)"
+  (doc    "A `(Tuple Int64 Float64)` closure arg mixes an int field (`box-int`) with a float field
+           (`box-float`) in ONE rebuild — the import set must carry BOTH box ops. Before the fix the float
+           field's `box-float` was absent and the compiler panicked. `call(handle, (7, 3.5))` → `(. p 0)` = 7.
+           Confirms a per-field mix of box ops all resolve.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Float64))) (. p 0)))
+              (export mk)))
+  (call   mk (: (tuple 7 3.5) (Tuple Int64 Float64)))
+  (output (: 7 Int64)))
+
 (case "a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary"
   (doc    "The tuple-arg path composes with capture (C-HOST-2): a parameterized export `(def (mk (: k
            Int64)) …)` returns a closure that BOTH captures `k` AND takes a `(Tuple Int64 Int64)` argument.

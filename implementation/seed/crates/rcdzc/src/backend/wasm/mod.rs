@@ -1864,6 +1864,21 @@ fn emit_closure_resource(
                 used.insert(op);
             }
         }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG: the `call` body rebuilds the flattened fields
+        // into a heap cell (`emit_tuple_rebuild`: `arr-alloc`, then per field its box op + `arr-set`). Those
+        // ops appear ONLY in the synthesized rebuild, not in any reachable body — so register EXACTLY what
+        // the rebuild emits: `arr-alloc`/`arr-set` plus each field's box op. All-int tuples happened to work
+        // because `box-int` is pulled in elsewhere, but a Bool field needs `box-bool`, a Float `box-float`/
+        // `box-float32` — absent from the import index without this, so `emit_tuple_rebuild`'s `imp(bop)`
+        // panicked ("rebuild op imported"). Keying off `field_box_ops` keeps imports consistent with the
+        // codegen for every field-type mix.
+        if let Some((_, _, _, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -2450,6 +2465,17 @@ fn emit_multi_closure_resource(
                 used.insert(op);
             }
         }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG rebuilds its cell in the `call` body
+        // (`emit_tuple_rebuild`): register the ops it emits — `arr-alloc`/`arr-set` + each field's box op
+        // (`box-int`/`box-bool`/`box-float`/`box-float32`), which appear only in the synthesized rebuild.
+        // Without the box op a Bool/Float field panicked ("rebuild op imported"); see `emit_closure_resource`.
+        if let Some((_, _, _, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2927,6 +2953,18 @@ fn emit_mixed_closure_resource(
                 "bytes-get",
             ] {
                 used.insert(op);
+            }
+        }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG rebuilds its cell in the `call` body
+        // (`emit_tuple_rebuild`): register the ops it emits — `arr-alloc`/`arr-set` + each field's box op
+        // (`box-int`/`box-bool`/`box-float`/`box-float32`), which appear only in the synthesized rebuild.
+        // Without the box op a Bool/Float field panicked ("rebuild op imported"); see `emit_closure_resource`.
+        // (This function's `tuple_arg` is the 3-tuple `(bytes, vts, rebuild)` shape.)
+        if let Some((_, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
             }
         }
         used.extend(lifted_ops.iter().copied());

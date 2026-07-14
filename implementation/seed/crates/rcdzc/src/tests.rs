@@ -43643,6 +43643,53 @@ mod closure_host_resource {
         );
     }
 
+    /// A fixed-shape scalar tuple closure ARG whose fields are NOT all `Int64` — a `Bool` field, a `Float`
+    /// field, a narrow int, or a mix — compiles cleanly. Each field's cell rebuild box op (`box-bool` /
+    /// `box-float` / `box-float32` / `box-int`) is named by `TupleArgRebuild::field_box_ops`, and the closure
+    /// `call`'s import-collection pass must register EXACTLY those ops. Before the fix it registered only
+    /// `box-int` (all-int tuples worked because that op was pulled in elsewhere), so a Bool/Float field's box
+    /// op was absent from the import index and `emit_tuple_rebuild`'s `imp(bop)` PANICKED the compiler
+    /// ("rebuild op imported"). Keying the imports off `field_box_ops` makes every field-type mix emit — this
+    /// covers the single-export, mixed (closure + plain export), and among-scalars shapes (the three funcs the
+    /// fix touched; the distinct-sig path already collected its `tuple_box_ops`).
+    #[test]
+    fn a_bool_or_float_field_tuple_closure_arg_compiles() {
+        use crate::testkit::parse;
+        let ok = |src: &str| {
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).unwrap_or_else(
+                |e| panic!("must compile (no rebuild-op panic): {src}\n  got: {e:?}"),
+            );
+        };
+        // A Bool field (single-export direct-call).
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0))) (export main))",
+        );
+        // A Bool field in the OTHER position.
+        ok("(module m (def (main) (fn ((: p (Tuple Bool Int64))) (. p 1))) (export main))");
+        // Two Float fields.
+        ok("(module m (def (main) (fn ((: p (Tuple Float64 Float64))) (. p 0))) (export main))");
+        // A narrow Float field (box-float32).
+        ok("(module m (def (main) (fn ((: p (Tuple Int32 Float32))) (. p 0))) (export main))");
+        // A mixed int + float tuple (box-int AND box-float in one rebuild).
+        ok("(module m (def (main) (fn ((: p (Tuple Int64 Float64))) (. p 0))) (export main))");
+        // A RECORD arg with a Bool field.
+        ok(
+            "(module m (def (main) (fn ((: r (Record (a Int64) (f Bool)))) (if (. r f) (. r a) 0))) (export main))",
+        );
+        // Among scalar args (prefix + suffix), Bool field — the `single_compound_among_scalars` path.
+        ok(
+            "(module m (def (main) (fn ((: x Int64) (: p (Tuple Int64 Bool)) (: y Int64)) (if (. p 1) (+ x y) (. p 0)))) (export main))",
+        );
+        // MIXED shape: a Bool-field tuple closure export alongside a plain (non-closure) export.
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int64 Bool))) (if (. p 1) (. p 0) 0))) (def (plain (: n Int64)) n) (export main) (export plain))",
+        );
+        // All-int must STILL compile (no regression from the added registration).
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1)))) (export main))",
+        );
+    }
+
     /// A fixed-shape scalar tuple closure ARG now composes with a BYTE-ROPE result: the bytes-result core +
     /// envelope thread the `TupleArgRebuild` (the `call` rebuilds the flattened tuple cell, then copies the
     /// closure's `Bytes` result out as `list<u8>`). Emits a valid component. A COMPOUND/COLLECTION result
