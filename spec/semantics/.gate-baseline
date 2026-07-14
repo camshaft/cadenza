@@ -638,6 +638,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a line comment wrapping a top-level form does not hide it
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
@@ -2009,6 +2010,7 @@ pass	splitting a tuple at a position yields a prefix and a suffix
 pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
+pass	stacked line comments on a top-level form are all seen through
 pass	string concatenation
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
