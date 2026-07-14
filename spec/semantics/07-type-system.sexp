@@ -36,6 +36,17 @@
   (input  (do (def (main) (: 5 foo)) (export main)))
   (error  CDZ0101))
 
+(case "an unbound uppercase name in a type annotation's type position is rejected"
+  (doc    "`(: 5 Foo)` puts the unbound UPPERCASE name `Foo` in type position — a missing or typo'd
+           CONCRETE type (unlike the lowercase `foo` above, which reads as an ML-style type variable). Both
+           reject CDZ0101 (the name is unbound either way), but they are distinct diagnostic branches: a
+           lowercase name gets an actionable 'generic route' hint (Cadenza's polymorphism comes from an
+           UNANNOTATED parameter, not a `∀`-binder in an annotation), while an uppercase name — read as a
+           concrete type that does not exist — keeps the plain 'unbound name' message. Pins the uppercase
+           branch (a missing concrete type), the case-distinct companion of the lowercase-`foo` case.")
+  (input  (do (def (main) (: 5 Foo)) (export main)))
+  (error  CDZ0101))
+
 (case "an integer literal in a type annotation's type position is rejected"
   (doc    "`(: 5 42)` puts the integer literal `42` — a VALUE, not a type — in type position. A value is
            not a type, so the annotation is meaningless and rejects (CDZ0203, 'expected a type'). Pins

@@ -1661,6 +1661,7 @@ pass	an unbound name in a type annotation's type position is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
+pass	an unbound uppercase name in a type annotation's type position is rejected
 pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
@@ -2324,6 +2325,8 @@ pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
 pass	two exports normalizing to the same kebab extern name are rejected
+pass	two fallible reads of one Bytes parameter share its resident handle slot
+pass	two fallible reads of one collection parameter share its resident handle slot
 pass	two functions defined by mutual recursion compute a result
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator
