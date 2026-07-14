@@ -971,14 +971,18 @@ the component type. The new work:
   module`, shared helpers) + `assemble_multi_closure_bytes_resource_borrow_tuple` +
   `resource_inner_component_multi_closure_bytes_borrow_tuple` (running type counter mints the `tuple<…>` before
   `list<u8>`). The `emit_multi_closure_resource` list-result decline guard is GONE. Corpus: mk-rev → (list 3
-  10), mk-sum → (tuple 13 7). The MIXED path keeps its guard (a trivial follow-on — same envelope + serializers,
-  just thread `tuple_arg` through its 3 branches + relax the guard).
+  10), mk-sum → (tuple 13 7).
+- **✅ TUPLE ARG × LIST-RESULT on the MIXED path** (`@a57eba46`, baseline `@7cf64e35`). The trivial follow-on:
+  a list-returning tuple-arg closure ALONGSIDE a plain export reuses the SAME multi list-result cores + the
+  shared multi list<u8> tuple envelope. Pure ROUTING — `emit_mixed_closure_resource`'s list-result guard GONE,
+  its 3 branches thread `tuple_arg` + route to the tuple envelope with the plain exports riding alongside.
+  Corpus: a List-returning tuple-arg closure `mk` + plain `twice` → closure (list 10 3) + plain twice(21)=42.
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export across EVERY result shape, multi-export across EVERY result
-  shape, and mixed/distinct-sig at SCALAR result; still to widen: MIXED + a LIST-result + tuple arg (trivial —
-  thread through its 3 branches); DISTINCT-SIG + a LIST-result + tuple arg (its per-group list-result `call-g`
-  bodies need the thread); a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the
-  tuple is the SOLE arg — needs interleaving flattened-tuple fields with pass-through scalars); a
+  SCALAR tuple/record is DONE for single-export, multi-export, AND mixed across EVERY result shape, plus
+  distinct-sig at SCALAR result; still to widen: DISTINCT-SIG + a LIST-result + tuple arg (its per-group
+  list-result `call-g` bodies + envelope functypes need the thread — the last list-result gap); a compound arg
+  ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving
+  flattened-tuple fields with pass-through scalars); a
   VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
