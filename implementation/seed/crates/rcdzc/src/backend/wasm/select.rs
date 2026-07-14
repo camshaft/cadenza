@@ -1211,15 +1211,11 @@ pub fn collect_used_ops(
             collect_used_ops(db, rhs, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
-        Core::Call { callee, args } => {
-            // A CONSTANT-BigInt argument for a BigInt PARAMETER is materialized via `bigint-of-i64` in
-            // `emit_call_args` (else it would push a raw `i64.const` where the callee wants an i32 handle),
-            // so declare that import here to match the emit.
-            for (i, arg) in args.iter().enumerate() {
-                if callee_param_is_bigint(db, callee, i) && const_bigint_materializes(db, *arg) {
-                    out.insert(OP_BIGINT_OF_I64);
-                }
-                collect_used_ops(db, *arg, out);
+        Core::Call { args, .. } => {
+            // A CONSTANT-BigInt argument to a BigInt param materializes via `bigint-of-i64` in the
+            // `Core::ConstInt` collect arm (matching its emit) — no per-call special-case needed here.
+            for arg in args {
+                collect_used_ops(db, arg, out);
             }
         }
         // A HOST CALL: mirror the `emit` arm's arg handling EXACTLY. A `Ty::String` argument is marshalled
@@ -1377,6 +1373,13 @@ pub fn collect_used_ops(
         Core::ConstStr(_) => {
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
+        }
+        // A CONSTANT typed `BigInt` used as an in-body runtime value MATERIALIZES via `bigint-of-i64` at
+        // `emit` (a map key/value, set element, call arg, op operand — it must be an i32 handle, not a raw
+        // i64), so declare that import here to match. (A whole-export constant BigInt takes the baked-bytes
+        // path and never reaches `emit`, but importing an unused op is harmless if it did.)
+        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => {
+            out.insert(OP_BIGINT_OF_I64);
         }
         // Leaves and references emit no runtime op. `trap` emits `unreachable` (a core instruction, not a
         // runtime import), so it adds nothing.
@@ -2693,6 +2696,28 @@ fn emit(
     }
     match core_of(db, id) {
         Core::ConstInt(v) => {
+            // A CONSTANT typed `BigInt` reaching `emit` is used as a RUNTIME VALUE (a map key/value, a set
+            // element, a call argument, an op operand) — every such context wants an i32 HANDLE, not a raw
+            // `i64.const`. A folded `(BigInt.of <const>)` is a `Core::ConstInt` typed BigInt; emitting it
+            // as a bare scalar pushes an i64 where a handle is expected → an invalid module (the map-key /
+            // call-arg miscompiles). MATERIALIZE it as a fresh BigInt leaf via `bigint-of-i64` (the value
+            // fits i64 — a beyond-i64 constant BigInt is not yet built and declines earlier). A CONSTANT
+            // BigInt that is a whole nullary EXPORT takes the baked-bytes `constant_value_form` path and
+            // never reaches here; this is only the in-body runtime-value use.
+            if matches!(type_of(db, id), Ty::BigInt) {
+                match v.to_i64() {
+                    Some(x) => {
+                        out.push(Lir::ConstI64(x));
+                        out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
+                        return Ok(());
+                    }
+                    None => {
+                        return Err(Reject::decline(
+                            "a constant BigInt beyond i64 range is not yet materialized as a heap leaf",
+                        ));
+                    }
+                }
+            }
             // Ground the literal to the machine width its solved type fixes. The constant must FIT the
             // width (checked at annotation time; a value that does not fit never reaches here for an
             // annotated literal), then it is emitted as the two's-complement BIT PATTERN of that width.
@@ -8687,26 +8712,6 @@ fn callee_param_int_tys(db: &mut Db, callee: usize) -> Vec<Option<IntTy>> {
         .collect()
 }
 
-/// Whether the callee's `i`th parameter has type `Ty::BigInt` — used by `emit_call_args` to MATERIALIZE a
-/// constant-BigInt argument as a heap handle (`bigint-of-i64`) rather than emit it as a raw `i64.const`.
-/// A `BigInt` param's machine slot is an i32 handle (`valtype_of(Ty::BigInt)`); a folded constant BigInt
-/// argument (`(BigInt.of 1)` in a call like `(loop n (BigInt.of 1))`) is a `Core::ConstInt` that would
-/// otherwise `emit` as a bare `i64.const`, pushing an i64 where the callee expects an i32 → an invalid
-/// module. The materialization is the same one `emit_bigint_operand` does for a `bigint-*` op operand.
-fn callee_param_is_bigint(db: &mut Db, callee: usize, i: usize) -> bool {
-    let Some(d) = db.defs.get(callee) else {
-        return false;
-    };
-    let Some(&p) = d.params.clone().get(i) else {
-        return false;
-    };
-    let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
-        Some(name_occ) => name_occ,
-        None => p,
-    };
-    matches!(type_of(db, binder), Ty::BigInt)
-}
-
 /// Emit a `Core::Call`'s arguments, GROUNDING each bare-literal integer argument to its parameter's
 /// machine width (`emit_operand`), so a narrow (i32-slot) parameter never receives a default-i64 literal.
 /// A non-integer parameter, or an argument past the known parameters, emits normally. Shared by the
@@ -8734,23 +8739,10 @@ fn emit_call_args(
     for (i, &arg) in args.iter().enumerate() {
         match param_its.get(i).copied().flatten() {
             Some(it) => emit_operand(db, arg, it, slots, arg_base, high, scratch_ty, layout, out)?,
-            // A BIGINT parameter takes an i32 HANDLE. A CONSTANT-BigInt argument (a folded `Core::ConstInt`
-            // typed BigInt — `(loop n (BigInt.of 1))`) would otherwise `emit` as a bare `i64.const`,
-            // pushing an i64 where the callee expects an i32 handle → an invalid module (the recursion-
-            // accumulator miscompile). Materialize it as a fresh BigInt leaf (`bigint-of-i64`), the same
-            // as a `bigint-*` op operand; the callee consumes the handle. A RUNTIME BigInt argument (a
-            // param/local ref, or a `bigint-*` result) is already an i32 handle — emit it normally.
-            None if callee_param_is_bigint(db, callee, i) && const_bigint_materializes(db, arg) => {
-                if let Core::ConstInt(v) = core_of(db, arg)
-                    && let Some(x) = v.to_i64()
-                {
-                    out.push(Lir::ConstI64(x));
-                    out.push(Lir::CallImport(OP_BIGINT_OF_I64));
-                } else {
-                    // `const_bigint_materializes` guaranteed a fits-i64 ConstInt; unreachable otherwise.
-                    emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
-                }
-            }
+            // A BigInt argument to a BigInt parameter (an i32 HANDLE) needs no special-casing here: a
+            // CONSTANT-BigInt arg materializes to a handle in the `Core::ConstInt` emit arm (which routes
+            // any BigInt-typed constant through `bigint-of-i64`), and a runtime BigInt arg is already a
+            // handle. `emit` does the right thing for both — the fix is at that single choke point.
             None => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
         }
         arg_base = *high;

@@ -2035,3 +2035,18 @@
             (def (main) (loop 70 (BigInt.of 1)))
             (export main)))
   (output (: 1180591620717411303424 BigInt)))
+
+(case "a BigInt is usable as a map key, matched by its arbitrary-precision value"
+  (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (BigInt.of 100) 1) (BigInt.of 200) 2) (BigInt.of
+           200))` = `Some 2`: a BigInt KEY is inserted and looked up by VALUE — the CHAMP map hashes and
+           compares it over its canonical sign-magnitude bytes (`champ_hash`/`champ_eq`, the same raw-byte
+           basis as a Bytes/String key), so the second key `200` finds its stored value 2. Pins that a
+           BigInt is a first-class map key. (A constant BigInt key materializes as a heap handle at the
+           insert/lookup site — the `Core::ConstInt`-typed-BigInt emit routes through `bigint-of-i64` —
+           rather than a raw i64, which would be an invalid module.)")
+  (input  (match (Map.lookup
+                   (Map.insert (Map.insert Map.empty (BigInt.of 100) 1) (BigInt.of 200) 2)
+                   (BigInt.of 200))
+                 ((Some v) v)
+                 ((None) 0)))
+  (output (: 2 Int64)))
