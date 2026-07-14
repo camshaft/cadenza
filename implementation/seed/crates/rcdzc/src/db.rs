@@ -2194,6 +2194,19 @@ fn is_binding_candidate(
     {
         return true; // the bindings-list
     }
+    // A `(def (NAME param…) body)`'s SIGNATURE LIST (parent is a `def`, `form` its first tail element) is a
+    // scope: an EARLIER type-valued parameter is visible in a LATER parameter's annotation
+    // (`(def (unbox (: t Type) (: b (Box t))) …)` — `(Box t)` reads `t`), the in-order signature scoping
+    // `resolve::binder_in`'s Case 4b provides. Without the sig list as a candidate the scope-skip index
+    // would hop PAST it and Case 4b would never fire, so `t` in `(Box t)` would be spuriously unbound (the
+    // `is_binding_candidate` trap: every binding form MUST be listed here). The sig list is headed by NAME
+    // (`unbox`), not a binding keyword, so the head case above never matched it.
+    if let Some(tail) = ast.as_form(p, "def")
+        && tail.first().copied() == Some(form)
+        && matches!(ast.get(form), Struct::List(_))
+    {
+        return true; // the def signature list
+    }
     if let Some(tail) = ast.as_form(p, "match") {
         // tail = [scrutinee, arm…]; `form` is an arm iff it is a tail element other than the scrutinee.
         if tail.first().copied() != Some(form) && tail.contains(&form) {

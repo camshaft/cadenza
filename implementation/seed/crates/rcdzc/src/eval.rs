@@ -2215,6 +2215,30 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
 /// apply)` is `Prim::TypeOf`), NOT by the name "Type", so `Type` is privileged by nothing
 /// (`prelude-and-resolution.md §Nothing Is Privileged By Name`). Used by `typeval_of` to let `Type`
 /// denote the kind-of-types (`Ty::Type`) in a parameter annotation — a type-valued parameter.
+/// If `id` (in a type position) resolves to a TYPE-VALUED PARAMETER — a `def`/`fn` parameter whose own
+/// annotation is `Type` (so `type_of` its binder is `Ty::Type`) — the binder occurrence; else `None`.
+/// Follows a `Ref` chain to the parameter (a bare type-position name resolves to a `Ref` to the param's
+/// name occurrence). Used by `typeval_of` to reduce `t` in `(: b t)` / `(: b (Box t))` to a stable type
+/// variable. NOT a name key — purely "does this reference resolve to a param typed `Ty::Type`".
+fn type_valued_param_binder(db: &mut Db, id: StructId) -> Option<StructId> {
+    // Chase a `Ref` chain (a type-position bare name → `Ref` to the param name occurrence) to a `Param`.
+    let mut cur = id;
+    let binder = loop {
+        match resolved_of(db, cur) {
+            Resolved::Param { binder } => break binder,
+            Resolved::Ref { value } if value != cur => cur = value,
+            _ => return None,
+        }
+    };
+    // The parameter is type-valued iff its OWN annotation is `Type` (`Ty::Type`). `param_annot_ty` reads
+    // the `(: name T)` annotation via `typeval_of(T)` — which for `Type` yields `Ty::Type` (T1). A bare
+    // (unannotated) param, or one annotated with an ordinary type, is NOT a type-valued parameter.
+    match crate::infer::type_of(db, binder) {
+        crate::ty::Ty::Type => Some(binder),
+        _ => None,
+    }
+}
+
 fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
     let of = Symbol {
         name: "of".to_string(),
@@ -2227,6 +2251,18 @@ fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
 }
 
 pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    // A TYPE-VALUED PARAMETER used in a type position — `(: t Type)`'s `t`, referenced as a bare type
+    // `(: b t)` or as a type-constructor argument `(: b (Box t))`. At the DEFINITION site the parameter's
+    // concrete type-value is unknown (it arrives at the call), so `t` reduces to a stable TYPE VARIABLE
+    // `Ty::Var(binder)` — the annotation `(Box t)` becomes the generic `(Box ?t)`, which the call site
+    // monomorphizes by substituting the passed type-value (the type-valued-parameter vertical, T3). Keyed
+    // on the binder's `StructId` so every occurrence of `t` in the signature+body shares ONE variable.
+    // Only a param whose OWN type is `Ty::Type` (a type-valued param); an ordinary value param is not a
+    // type. Checked FIRST because such a reference resolves to a `Ref`/`Param`, which the arms below would
+    // otherwise treat as a non-type (returning `None`).
+    if let Some(binder) = type_valued_param_binder(db, id) {
+        return Some(crate::ty::Ty::Var(binder.0));
+    }
     match resolved_of(db, id) {
         // A ground-type record: read its `(meta t)`, which holds the type-value.
         Resolved::Record { .. } | Resolved::Ref { .. } => {

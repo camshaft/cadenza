@@ -2849,10 +2849,21 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         // its parameter used by matching NAME), and a def's parameter names are unique (CDZ0102 rejects a
         // repeated one), so a name-keyed set reproduces the per-parameter check EXACTLY. Skipped entirely
         // when the def has no user parameters to check.
-        let referenced: std::collections::HashSet<String> = match body {
+        let mut referenced: std::collections::HashSet<String> = match body {
             Some(b) if !params.is_empty() => used_param_names(db, b),
             _ => std::collections::HashSet::new(),
         };
+        // A TYPE-VALUED PARAMETER is used in a SIBLING parameter's ANNOTATION, not the body — `(def (unbox
+        // (: t Type) (: b (Box t))) …)` uses `t` only in `(Box t)`. So also scan each parameter's
+        // annotation type-expression for param references (`used_param_names` over the `(: name T)`'s `T`),
+        // else a genuinely-used type parameter warns spuriously CDZ0306. Cheap: the annotations are tiny.
+        if !params.is_empty() {
+            for &p in &params {
+                if let Some(ty_expr) = db.ast.as_form(p, ":").and_then(|t| t.get(1).copied()) {
+                    referenced.extend(used_param_names(db, ty_expr));
+                }
+            }
+        }
         for p in params {
             // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
             let name_occ = param_name_occ(db, p);

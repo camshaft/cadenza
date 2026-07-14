@@ -31516,6 +31516,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_generic_def_takes_the_type_as_a_type_valued_parameter() {
+        // Type-valued-parameter vertical, T2+T3 (09-functions "a generic definition takes the type as a
+        // type-valued parameter"): the spec's generic model — `unbox` takes `(: t Type)` (a type-valued
+        // parameter, the kind of types) and `(: b (Box t))` (an EARLIER param `t` visible in a LATER
+        // param's annotation — in-order signature scoping), and the caller passes the concrete type as an
+        // ordinary argument. `(Box t)` reduces to the generic `(Box ?t)` (the type-valued param → a stable
+        // type var), which the call site monomorphizes per passed type; the type argument is
+        // compile-time-only (erased). Uses the value heap (the String), so it SKIPS if the store is
+        // absent. `(unbox Int64 (Box.Mk 40))` = 40, `(unbox String (Box.Mk "hi"))` = "hi" (byte-len 2);
+        // 40 + 2 = 42.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Box (Mk a)) \
+               (def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v))) \
+               (def (main) (+ (unbox Int64 (Box.Mk 40)) \
+                              (String.byte-len (unbox String (Box.Mk \"hi\"))))) (export main))",
+        )))
+        .expect("a generic def with a type-valued parameter compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping type-valued-parameter run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "42",
+                "unbox monomorphized at Int64 (40) + String (byte-len 2)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
