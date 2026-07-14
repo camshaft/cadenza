@@ -11089,6 +11089,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_deeply_nested_match_lowers_without_a_cubic_constraint_reclone() {
+        // REGRESSION (perf): even after the `PathTypes` `Arc<Ty>` fix (see
+        // `a_deeply_nested_option_pattern_lowers_in_bounded_time`), `lower::build_tree` stayed O(depth³) on
+        // a deeply-nested pattern via TWO further per-level whole-structure re-clones: (a) the PARTITION
+        // loop rebuilt every surviving row's `constraints` list — each a `Vec<PathStep>` path — at every
+        // one of `depth` levels (an O(depth)-long path deep-copied `depth` times = O(depth³)); (b)
+        // `extend_path_types` CLONED THE WHOLE growing `path_types` map per arm per level. Three fixes:
+        // the constraint/lit-test PATH is now `Arc<[PathStep]>` (per-level clone = pointer bump, like
+        // `PathTypes`' `Arc<Ty>`), `build_tree` threads ONE shared `&mut PathTypes` with scoped
+        // insert/restore instead of a per-arm map clone, and `shallowest_path` selects by reference.
+        //
+        // The guard is the GROWTH RATIO across a depth doubling, not an absolute wall-clock bound — a ratio
+        // tests the complexity CLASS and is independent of profile (dev vs release) and machine speed, where
+        // an absolute ceiling is not (the cubic factor only dominates at large depth, so a shallow absolute
+        // bound catches nothing). Cubic lowering grows ~8× per doubling; the fixed quadratic-or-better grows
+        // ~2–4×. The two depths are timed PAIRED and back-to-back, and we take the MIN ratio across several
+        // pairs: measuring both depths in the same instant means transient CPU contention (under the
+        // parallel test harness) hits them EQUALLY, so it cancels in the ratio — a single starved window
+        // can't inflate one depth without the other. Threshold 6.0 sits between the two classes with margin
+        // (fixed ~2–4×, cubic ~8×). Depths are large enough that the timed work dominates measurement noise,
+        // but shallow enough to avoid the deep-recursion stack limit.
+        fn build_src(depth: usize) -> String {
+            let mut val = String::from("(None)");
+            let mut pat = String::from("x");
+            for _ in 0..depth {
+                val = format!("(Some {val})");
+                pat = format!("(Some {pat})");
+            }
+            format!(
+                "(module m (type Opt (a) (Some Opt) (None)) \
+                   (def (f (: o Opt)) (match o ({pat} 1) (_ 0))) \
+                   (def (main) (f {val})) (export main))"
+            )
+        }
+        fn lower_ms(src: &str, depth: usize) -> f64 {
+            let start = std::time::Instant::now();
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a {depth}-deep nested Some match lowers with no error diagnostics: {diags:?}"
+            );
+            ms
+        }
+        let (src200, src400) = (build_src(200), build_src(400));
+        // Deep-but-finite recursion (per nesting level) → run under the compiler stack guard, like the
+        // depth-60 test, so a default worker's ~2 MB stack does not SIGABRT on a terminating walk.
+        let ratio = crate::host::run_with_compiler_stack(|| {
+            lower_ms(&src200, 200); // warm lazy one-time init before the first timed pair
+            let mut best = f64::INFINITY;
+            for _ in 0..6 {
+                let t200 = lower_ms(&src200, 200);
+                let t400 = lower_ms(&src400, 400);
+                best = best.min(t400 / t200.max(0.1));
+            }
+            best
+        });
+        assert!(
+            ratio < 6.0,
+            "a nested match's lowering must grow sub-cubically with depth (was O(depth³) via per-level \
+             constraint/path-map re-clone): 200→400 grew {ratio:.1}× (min paired ratio); \
+             cubic would be ~8×, the fix is ~2–4×"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
         // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
         // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and

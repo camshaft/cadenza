@@ -3189,7 +3189,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
     let mut path_types: PathTypes = std::collections::HashMap::new();
     path_types.insert(Vec::new(), std::sync::Arc::new(scrut_ty));
-    match build_tree(db, scrutinee, &rows, &path_types) {
+    match build_tree(db, scrutinee, &rows, &mut path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
         // Otherwise the root is a Switch (the usual case) — or a Guarded, when a disc-fold collapsed the
@@ -3203,18 +3203,30 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
 }
 
+/// A match-decision PATH shared across nesting levels — an `Arc<[PathStep]>`, not a bare `Vec`:
+/// `build_tree`'s partition loop re-clones every surviving row's constraint/lit-test paths at EACH nesting
+/// level, and `build_tree` recurses once per level. With `Vec<PathStep>` paths a deeply-nested pattern
+/// (`(Some (Some … x))`) deep-copied its O(depth)-long paths at every one of `depth` levels = O(depth³) (a
+/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Arc` makes each per-level path clone a pointer
+/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Arc<Ty>` values.)
+type MatchPath = std::sync::Arc<[crate::core::PathStep]>;
+/// A discriminant CONSTRAINT: the sub-value at this `MatchPath` must have this variant discriminant.
+type PathConstraint = (MatchPath, u32);
+/// A LITERAL test: the sub-value at this `MatchPath` must equal this literal probe.
+type PathLitTest = (MatchPath, crate::core::Probe);
+
 /// One row of the pattern matrix: the discriminant CONSTRAINTS this arm imposes (each a `(path, disc)`),
 /// and the arm's body. An empty constraint set is a catch-all (a bare binder / `_` top-level pattern) —
 /// it matches regardless of any discriminant. Constraints are ordered outer-to-inner (a shorter path
 /// first), which is the order the tree tests them.
 #[derive(Clone)]
 struct MatchRow {
-    constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
+    constraints: Vec<PathConstraint>,
     /// LITERAL tests the arm imposes on payload sub-values: each `(path, probe)` requires the scalar at
     /// `path` to equal the literal. A `(Some 0)` pattern adds `([Payload], Int(0))`. Like a guard, a
     /// literal test does NOT count toward exhaustiveness (it may not match — it needs a same-variant
     /// binder/wildcard fall-through), and it is gated once the discriminant constraints are satisfied.
-    lit_tests: Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
+    lit_tests: Vec<PathLitTest>,
     body: StructId,
     /// A match-arm GUARD `(guard <pattern> <cond>)` — the boolean `<cond>` the arm additionally requires.
     /// `None` for an unguarded arm. Once every discriminant constraint is satisfied (the row reaches a
@@ -3648,8 +3660,8 @@ fn pattern_constraints(
     pat: StructId,
     ty: &crate::ty::Ty,
     path: Vec<crate::core::PathStep>,
-    lit_tests: &mut Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
-) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
+    lit_tests: &mut Vec<PathLitTest>,
+) -> Result<Vec<PathConstraint>, Reject> {
     // A GUARDED pattern `(guard <inner-pattern> <cond>)` contributes the INNER pattern's discriminant
     // constraints (the guard itself is not a discriminant test — it is carried on the `MatchRow` by
     // `lower_match_sum` and gated at the leaf in `build_tree`). Descend into the inner pattern so a
@@ -3702,7 +3714,7 @@ fn pattern_constraints(
                 ),
             ));
         }
-        lit_tests.push((path, probe));
+        lit_tests.push((path.into(), probe));
         return Ok(Vec::new());
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
@@ -3713,7 +3725,7 @@ fn pattern_constraints(
         if name != "_"
             && let Some(disc) = variant_disc_by_name(db, ty, &name)
         {
-            return Ok(vec![(path, disc)]);
+            return Ok(vec![(path.into(), disc)]);
         }
         return Ok(Vec::new()); // a binder / wildcard — no constraint
     }
@@ -3825,7 +3837,7 @@ fn pattern_constraints(
         // `.. rest` binds the tail. Gated like a literal test (folded against a constant `Core::ListNew`);
         // a mismatch falls through.
         lit_tests.push((
-            path.clone(),
+            path.clone().into(),
             crate::core::Probe::ListLen {
                 len: leads.len(),
                 at_least: has_rest,
@@ -4001,7 +4013,7 @@ fn pattern_constraints(
             ),
         ));
     }
-    let mut out = vec![(path.clone(), disc)];
+    let mut out: Vec<PathConstraint> = vec![(path.clone().into(), disc)];
     // Recurse into the payload. A single-payload variant `(Some p)` descends into `p` at `path +
     // [Payload]`; the payload's TYPE is the variant's payload type at this instantiation, so a nested
     // variant name there resolves against the right sum. A NULLARY variant pattern `(None)`/bare `None`
@@ -4242,14 +4254,22 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
 /// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
 /// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
 /// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
-// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`: `extend_path_types` clones the whole map at
-// every nesting level (so sibling arms don't share a mutation), and a deeply-NESTED pattern (`(Some (Some
-// … x))`) descends `depth` levels with a map that grows one entry per level. With bare `Ty` values, each
-// per-level clone deep-copied every entry's Ty (itself O(depth) deep for a nested sum) → O(depth³) total
-// (a depth-400 nested match: 7.5s, 52% in `Ty::clone`). `Arc` makes the per-level map clone a cheap
-// pointer-bump per entry, dropping the map-clone factor to O(depth²).
+// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
+// insert/restore per arm (see its arm loop): entering a variant arm inserts the arm's payload-path types
+// (recording each key's prior value), recurses, then restores — so sibling arms don't share a mutation
+// without cloning the whole map. An `Arc<Ty>` value keeps a restored prior entry a pointer-bump rather than
+// a deep `Ty` copy. (An earlier version CLONED the whole map per arm per level → O(depth³) on a nested
+// pattern; the shared-map + `Arc`-path fixes dropped that whole factor.)
 type PathTypes =
     std::collections::HashMap<Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>>;
+/// A path-type ADDITION a variant arm makes: `(path, sub-value type)`. `path` is a plain `Vec` (a `Vec` key
+/// the `PathTypes` map owns), the type an `Arc` (shared, so a restore is a pointer bump).
+type PathTypeEntry = (Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>);
+/// A saved-for-restore `PathTypes` slot: the key, and its value BEFORE the arm's insert (`None` = absent).
+type PathTypeRestore = (
+    Vec<crate::core::PathStep>,
+    Option<std::sync::Arc<crate::ty::Ty>>,
+);
 
 /// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
 /// the FIRST row is a catch-all (no constraints), it matches unconditionally → its body is the leaf (later
@@ -4263,7 +4283,7 @@ fn build_tree(
     db: &mut Db,
     scrutinee: StructId,
     rows: &[MatchRow],
-    path_types: &PathTypes,
+    path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
     // The FIRST row whose discriminant constraints are all satisfied (empty) is at a LEAF position. If it
     // is UNGUARDED it matches unconditionally → its body is the leaf (later rows unreachable). If it is
@@ -4397,7 +4417,7 @@ fn build_tree(
     // The switch sub-value's type, as an `Arc` — the seeded case SHARES the map's `Arc` (a pointer bump,
     // not a deep clone of an O(depth)-nested `Ty`), so descending a deeply-nested pattern does not re-clone
     // the growing type at every level. The computed fallback wraps its fresh `Ty` once.
-    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path) {
+    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
         Some(t) => t.clone(),
         // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
         // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
@@ -4505,11 +4525,32 @@ fn build_tree(
     for &d in &tested {
         let own = disc_rows.remove(&d).unwrap_or_default();
         let sub_rows = merge_rows(own, &default_rows);
-        let child_types = extend_path_types(db, path_types, &switch_path, &sub_ty, decl, d);
-        let cont = build_tree(db, scrutinee, &sub_rows, &child_types)?;
+        // This variant's payload-type additions to `path_types`. SCOPED insert/restore over the SHARED map
+        // (rather than a whole-map clone per arm): insert the new keys — recording each key's PRIOR value —
+        // recurse, then RESTORE so a sibling arm (which extends the SAME `switch_path+[Payload]` key with
+        // ITS own payload type) sees the parent state, not this arm's. Sibling arms must not share a
+        // mutation; the parent map is left exactly as found. This is what drops the O(depth³) map-clone.
+        let additions = path_type_additions(db, &switch_path, &sub_ty, decl, d);
+        let mut prev: Vec<PathTypeRestore> = Vec::with_capacity(additions.len());
+        for (path, ty) in additions {
+            let old = path_types.insert(path.clone(), ty);
+            prev.push((path, old));
+        }
+        let cont = build_tree(db, scrutinee, &sub_rows, path_types);
+        // Restore BEFORE `?`-propagating, so the map is clean on the error path too.
+        for (path, old) in prev.into_iter().rev() {
+            match old {
+                Some(t) => {
+                    path_types.insert(path, t);
+                }
+                None => {
+                    path_types.remove(&path);
+                }
+            }
+        }
         sum_arms.push(crate::core::SumArm {
             disc: Some(d),
-            cont,
+            cont: cont?,
         });
     }
     if has_default {
@@ -4533,7 +4574,9 @@ fn build_tree(
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, depth = switch_path.len(), arms = sum_arms.len(), "sum switch (decision-tree node)");
     Ok(crate::core::SumCont::Switch {
-        path: switch_path,
+        // The emitted `SumCont` carries a plain `Vec<PathStep>` (backends read it); convert the shared
+        // switch path ONCE here at the tree node, not per level.
+        path: switch_path.to_vec(),
         arms: sum_arms,
     })
 }
@@ -4547,11 +4590,11 @@ fn build_tree(
 fn build_lit_test(
     db: &mut Db,
     scrutinee: StructId,
-    lit_path: Vec<crate::core::PathStep>,
+    lit_path: MatchPath,
     probe: crate::core::Probe,
     matched_rows: &[MatchRow],
     else_rows: &[MatchRow],
-    path_types: &PathTypes,
+    path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
     // A `ListLen` or `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant
     // `Core::ListNew`/`Core::ConstStr`) needs a runtime length/string test the backends don't emit — the
@@ -4568,7 +4611,8 @@ fn build_lit_test(
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
     let els = build_tree(db, scrutinee, else_rows, path_types)?;
     Ok(crate::core::SumCont::LitTest {
-        path: lit_path,
+        // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
+        path: lit_path.to_vec(),
         probe,
         then_: Box::new(then_),
         els: Box::new(els),
@@ -4671,25 +4715,29 @@ fn type_from_seeded_prefix(
     None
 }
 
-/// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
-/// declaration `decl`): the sub-value at `switch_path + [Payload]` has the type of THAT variant's payload
-/// at `sub_ty`'s instantiation. Read via the variant's constructor record (its `(meta t)` scheme unified
-/// against `sub_ty`), so a generic sum's payload is instantiated (`Ok`'s payload in `Result Int Str` is
-/// `Int`). A nullary variant has no payload — no extension. The map is CLONED so sibling arms don't share.
-fn extend_path_types(
+/// The path-type ADDITIONS the arm switching on variant `disc` at `switch_path` introduces (a sum of type
+/// `sub_ty`, declaration `decl`): the sub-value at `switch_path + [Payload]` has the type of THAT variant's
+/// payload at `sub_ty`'s instantiation. Read via the variant's constructor record (its `(meta t)` scheme
+/// unified against `sub_ty`), so a generic sum's payload is instantiated (`Ok`'s payload in `Result Int
+/// Str` is `Int`). A nullary variant has no payload — no additions.
+///
+/// Returns just the NEW `(path, type)` entries rather than a whole extended map: `build_tree` INSERTS them
+/// into the shared `path_types`, recurses, then RESTORES the prior state (see `build_tree`'s arm loop). The
+/// old code cloned the entire map here per arm; since the map grows one deeper key per nesting level, a
+/// deeply-nested pattern (`(Some (Some … x))`) re-cloned the O(depth)-entry map at every one of `depth`
+/// levels = O(depth³). Scoped insert/restore over a shared map drops that whole factor.
+fn path_type_additions(
     db: &mut Db,
-    path_types: &PathTypes,
     switch_path: &[crate::core::PathStep],
     sub_ty: &crate::ty::Ty,
     decl: StructId,
     disc: u32,
-) -> PathTypes {
-    let mut out = path_types.clone();
-    // The variant's constructor occurrence — via the synthesized sum record's variant field, which
-    // carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name occurrence
-    // does not resolve to a scheme; the synthesized ctor field does.)
+) -> Vec<PathTypeEntry> {
+    let mut out = Vec::new();
     // The variant's constructor occurrence — cached on the variant at synthesis time (O(1)), rather than
     // re-scanning the sum record's variant fields by name per arm (that was O(V) per arm → O(V²) overall).
+    // It carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name
+    // occurrence does not resolve to a scheme; the synthesized ctor field does.)
     let ctor = db
         .type_decl_by_occ(decl)
         .and_then(|t| t.variants.get(disc as usize))
@@ -4707,20 +4755,25 @@ fn extend_path_types(
             for (i, elem_ty) in elems.iter().enumerate() {
                 let mut elem_path = child.clone();
                 elem_path.push(crate::core::PathStep::Elem(i));
-                out.insert(elem_path, std::sync::Arc::new(elem_ty.clone()));
+                out.push((elem_path, std::sync::Arc::new(elem_ty.clone())));
             }
         }
-        out.insert(child, std::sync::Arc::new(payload_ty));
+        out.push((child, std::sync::Arc::new(payload_ty)));
     }
     out
 }
 
-/// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site.
-fn shallowest_path(rows: &[MatchRow]) -> Vec<crate::core::PathStep> {
+/// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site. Returns a
+/// SHARED `Arc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
+/// EVERY path just to `min_by` them, which — since `build_tree` recurses once per pattern level — re-cloned
+/// the O(depth)-long constraint paths at every level = O(depth³). Selecting by reference + returning the
+/// winner's `Arc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
+fn shallowest_path(rows: &[MatchRow]) -> MatchPath {
     rows.iter()
-        .flat_map(|r| r.constraints.iter().map(|(p, _)| p.clone()))
+        .flat_map(|r| r.constraints.iter().map(|(p, _)| p))
         .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| path_cmp(a, b)))
-        .unwrap_or_default()
+        .cloned()
+        .unwrap_or_else(|| std::sync::Arc::from(&[][..]))
 }
 
 /// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
