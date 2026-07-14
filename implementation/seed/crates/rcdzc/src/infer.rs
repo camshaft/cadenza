@@ -2750,20 +2750,31 @@ fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, Stri
 }
 
 /// The coercion [`Fix`] that repairs a NUMERIC/TEXT mismatch between an `expected` type and the value
-/// `arg` (of type `actual`), or `None` when no total one-shot conversion applies. Consolidates the four
-/// coercions the argument-unify chain offers — int→float (`of-int`, width-aware), int-width (`.of`),
-/// int-valued-float-literal drop (`3.0`→`3`), and String→Bytes (`to-bytes`) — so EVERY site the same
-/// mismatch surfaces (an operator/ctor argument AND a VARIANT-CONSTRUCTOR PAYLOAD) offers the identical
-/// repair. Does NOT include the sum-wrap ("wrap in `Some`", `wrap_variant_for`) — that is a distinct
-/// structural repair a caller adds separately. Every fix is heuristic (`.of` is checked, drop-`.0` and
-/// to-bytes are intent guesses); the wrap text is a resolver-generic member-access spelling, not a
-/// hard-coded name.
+/// `arg` (of type `actual`), or `None` when no total one-shot conversion applies. Consolidates the
+/// coercions the argument-unify chain offers — int-LITERAL→float retype (`3`→`3.0`, preferred over the
+/// wrap), int→float (`of-int`, width-aware), int-width (`.of`), int-valued-float-literal drop
+/// (`3.0`→`3`), and String→Bytes (`to-bytes`) — so EVERY site the same mismatch surfaces (an operator/ctor
+/// argument, a VARIANT-CONSTRUCTOR PAYLOAD, an annotated LET-BINDER) offers the identical repair. Does NOT
+/// include the sum-wrap ("wrap in `Some`", `wrap_variant_for`) — that is a distinct structural repair a
+/// caller adds separately. Every fix is heuristic (`.of` is checked, retype/drop-`.0`/to-bytes are intent
+/// guesses); the wrap text is a resolver-generic member-access spelling, not a hard-coded name.
 fn numeric_text_coercion_fix(
     db: &mut Db,
     expected: &Ty,
     actual: &Ty,
     arg: StructId,
 ) -> Option<Fix> {
+    // integer LITERAL where a float is expected → RETYPE it to a float literal (`3` → `3.0`), the same
+    // one-shot repair the value-annotation site gives `(: 3 Float64)`. Preferred over the `of-int` WRAP
+    // below: a literal has no reason to round-trip through a runtime conversion — just write it as a float.
+    // (A non-literal int expression has no float spelling, so it falls through to the `of-int` wrap.)
+    if let Ty::Float(_) = expected
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
+        && let crate::ast::Leaf::Int { value, .. } = db.ast.leaf(*lid).clone()
+        && let Some(n) = value.to_i128()
+    {
+        return Some(Fix::replace_heuristic(arg, format!("{n}.0")));
+    }
     // int → float: `(<Float>.of-int …)`, widening a narrower int to Int64 first (`of-int : Int64 → Float`).
     if let (Ty::Float(_), Ty::Int(actual_int)) = (expected, actual) {
         let float_name = expected.render_name();
@@ -4996,23 +5007,36 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // well-formed so an ill-formed one faults instead of silently miscompiling.)
                 let value_ty = type_of(db, value);
                 if let Err(mut r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
-                    // An ANNOTATED let-binder whose annotation mismatches the init value — `(let (((: x
-                    // T) v)) …)` — is the let-binding analogue of the value/param annotation mismatch
-                    // (D33) and the argument mismatch: it has the SAME one-shot repair whenever a total
-                    // conversion bridges the gap. Use the SHARED `numeric_text_coercion_fix` (not just
-                    // `int_coercion_wrap`) so ALL its cases fire here as at the other 5 sites: int-width
-                    // `(<T>.of …)`, int→float `(<Float>.of-int …)`, int-valued-float-literal drop / int-
-                    // literal→float retype, and String→Bytes `(String.to-bytes …)`. Attached HERE, where
-                    // the init `value` node is in hand (`check_binding_pattern` recurses over patterns
-                    // without it), keyed on the binder's annotation type.
+                    // An ANNOTATED let-binder whose annotation disagrees with the init value's type —
+                    // `(let (((: x Float64) 3)) …)`, `(let (((: x Int64) n)) …)` with `n : Int8`,
+                    // `(let (((: x Bytes) s)) …)` with `s : String`, `(let (((: x (Option Int64)) 5)) …)` —
+                    // is the let-binding analogue of the value/param annotation mismatch (D33) and the
+                    // argument mismatch: it has the SAME one-shot repair the direct annotation `(: value T)`
+                    // offers. Attach it HERE (where the init `value` node is in hand —
+                    // `check_binding_pattern` recurses over patterns without it), keyed on the binder's
+                    // annotation type. `numeric_text_coercion_fix` bundles the numeric/text coercions
+                    // (int-literal→float retype `3`→`3.0`, int→float `of-int`, int-width `.of`, int-valued-
+                    // float literal drop `3.0`→`3`, String→Bytes `to-bytes`); the sum-wrap (`5` where an
+                    // `(Option Int64)` is annotated → `(Some 5)`) is the separate structural repair. Before
+                    // this the let-binder offered ONLY the int-width `.of` case — so `(: x Float64) 3` and
+                    // the rest declined a fix the annotation site already gave.
                     if r.code == Some(Code::TypeMismatch)
                         && let Some(ann) = db.ast.as_form(lhs, ":")
                         && ann.len() == 2
                         && let Some(annot_ty) = crate::eval::typeval_of(db, ann[1])
-                        && let Some(fix) =
-                            numeric_text_coercion_fix(db, &annot_ty, &value_ty, value)
                     {
-                        r = r.with_fix(fix);
+                        if let Some(fix) =
+                            numeric_text_coercion_fix(db, &annot_ty, &value_ty, value)
+                        {
+                            r = r.with_fix(fix);
+                        } else if let Some(variant) = wrap_variant_for(db, &annot_ty, &value_ty) {
+                            r = r.with_fix(Fix::wrap_heuristic(
+                                value,
+                                format!("({variant} "),
+                                ")",
+                                format!("wrap the value in `{variant}`"),
+                            ));
+                        }
                     }
                     out.push(r);
                 }

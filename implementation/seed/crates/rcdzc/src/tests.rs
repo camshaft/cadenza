@@ -19220,24 +19220,42 @@ mod diagnostics {
             "no coercion fix Bool→Int64 let-binder: {:?}",
             d.fix
         );
-        // The let-binder now shares the FULL `numeric_text_coercion_fix` (M65), not just int-width — so
-        // int→Float and String→Bytes coercions fire here exactly as at the argument/annotation sites.
-        // An int init annotated Float64 → wrap in `(Float64.of-int …)`.
-        let f = first_error("(module m (def (main) (let (((: x Float64) 5)) x)) (export main))");
+
+        // The let-binder now offers the SAME coercions the value annotation `(: value T)` does — not just
+        // the int-width `.of` above. Each covering fix must resolve in ONE shot (helper `fix_text`).
+        fn fix_text(src: &str) -> Option<String> {
+            let d = first_error(src);
+            d.fix.map(|f| f.replacement)
+        }
+        // int LITERAL annotated Float → retype `3` → `3.0` (the clean literal form, not an `of-int` wrap).
         assert_eq!(
-            f.fix.as_ref().map(|x| x.replacement.as_str()),
-            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE).as_str()),
-            "int init annotated Float64 wraps in of-int: {}",
-            f.message
+            fix_text("(module m (def (f) (let (((: x Float64) 3)) x)) (export f))").as_deref(),
+            Some("3.0"),
+            "int-literal→Float let-binder retypes to a float literal"
         );
-        // A String init annotated Bytes → wrap in `(String.to-bytes …)`.
-        let b =
-            first_error("(module m (def (f (: s String)) (let (((: b Bytes) s)) b)) (export f))");
+        // A NON-literal int init annotated Float → wrap in `(Float64.of-int …)` (no float literal spelling).
         assert_eq!(
-            b.fix.as_ref().map(|x| x.replacement.as_str()),
-            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE).as_str()),
-            "String init annotated Bytes wraps in to-bytes: {}",
-            b.message
+            fix_text("(module m (def (f (: n Int64)) (let (((: x Float64) n)) x)) (export f))"),
+            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
+            "non-literal int→Float let-binder wraps in of-int"
+        );
+        // integer-valued float LITERAL annotated Int → drop the `.0`.
+        assert_eq!(
+            fix_text("(module m (def (f) (let (((: x Int64) 3.0)) x)) (export f))").as_deref(),
+            Some("3"),
+            "float-literal→Int let-binder drops the fractional form"
+        );
+        // String init annotated Bytes → wrap in `(String.to-bytes …)` (total prelude conversion).
+        assert_eq!(
+            fix_text("(module m (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f))"),
+            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)),
+            "String→Bytes let-binder wraps in to-bytes"
+        );
+        // A payload-type value annotated its SUM → wrap in the matching variant constructor `(Some …)`.
+        assert_eq!(
+            fix_text("(module m (def (f) (let (((: x (Option Int64)) 5)) x)) (export f))"),
+            Some(format!("(Some {})", crate::abi::WRAP_HOLE)),
+            "Int→(Option Int64) let-binder wraps in Some"
         );
     }
 
