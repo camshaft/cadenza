@@ -38972,6 +38972,54 @@ mod stage1 {
     }
 
     #[test]
+    fn list_at_none_arm_pushes_the_inline_unit_constant_not_an_arr_alloc_call() {
+        // A runtime `List.at` builds its `None` (OOB) box with the inline-unit CONSTANT (`IMM_UNIT`) for the
+        // nullary payload, NOT a runtime `arr-alloc(0)` CALL — parity with the `SumNew` nullary path. `f`'s
+        // body reads `xs` via `vec-get` (no arr-alloc of its own), so after the fix the ENTIRE `f` body has
+        // ZERO `arr-alloc` calls and DOES contain `ConstI32(IMM_UNIT)` (the None payload). `arr-alloc(0)`
+        // returns exactly `imm_unit()`, so the constant is the same handle `sum-new`/`sum-disc` would see.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::IMM_UNIT;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m \
+               (def (f (: xs (List Int64)) (: i Int64)) \
+                  (match ((. List at) xs i) ((Some v) v) ((None _) -1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        assert!(
+            code.iter()
+                .any(|i| matches!(i, Lir::ConstI32(v) if *v == IMM_UNIT as i32)),
+            "List.at's None arm pushes the inline-unit constant, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::CallImport("arr-alloc"))),
+            "List.at's None arm emits no arr-alloc call for its unit payload, got: {code:?}"
+        );
+    }
+
+    #[test]
     fn a_parameterized_sum_returning_export_escapes_via_param_forwarding_make() {
         // A PARAMETERIZED sum-returning export (`mk` takes `a`) now crosses as the resource escape: `make`
         // forwards the export's scalar param (`make(a) -> own<t>`), so the host builds `(Option.Some a)`
