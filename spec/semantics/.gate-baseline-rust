@@ -1016,7 +1016,7 @@ todo	a recursive reader decodes a CBOR application tree and evaluates it by head
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles
-todo	a recursive user sum type is built at run time and renders its variant names
+pass	a recursive user sum type is built at run time and renders its variant names
 todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built byte sequence assembles its bytes at run time
 todo	a recursively-built linked list renders its full runtime spine
