@@ -166,6 +166,25 @@ pub fn emit(
     if let Some(reject) = kebab_export_collision(layout) {
         return Err(reject);
     }
+    // HOST-OP BOUNDARY-REPRESENTABILITY guard — hoisted BEFORE every emit path (escape / closure / main),
+    // so an unsupported host op declines HONESTLY regardless of which path the export's result routes to.
+    // A host op with a DETERMINED String/compound RESULT (or a determined compound ARGUMENT) has no
+    // boundary form this compiler emits yet; without this, such an op collected `result: None` and hit
+    // `select`'s internal "not in the host-import set" message (documented "a compiler bug") — and a
+    // String-RESULT op used AS the export routed to `emit_runtime_resource` (the value-escape path) and hit
+    // it THERE, ahead of the post-collection check further down. Checking here covers all paths uniformly.
+    // (`ty_undetermined`-gated inside, so a fold-synthesized `Ty::Any` HostCall is not falsely flagged.)
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
+            return Err(Reject::decline(format!(
+                "the host operation `{op}` has a {pos} of type `{ty}`, which has no component \
+                 boundary form this compiler emits yet (only scalar and unit results, and \
+                 scalar/string/unit arguments, cross the host boundary; a string or compound result \
+                 is a later increment)"
+            )));
+        }
+    }
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
@@ -388,28 +407,13 @@ pub fn emit(
     // selection (it fixes the host-op call index a `Core::HostCall` resolves to) and it shifts the
     // defined-func index space. This increment supports HOST-ONLY programs: a program mixing host + value-
     // heap runtime imports declines below (the two index spaces compose in a later increment).
+    // The per-program HOST-import set (a `Core::HostCall`), first-encountered order. An unrepresentable
+    // host-op boundary type was already declined honestly at the top of `emit` (the hoisted guard), so
+    // every op reaching here has an emittable scalar/unit/string signature.
     let mut host_imports: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
-    }
-    // A host op whose BOUNDARY SIGNATURE this increment cannot emit (a String/compound RESULT, or a
-    // compound ARGUMENT) is collected with `result: None` (indistinguishable from a Unit result) and would
-    // then hit `select`'s INTERNAL "not in the host-import set" path — a message documented as "a compiler
-    // bug" surfacing for a valid-but-unsupported program. Diagnose it HONESTLY here, naming the real
-    // limitation, before selection. (A scalar/Unit result + scalar/String/Unit args stay on the emit path.)
-    if !host_imports.is_empty() {
-        for &def in &layout.order {
-            let body = def_body(db, def)?;
-            if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
-                return Err(Reject::decline(format!(
-                    "the host operation `{op}` has a {pos} of type `{ty}`, which has no component \
-                     boundary form this compiler emits yet (only scalar and unit results, and \
-                     scalar/string/unit arguments, cross the host boundary; a string or compound result \
-                     is a later increment)"
-                )));
-            }
-        }
     }
     if !host_imports.is_empty() && !imports.is_empty() {
         return Err(Reject::decline(

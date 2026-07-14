@@ -35315,6 +35315,23 @@ mod closure_host_resource {
             "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
             err.message
         );
+        // The SAME honest decline covers a String-result op used AS THE EXPORT (routes to the value-escape
+        // path, `emit_runtime_resource`) — the representability guard is hoisted to the TOP of `emit`, before
+        // any escape/closure/main dispatch, so BOTH routings decline honestly (not the internal message).
+        let as_export = "(do (effect ask (op greet (-> Unit String))) \
+                   (def (main) (host (ask) (ask.greet))) (export main))";
+        let err2 = crate::compile::compile_component(&crate::codec::encode(&parse(as_export)))
+            .expect_err("a host op returning a String, used as the export, must also decline");
+        assert!(
+            err2.message.contains("greet") && err2.message.contains("no component"),
+            "the used-as-export routing must also decline honestly, got: {}",
+            err2.message
+        );
+        assert!(
+            !err2.message.contains("not in the host-import set"),
+            "the used-as-export routing must NOT surface the internal message, got: {}",
+            err2.message
+        );
         // A SCALAR-result host op still compiles (the honest decline must not over-reject).
         let ok = "(do (effect ask (op ask (-> Unit Int64))) \
                   (def (main) (host (ask) (+ (ask.ask) 1))) (export main))";
