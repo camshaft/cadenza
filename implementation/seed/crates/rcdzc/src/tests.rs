@@ -19413,6 +19413,30 @@ mod diagnostics {
             "nothing to delete for too-few: {:?}",
             few.fix
         );
+        // The COMPARISON `(< 1 2 3)` and FLOAT `(+. 1.0 2.0 3.0)` operators share the exact shape — they
+        // route through `lower_comparison`/`lower_float_arith`, which previously lacked the delete fix (so
+        // they DOUBLE-reported: CDZ0201 + an un-deduped CDZ0203). Via the shared `binop_arity_reject` they
+        // now report ONCE with the fix, exactly like `+`.
+        for src in [
+            "(module m (def (f) (< 1 2 3)) (export f))",
+            "(module m (def (f) (+. 1.0 2.0 3.0)) (export f))",
+        ] {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errs.len(),
+                1,
+                "a comparison/float operator over-application reports ONCE: {errs:?} for {src}"
+            );
+            assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"), "for {src}");
+            assert_eq!(
+                errs[0].fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "the surviving reject carries the delete fix for {src}"
+            );
+        }
     }
 
     #[test]

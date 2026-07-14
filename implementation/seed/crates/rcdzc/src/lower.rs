@@ -6618,24 +6618,31 @@ fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
     }
 }
 
+/// The wrong-arity CDZ0201 reject shared by the fixed-arity BINARY operators — integer arithmetic
+/// (`lower_arith`), FLOAT arithmetic (`lower_float_arith`), and COMPARISON (`lower_comparison`). All three
+/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+. 1.0 2.0 3.0)`) has a
+/// mechanical repair: DELETE the first surplus operand (`args[2]`) — the fixpoint removes each extra until
+/// exactly 2 remain. A TOO-FEW application (`(+ 1)`) has nothing to delete → no fix. Carrying the delete
+/// fix on THIS authoritative CDZ0201 is what lets `dedup_faults` drop the sibling CDZ0203 over-application
+/// (which anchors at the same surplus node), so a binary operator over-application reports ONCE, with the
+/// fix — the parity `lower_arith` had but `lower_comparison`/`lower_float_arith` lacked (they double-reported).
+fn binop_arity_reject(op: Prim, args: &[StructId]) -> Reject {
+    let mut reject = Reject::coded(
+        Code::Malformed,
+        format!("{} takes exactly 2 operands", intrinsic_name(op)),
+    );
+    if args.len() > 2 {
+        reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+            args[2],
+            "remove the extra operand",
+        ));
+    }
+    reject
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        let mut reject = Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        );
-        // OVER-application of a fixed-arity operator (`(+ 1 2 3)`) has a mechanical repair: DELETE the
-        // first surplus operand (`args[2]`) — the fixpoint removes each extra until exactly 2 remain. (A
-        // TOO-FEW `(+ 1)` has nothing to delete → no fix.) This is the authoritative operator-arity reject;
-        // it carrying the fix lets `dedup_faults` drop the sibling CDZ0203 over-application (which anchors
-        // at the same surplus arg) so the operator reports ONCE, with the fix.
-        if args.len() > 2 {
-            reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
-                args[2],
-                "remove the extra operand",
-            ));
-        }
-        return Core::Poison(reject);
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -6670,10 +6677,7 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 /// (the float-literal-overflow rule), so a fold to `±inf`/NaN DECLINES rather than producing a bad value.
 fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        return Core::Poison(Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        ));
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -8570,10 +8574,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
 
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        return Core::Poison(Reject::coded(
-            Code::Malformed,
-            format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        ));
+        return Core::Poison(binop_arity_reject(op, args));
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
