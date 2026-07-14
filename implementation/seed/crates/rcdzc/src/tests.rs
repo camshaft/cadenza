@@ -50673,7 +50673,7 @@ mod cross_component_oracle {
         assemble_extern(
             &consumer_core_b(),
             &exports,
-            "cadenza:peer/api",
+            &["cadenza:peer/api"],
             &extern_fns,
         )
     }
@@ -51574,6 +51574,114 @@ mod cross_component_oracle {
             ),
             cdz_run::Outcome::Trap(t) => panic!("both-sides-from-source run trapped: {t}"),
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U9 — a consumer binds TWO DISTINCT PEER INTERFACES. The multi-interface extern envelope: each bound
+    // interface becomes its own imported component instance, and each op aliases out of ITS instance; the
+    // one `"peer"` core instance exports every op flat by name (so op names are globally unique). Consumer
+    // binds effect M → cadenza:math/api (scalar `neg`) AND effect P → cadenza:pairs/api (compound `pair`),
+    // combining both in one body. Because it inspects the tuple it uses the runtime → assemble_extern_runtime
+    // with g=2. Composed via run_with_peers with the TWO source-provider peers → runs end-to-end.
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn u9_a_consumer_binds_two_distinct_peer_interfaces() {
+        use crate::testkit::parse;
+        // Two SOURCE providers, distinct interfaces + distinct op names.
+        let math = compile_provider(
+            "(do (def (neg (: x Int64)) (- 0 x)) (export neg))",
+            "cadenza:math/api",
+        );
+        let pairs = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        // CONSUMER (source): binds M → math (scalar neg), P → pairs (compound pair). main(9) computes
+        // `neg(pair(9).0) = neg(9) = -9` — a value from EACH bound peer interface in one body.
+        let src = "(do \
+            (effect M (op neg (-> Int64 Int64))) \
+            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind M \"cadenza:math/api\") \
+            (bind P \"cadenza:pairs/api\") \
+            (def (main (: x Int64)) (host (M) (host (P) (M.neg (. (P.pair x) 0))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("two-interface consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("two-interface consumer validates");
+        }
+        // The consumer imports BOTH peer interfaces (they appear verbatim as component import names).
+        assert!(
+            contains_bytes(&consumer, b"cadenza:math/api")
+                && contains_bytes(&consumer, b"cadenza:pairs/api"),
+            "the consumer must import both bound peer interfaces"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U9] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![
+            cdz_run::Peer {
+                bytes: math,
+                interface: "cadenza:math/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: pairs,
+                interface: "cadenza:pairs/api".to_string(),
+            },
+        ];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a consumer bound to two peer interfaces runs")
+        {
+            // pairs.pair(9) = (9,9) crossing as a handle; `. … 0` = 9; math.neg(9) = -9. A value from EACH
+            // of the two bound peer interfaces, over the multi-interface extern+runtime envelope.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "-9",
+                "a consumer combines results from two distinct peer interfaces"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("two-interface run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn u9b_two_peer_interfaces_offering_the_same_op_name_declines() {
+        use crate::testkit::parse;
+        // Two bound interfaces BOTH offering an op named `f` — the one merged `"peer"` core instance would
+        // export `f` twice, so the compiler DECLINES (honestly, not a miscompile) rather than emit an
+        // ill-formed component. (An unbound version would just be two effects; the collision is only a
+        // problem once both route to the flat peer instance.)
+        let src = "(do \
+            (effect A (op f (-> Int64 Int64))) \
+            (effect B (op f (-> Int64 Int64))) \
+            (bind A \"cadenza:a/api\") \
+            (bind B \"cadenza:b/api\") \
+            (def (main (: x Int64)) (host (A) (host (B) (+ (A.f x) (B.f x))))) \
+            (export main))";
+        let r = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+        match r {
+            Err(d) => assert!(
+                d.message.contains("unique across the peer interfaces")
+                    || d.message.contains("offered by two bound interfaces"),
+                "expected the cross-interface op-name-collision decline; got: {}",
+                d.message
+            ),
+            Ok(_) => panic!("two interfaces offering the same op name must decline, not compile"),
+        }
+    }
+
+    /// Substring search over bytes (dependency-free) — used to assert a component embeds an import name.
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
     }
 }
 

@@ -828,18 +828,30 @@ pub fn emit(
         });
     }
 
-    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: the peer interface is a
+    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: each peer interface is a
     // component INTERFACE, its operations imported funcs the composition resolves (bound under `"peer"`).
-    // X4b-3 scope: a SINGLE peer interface (every extern import shares one interface name); a consumer
-    // binding two distinct peer interfaces declines (the multi-interface shape is a later increment).
+    // U9: a consumer may bind MORE THAN ONE distinct peer interface — each becomes its own imported
+    // component instance, and each op aliases out of its interface's instance. The one `"peer"` core
+    // instance exports every lowered op FLAT by name, so op names must be globally UNIQUE across the bound
+    // interfaces; a cross-interface collision declines (the merged instance would export the name twice).
     if !extern_imports.is_empty() {
-        let iface = extern_imports[0].interface.clone();
-        if extern_imports.iter().any(|e| e.interface != iface) {
-            return Err(Reject::decline(
-                "binding more than one peer interface is not yet emitted (one interface per envelope; \
-                 the multi-interface extern shape is a later increment)",
-            ));
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for e in &extern_imports {
+            if let Some(&prior) = seen.get(e.op.as_str())
+                && prior != e.interface.as_str()
+            {
+                return Err(Reject::decline(format!(
+                    "peer operation `{}` is offered by two bound interfaces (`{}` and `{}`); an \
+                     operation name must be unique across the peer interfaces a component binds — \
+                     rename one so each peer op has a distinct name",
+                    e.op, prior, e.interface
+                )));
+            }
+            seen.insert(e.op.as_str(), e.interface.as_str());
         }
+        // Each op's interface, PARALLEL to `extern_fns` (i.e. `extern_order`) — the envelope groups the ops
+        // by interface into per-interface imported instances.
+        let op_ifaces: Vec<&str> = extern_imports.iter().map(|e| e.interface.as_str()).collect();
         let extern_fns: Vec<envelope::HostFn> = extern_imports
             .iter()
             .map(|e| envelope::HostFn {
@@ -849,15 +861,14 @@ pub fn emit(
             })
             .collect();
         // A consumer that ALSO uses the value-heap runtime (it inspects a compound `value` handle the
-        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer (as `"peer"`)
-        // AND the runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only
-        // envelope (X3).
+        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer(s) AND the
+        // runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only envelope (X3).
         if !imports.is_empty() {
             let import_name = runtime_import_name();
             return Ok(envelope::assemble_extern_runtime(
                 &core,
                 &boundary,
-                &iface,
+                &op_ifaces,
                 &extern_fns,
                 &imports,
                 &import_name,
@@ -866,7 +877,7 @@ pub fn emit(
         return Ok(envelope::assemble_extern(
             &core,
             &boundary,
-            &iface,
+            &op_ifaces,
             &extern_fns,
         ));
     }

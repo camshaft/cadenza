@@ -130,6 +130,19 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   asserted by dependency-free byte inspection (the `cdz-run --peer` consumer-run half needs wasmtime + the
   store, kept in `cdz-run`; `u6_*` proves the full run). Byte-neutral; gate 2105/0/0.
 
+- **U9 — a consumer binds TWO+ DISTINCT PEER INTERFACES. ✅ DONE (`spec`).** Lifts the single-interface
+  decline (`mod.rs`). Generalized `assemble_extern`/`assemble_extern_runtime` to take `op_ifaces: &[&str]`
+  (the interface each op in `extern_order` is imported from) instead of one `peer_iface`: the distinct
+  interfaces (first-appearance order) become component instances/types `0..g`, each op aliases out of ITS
+  interface's instance, and the boundary lift's comp-type index shifts `1`→`g` (peer-only) / `2`→`g+1`
+  (peer+runtime). The core module is UNCHANGED — the one merged `"peer"` core instance still exports every
+  lowered op FLAT by name, so op names must be globally unique across the bound interfaces; a cross-interface
+  collision DECLINES (`mod.rs`, "unique across the peer interfaces"). G=1 reproduces the byte-exact X3/X5
+  shape (gate 2107/0/0, byte-neutral). Helpers `distinct_ifaces`/`iface_index`/`peer_group_ops`. Tests:
+  `u9_*` — a consumer binds M→`cadenza:math/api` (scalar `neg`) AND P→`cadenza:pairs/api` (compound `pair`),
+  `main(9)=neg(pair(9).0)=-9` (a value from EACH peer, via `assemble_extern_runtime` g=2) — plus `u9b_*` the
+  same-op-name collision decline. 12 cross-component tests.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for

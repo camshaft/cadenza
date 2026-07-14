@@ -814,6 +814,41 @@ pub fn assemble_host(
 /// imports each peer operation from this module; the envelope binds it to the imported peer instance.
 const PEER_MODULE: &str = "peer";
 
+/// The DISTINCT peer interfaces named in `op_ifaces`, in FIRST-APPEARANCE order — the order the extern
+/// envelope imports them as component instances/types `0..g`. `op_ifaces[i]` is the interface op `i`
+/// (in `extern_order`) is imported from; a single-interface consumer yields `["cadenza:pkg/iface"]`.
+fn distinct_ifaces<'a>(op_ifaces: &[&'a str]) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for &iface in op_ifaces {
+        if !out.contains(&iface) {
+            out.push(iface);
+        }
+    }
+    out
+}
+
+/// The position of `iface` in the distinct-interface list — the component instance/type index the extern
+/// envelope imports it under. `iface` is always present (it came from `op_ifaces`).
+fn iface_index(ifaces: &[&str], iface: &str) -> usize {
+    ifaces.iter().position(|&i| i == iface).unwrap_or(0)
+}
+
+/// The ops (in `extern_fns`/`extern_order` order) belonging to interface `iface` — those whose `op_ifaces`
+/// entry names it. Used to declare each imported interface's instance-type with only ITS ops (the func
+/// index in the instance-type is LOCAL to that instance, `0..ops-in-iface`).
+fn peer_group_ops<'a>(
+    extern_fns: &'a [HostFn],
+    op_ifaces: &[&str],
+    iface: &str,
+) -> Vec<&'a HostFn> {
+    extern_fns
+        .iter()
+        .zip(op_ifaces)
+        .filter(|(_, oi)| **oi == iface)
+        .map(|(f, _)| f)
+        .collect()
+}
+
 /// The CROSS-COMPONENT import shape (X3, `DESIGN-cross-component-interop-rcdzc.md`): a CONSUMER component
 /// that binds a PEER Cadenza component's exported interface `iface` and calls its operations across the
 /// live component boundary. Structurally IDENTICAL to [`assemble_host`] — import an instance-type
@@ -833,48 +868,72 @@ const PEER_MODULE: &str = "peer";
 /// functypes → component types `1..=m`. Peer op aliases → component funcs `0..p`; lifts → component funcs
 /// `p..p+m`. Imported peer instance → component instance 0; peer core instance → core instance 0; program
 /// → core instance 1.
+///
+/// MULTI-INTERFACE (U9): a consumer may bind MORE THAN ONE distinct peer interface. `op_ifaces[i]` names
+/// the interface op `i` (in `extern_fns`, i.e. `extern_order`) is imported from; the distinct interfaces
+/// (first-appearance order) become component instances/types `0..g`, and each op is aliased out of ITS
+/// interface's instance. The ONE `"peer"` core instance still exports every lowered op FLAT by name (the
+/// consumer core imports them all from `"peer"`), so op names must be globally unique across the bound
+/// interfaces — the front-end declines a cross-interface collision. A single interface (`g == 1`, every
+/// `op_ifaces` entry equal) reproduces the byte-exact X3 shape above.
 pub fn assemble_extern(
     core: &[u8],
     exports: &[BoundaryExport],
-    peer_iface: &str,
+    op_ifaces: &[&str],
     extern_fns: &[HostFn],
 ) -> Vec<u8> {
     let p = extern_fns.len();
     let m = exports.len();
+    // The distinct peer interfaces, in first-appearance order — imported as component instances `0..g`
+    // (and instance-types `0..g`). `op_ifaces[i]` is the interface op `i` (in `extern_fns`/extern_order) is
+    // imported from; a single interface (`g == 1`) reproduces the byte-exact X3 shape. See [`peer_groups`].
+    let ifaces = distinct_ifaces(op_ifaces);
+    let g = ifaces.len();
 
-    // sec 7: the peer interface's instance-type — component type 0. 2p declarations, interleaved per op:
-    // a `ty` decl (the op's component functype) then an `export` decl naming the op (kebab-normalized).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, f) in extern_fns.iter().enumerate() {
-            decls.push(0x01); // ty decl
-            decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
-            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
-            decls.push(0x01); // sort: component func
-            uleb128(i as u64, &mut decls);
+    // sec 7: one instance-type per distinct peer interface (component types `0..g`). Each declares ITS ops
+    // (those whose `op_ifaces` names it), interleaved `ty` decl + `export` decl, the export's func index
+    // LOCAL to that instance-type (`0..ops-in-iface`). For `g == 1` this is the single 2p-decl X3 shape.
+    let type_sec = {
+        let mut items = Vec::new();
+        for iface in &ifaces {
+            let ops = peer_group_ops(extern_fns, op_ifaces, iface);
+            let mut decls = Vec::new();
+            for (local, f) in ops.iter().enumerate() {
+                decls.push(0x01); // ty decl
+                decls.extend_from_slice(&f.comp_functype);
+                decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
+                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.push(0x01); // sort: component func
+                uleb128(local as u64, &mut decls);
+            }
+            let mut it = vec![0x42]; // instance type form
+            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            items.extend_from_slice(&it);
         }
-        let mut it = vec![0x42]; // instance type form
-        it.extend_from_slice(&wasm_vec(2 * p, &decls));
-        it
+        section(sec::COMPONENT_TYPE, &wasm_vec(g, &items))
     };
-    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the peer interface as an instance of component type 0, under its (kebab-normalized)
-    // interface name.
+    // sec 10: import each peer interface as an instance of its component type (`g_idx`), under its
+    // (kebab-normalized) interface name → component instances `0..g`.
     let import_sec = {
-        let mut item = extern_name(&super::kebab_extern_name(peer_iface));
-        item.push(0x05); // ComponentTypeRef::Instance sort
-        uleb128(0, &mut item); // type index 0
-        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+        let mut items = Vec::new();
+        for (g_idx, iface) in ifaces.iter().enumerate() {
+            let mut item = extern_name(&super::kebab_extern_name(iface));
+            item.push(0x05); // ComponentTypeRef::Instance sort
+            uleb128(g_idx as u64, &mut item); // type index g_idx
+            items.extend_from_slice(&item);
+        }
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g, &items))
     };
 
-    // sec 6 (first): alias each op out of the imported peer instance (component instance 0) → component
-    // funcs `0..p`, by the op's kebab-normalized component extern name.
+    // sec 6 (first): alias each op (flat, in extern_order) out of ITS interface's imported instance →
+    // component funcs `0..p`, by the op's kebab-normalized component extern name. A single interface aliases
+    // every op from instance 0 (byte-identical to X3).
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in extern_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
+            let inst = iface_index(&ifaces, oi);
+            items.extend_from_slice(&comp_alias_item(inst as u32, &super::kebab_extern_name(&f.op)));
         }
         section(sec::ALIAS, &wasm_vec(p, &items))
     };
@@ -981,12 +1040,18 @@ pub fn assemble_extern(
 /// serializer already composes both import spaces (`core_module_with_extern` lays peer ops, and the shared
 /// runtime ops follow), so this lays the component-side imports in the SAME order.
 ///
-/// Index spaces (`p = extern_fns.len()`, `k = imports.len()`, `m = exports.len()`): lowered PEER ops →
-/// core funcs `0..p`; lowered RUNTIME ops → core funcs `p..p+k`; boundary aliases → `p+k..p+k+m`. Peer
-/// instance-type → comp type 0; runtime instance-type → comp type 1; boundary functypes → comp types
-/// `2..=1+m`. Peer op aliases → comp funcs `0..p`; runtime aliases → `p..p+k`; lifts → `p+k..`. Imported
-/// peer instance → comp instance 0; runtime instance → comp instance 1; peer core instance 0; runtime core
-/// instance 1; program core instance 2.
+/// Index spaces (`p = extern_fns.len()`, `k = imports.len()`, `m = exports.len()`, `g` = distinct peer
+/// interfaces): lowered PEER ops → core funcs `0..p`; lowered RUNTIME ops → core funcs `p..p+k`; boundary
+/// aliases → `p+k..p+k+m`. Peer instance-types → comp types `0..g`; runtime instance-type → comp type `g`;
+/// boundary functypes → comp types `g+1..=g+m`. Peer op aliases → comp funcs `0..p`; runtime aliases →
+/// `p..p+k`; lifts → `p+k..`. Imported peer instances → comp instances `0..g`; runtime instance → comp
+/// instance `g`; peer core instance 0; runtime core instance 1; program core instance 2.
+///
+/// MULTI-INTERFACE (U9): `op_ifaces[i]` names the interface op `i` is imported from (see [`assemble_extern`]);
+/// the distinct interfaces become comp instances/types `0..g` and each op aliases out of ITS instance. The
+/// one merged `"peer"` core instance still exports every lowered peer op FLAT by name, so op names are
+/// globally unique across the bound interfaces (the front-end declines a collision). `g == 1` reproduces
+/// the byte-exact single-peer X5 shape.
 ///
 /// The handle a peer hands this consumer is meaningful only within the ONE shared runtime instance (both
 /// import the same runtime), and the consumer NEVER dereferences it — it reads the value only through the
@@ -999,7 +1064,7 @@ pub fn assemble_extern(
 pub fn assemble_extern_runtime(
     core: &[u8],
     exports: &[BoundaryExport],
-    peer_iface: &str,
+    op_ifaces: &[&str],
     extern_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
@@ -1007,23 +1072,30 @@ pub fn assemble_extern_runtime(
     let p = extern_fns.len();
     let k = imports.len();
     let m = exports.len();
+    // The distinct peer interfaces (first-appearance order) → comp instances/types `0..g`; the runtime is
+    // comp instance/type `g`. `g == 1` reproduces the byte-exact single-peer X5 shape (peer 0, runtime 1).
+    let ifaces = distinct_ifaces(op_ifaces);
+    let g = ifaces.len();
 
-    // sec 7: TWO instance-types — comp type 0 (the peer) then comp type 1 (the runtime).
+    // sec 7: g+1 instance-types — one per distinct peer interface (comp types `0..g`, each declaring ITS
+    // ops with instance-local func indices) then the runtime (comp type `g`).
     let type_sec = {
-        let peer_it = {
+        let mut items = Vec::new();
+        for iface in &ifaces {
+            let ops = peer_group_ops(extern_fns, op_ifaces, iface);
             let mut decls = Vec::new();
-            for (i, f) in extern_fns.iter().enumerate() {
+            for (local, f) in ops.iter().enumerate() {
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
                 decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
                 decls.push(0x01);
-                uleb128(i as u64, &mut decls);
+                uleb128(local as u64, &mut decls);
             }
             let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * p, &decls));
-            it
-        };
+            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            items.extend_from_slice(&it);
+        }
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1038,35 +1110,37 @@ pub fn assemble_extern_runtime(
             it.extend_from_slice(&wasm_vec(2 * k, &decls));
             it
         };
-        let mut items = peer_it;
         items.extend_from_slice(&rt_it);
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
     };
 
-    // sec 10: import the peer interface (comp type 0, kebab name) THEN the runtime (comp type 1,
-    // `import_name`) → comp instances 0 and 1.
+    // sec 10: import each peer interface (comp type `g_idx`, kebab name) → comp instances `0..g`, THEN the
+    // runtime (comp type `g`, `import_name`) → comp instance `g`.
     let import_sec = {
         let mut items = Vec::new();
-        let mut pe = extern_name(&super::kebab_extern_name(peer_iface));
-        pe.push(0x05);
-        uleb128(0, &mut pe);
-        items.extend_from_slice(&pe);
+        for (g_idx, iface) in ifaces.iter().enumerate() {
+            let mut pe = extern_name(&super::kebab_extern_name(iface));
+            pe.push(0x05);
+            uleb128(g_idx as u64, &mut pe);
+            items.extend_from_slice(&pe);
+        }
         let mut rt = extern_name(import_name);
         rt.push(0x05);
-        uleb128(1, &mut rt);
+        uleb128(g as u64, &mut rt);
         items.extend_from_slice(&rt);
-        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
     };
 
-    // sec 6 (first): alias each peer op out of comp instance 0 (→ comp funcs `0..p`), then each runtime op
-    // out of comp instance 1 (→ comp funcs `p..p+k`).
+    // sec 6 (first): alias each peer op out of ITS interface's instance (→ comp funcs `0..p`), then each
+    // runtime op out of comp instance `g` (→ comp funcs `p..p+k`).
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in extern_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
+            let inst = iface_index(&ifaces, oi);
+            items.extend_from_slice(&comp_alias_item(inst as u32, &super::kebab_extern_name(&f.op)));
         }
         for op in imports {
-            items.extend_from_slice(&comp_alias_item(1, op.name));
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
         }
         section(sec::ALIAS, &wasm_vec(p + k, &items))
     };
@@ -1132,7 +1206,8 @@ pub fn assemble_extern_runtime(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → comp types `2..=1+m`.
+    // sec 7 (second): one component functype per boundary export → comp types `g+1..=g+m` (after the g
+    // peer instance-types `0..g` and the runtime instance-type `g`).
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
@@ -1145,11 +1220,11 @@ pub fn assemble_extern_runtime(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`p+k+j`) using its component type (`2+j`).
+    // sec 8 (second): lift each boundary core func (`p+k+j`) using its component type (`g+1+j`).
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((p + k + j) as u32, (2 + j) as u32));
+            items.extend_from_slice(&canon_lift_item((p + k + j) as u32, (g + 1 + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };
