@@ -667,7 +667,11 @@ pub enum Core {
     ///
     /// The `captures` are the lambda's free variables captured BY VALUE at the point the closure is
     /// BUILT, so applying it later observes those captured bindings — not whatever is in scope at the
-    /// call site:
+    /// call site. A closure is an ordinary runtime VALUE — an i32 handle to its cell — so it can be bound
+    /// to a name, passed as an argument (the case that forces this lift), returned, and stored in a
+    /// compound exactly like any other value:
+    //= spec/capabilities/core-semantics.md#a-function-is-a-first-class-value
+    //# A function MUST be a value that can be bound to a name, passed as an argument, returned as a result, and stored in a data structure, like any other value.
     //= spec/capabilities/core-semantics.md#a-function-is-a-first-class-value
     //# A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
     Closure {

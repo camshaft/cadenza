@@ -4653,6 +4653,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     format!("if condition must be Bool, found {}", cond_ty.render_name()),
                 ));
             }
+            // Both branches are type-checked HERE (each `type_of`'d, and they must agree) EVEN THOUGH only
+            // the condition-selected branch runs — so an unevaluated branch can never carry a deferred type
+            // error, exactly as a boolean connective's shielded operand is still checked.
+            //= spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch
+            //# Every branch of a conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated branch cannot carry a deferred error.
             let then_ty = type_of(db, then_);
             let else_ty = type_of(db, else_);
             if !then_ty.agrees_with(&else_ty) {
