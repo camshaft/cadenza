@@ -654,6 +654,7 @@ pass	a line comment wrapping the entry point is seen through
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
+pass	a list arm with two constructor elements binds both payloads
 pass	a list arm's constructor element at a non-head position
 pass	a list arm's constructor element that does not match the tag falls through
 pass	a list built at run time by a push-loop escapes to the host
@@ -669,6 +670,7 @@ pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
+pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list value consumed by two operations in one function is not freed early
@@ -1143,6 +1145,7 @@ pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
 pass	a runtime product's derived dimension is enforced against an incompatible add
 pass	a runtime record built behind a recursive call escapes to the host
+pass	a runtime record nested in a tuple compares component-wise
 pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime right shift by the bit width or more traps
@@ -1174,6 +1177,7 @@ pass	a runtime sum whose payload comes from recursion compares unequal by a heap
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime symbol compared to an interned constant matches by content
 pass	a runtime symbol that differs from the interned constant does not match
+pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
 pass	a runtime three-variant classifier dispatches to the negative arm
 pass	a runtime truncation into a signed byte sign-extends
@@ -1253,6 +1257,8 @@ pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
 pass	a slice whose start equals its end is Some of the empty string
 pass	a slice with a negative start yields None
+pass	a sparse three-arm match's terminal pair dispatches branchlessly — the default
+pass	a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
@@ -1350,6 +1356,7 @@ pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
+pass	a two-constructor-element list arm falls through when the second tag differs
 pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant

@@ -81,6 +81,31 @@
   (input  (= (tuple -0.0) (tuple -0.0)))
   (output (: true Bool)))
 
+; The nested-equality cases above compare CONSTANT compounds (they fold). These pin the RUNTIME heap-walk
+; through DEEP nesting: a compound built from a boundary parameter (so it cannot fold) compared component-
+; wise down multiple levels — a record inside a tuple, and three tuple levels deep. The value-eq walk must
+; descend to the runtime leaf and compare it, the shape a structural-equality check over a built IR node
+; takes.
+
+(case "a runtime record nested in a tuple compares component-wise"
+  (doc    "`(= (tuple (record (x n) (y 2)) 5) (tuple (record (x 3) (y 2)) 5))` with `n` a boundary parameter
+           — the tuples cannot fold, so the runtime `value-eq` walk descends: tuple element 0 is a record
+           whose field `x` is the runtime `n`. n=3 → the records (hence tuples) are equal → true; n=9 →
+           `x` differs → false. Pins that the structural-equality walk recurses through a RECORD nested in a
+           TUPLE at run time (a heap value inside a heap value), comparing the runtime leaf.")
+  (input  (do (def (main (: n Int64)) (= (tuple (record (x n) (y 2)) 5) (tuple (record (x 3) (y 2)) 5))) (export main)))
+  (call   main (: 3 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64)) (output (: false Bool)))
+
+(case "a runtime three-level nested tuple compares equal by a deep walk"
+  (doc    "Three tuple levels deep: `(= (tuple 1 (tuple 2 (tuple n 4))) (tuple 1 (tuple 2 (tuple 3 4))))`
+           with `n` a parameter. The `value-eq` walk descends all three levels to reach `n` — n=3 → equal
+           at every level → true; n=9 → the innermost element differs → false. Pins that the deep structural
+           walk reaches a leaf several nesting levels down at run time, not only one level.")
+  (input  (do (def (main (: n Int64)) (= (tuple 1 (tuple 2 (tuple n 4))) (tuple 1 (tuple 2 (tuple 3 4))))) (export main)))
+  (call   main (: 3 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64)) (output (: false Bool)))
+
 (case "a NaN nested in a list compares equal under the canonical byte form"
   (doc    "The list companion: `(= (list Float64.nan 1.0) (list Float64.nan 1.0))` = true — element-wise
            equality compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the

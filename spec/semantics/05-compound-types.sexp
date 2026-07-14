@@ -3730,6 +3730,20 @@
   (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64)))
 
+(case "a list of records: a runtime index then reads a field of the found record"
+  (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned
+           record handle is then projected `(. r v)` at run time. i=0 → 10, i=1 → 20, out of bounds → -1.
+           Pins that a list ELEMENT that is itself a record round-trips through `List.at` as a usable record
+           handle whose field projects — the symbol-table-as-a-VECTOR idiom (a list of entry records indexed
+           by position), the record companion of the list-of-maps case above.")
+  (input  (do (def (main (: i Int64))
+                (match (List.at (list (record (v 10) (tag 1)) (record (v 20) (tag 2))) i)
+                  ((Some r) (. r v))
+                  (None -1))) (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 1 Int64)) (output (: 20 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
 (case "a set as a map value: runtime membership tested through the lookup"
   (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
            returned set at run time. k=1,e=10 → present (1); k=1,e=99 → absent (0); an absent key → -1. Pins
