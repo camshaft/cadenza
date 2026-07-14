@@ -509,6 +509,14 @@ pub enum Prim {
     /// `expect`) is explicit at the point the program crosses it, not hidden inside the access operation.
     //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
     //# A program that requires the present value of such an optional MUST obtain it through the optional's value-requiring operation carrying a mandatory message (core-semantics.md §"Requiring The Value Of An Optional Traps On Absence"), so that the boundary between handling absence as data and halting on absence is explicit at the point the program crosses it, not hidden inside the access operation.
+    ///
+    /// The message is a MANDATORY parameter of the operation, not optional: `expect`'s scheme is `∀a.
+    /// Sum<a> → String → a` and `lower` requires the full two-argument application (`args.len() == 2`), so
+    /// a program cannot require a present value without stating, at that point, why it expects presence.
+    /// (The runtime does not carry the text — that is a SEPARATE, currently-declined obligation; here only
+    /// the "MUST require a message argument" signature obligation is realized.)
+    //= spec/capabilities/core-semantics.md#requiring-the-value-of-an-optional-traps-on-absence
+    //# This operation MUST require a message argument, so that requiring a present value states, at the point it does so, why the value is expected to be present.
     SumExpect,
     /// `trap` — the DIVERGING primitive: `∀a. String → a`, an expression that never produces a value but
     /// HALTS the program at a defined point (core-semantics.md §A Trap Occurs Only Where Its Computation

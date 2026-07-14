@@ -394,6 +394,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // (`(: 5 Int64)` types as `Int64`), and a genuine conflict (`(: true Int64)`) is a fault the
         // `type_errors` side reports (here we return `T`, the asserted type, so the value column stays
         // definite). If `T` is not a type expression this stage reduces, fall back to `expr`'s type.
+        //
+        // `T` is not a syntactic marker stripped before evaluation: `ty_expr` is REDUCED to a type VALUE
+        // (`typeval_of` runs the SAME evaluator that reduces any value — `(Int 8)`/`(-> A B)` etc. fold to
+        // a `Ty` through the one `Meta.apply` channel), and that value is what unifies into `expr`'s type.
+        // The annotation carries its type AS a value, exactly as §Types Are First-Class Values requires.
+        //= spec/capabilities/core-semantics.md#types-are-first-class-values
+        //# A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker erased before evaluation.
         Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
             Some(annot_ty) => {
                 let expr_ty = type_of(db, expr);
