@@ -3325,13 +3325,20 @@ mod tests {
             // Re-readable: the ML parses back + re-prints identically (idempotent).
             let reparsed = parser::read_ml(&printed);
             assert!(reparsed.ok(), "{want} re-reads");
-            assert_eq!(print(&reparsed.arenas, 80).trim(), want, "{want} is idempotent");
+            assert_eq!(
+                print(&reparsed.arenas, 80).trim(),
+                want,
+                "{want} is idempotent"
+            );
         }
         // A NON-rational name with a slash is NOT resugared (still backtick-escaped as a name) — the
         // resugar is strict (annotated `Rational` + a `digits/digits` name only).
         let a = sexpr::read("(: a/b Rational)").unwrap();
         let printed = print(&a, 80);
-        assert!(!printed.contains("Rational.of"), "a/b is not a rational value: {printed}");
+        assert!(
+            !printed.contains("Rational.of"),
+            "a/b is not a rational value: {printed}"
+        );
     }
 
     #[test]
