@@ -822,12 +822,26 @@ the component type. The new work:
   `emit_closure_resource` route to borrow. PROVEN e2e by `a_borrow_compound_result_closure_handle_is_repeatable`
   (one `pair(100)` handle → two `call(5)`s → the SAME `(tuple 5 105)` value form). +1 corpus witness. **The
   SINGLE-EXPORT closure `call` is now a repeatable `borrow<t>` handle for EVERY result shape (scalar +
-  value-form). The multi-export/mixed/distinct-sig `call`s keep own/self-drop for now — a later borrow widening.**
+  value-form).**
+- **✅ C-HOST-6, MULTI-EXPORT/MIXED shared `call` — the shared scalar `call` is a repeatable `borrow<t>`
+  handle `@d8e0fe58`.** The ONE `call` that serves N same-signature closure exports (`make-<name>` per export)
+  now takes `borrow<t>`: each make's handle survives across calls (the host keeps it, invokes the shared `call`
+  repeatedly; the `t-dtor` reclaims). Pieces: `serialize::multi_closure_resource_core_module_borrow` (threads
+  `call_borrow` to the shared scalar `call` body via `_with_host_borrow`); `envelope::
+  {assemble_multi_closure_resource_borrow, assemble_mixed_closure_resource_borrow,
+  resource_inner_component_multi_closure_borrow}` (the shared `call`'s self handle = `borrow<t>` on the outer
+  lift + nested re-export; `make`s + plain exports unaffected); `emit_multi_closure_resource` +
+  `emit_mixed_closure_resource` scalar tails route to borrow. PROVEN e2e by
+  `a_multi_export_shared_borrow_call_is_repeatable` (one `make-inc` handle → shared `call(5)`=6 then
+  `call(40)`=41). +1 corpus witness. **The scalar `call` is now a repeatable `borrow<t>` handle across
+  single-export AND multi-export/mixed. Remaining borrow work: the multi-export VALUE-FORM shared calls +
+  the distinct-sig per-group `call-g<n>` (keep own/self-drop for now).**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined); a borrow<t> `call` for the MULTI-EXPORT/MIXED/DISTINCT-SIG closures (the single-export
-  `call` is done for every result shape; the shared-`call` variants keep own/self-drop for now). **The entire byte-rope
+  cleanly declined); a borrow<t> `call` for the multi-export VALUE-FORM shared calls + the DISTINCT-SIG
+  per-group `call-g<n>` (single-export all-shapes + multi-export/mixed scalar are done; these keep
+  own/self-drop for now). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
