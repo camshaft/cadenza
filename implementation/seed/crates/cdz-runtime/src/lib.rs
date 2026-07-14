@@ -3059,6 +3059,47 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
     }
 }
 
+/// `String.scalar-at` — the codepoint of the `scalar_index`-th UNICODE SCALAR of a String, or the
+/// sentinel `NO_SCALAR` (`u32::MAX`) when the index is out of range. The SCALAR index is NOT the byte
+/// index: a String is a UTF-8 byte-rope, so the Nth scalar can start at any byte offset (`"café"` has
+/// byte-len 5 but scalar-len 4 — its scalar 3 `'é'` is a 2-byte encoding at byte offset 3). Returns the
+/// scalar's Unicode codepoint as a `u32` (a `Char` at the language level is that codepoint immediate) —
+/// UNLIKE `String.at`, whose `(Option String)` payload is a one-scalar SLICE ROPE that the physical
+/// `champ_eq` mis-compares (the rope-eq bug the compiler-in-Cadenza lexer WORKS AROUND by lexing
+/// `List Int64` char-codes). A `Char` codepoint is an ordinary integer, so comparing two of them is a
+/// plain `i32.eq` — no rope, no content-eq hazard: this is the op a real text lexer wants.
+///
+/// FLATTEN first (`buf` may be a `Bytes.concat`/`.slice` rope whose `raw` holds header bytes, not
+/// content) — iterative, so a deep rope can't overflow; content-preserving, so UNOBSERVABLE on a shared
+/// value — exactly as `op_str_get`/`op_bytes_get`/`str-from-bytes` do. BORROWS `buf` (an indexed read,
+/// no consume). Decodes the flat leaf as UTF-8 and takes the Nth `char`; a well-formed String always
+/// decodes, but an ill-formed buffer (defensive) reads as `NO_SCALAR`, never a trap.
+///
+/// ⚠ NOT YET WIT-EXPORTED — the ready runtime half of a coordinated `str-scalar-at` op (the compiler
+/// declines `String.scalar-at` on a RUNTIME string at lower.rs `lower_str_scalar_at`, "constant strings
+/// only"; the constant case folds to a `Leaf::Char`). Kept UNEXPORTED (no WIT line, no `Guest` method) →
+/// DCE'd from the shipped wasm → frozen runtime hash UNCHANGED. When the compiler wires
+/// `Core::StrScalarAt` it adds ONLY the one-line WIT export + a `Guest` method calling THIS fn (returns
+/// `NO_SCALAR`=out-of-range, so the compiler builds the `(Option Char)` sum), plus the runtime emit —
+/// the flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed String family
+/// (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
+#[cfg_attr(not(test), allow(dead_code))]
+fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
+    const NO_SCALAR: u32 = u32::MAX; // out-of-range / ill-formed sentinel (not a valid Unicode scalar)
+    if is_immediate(buf) {
+        return NO_SCALAR; // the empty/inline-unit Bytes has no scalars — any index is out of range
+    }
+    bytes_flatten(buf);
+    with_node(buf, NO_SCALAR, |n| match core::str::from_utf8(&n.raw) {
+        Ok(s) => s
+            .chars()
+            .nth(scalar_index as usize)
+            .map(|c| c as u32)
+            .unwrap_or(NO_SCALAR),
+        Err(_) => NO_SCALAR, // ill-formed (defensive — a well-formed String always decodes)
+    })
+}
+
 /// CONTENT (storage-independent) byte/String equality — equal iff `a` and `b` denote the SAME byte
 /// sequence, regardless of rope SHAPE (a `Bytes.slice`/`.concat` view vs a flat leaf vs a differently-
 /// split rope of the same content). This is the equality core-semantics.md §Equality Is Structural
@@ -12743,6 +12784,88 @@ mod tests {
             live_nodes(),
             before,
             "no leak / no double-free across str-from-bytes"
+        );
+    }
+
+    /// `op_bytes_scalar_at(buf, i)` — the codepoint of the i-th UNICODE SCALAR, or `u32::MAX` out of range.
+    /// The op a real text lexer wants: a `Char` codepoint (an immediate integer, compared by a plain
+    /// `i32.eq`), sidestepping the `String.at` slice-rope content-eq hazard the compiler-in-Cadenza lexer
+    /// works around. Covers: (1) ASCII by-scalar read; (2) MULTI-BYTE where the SCALAR index ≠ the BYTE
+    /// index (`"café"` byte-len 5, scalar 3 = 'é' = 233); (3) a 4-byte scalar (emoji U+1F600); (4) a ROPE
+    /// input (flatten across the concat seam); (5) out-of-range + empty/immediate → the `u32::MAX` sentinel;
+    /// (6) it BORROWS (no consume — the buffer survives + reads again, node count balances).
+    #[test]
+    fn bytes_scalar_at_reads_the_nth_unicode_scalar_by_codepoint() {
+        reset();
+        let before = live_nodes();
+        const NO_SCALAR: u32 = u32::MAX;
+        // (1) ASCII "abc": scalars 'a','b','c' = 97,98,99; index 3 is out of range.
+        let a = op_str_new(String::from("abc"));
+        assert_eq!(op_bytes_scalar_at(a, 0), 97, "abc scalar 0 = 'a'");
+        assert_eq!(op_bytes_scalar_at(a, 2), 99, "abc scalar 2 = 'c'");
+        assert_eq!(
+            op_bytes_scalar_at(a, 3),
+            NO_SCALAR,
+            "abc scalar 3 out of range"
+        );
+        // (6) BORROW: `a` survives the reads (no consume) and still reads.
+        assert_eq!(op_str_get(a), "abc", "buf survives scalar-at (borrowed)");
+        op_drop(a);
+        // (2) MULTI-BYTE "café": byte-len 5 but scalar-len 4 — scalar 3 = 'é' (233), a 2-byte encoding at
+        //     BYTE offset 3. Proves the SCALAR index is not the byte index.
+        let cafe = op_str_new(String::from("café"));
+        assert_eq!(op_bytes_len(cafe), 5, "café is 5 BYTES");
+        assert_eq!(op_bytes_scalar_at(cafe, 0), 99, "café scalar 0 = 'c'");
+        assert_eq!(
+            op_bytes_scalar_at(cafe, 3),
+            233,
+            "café scalar 3 = 'é' (233), NOT byte 3"
+        );
+        assert_eq!(
+            op_bytes_scalar_at(cafe, 4),
+            NO_SCALAR,
+            "café has only 4 scalars"
+        );
+        op_drop(cafe);
+        // (3) a 4-byte scalar: "a😀b" — scalar 1 = U+1F600 (128512), scalar 2 = 'b' (98).
+        let emoji = op_str_new(String::from("a😀b"));
+        assert_eq!(op_bytes_scalar_at(emoji, 0), 97, "a😀b scalar 0 = 'a'");
+        assert_eq!(
+            op_bytes_scalar_at(emoji, 1),
+            128512,
+            "a😀b scalar 1 = U+1F600"
+        );
+        assert_eq!(
+            op_bytes_scalar_at(emoji, 2),
+            98,
+            "a😀b scalar 2 = 'b' (past the 4-byte scalar)"
+        );
+        op_drop(emoji);
+        // (4) a ROPE input (Bytes.concat with é split onto the second leaf) must flatten then decode.
+        let rope = op_bytes_concat(bytes_leaf(b"caf"), bytes_leaf("é".as_bytes()));
+        assert_eq!(
+            op_bytes_scalar_at(rope, 3),
+            233,
+            "rope scalar 3 = 'é' after flatten across the seam"
+        );
+        op_drop(rope);
+        // (5) empty leaf + immediate → the sentinel (no scalars).
+        let empty = op_bytes_alloc(0);
+        assert_eq!(
+            op_bytes_scalar_at(empty, 0),
+            NO_SCALAR,
+            "empty has no scalar 0"
+        );
+        op_drop(empty);
+        assert_eq!(
+            op_bytes_scalar_at(imm_unit(), 0),
+            NO_SCALAR,
+            "an immediate has no scalars"
+        );
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak (scalar-at borrows, never consumes)"
         );
     }
 
