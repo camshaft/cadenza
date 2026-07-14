@@ -1842,6 +1842,72 @@ impl ComposedRuntime {
         (out1[0].clone(), out2[0].clone())
     }
 
+    /// Like [`closure_make_call_twice`] but for a closure whose `call` returns a `list<u8>` (a byte-rope /
+    /// compound value-form / collection value-encode result): mint ONE handle, `call` it twice, return both
+    /// results as raw byte vectors. Proves a value-form-result closure's `borrow<t>` `call` is REPEATABLE —
+    /// the same handle serves both calls and yields the SAME value-form bytes (an `own<t>` cell would be
+    /// consumed on the first call).
+    fn closure_make_call_list_twice(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        // Extract a `list<u8>` result Val into a byte vector.
+        let bytes = |v: &Val| -> Vec<u8> {
+            match v {
+                Val::List(items) => items
+                    .iter()
+                    .map(|it| match it {
+                        Val::U8(b) => *b,
+                        other => panic!("expected u8 list element, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected a list<u8> call result, got {other:?}"),
+            }
+        };
+        let mut args = vec![handle[0].clone()];
+        args.extend_from_slice(call_args);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out1)
+            .expect("first call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let first = bytes(&out1[0]);
+        // Second call on the SAME handle — borrow<t> keeps it live.
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out2)
+            .expect("second call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        let second = bytes(&out2[0]);
+        (first, second)
+    }
+
     /// Like [`closure_make_call`] but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
     /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
     /// dispatches whichever the named `make` built.
@@ -38337,6 +38403,40 @@ mod closure_host_resource {
             second,
             Val::S64(17),
             "the SAME handle applied to 7 = 17 — borrow<t> keeps it live (repeatable)"
+        );
+    }
+
+    /// C-HOST-6, value-form results: a closure whose `call` returns a `list<u8>` value form (here a COMPOUND
+    /// tuple) is ALSO a repeatable `borrow<t>` handle. Mint one handle, `call` it twice, and confirm the SAME
+    /// value-form bytes come back both times (an `own<t>` cell would be consumed on the first call). The
+    /// value-form paths (byte-rope / compound / collection) share the `list<u8>` envelope, so proving the
+    /// compound one exercises the same borrow rep-recovery + no-self-drop the byte-rope/collection cores use.
+    /// `#[ignore]` — needs the runtime wasm in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_borrow_compound_result_closure_handle_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A capturing closure returning a COMPOUND: `pair(100)` builds a cell holding k=100; the returned
+        // closure `(fn (x) (tuple x (+ x k)))` yields a tuple whose value form crosses as list<u8>.
+        let src = "(module m (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(100) → ONE handle; call(5) twice on the SAME handle — both yield the value form of
+        // `(tuple 5 105)`. Equal bytes ⇒ the handle (and captured k=100) survived the first call.
+        let (first, second) = rt.closure_make_call_list_twice(&[Val::S64(100)], &[Val::S64(5)]);
+        assert!(
+            !first.is_empty(),
+            "the first call returns a non-empty value-form document"
+        );
+        assert_eq!(
+            first, second,
+            "the SAME handle yields the SAME compound value form on a repeated call — borrow<t> keeps it live"
         );
     }
 

@@ -55,6 +55,22 @@
   (call   adder (: 100 Int64) (: 5 Int64))
   (output (: 105 Int64)))
 
+; The repeatable `borrow<t>` `call` extends to the VALUE-FORM result closures too (byte-rope / compound /
+; collection — all cross `call` as `list<u8>`): the cell is kept across calls, the transient result handle is
+; released each call, and the `t-dtor` reclaims the cell on drop. The gate drives one `(call …)`; the
+; repeatability is pinned by `a_borrow_compound_result_closure_handle_is_repeatable` (one `pair(100)` handle,
+; two `call(5)`s, the SAME `(tuple 5 105)` value form both times — the captured k survived).
+
+(case "a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle"
+  (doc    "`(def (pair (: k Int64)) (fn (x) (tuple x (+ x k))))` → a closure whose result is a tuple, crossing
+           `call` as the `list<u8>` value form. `call` borrows the handle (repeatable — the same handle serves
+           many calls, proven in the unit test), and the returned tuple is value-form-encoded out.
+           `pair(100)` → a handle → `call(handle, 5)` = `(: (tuple 5 105) (Tuple Int64 Int64))`. Pins the
+           borrow<t> repeatable `call` on a value-form (compound) result end-to-end.")
+  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair)))
+  (call   pair (: 100 Int64) (: 5 Int64))
+  (output (: (tuple 5 105) (Tuple Int64 Int64))))
+
 ; A closure whose body MULTIPLIES rather than adds — a different lifted code selected through the same
 ; call_indirect boundary, proving the resource carries the RIGHT closure code (its funcref-table slot).
 

@@ -1630,7 +1630,10 @@ fn emit_closure_resource(
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
     // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
     if ret_is_bytes {
-        let main_core = serialize::closure_bytes_resource_core_module(
+        // C-HOST-6: the `call` takes `borrow<t>` (repeatable — the host keeps the handle; the `t-dtor`
+        // reclaims the cell). The byte-rope copy path is unaffected; only the cell rep-recovery + release
+        // change (rep passed directly, no self-drop).
+        let main_core = serialize::closure_bytes_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1638,22 +1641,25 @@ fn emit_closure_resource(
             &make_param_vts,
             lifted_type_idx,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
     // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
     // the bytes path (so the SAME envelope), but the core walks the closure's returned handle to fill the
     // value-form template. The host decodes the bytes to `(: value T)`.
     if let Some(template) = &ret_template {
-        let main_core = serialize::closure_value_resource_core_module(
+        // C-HOST-6 borrow<t> `call` — the compound-walk path is unaffected; the cell is kept (repeatable).
+        let main_core = serialize::closure_value_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1662,22 +1668,25 @@ fn emit_closure_resource(
             lifted_type_idx,
             template,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
     // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
     // the descriptor Bytes, `value-encode(rep, desc)` → the value-form document, copy out). Same `list<u8>`
     // envelope as the bytes/compound paths; cdz-run try-decodes to `(: (list …) (List <e>))` etc.
     if let Some(descriptor) = &ret_descriptor {
-        let main_core = serialize::closure_value_encode_resource_core_module(
+        // C-HOST-6 borrow<t> `call` — the value-encode path is unaffected; the cell is kept (repeatable).
+        let main_core = serialize::closure_value_encode_resource_core_module_borrow(
             &funcs,
             &imports,
             export_abs,
@@ -1686,15 +1695,17 @@ fn emit_closure_resource(
             lifted_type_idx,
             descriptor,
             &layout,
+            true,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_closure_bytes_resource(
+        return Ok(envelope::assemble_closure_bytes_resource_borrow(
             &main_core,
             &dtor_core,
             &imports,
             &import_name,
             &make_param_bytes,
             &arg_bytes,
+            true,
         ));
     }
     // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a

@@ -2025,6 +2025,32 @@ pub fn assemble_closure_bytes_resource(
     make_param_bytes: &[u8],
     arg_bytes: &[u8],
 ) -> Vec<u8> {
+    assemble_closure_bytes_resource_borrow(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        make_param_bytes,
+        arg_bytes,
+        false,
+    )
+}
+
+/// [`assemble_closure_bytes_resource`] with a `call_borrow` switch (C-HOST-6, `list<u8>`-result closures —
+/// byte-rope / compound value-form / collection value-encode). When TRUE `call`'s `self` is `borrow<t>` (both
+/// the outer lift and the nested re-export re-typing) so the host keeps the handle across calls; `make` stays
+/// `own<t>`. Pairs with the `_borrow(…, true)` serializer cores (the `call` body uses the passed rep directly,
+/// no `resource.rep`, no cell self-drop). `false` reproduces the shipped own component byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_closure_bytes_resource_borrow(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -2132,10 +2158,14 @@ pub fn assemble_closure_bytes_resource(
         sec::CANON,
         &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
     ));
-    // sec 7: `own<t>` (type 4), `list<u8>` (type 5), then the `call` functype `(self: own<t>, args…) ->
-    // list<u8>` (type 6).
+    // sec 7: `own<t>`/`borrow<t>` (type 4), `list<u8>` (type 5), then the `call` functype `(self: <handle<t>>,
+    // args…) -> list<u8>` (type 6). `borrow<t>` → the host keeps the handle across calls (repeatable).
     out.extend_from_slice(&{
-        let mut items = own_item(1);
+        let mut items = if call_borrow {
+            borrow_item(1)
+        } else {
+            own_item(1)
+        };
         items.extend_from_slice(&list_u8_defined_type());
         items.extend_from_slice(&closure_call_list_functype(4, arg_bytes, 5));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -2150,10 +2180,9 @@ pub fn assemble_closure_bytes_resource(
         ),
     ));
     // sec 4/5/11: nested re-export component; instantiate (comp type 1 + comp funcs k, k+1); export.
-    out.extend_from_slice(&component_section(&resource_inner_component_closure_bytes(
-        make_param_bytes,
-        arg_bytes,
-    )));
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_closure_bytes_borrow(make_param_bytes, arg_bytes, call_borrow),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
         &wasm_vec(
@@ -3857,7 +3886,26 @@ fn resource_inner_component_closure_borrow(
 /// indices (import side): resource 0; make `own<0>` 1, make-ft 2; call `own<0>` 3, `list<u8>` 4, call-ft 5.
 /// Export side: re-exported resource 6; make `own<6>` 7, make-ft 8; call `own<6>` 9, `list<u8>` 10, call-ft
 /// 11. Imported funcs: make 0, call 1.
+#[allow(dead_code)]
 fn resource_inner_component_closure_bytes(make_param_bytes: &[u8], arg_bytes: &[u8]) -> Vec<u8> {
+    resource_inner_component_closure_bytes_borrow(make_param_bytes, arg_bytes, false)
+}
+
+/// [`resource_inner_component_closure_bytes`] with a `call_borrow` switch. `call`'s self handle type (the
+/// imported type 3 and the re-exported type 9) is `borrow<t>` when TRUE, `own<t>` when FALSE — matching the
+/// outer lift in [`assemble_closure_bytes_resource_borrow`]. `make` stays `own<t>`.
+fn resource_inner_component_closure_bytes_borrow(
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+) -> Vec<u8> {
+    let call_handle = |idx: u32| -> Vec<u8> {
+        if call_borrow {
+            borrow_item(idx)
+        } else {
+            own_item(idx)
+        }
+    };
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     // sec 10: import the abstract resource → type 0.
@@ -3875,10 +3923,10 @@ fn resource_inner_component_closure_bytes(make_param_bytes: &[u8], arg_bytes: &[
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_func_item("import-func-make", 2)),
     ));
-    // sec 7: `own<0>` (type 3), `list<u8>` (type 4), imported `call` functype `(self: own<3>, args…) ->
-    // list<u8>` (type 5).
+    // sec 7: `own<0>`/`borrow<0>` (type 3), `list<u8>` (type 4), imported `call` functype `(self: <handle<3>>,
+    // args…) -> list<u8>` (type 5).
     out.extend_from_slice(&{
-        let mut items = own_item(0);
+        let mut items = call_handle(0);
         items.extend_from_slice(&list_u8_defined_type());
         items.extend_from_slice(&closure_call_list_functype(3, arg_bytes, 4));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -3902,9 +3950,9 @@ fn resource_inner_component_closure_bytes(make_param_bytes: &[u8], arg_bytes: &[
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
     ));
-    // sec 7: `own<6>` (type 9), `list<u8>` (type 10), `call` functype re-typed (type 11).
+    // sec 7: `own<6>`/`borrow<6>` (type 9), `list<u8>` (type 10), `call` functype re-typed (type 11).
     out.extend_from_slice(&{
-        let mut items = own_item(6);
+        let mut items = call_handle(6);
         items.extend_from_slice(&list_u8_defined_type());
         items.extend_from_slice(&closure_call_list_functype(9, arg_bytes, 10));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
