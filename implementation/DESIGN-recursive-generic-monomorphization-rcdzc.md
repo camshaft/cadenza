@@ -520,6 +520,17 @@ concern (2026-07-14): the compiler inlines EVERY non-recursive call unconditiona
 N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). `opaque`
 gives the author control over that — the inverse of `const`.
 
+## THE KEY INTENT (operator, 2026-07-14): `opaque` COMPOSES WITH `const`/generics
+`opaque` must be "avoid the inline but STILL get polymorphism." It is NOT mutually exclusive with `const`
+or generic monomorphization — it is orthogonal:
+- `const`/generic decides HOW a call is SPECIALIZED (a const dict / type erased into a per-instantiation
+  copy — the polymorphism).
+- `opaque` decides how the (specialized) callee is EMITTED — as one real function, called, not inlined.
+So an `opaque` def with a `const` dictionary parameter: the dict is STILL inlined into the specialized
+copy (polymorphism kept — direct op, no `call_indirect`, dict erased from the signature), and that copy is
+emitted ONCE and `Core::Call`ed at every site of that instantiation (inline avoided). You get monomorphic
+polymorphism WITHOUT the per-call-site body duplication. This falls out for free (see below).
+
 ## The problem (measured)
 A non-recursive user call ALWAYS β-reduces at the call site (`lower.rs` ~943, `apply_lambda` → inline the
 reduced body). Great for folding, but code size grows with (call sites × body size), and there is no way
@@ -548,21 +559,32 @@ signature. An `opaque` NON-recursive def rides the SAME path. Seams (mirroring `
    (keyed by body occ, the identity `lower`/`layout` already use). Every downstream reader sees a plain
    `(def …)`; opacity lives only in the set.
 2. **`lower.rs` the apply path (~943)** — BEFORE β-reducing a lambda head, if the callee's body is in
-   `db.opaque_defs` (via `callee_def_index`), route to `lower_recursive_call_or_decline`-style emission: a
-   `Core::Call { callee, args }` (requiring `def_scheme(callee).is_some()` — an opaque def needs a
-   determined signature, exactly like a recursive one; an unannotated undetermined-param opaque def
-   declines "annotate its parameters", the same message).
+   `db.opaque_defs` (via `callee_def_index`), route to the SAME code `lower_recursive_call_or_decline`
+   runs: it (a) reads `def_scheme(callee)` (an opaque def needs a determined signature, like a recursive
+   one; undetermined → the "annotate its parameters" decline), and (b) if the scheme is GENERIC or the
+   callee has a `const` param, calls `type_specialize` — which erases the const dict/type into a
+   per-instantiation copy and returns a `Core::Call` to it; else a plain `Core::Call { callee }`. 🎯 THIS
+   IS WHERE `opaque` + `const`/generics COMPOSES FOR FREE: routing an opaque call through the recursive
+   emit path means an opaque GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept)
+   AND emitted once + called (inline avoided) — no extra logic, the existing `type_specialize` branch does
+   both. Factor the generic/const/plain decision out of `lower_recursive_call_or_decline` into a shared
+   `emit_call_or_specialize(callee, args)` both the recursion decline and the opaque path call.
 3. **`layout`** — no change: a `Core::Call` to the opaque def already grows the reachable set + emits it
    once. `def_params`/`select_function` emit its body once with its solved param types.
 4. **`cadenza-syntax` printer + parser** — emit/accept `opaque` before a `def` (mirrors the `const` param
    work): the printer prefixes `opaque `, the parser accepts a leading `opaque` keyword on a def. Round-trip.
 
 ## Interactions to pin at build time
-- **`const` + `opaque`** — a `const` PARAM on an `opaque` def is fine (the param is still erased at
-  instantiation; the RESIDUAL specialized copy is opaque = emitted once per instantiation, not inlined).
-  An `opaque` def with no const params is just emit-once.
-- **Generics** — an `opaque` GENERIC def (a free scheme var) still monomorphizes per type (each
-  specialization is a real emitted function); `opaque` only stops the *inline*, not the *specialize*.
+- **`const` + `opaque` — THE HEADLINE (operator: "avoid the inline but still get polymorphism")** — a
+  `const` dictionary param on an `opaque` def: the dict is STILL inlined into the specialized copy (so
+  `(. d op)` folds to a direct op — polymorphism kept, dict erased from the signature), and that copy is
+  emitted ONCE per instantiation and `Core::Call`ed everywhere it is used at that instantiation (inline
+  avoided). Monomorphic polymorphism without per-call-site body duplication — exactly the goal. One
+  emitted fn per DISTINCT const instantiation (the `type_specialize` memo already dedups); calls at the
+  same instantiation share it.
+- **Generics** — an `opaque` GENERIC def (a free scheme var) still monomorphizes per type — one real
+  emitted function per concrete type, called (not inlined) at each use. `opaque` stops the *inline*, not
+  the *specialize*.
 - **A NULLARY opaque def** — today a nullary non-exported def inlines at its (one) call; `opaque` keeps it
   a function. Low value but consistent.
 - **Effects** — an opaque def that performs an effect still needs its handler in scope; opacity is about
@@ -570,6 +592,10 @@ signature. An `opaque` NON-recursive def rides the SAME path. Seams (mirroring `
   (`effects::specialize_recursive` already emits real functions).
 
 ## Gate targets (when built)
-`(opaque (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5 muls, not
-15); an un-marked `big` stays fully inlined (byte-identical to today); `opaque` round-trips s-expr↔ML;
-an opaque generic still monomorphizes per type.
+- `(opaque (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5 muls, not
+  15); an un-marked `big` stays fully inlined (byte-identical to today).
+- 🎯 `(opaque (def (fold-n (const (: d …)) n acc) …))` called at ONE const dict from several sites → ONE
+  emitted `fold-n#mono` with the dict INLINED (0 `call_indirect`, dict-less signature) + a `Core::Call`
+  at each site (not N inlined copies). At TWO distinct dicts → two emitted specializations. This is the
+  "avoid the inline but keep polymorphism" acceptance test.
+- `opaque` round-trips s-expr↔ML; an opaque generic still monomorphizes per type.
