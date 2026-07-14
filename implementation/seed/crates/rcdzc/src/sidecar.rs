@@ -642,9 +642,17 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         return Some(HighlightKind::Label);
     }
 
-    // A GRAMMAR KEYWORD in head/annotation position (`if`/`let`/`def`/`:`/`and`/…). Only in a syntactic
-    // position — a bare value that happens to share the spelling is not a keyword. `is_keyword_position`
-    // mirrors `hover_text`'s `grammar_keyword` (head-of-list, plus the annotation colon).
+    // An EFFECT OPERATION NAME — the second child of an `(op <name> <type>)` signature inside an
+    // `(effect …)` declaration. It DECLARES an operation of the effect (it never resolves to a value on
+    // its own — the resolver reads the effect record, not the bare op name), so classify it structurally
+    // as an `Effect` rather than letting it fall through to a spurious `Unbound`.
+    if is_effect_op_name(db, id) {
+        return Some(HighlightKind::Effect);
+    }
+
+    // A GRAMMAR KEYWORD in head/annotation position (`if`/`let`/`def`/`:`/`and`/…, plus the declaration
+    // heads `effect`/`op`/`type` and the desugar-orphaned control heads `handle`/`host`/`resume`). Only
+    // in a syntactic position — a bare value that happens to share the spelling is not a keyword.
     if is_keyword_position(db, id) {
         return Some(HighlightKind::Keyword);
     }
@@ -692,19 +700,53 @@ fn is_label_position(db: &Db, id: StructId) -> bool {
 }
 
 /// Whether the name at `id` is a GRAMMAR KEYWORD used in a syntactic position — the head (first child)
-/// of its enclosing list, or the annotation colon. Mirrors `hover_text::grammar_keyword`: only a name in
-/// head position (or the `:` annotation) is the keyword; the same spelling as a bare value is not.
+/// of its enclosing list, or the annotation colon. Only a name in head position is the keyword; the same
+/// spelling as a bare value is not.
+///
+/// The keyword set is the resolver's `GRAMMAR` heads PLUS the DECLARATION-form heads (`effect`/`op`/
+/// `type`) — forms the resolver dispatches structurally by head-name but that are NOT in `GRAMMAR` (they
+/// are recognized as declarations elsewhere), so their head token would otherwise fall through to
+/// resolution and paint as a spurious `Unbound`. These are exactly the keyword heads the hover
+/// classifier (`grammar_keyword`) already lists — keeping the two token classifiers in agreement.
+///
+/// The head-position check tolerates a MISSING parent: `effects::desugar_handles` re-spells a
+/// `(handle …)` head to `handle-internal` IN PLACE, which ORPHANS the original `handle` atom (it stays
+/// in the arena — so the leaf walk still visits it — but is no longer any list's child). A control-flow
+/// keyword atom with no parent is therefore that orphaned head; it is still the keyword it spells.
 fn is_keyword_position(db: &Db, id: StructId) -> bool {
     let Some(name) = db.ast.as_name(id) else {
         return false;
     };
-    if !crate::resolve::is_grammar_head(name) {
+    if !is_highlight_keyword(name) {
         return false;
     }
+    match db.parent_of(id) {
+        Some(parent) => {
+            matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id))
+        }
+        // No parent: a desugar-orphaned control head (see the doc comment). `desugar_handles` is the only
+        // pass that orphans a head atom, and only for `handle`; treat any parentless keyword atom as its
+        // (former) head position rather than resolving it to `Unbound`.
+        None => true,
+    }
+}
+
+/// The keyword-head names the highlighter paints as `Keyword` — the resolver's structural `GRAMMAR`
+/// heads plus the declaration-form heads `effect`/`op`/`type` (declarations the resolver dispatches by
+/// head-name but keeps out of `GRAMMAR`). One source of truth for [`is_keyword_position`].
+fn is_highlight_keyword(name: &str) -> bool {
+    crate::resolve::is_grammar_head(name) || matches!(name, "effect" | "op" | "type")
+}
+
+/// Whether the name at `id` is an EFFECT OPERATION NAME — the second child of an `(op <name> <type>)`
+/// operation signature (the shape an `(effect …)` declaration's operations take). Such a name declares
+/// an operation of the effect; it resolves to nothing on its own (the effect RECORD is what resolves),
+/// so a leaf walk would paint it `Unbound` — classify it as an `Effect` by position instead.
+fn is_effect_op_name(db: &Db, id: StructId) -> bool {
     let Some(parent) = db.parent_of(id) else {
         return false;
     };
-    matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id))
+    matches!(db.ast.as_form(parent, "op"), Some(tail) if tail.first() == Some(&id))
 }
 
 /// Whether the name at `id` is a LOCAL BINDER DECLARATION — a name that DECLARES a binding rather than

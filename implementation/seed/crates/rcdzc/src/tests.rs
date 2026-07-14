@@ -33710,6 +33710,44 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_classifies_the_effect_construct_not_as_unbound() {
+        // An effect declaration + a handler: the declaration/effect-form HEADS (`effect`/`op`/`handle`/
+        // `resume`) are keywords, the effect NAME + its OPERATION name are `effect`, and NOTHING is
+        // `unbound`. Regression guard: the effect-syntax change left `effect`/`op` out of the highlighter's
+        // keyword set (→ their heads + the op name painted `unbound`), and `desugar_handles` orphaned the
+        // `handle` head (parent lost → also painted `unbound`) — spurious red squiggles under every effect
+        // example in the guide, though the program compiles clean.
+        let src = "(module m \
+                   (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (handle Ask unit ((ask (u) s (resume 42 s))) (Ask.ask))) \
+                   (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean effect program is unbound:\n{text}"
+        );
+        // The declaration/control heads are keywords.
+        assert_eq!(highlight_kinds_of(src, "effect"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "op"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "handle"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "resume"), vec!["keyword"]);
+        // The effect NAME (declaration + the `handle E` head) and the OPERATION name are `effect`. `ask`
+        // occurs as the op-signature name AND the arm op; both read `effect` (the member key `Ask.ask` is
+        // a `label`, so the trailing `ask` there is not counted here).
+        assert!(
+            highlight_kinds_of(src, "Ask").iter().all(|k| k == "effect"),
+            "the effect name is `effect` everywhere it is a value: {:?}",
+            highlight_kinds_of(src, "Ask")
+        );
+        assert!(
+            highlight_kinds_of(src, "ask").contains(&"effect".to_string()),
+            "the effect operation name reads as `effect`: {:?}",
+            highlight_kinds_of(src, "ask")
+        );
+    }
+
+    #[test]
     fn highlight_treats_a_record_field_and_member_key_as_labels() {
         // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
         // they are `label`, not a spurious unbound name.
