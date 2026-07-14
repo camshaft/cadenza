@@ -1077,15 +1077,20 @@ the component type. The new work:
 - **✅ NESTED compound ARG on the MULTI-EXPORT path** (`3f217430`, scalar + list<u8> results). N same-sig
   closures each taking a sole nested tuple/record arg share one `call`. `emit_multi_closure_resource` binds
   `nested_tuple`; the multi/mixed envelopes + their inner components gained the same `tuple_shape` param (the
-  `tuple_shift` / running type counters absorb `nested_tuple_type_count` extra types). Mixed passes `None`
-  (sole-tuple only); distinct-sig nested still declines cleanly. e2e: mk-a→113, mk-b→87, nested × List.
+  `tuple_shift` / running type counters absorb `nested_tuple_type_count` extra types). e2e: mk-a→113, mk-b→87.
+- **✅ NESTED compound ARG on the MIXED path** (`374078bf`, scalar + list results). A nested-tuple-arg closure
+  exported ALONGSIDE a plain export. PURE ROUTING in `emit_mixed_closure_resource` — the mixed envelopes
+  already threaded `tuple_shape` (multi-export tick); it now passes it instead of `None`. e2e: closure→113,
+  plain→2, nested × List. Only DISTINCT-SIG nested remains (its per-group detector uses the non-recursive
+  classifier).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
   envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the MIXED/DISTINCT-SIG
-  paths** — single-export (all results) + multi-export (scalar + list) DONE; the mixed + distinct-sig
-  envelopes thread the same `tuple_shape` (a mechanical widening). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
+  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the DISTINCT-SIG path** —
+  single-export (all results) + multi-export + mixed DONE; distinct-sig needs its per-group detector switched
+  to `nested_fixed_shape_tuple_arg` + `SigGroup`/`SigGroupAbi` to carry the `TupleFieldShape`. (3) a **SUM
+  (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
   these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
