@@ -17118,7 +17118,11 @@ fn bin_match_decode(
             // A UTF-8 string segment `(utf8 s n)`: read exactly `n` bytes (like a dependent `bytes`) then
             // DECODE them as strict UTF-8. Ill-formed bytes are a NON-MATCH (return `None`), never a trap —
             // exhaustiveness (a required catch-all) forces the caller to handle the bad case. `n` names an
-            // earlier integer segment binder, resolved to its already-decoded value.
+            // earlier integer segment binder, resolved to its already-decoded value. This IS the
+            // string-decoding PATTERN the spec requires: ill-formed UTF-8 is a non-match that falls through
+            // to a later arm (a branch the exhaustiveness rule forces the program to carry), not a halt.
+            //= spec/capabilities/collections-and-text.md#decoding-bytes-to-a-string-is-total-not-trapping
+            //# A pattern that decodes a string from a byte sequence MUST treat ill-formed UTF-8 as a non-match that the match's exhaustiveness obligation forces the program to handle, so that the ill-formed case is covered by a branch rather than by a trap.
             SegKind::Utf8 { size } => {
                 debug_assert_eq!(
                     nbits, 0,
