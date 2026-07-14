@@ -885,11 +885,26 @@ the component type. The new work:
   defined type in the `call` functype + inner re-export; (D) `emit_closure_resource` routes a fixed-shape
   scalar compound arg to it; (E) cdz-run supplies the arg as a `Val::Tuple`/`Val::Record`. Then the
   compound-arg direct-call todo flips to PASS.
-- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — for a
-  FIXED-SHAPE SCALAR tuple/record this is now an IMPLEMENTATION GAP with a proven ABI (oracle `@54396f93`,
-  emit bricks B–E above); a VARIABLE-LENGTH collection arg still needs a `value-decode` runtime op that does
-  not exist. A closure-typed closure ARG on the direct-call path (a closure-resource passed INTO a call); a
-  closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
+- **✅✅ DIRECT-CALL FIXED-SHAPE SCALAR COMPOUND ARG COMPLETE — end-to-end** (bricks B `@22cb28ec`, C–E
+  `@2807d76a`, corpus `@7ed43cae`). All four bricks landed + integrated: (B) `serialize::TupleArgRebuild` +
+  the shared `call` serializer rebuilds the flattened-field tuple cell (`arr-alloc N` + per field box/arr-set,
+  FBIP array threaded on the stack) then dispatches, dropping the rebuilt cell after (an owned per-call
+  temporary); (C) `envelope::assemble_closure_resource_borrow_tuple` + `resource_inner_component_closure_
+  borrow_tuple` mint a native `tuple<field-bytes…>` defined type in the `call` functype (+ `tuple_defined_
+  type` / `closure_call_tuple_arg_functype` helpers); (D) `emit_closure_resource`'s `fixed_shape_scalar_tuple_
+  arg` classifier feeds the flattened field valtypes as core call params + routes to (B)/(C); (E) cdz-run's
+  `coerce_one` parses a `Type::Tuple` param from a `(tuple f0 f1 …)` literal into `Val::Tuple`. Corpus: a
+  Tuple arg → 7, a RECORD arg (sorted-key order) → 7, a NARROW-int-field tuple (i32→i64 extend) → 123, a
+  CAPTURING closure + tuple arg → 17 — all run end-to-end under wasmtime. SCOPE: single-export, EXACTLY ONE
+  fixed-shape scalar tuple/record arg, scalar result, no build-time host effect. Still declines (clean): a
+  compound arg with a VARIABLE-LENGTH field (needs `value-decode`), a compound arg ALONGSIDE other args,
+  multi-export/round-trip variants of the compound arg, a closure-typed arg.
+- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — a FIXED-SHAPE
+  SCALAR tuple/record is DONE (above); a VARIABLE-LENGTH collection arg still needs a `value-decode` runtime
+  op that does not exist; multi-export/mixed/distinct-sig/round-trip variants of the compound arg + a compound
+  arg alongside other args are follow-on widenings of the shipped single-export path. A closure-typed closure
+  ARG on the direct-call path (a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both
+  directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
