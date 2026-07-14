@@ -1579,14 +1579,30 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
 /// record, its field names; otherwise the operand's record TYPE's field names (a runtime record — a
 /// call result / `if` selection). Empty when the operand is not a record at all (a non-record operand
 /// is a different fault, "member access requires a record", with no field to suggest).
+///
+/// META-CHANNEL fields (`(meta t)`/`(meta apply)`/`(meta variant)`/…, keyed in the `"meta"` namespace)
+/// are EXCLUDED: they are the compiler's internal type/apply/discriminant channels on a MODULE record
+/// (a prelude sum module like `Option` carries a `(meta t)`), never a user-facing member a source
+/// program projects by name. Including them polluted the suggestion list — `(Option.Ok 5)` offered
+/// "closest matches: `t`, `None`, `Some`", the internal `t` a baseless variant suggestion. Filtering by
+/// namespace is the principled cut (a meta field is `Symbol { namespace: Some("meta"), … }`), so no
+/// name-string knowledge lives here.
 pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
     if let Some(rec) = reduce_to_record_id(db, operand)
         && let Resolved::Record { fields } = resolved_of(db, rec)
     {
-        return fields.keys().map(|k| k.name.clone()).collect();
+        return fields
+            .keys()
+            .filter(|k| k.namespace.as_deref() != Some("meta"))
+            .map(|k| k.name.clone())
+            .collect();
     }
     match crate::infer::type_of(db, operand) {
-        crate::ty::Ty::Record(fields) => fields.keys().map(|k| k.name.clone()).collect(),
+        crate::ty::Ty::Record(fields) => fields
+            .keys()
+            .filter(|k| k.namespace.as_deref() != Some("meta"))
+            .map(|k| k.name.clone())
+            .collect(),
         _ => Vec::new(),
     }
 }
