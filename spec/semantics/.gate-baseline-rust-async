@@ -202,7 +202,9 @@ pass	a let body of unit yields unit
 pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
+pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound returned closure applied twice folds each application independently
+pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
