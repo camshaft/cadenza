@@ -20061,6 +20061,45 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant() {
+        // A qualified match-pattern head `(. Sum Q)` where `Q` is not a variant of the scrutinee sum —
+        // `((C.Alph) …)` on `(type C (Alpha) (Beta))` — is CDZ0201 "record has no field `Alph`" (a sum's
+        // variants ARE its record fields). It now also carries a "did you mean `Alpha`?" over the sum's
+        // VARIANT names + a replace fix on the mistyped key — the pattern-position twin of the value-
+        // position suggestion (`infer::no_field_reject`). Reached via a `main`-reachable match (the
+        // pattern-constraint check runs on the emit path).
+        let d = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Alph) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`Alph`") && d.message.contains("did you mean `Alpha`?"),
+            "names the mistyped key AND the nearest variant: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("carries a replace-with-the-variant fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "Alpha",
+            "replaces the mistyped key with the variant"
+        );
+
+        // A FAR typo (no near variant) → the bare "record has no field" message, no spurious suggestion.
+        let far = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Zzz) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
+        assert!(
+            !far.message.contains("did you mean"),
+            "no spurious suggestion for a far typo: {}",
+            far.message
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with

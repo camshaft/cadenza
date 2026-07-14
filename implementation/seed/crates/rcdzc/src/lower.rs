@@ -2940,6 +2940,43 @@ fn collect_pattern_binders(
 //# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
 //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
 //# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+/// Enrich the propagated "record has no field `Q`" poison of a MATCH-PATTERN head `(. Sum Q)` — where `Q`
+/// is not a variant of the scrutinee sum — with a "did you mean?" over the sum's VARIANT NAMES, plus a
+/// replace fix on the mistyped key. The pattern-position twin of `infer::no_field_reject`'s value-position
+/// suggestion: `core_of(head)` (the member fold) emits the bare coded message; here — where the scrutinee
+/// sum type `ty` is in hand — we can name the nearest variant. `ty` is the scrutinee's type (a `Ty::Sum`
+/// when this fires; a non-sum leaves the bare `reject` untouched). Returns the enriched (or original)
+/// reject. Deterministic — `suggest::nearest` over the declaration-ordered variant set.
+fn enrich_pattern_head_suggestion(
+    db: &Db,
+    head: StructId,
+    ty: &crate::ty::Ty,
+    reject: Reject,
+) -> Reject {
+    // The scrutinee sum's declared variant names — the closed candidate set.
+    let crate::ty::Ty::Sum { decl, .. } = ty else {
+        return reject;
+    };
+    let Some(t) = db.type_decl_by_occ(*decl) else {
+        return reject;
+    };
+    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    // The mistyped key: the second child of the `(. Sum Q)` head; its name is what to match + rewrite.
+    let Some(key_occ) = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied()) else {
+        return reject;
+    };
+    let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
+        return reject;
+    };
+    let Some(candidate) = crate::diag::suggest::nearest(&key, &names) else {
+        return reject; // no near variant — keep the bare "record has no field" message
+    };
+    // Append the suggestion to the bare message and carry a replace fix on the key occurrence — mirroring
+    // `infer::no_field_reject`'s value-position enrichment.
+    let message = format!("{} — did you mean `{candidate}`?", reject.message);
+    Reject { message, ..reject }.with_fix(Fix::replace_heuristic(key_occ, candidate))
+}
+
 fn pattern_constraints(
     db: &mut Db,
     pat: StructId,
@@ -3191,13 +3228,16 @@ fn pattern_constraints(
         // precise coded fault — `CDZ0201: record has no field \`Q\`` (a sum record's variants ARE its
         // fields), the SAME code the value position `(V.Q)` gets. Propagate that coded poison rather than
         // the generic UNCODED "not a variant constructor" decline, so a mistyped variant in a match
-        // pattern NAMES the offending variant and is graded a rejection (not a to-do). (The infer-side
-        // `no_field_reject` adds a "did you mean?" suggestion at the value position; this lowering path
-        // emits the bare coded message — the code + named variant are the load-bearing improvement.)
+        // pattern NAMES the offending variant and is graded a rejection (not a to-do).
         if let Core::Poison(reject) = core_of(db, head)
             && reject.code.is_some()
         {
-            return Err(reject);
+            // ENRICH with a "did you mean?" over the SCRUTINEE sum's variant names — the pattern-position
+            // twin of `infer::no_field_reject`'s value-position suggestion. `core_of(head)` (a member fold)
+            // emits the BARE `record has no field \`Q\``; here we know the scrutinee's sum type, so we can
+            // name the nearest variant (`((V.Alph) …)` on `(type V (Alpha) (Beta))` → "did you mean
+            // `Alpha`?") + carry a replace fix on the mistyped key occurrence, exactly as the value site.
+            return Err(enrich_pattern_head_suggestion(db, head, ty, reject));
         }
         return Err(Reject::decline(
             "a sum match pattern head is not a variant constructor",
