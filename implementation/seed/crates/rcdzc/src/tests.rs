@@ -32304,6 +32304,53 @@ mod stage1 {
     }
 
     #[test]
+    fn an_undetermined_escape_type_is_reported_by_check_not_only_compile() {
+        // The undetermined-escape-result-type reject (a bare `(None)` : `Option ?`, an empty `(Set.of
+        // (list))` : `Set ?`) was an EMIT-path check only — `cdz compile` failed CDZ0203 but `cdz check`
+        // (which runs no backend) ACCEPTED it, a check≡compile gap. `collect_faults` now mirrors the emit
+        // guard, so `diagnostics()` (the `cdz check`/LSP surface) reports the SAME CDZ0203.
+        let check_err = |src: &str| -> Option<crate::abi::Diagnostic> {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+        };
+        for src in [
+            "(module m (def (main) (None)) (export main))",
+            "(module m (def (main) (Set.of (list))) (export main))",
+        ] {
+            let d =
+                check_err(src).unwrap_or_else(|| panic!("check must report the ambiguity: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("not fully determined") && d.message.contains("annotate"),
+                "check names the undetermined type + fix: {}",
+                d.message
+            );
+            // check≡compile: the emit path must AGREE (also reject).
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_err(),
+                "compile must also reject (check≡compile): {src}"
+            );
+        }
+        // NO OVERREACH — check stays clean where compile succeeds:
+        //  • an annotated escape (the free var is resolved),
+        //  • a DIVERGING export (body traps; result `_`/Never is NOT a heap-escape, emittable as a
+        //    trapping function — the `crosses_as_resource_escape` guard excludes it),
+        //  • an ordinary scalar.
+        for ok in [
+            "(module m (def (main) (: (None) (Option Int64))) (export main))",
+            "(module m (def (main) (trap \"x\")) (export main))",
+            "(module m (def (main) 42) (export main))",
+        ] {
+            assert!(
+                check_err(ok).is_none(),
+                "check must stay clean where compile succeeds: {ok} -> {:?}",
+                check_err(ok).map(|d| d.message)
+            );
+        }
+    }
+
+    #[test]
     fn tuple_branches_of_different_arity_are_a_type_error() {
         // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
         // different types (a tuple's arity is part of its type), so the whole `if` has no single type

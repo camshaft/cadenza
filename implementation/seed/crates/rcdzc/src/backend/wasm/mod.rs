@@ -133,7 +133,7 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 /// names the ACTUAL constraint (arity — a compound must be the sole nullary export) rather than the type,
 /// and the two can never drift. A `Ty::Fn` (closure) is NOT here — it has its own resource path with a
 /// `call` method, keyed separately.
-fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
+pub(crate) fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     matches!(
         ty,
