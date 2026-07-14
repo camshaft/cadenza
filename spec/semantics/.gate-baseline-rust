@@ -1506,12 +1506,15 @@ todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime-built string crosses the boundary as its value form
 todo	a runtime string rope compares equal to its flat twin
+todo	a runtime string rope inserted into a set is a member
 todo	a runtime string rope map key is found by its flat twin
 todo	a runtime string rope matches a string-literal arm
+todo	a runtime string rope set element is found by its flat twin
 todo	a runtime-computed BigInt result crosses the host boundary
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a second same-signature closure export shares the one call method
+todo	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
 todo	a set built at run time escapes to the host as its value form
 todo	a set is constructed from a list of its elements
 todo	a slice whose end is beyond the string length yields None

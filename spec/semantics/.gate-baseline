@@ -1080,8 +1080,10 @@ pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string rope compares equal to its flat twin
+pass	a runtime string rope inserted into a set is a member
 pass	a runtime string rope map key is found by its flat twin
 pass	a runtime string rope matches a string-literal arm
+pass	a runtime string rope set element is found by its flat twin
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
@@ -1137,6 +1139,7 @@ pass	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
+pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
 pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
