@@ -469,6 +469,73 @@
   (call   main (: 5 Int64))
   (output (: 7 Int64)))
 
+(case "a factory RETURNS a closure that captures a let-bound inner closure"
+  (doc    "`(def (mk (: k Int64)) (let ((g (fn (y) (+ y k)))) (fn (x) (g x))))` — `mk` binds an inner closure
+           `g` (capturing `k`), then RETURNS an outer closure that captures `g`. `((mk 10) n)` with n = 5 →
+           the returned closure applies `g` to 5 = 5 + 10 = 15, at runtime. Pins a returned closure capturing
+           a LET-bound closure (a two-level capture: the outer holds `g`, `g` holds `k`).")
+  (input  (do (def (mk (: k Int64)) (let ((g (fn ((: y Int64)) (+ y k)))) (fn ((: x Int64)) (g x))))
+              (def (main (: n Int64)) ((mk 10) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+; The DISCRIMINATOR for the closure-param-capture gap: a returned lambda capturing the def's SCALAR parameter
+; works (below — the scalar argument substitutes cleanly), but capturing a CLOSURE-typed parameter declines
+; (the case after). So it is the closure-TYPEDNESS of the captured param that triggers the gap, not
+; "capturing a def param" in general — the closure argument is a `resolve_subtree`-pinned lambda whose own
+; params dangle when it is spliced into the returned lambda that then lifts.
+
+(case "a factory RETURNS a closure capturing the def's SCALAR parameter"
+  (doc    "`(def (mk (: k Int64)) (fn (x) (+ x k)))` — the returned closure captures the def's SCALAR param
+           `k`. Applied `((mk 10) n)` with n = 5 → 5 + 10 = 15. The scalar argument `10` substitutes cleanly
+           into the returned lambda's cell (this is the C-HOST-2 make-forwarding shape at the def level). The
+           companion of the closure-param case below — proving SCALAR-param capture in a returned lambda
+           works, so the decline there is specific to a CLOSURE-typed captured param.")
+  (input  (do (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (main (: n Int64)) ((mk 10) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+; A nested lambda capturing a closure-typed DEF PARAMETER (rather than a scalar param or a let-bound closure)
+; is NOT yet supported: when the def is applied to a closure argument and inlined, the argument lambda is
+; `resolve_subtree`-pinned and later copied, leaving a body occurrence resolving to the ORIGINAL param binder
+; with no local slot at the build site. The compiler DECLINES ("parameter reference has no local slot") rather
+; than emit an invalid module — reject-don't-miscompile. A sound α-renaming fix to the copy machinery is a
+; separate, larger reduction-engine change. (Contrast: capturing a LET-bound closure OR a scalar param works.)
+
+(case "a nested lambda capturing a closure-typed def PARAMETER is declined"
+  (doc    "`(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returns a closure that captures the def's
+           CLOSURE-typed parameter `g`. Applied `((mk (fn (y) (+ y 1))) n)`, the returned lambda captures `g`
+           — but `g` is a closure PARAM pinned+copied through the inline, so its body reference has no local
+           slot. Declines (a `todo`), not a miscompile. The let-bound-closure capture above works; this is the
+           closure-PARAM-capture α-renaming gap.")
+  (input  (do (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
+              (def (main (: n Int64)) ((mk (fn (y) (+ y 1))) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+; The FINE discriminator: the decline above is specific to an INLINE-LAMBDA argument (whose body references
+; its OWN param). Passing the SAME shape a TOP-LEVEL DEF as the closure argument WORKS — a def reference is a
+; global that re-resolves by name (no pinned own-param to dangle), so the returned lambda captures it and
+; dispatches cleanly. So the gap is precisely: an inline lambda arg (with an own-param body ref) substituted
+; for a closure param and captured into a returned lambda that lifts — NOT closure-param capture in general.
+
+(case "a returned lambda captures+applies a closure param bound to a TOP-LEVEL def"
+  (doc    "The same `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returning a closure that captures its
+           closure param `g` — but here `g`'s argument is a TOP-LEVEL def `inc`, not an inline lambda.
+           `((mk inc) n)` with n = 5 → the returned closure applies `inc` to 5 = 6. Works: a def reference is a
+           global (re-resolves by name, no pinned own-param), so it captures + dispatches cleanly — isolating
+           the decline above to the INLINE-lambda argument specifically.")
+  (input  (do (def (inc (: y Int64)) (+ y 1))
+              (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
+              (def (main (: n Int64)) ((mk inc) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a closure argument is another closure's result"
   (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
            (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
@@ -2708,3 +2775,36 @@
   (input  (do (def (double n) (* n 2)) (def (add a b) (+ a b))
               (def (main) (|> (|> 5 double) (add 1))) (export main)))
   (output (: 11 Int64)))
+
+; RECURSIVE-GENERIC MONOMORPHIZATION — a recursive function used at more than one type is INSTANTIATED
+; more than once. A non-recursive generic function already monomorphizes by inlining (β-reduction at each
+; call site IS specialization); a RECURSIVE one cannot inline (it would not terminate), so it lowers to a
+; real function. When such a function is GENERIC — a parameter the body only threads, never constraining
+; to a concrete type — the compiler synthesizes ONE specialized copy per distinct concrete instantiation
+; (`glossary.md §Monomorphization`: "concrete specializations by the same compile-time reduction … done
+; before emitting a component interface because generics do not cross the boundary"). Each copy emits as
+; an ordinary monomorphic function with its own machine valtypes; two calls at the SAME type share one.
+
+(case "a recursive generic function is instantiated at two different types"
+  (doc    "`loopn` counts `n` down, threading `x` UNCHANGED — so `x` is generic (the body never fixes its
+           type). Called at Int64 (`(loopn 3 40)` → 40, an i64 slot) AND at String (`(loopn 2 \"hi\")` →
+           \"hi\", an i32 heap handle), it is MONOMORPHIZED into two functions with distinct machine
+           signatures. Before recursive-generic monomorphization the second use was rejected CDZ0203
+           (`x` pinned to Int64 by the first call). `byte-len(\"hi\") = 2`, so `40 + 2 = 42`.")
+  (input  (do
+            (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
+            (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 "hi"))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a recursive generic function called at one type twice shares a single instantiation"
+  (doc    "The dedup companion: `loopn` called at Int64 in BOTH `(loopn 3 40)` and `(loopn 2 2)` is
+           instantiated ONCE — the two calls share a single monomorphic function (keyed by the concrete
+           type), not two copies. `40 + 2 = 42`. Pins that monomorphization is per-TYPE, not per-call:
+           the same instantiation is reused, so a program that calls a generic recursive helper at one
+           type many times emits one function for it.")
+  (input  (do
+            (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
+            (def (main) (+ (loopn 3 40) (loopn 2 2)))
+            (export main)))
+  (output (: 42 Int64)))

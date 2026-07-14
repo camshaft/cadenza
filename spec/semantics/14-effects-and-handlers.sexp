@@ -353,6 +353,54 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
 
+(case "a MULTI-shot handler arm folds a two-hole body by re-reducing per resume"
+  (doc    "The re-reducing fold extends to a MULTI-shot arm — one that resumes more than once — when the
+           body's performs are all discharged BY THIS handler (no effect escapes to be re-issued). The fold
+           rewrites EACH `resume` occurrence to its own re-reduction of the continuation, which is exactly the
+           deep-handler multi-shot semantics: every resumption independently continues, re-handling the
+           discharged effect in the continuation. Here the arm `(+ (resume 1 s) (resume 2 s))` resumes twice
+           and the body `(+ (Amb.flip) (Amb.flip))` performs twice: the leading flip's continuation `C = (+
+           [] (Amb.flip))` is re-reduced at 1 and at 2 — `C[1]` folds the second flip to `(+ (+ 1 1) (+ 1 2))`
+           = 5, `C[2]` to `(+ (+ 2 1) (+ 2 2))` = 7 — so the arm yields `(+ 5 7)` = 12. Re-running a
+           DISCHARGED in-program effect per resumption is sound (it is folded away, leaving pure code); a
+           continuation that reached a HOST-delegated or outer-handler effect would violate the
+           host-composition invariant and stays a clean decline.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
+  (output (: 12 Int64)))
+
+(case "a one-shot two-hole body folds across a let binding"
+  (doc    "The one-shot re-reducing fold descends the STRICT spine of a `let` (its inits then its body, run
+           unconditionally in sequence), so a body with a perform in the let INIT and another in the let
+           BODY folds. Here `(let ((x (Amb.flip))) (+ x (Amb.flip)))`: the leading flip is the INIT, with
+           continuation `C = (let ((x [])) (+ x (Amb.flip)))`; `(resume 10 s)` re-reduces `C[10] = (let ((x
+           10)) (+ x (Amb.flip)))` — the binding fixes `x = 10` and the body's remaining flip is a pure
+           one-hole context, folding to `(+ 1 (+ 10 10))` = 21; the outer arm `(+ 1 (resume 10 s))` then
+           evaluates to `(+ 1 21)` = 22. The whole `let` is copied into `C`, so its binder re-binds
+           independently; one resume, so the continuation is spliced once.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main)))
+  (output (: 22 Int64)))
+
+(case "a one-shot two-hole body folds with the leading perform in an if condition"
+  (doc    "The one-shot re-reducing fold descends an `if` CONDITION — the strict, evaluated-first position —
+           for its leading hole, and a further perform in a BRANCH is served when the re-reduced condition
+           selects that branch. Here `(if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0)`: the leading flip is the
+           condition, `C = (if (< [] 50) (+ 1 (Amb.flip)) 0)`; `(resume 10 s)` re-reduces `C[10] = (if (< 10
+           50) (+ 1 (Amb.flip)) 0)` — the condition is now the constant `(< 10 50)` = true, so the then-branch
+           is taken and its remaining flip folds (by handler distribution over the now-constant conditional):
+           `(+ 1 (+ 1 10))` = 12; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 12)` = 13. The condition runs
+           once (one resume), so no effect is duplicated.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
            position, so the continuation `C = (if (< [] 5) 1 2)` is uniform (the branches run only AFTER the

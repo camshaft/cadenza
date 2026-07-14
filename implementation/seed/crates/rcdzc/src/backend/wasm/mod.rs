@@ -150,6 +150,10 @@ fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
             // 8/16/32/64 cross as scalars), so it crosses via the value-form escape like Bytes/String —
             // the value-encode walk renders it as a KIND_INT leaf (`Shape::BigInt`, descriptor tag 17).
             | Ty::BigInt
+            // A Rational has no scalar boundary valtype either, so it crosses via the value-form escape.
+            // A CONSTANT rational's `constant_value_form` bakes its `num/den` name leaf (B4-1); a runtime
+            // rational compound's value-form walk is a later B4 slice (falls through to the decline).
+            | Ty::Rational
             | Ty::Nominal { .. }
             | Ty::Qty { .. }
     )

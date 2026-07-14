@@ -560,6 +560,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         // Leaves / references build no closure.
         Core::ConstInt(_)
+        | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstChar(_)
@@ -821,6 +822,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)
+        | crate::core::Core::ConstRational(_, _)
         | crate::core::Core::ConstBool(_)
         | crate::core::Core::ConstStr(_)
         | crate::core::Core::ConstChar(_)

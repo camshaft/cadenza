@@ -653,6 +653,22 @@ pub const RESUME_RESULT_MISMATCH_MARKER: &str = "a handler resumes with a value 
 /// misdirects (the author DID write a handler). Matched as a prefix so the shape-carrying tail can vary.
 pub const HANDLE_NONCANONICAL_PREFIX: &str = "this handle is not in canonical form";
 
+/// A stable PREFIX of the coded CDZ0201 "an operation's type must be an arrow" reject — a
+/// `(op get Int64)` whose type is a well-formed NON-arrow. The op-value's `(meta t)` is then wrapped as
+/// `(fn () Int64)`, so PERFORMING it types the projected op-VALUE record against the arg, leaking the
+/// internal `(Record (apply Any) (effect-op Any) (t Type))` in a consequent CDZ0203 at the perform site.
+/// That leak is a CONSEQUENCE of the malformed declaration, not an independent fault — `dedup_faults`
+/// drops it (a fault whose message names the internal op-record) whenever this reject is present, so a
+/// malformed op type is ONE primary `error:` at the declaration (carrying the wrap fix), not shadowed by
+/// a downstream internal-record type error the author cannot act on.
+pub const NON_ARROW_OP_TYPE_PREFIX: &str = "an operation's type must be an arrow";
+
+/// The internal op-VALUE record signature that leaks into a perform-site type-mismatch message when an
+/// operation was declared with a non-arrow type (see [`NON_ARROW_OP_TYPE_PREFIX`]). No legitimate user
+/// type renders these synthesized meta-channel field names, so `dedup_faults` uses this substring to
+/// recognize (and drop) the consequent leak when the primary malformed-op-type reject is present.
+pub const OP_VALUE_RECORD_LEAK: &str = "(effect-op Any)";
+
 /// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
 /// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
 /// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this

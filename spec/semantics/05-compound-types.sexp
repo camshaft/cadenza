@@ -1265,6 +1265,46 @@
   (call   main)
   (output (: (Ch #\a) Tok)))
 
+(case "a variant carrying a Rational payload constructs and matches"
+  (doc    "A variant whose payload is the exact-rational leaf `Rational` — `(type W (V Rational) (Z))`.
+           `(Rational.of 3 4)` builds `3/4`, `(W.V …)` wraps it, and the `(W.V r) → 1` arm discriminates on
+           the variant (the Rational payload need not be re-computed to select the arm). Pins that the newer
+           `Rational` scalar composes as a sum payload — construction and match — exactly as an Int64 or
+           Char payload does; the leaf's own arithmetic is a separate capability, not exercised here.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Rational) (Z))
+            (def (f (: w W)) (match w ((W.V r) 1) ((W.Z) 0)))
+            (def (main) (f (W.V (Rational.of 3 4))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a Rational-payload sum value escapes across the boundary in its canonical form"
+  (doc    "The escape companion: a `(V Rational)` variant value returned across the boundary renders its
+           canonical value form `(V 3/4)` — the Rational payload survives the value-escape walk (rendered
+           as its `numerator/denominator` form) exactly as an Int64/Char payload does. Pins that a Rational
+           is a first-class sum payload end to end (construction/match AND escape).")
+  (needs  sum-type-declaration)
+  (input  (do (type W (V Rational) (Z)) (def (main) (W.V (Rational.of 3 4))) (export main)))
+  (call   main)
+  (output (: (V 3/4) W)))
+
+(case "arithmetic on a bound Rational payload computes and escapes exactly"
+  (doc    "The payload binder flows into an EXACT-RATIONAL operation: `(match w ((W.V r) (+ r r)) …)` binds
+           the Rational payload as `r` and doubles it — `(+ (3/4) (3/4))` = `3/2` (exact, no rounding), and
+           the computed Rational escapes as `3/2` in lowest terms. Pins that a sum-bound Rational payload is
+           a full-fledged operand of the leaf's own arithmetic (not merely stored/discriminated) and the
+           result crosses the boundary in canonical normalized form — the payload participates in
+           computation, then re-escapes.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Rational) (Z))
+            (def (f (: w W)) (match w ((W.V r) (+ r r)) ((W.Z) (Rational.of 0 1))))
+            (def (main) (f (W.V (Rational.of 3 4))))
+            (export main)))
+  (call   main)
+  (output (: 3/2 Rational)))
+
 ; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
 ; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
 ; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type
@@ -1555,6 +1595,26 @@
                            ((IntList.Nil _)            0)))
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
+
+(case "a recursive-sum payload projected more than once folds to a scalar"
+  (doc    "A recursive list `(type L (Nil) (Cons Int64 L))` whose `Cons` payload the Rust backend BOXES,
+           where the bound tail `t` is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` reads
+           the recursive field in both the `if` condition (`f t`) and — via `d` inlining — the else-branch.
+           `f (Cons 5 (Nil))` = 5. The wasm backend reads the heap slot each time (no move discipline); the
+           Rust backend deref-projects the boxed field, and a bare `(*box).N` read of a non-`Copy` field
+           MOVES it out of the box, so the second projection was a use-after-move (rustc E0382) and the rust
+           artifact did not build — cloning each boxed-payload projection fixes it (the emitted enum derives
+           `Clone`). Pins that a recursive-data consumer inspecting a payload field more than once (a
+           list/tree walker that both tests and returns a field) runs on both backends. A payload projected
+           exactly once (the fold cases above) needs no clone; a `Copy` scalar field copies rather than
+           moves regardless.")
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((d (f t))) (if (= d 0) h d)))))
+            (def (main) (f (Cons 5 (Nil))))
+            (export main)))
+  (call   main)
+  (output (: 5 Int64)))
 
 (case "a recursive NEWTYPE-wrapped linked list folds to a scalar"
   (doc    "The single-variant NEWTYPE spelling of the recursive linked list above: `(type Lst (Mk (Option
@@ -3259,6 +3319,40 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
+
+(case "a variant-payload binder shadow is scoped to its arm, not the whole def"
+  (doc    "The shadow's SCOPE BOUNDARY: `(def (f (: n Int64)) (+ (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0))
+           n))` — the arm binder `n` shadows the param `n` INSIDE the match arm, but the `+ n` OUTSIDE the
+           match (still in `f`'s body) reads the PARAM again. `f(5)`: the match yields the payload 6 (the
+           shadow), and the trailing `+ n` adds the param 5 → 11. Pins that a variant-payload binder shadow
+           is scoped to its arm ONLY (core-semantics.md §Bindings Introduced By A Pattern Are Scoped To Its
+           Branch), so a reference to the same name outside the match resolves to the enclosing param, not
+           the arm binder — the exact scope boundary the shadow-in-a-called-def fix must preserve.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Int64) (Z))
+            (def (f (: n Int64)) (+ (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)) n))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "a match on the result of a match threads sum values through nested control flow"
+  (doc    "A match whose SCRUTINEE is itself a match returning a sum: the inner match flips `(W.A n)` →
+           `(W.B n)` and `(W.B n)` → `(W.A n)`, and the outer match deconstructs the flipped result. `f(5)`
+           builds `(W.A 5)` (k > 0), the inner flips it to `(W.B 5)`, and the outer `(W.B n)` arm yields
+           `n * 2` = 10. Pins that a sum value produced by one match flows as the scrutinee of another — a
+           match is an ordinary sum-valued expression, composable as a scrutinee, with the binders of each
+           match scoped to its own arms.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (A Int64) (B Int64))
+            (def (f (: k Int64))
+              (match (match (if (> k 0) (W.A k) (W.B k)) ((W.A n) (W.B n)) ((W.B n) (W.A n)))
+                ((W.A n) n) ((W.B n) (* n 2))))
+            (export f)))
+  (call   f (: 5 Int64))
+  (output (: 10 Int64)))
 
 (case "a RUNTIME guarded sum-match arm dispatches through its guard"
   (doc    "A guarded arm over a RUNTIME sum scrutinee (chosen by `if`, so the match cannot fold): `((guard

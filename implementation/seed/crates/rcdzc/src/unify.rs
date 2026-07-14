@@ -6,6 +6,12 @@
 //!
 //= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
 //# Type inference MUST determine types by unification over type variables — solving the equality constraints a program's structure imposes — so that a type is derived from how each binding is used rather than assumed or guessed from a single use site.
+//= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+//# The type inference determines for an expression MUST be its principal type: the most general type from which every other valid type of that expression is an instance, so that inference commits to no more than the program's uses require.
+//!
+//! The solve is a most-general one: `unify` only equates variables the uses force and `instantiate`
+//! freshens a scheme's bound variables per use, so the type inferred is the PRINCIPAL type — inference
+//! commits to no more than the constraints require, and every other valid typing is an instance of it.
 //!
 //! A [`Subst`] maps a variable to the type (or width/sign) it has been solved to; `unify` extends it
 //! by equating two types, failing (a [`Reject`]) when they cannot be made equal — the conflicting-use

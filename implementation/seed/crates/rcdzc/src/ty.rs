@@ -1040,6 +1040,50 @@ impl Ty {
         }
     }
 
+    /// Collect the distinct free type-variable numbers ([`Ty::Var`]) this type mentions, into `out` (in
+    /// first-seen order, deduplicated). Used to GENERALIZE a recursive-generic def's signature into a
+    /// [`Scheme`]'s `ty_vars` (recursive-generic monomorphization) — a parameter the body only threads is
+    /// a `Ty::Var`, and the scheme quantifies over those so each call site instantiates fresh. Structurally
+    /// mirrors [`has_free_var`]. Only whole-type vars are collected: a deferred integer width/sign grounds
+    /// to a default (never a genuine free variable), so `width_vars`/`sign_vars` are left empty by the
+    /// generalizer — a generic param is generic over its WHOLE type, not a numeric width alone.
+    pub fn collect_free_vars(&self, out: &mut Vec<u32>) {
+        match self {
+            Ty::Var(n) => {
+                if !out.contains(n) {
+                    out.push(*n);
+                }
+            }
+            Ty::Fn(p, r) => {
+                p.collect_free_vars(out);
+                r.collect_free_vars(out);
+            }
+            Ty::Tuple(elems) => elems.iter().for_each(|t| t.collect_free_vars(out)),
+            Ty::List(elem) | Ty::Set(elem) => elem.collect_free_vars(out),
+            Ty::Map(k, v) => {
+                k.collect_free_vars(out);
+                v.collect_free_vars(out);
+            }
+            Ty::Record(fields) => fields.values().for_each(|t| t.collect_free_vars(out)),
+            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+                args.iter().for_each(|t| t.collect_free_vars(out))
+            }
+            Ty::Qty { inner, .. } => inner.collect_free_vars(out),
+            Ty::Int(_)
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Any
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational
+            | Ty::Float(_) => {}
+        }
+    }
+
     /// Whether two types are COMPATIBLE — a structural yes/no relation, distinct from [`crate::unify`]
     /// which solves variables into a substitution. This is the cheap check the passes that only need a
     /// verdict use (an annotation's declared vs inferred type, an `if`'s two branches, a match

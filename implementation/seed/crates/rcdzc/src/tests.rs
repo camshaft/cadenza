@@ -11761,33 +11761,31 @@ mod match_engine {
     }
 
     #[test]
-    fn adding_two_rationals_declines_honestly_without_a_phantom_int64() {
-        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic is not yet wired. The operator's
-        // `∀a. (Int a) → …` scheme does not accept a Rational, so the generic scheme-unify would default the
-        // first operand to `Int64` and report the second (Rational) as a numeric MIX — fabricating a phantom
-        // `Int64` the author never wrote. The honest outcome names Rational once, as a not-yet-supported op.
-        let d = reject_full(
-            "(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))",
-        )
-        .expect("Rational arithmetic must decline (not yet wired)");
+    fn adding_two_rationals_type_checks_without_a_phantom_int64() {
+        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic IS wired (B4-1, `@431d7833`:
+        // `apply_type` gives a Rational-operand `+`/`-`/`*`/`/` the result `Ty::Rational`). So it type-checks
+        // cleanly, WITHOUT the operator's `∀a. (Int a) → …` scheme defaulting the first operand to `Int64`
+        // and reporting the second as a numeric MIX (a phantom `Int64` the author never wrote). Before the
+        // wiring this DECLINED honestly (`adding_two_rationals_declines_honestly_…`); now it is well-typed.
+        // (A runtime-Rational operand still DECLINES at LOWERING — the constant fold is wired, the runtime
+        // rational compound is a later slice — but the TYPE side is clean, which is what this pins.)
         assert!(
-            d.message.contains("Rational"),
-            "the message names Rational: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("Int64"),
-            "no phantom Int64 operand (neither operand is Int64): {}",
-            d.message
-        );
-        // An uncoded decline (a not-yet-built construct), NOT the CDZ0301 numeric-mix rejection.
-        assert_eq!(
-            d.code, None,
-            "an uncoded decline, not a coded mismatch: {}",
-            d.message
+            reject_code("(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))")
+                .is_none(),
+            "Rational + Rational type-checks (no phantom Int64 mix)"
         );
 
-        // CONTRAST — must be UNAFFECTED: equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
+        // A CONSTANT Rational sum FOLDS end-to-end (the wired path): `(+ (Rational.of 1 3) (Rational.of 1
+        // 6))` = 1/2, a real value, not a decline.
+        assert!(
+            reject_code(
+                "(module m (def (main) (+ (Rational.of 1 3) (Rational.of 1 6))) (export main))"
+            )
+            .is_none(),
+            "constant Rational arithmetic folds"
+        );
+
+        // CONTRAST — equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
         assert!(
             reject_code("(module m (def (f (: r Rational) (: s Rational)) (= r s)) (def (main) 5) (export main))")
                 .is_none(),
@@ -14368,6 +14366,23 @@ mod match_engine {
                         .contains(&format!("write `{name}`, not `({name} …)`")),
                 "names the no-type-parameters fix for {name}: {}",
                 d.message
+            );
+            // The named fix is now APPLYABLE: a replace of the whole `(T …)` application with the bare type
+            // `T` (strip the spurious args). Heuristic — it clears the fault in the common ANNOTATION slip
+            // (`(: t (T Int64))`); in value call position it trades this error for a clearer one, so it is
+            // not asserted verified.
+            let fix = d
+                .fix
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} carries the write-`{name}` fix"));
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement, *name,
+                "replaces `({name} …)` with the bare `{name}`"
+            );
+            assert!(
+                !fix.verified,
+                "heuristic — right in annotation position, not asserted for value position"
             );
         }
     }
@@ -20824,6 +20839,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_arrow_effect_operation_type_is_rejected_with_a_wrap_fix() {
+        // An operation is PERFORMED like a function, so its declared type MUST be an arrow `(-> Arg…
+        // Result)` (a nullary op is `(-> Result)`). A WELL-FORMED non-arrow type — `(op get Int64)`,
+        // `(op get (Option Int64))` — was silently accepted: the op-value's `(meta t)` was wrapped
+        // `(fn () Int64)`, so PERFORMING it leaked the internal op-record ("type mismatch: Int64 and
+        // (Record (apply Any) (effect-op Any) …)") — a non-canonical spelling that garbles downstream.
+        // Reject it AT THE DECLARATION (CDZ0201) with a wrap fix into the canonical `(-> T)`.
+        for src in [
+            "(module m (effect E (op get Int64)) (def (main) 0) (export main))",
+            "(module m (effect E (op get (Option Int64))) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a non-arrow operation type must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+            assert!(
+                err.message.contains("an operation's type must be an arrow"),
+                "names the arrow requirement: {}",
+                err.message
+            );
+            assert_eq!(
+                err.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Wrap),
+                "carries the wrap-into-arrow fix: {}",
+                err.message
+            );
+        }
+
+        // The consequent perform-site leak (the internal op-record) is DEDUPED — a bare-type op that is
+        // ALSO performed reports the ONE declaration-site error, not the garbled `(effect-op Any)` mismatch.
+        let performed = "(module m (effect E (op get Int64)) \
+             (def (main) (handle E 0 ((get (u) s (resume 5 s))) (+ (E.get) 1))) (export main))";
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
+        assert!(
+            !d.iter().any(|e| e.message.contains("(effect-op Any)")),
+            "the internal op-record leak is dropped in favor of the decl-site error: {:?}",
+            d.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert!(
+            d.iter()
+                .any(|e| e.message.contains("an operation's type must be an arrow")),
+            "the declaration-site reject is present: {:?}",
+            d.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+
+        // NO false positive: a canonical nullary `(-> Result)`, a unary `(-> Arg Result)`, and an unknown
+        // NAME (which keeps its more-actionable CDZ0101, not a spurious arrow reject) all behave correctly.
+        for ok in [
+            "(module m (effect E (op get (-> Int64))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> Int64 Unit))) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid arrow operation type must compile: {ok}"
+            );
+        }
+        let unknown = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op get Nonesuch)) (def (main) 0) (export main))",
+        )))
+        .expect_err("an unknown op type name is still rejected");
+        assert_eq!(
+            unknown.code.as_deref(),
+            Some("CDZ0101"),
+            "an unknown name keeps its CDZ0101, not the arrow reject: {}",
+            unknown.message
+        );
+    }
+
+    #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
         // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
@@ -21524,6 +21607,78 @@ mod diagnostics {
                 .any(|d| d.message.contains("declared more than once")),
             "two distinct type names are not a duplicate: {clean:?}"
         );
+    }
+
+    #[test]
+    fn a_malformed_variant_position_in_a_type_declaration_is_rejected() {
+        // A `(type …)` tail element is a VARIANT: a bare NAME (`Red`) or a `(Name payload…)` form.
+        // `scan_type_decl` SILENTLY DROPS anything else — a literal `(type T 5)`, a list headed by a
+        // non-name `(type T (5 Int64))`, `()` — so `(type T Red 5 Blue)` became the two-variant `{Red,
+        // Blue}` with `5` invisibly gone, and a match on `Red`/`Blue` then wrongly type-checked as
+        // EXHAUSTIVE (a silent correctness hazard). Now each malformed variant position is rejected CDZ0201.
+        for (src, what) in [
+            (
+                "(module m (type T 5) (def (main) 0) (export main))",
+                "a bare literal",
+            ),
+            (
+                "(module m (type T Red 5 Blue) (def (main) 0) (export main))",
+                "a literal amid good variants",
+            ),
+            (
+                "(module m (type T (5 Int64)) (def (main) 0) (export main))",
+                "a list headed by a literal",
+            ),
+            (
+                "(module m (type T ()) (def (main) 0) (export main))",
+                "an empty list",
+            ),
+            (
+                "(module m (type T (Red) \"str\") (def (main) 0) (export main))",
+                "a string literal variant",
+            ),
+        ] {
+            let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.message.contains("must be a name"))
+                .collect();
+            assert_eq!(d.len(), 1, "{what}: one malformed-variant reject: {d:?}");
+            assert_eq!(
+                d[0].code.as_deref(),
+                Some("CDZ0201"),
+                "{what}: {}",
+                d[0].message
+            );
+        }
+
+        // The silent-EXHAUSTIVENESS hazard is closed: `(type T Red 5 Blue)` with a match on Red/Blue no
+        // longer compiles as though exhaustive — the malformed `5` is a hard error at the declaration.
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(
+                "(module m (type T Red 5 Blue) \
+                 (def (main) (match (T.Red) ((T.Red) 10) ((T.Blue) 20))) (export main))",
+            )))
+            .iter()
+            .any(|d| d.message.contains("must be a name")),
+            "the dropped-variant exhaustiveness hazard is rejected at the declaration"
+        );
+
+        // NO false positive: every valid variant shape stays clean — nullary names, payloads, generics,
+        // record/tuple/list payloads, multi-payload.
+        for ok in [
+            "(module m (type Color Red Green Blue) (def (main) 0) (export main))",
+            "(module m (type C (Mk Int64)) (def (main) 0) (export main))",
+            "(module m (type Opt (Sm a) Nn) (def (main) 0) (export main))",
+            "(module m (type C (Mk (Record (x Int64)))) (def (main) 0) (export main))",
+            "(module m (type C (Mk Int64 Bool)) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("must be a name")),
+                "a valid type declaration produces no malformed-variant fault: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -23300,6 +23455,57 @@ mod stage1 {
             ),
             1
         );
+    }
+
+    #[test]
+    fn a_recursive_generic_function_is_instantiated_per_type() {
+        // 09-functions "a recursive generic function is instantiated at two different types": `loopn`
+        // threads `x` UNCHANGED, so `x` is GENERIC (the body never fixes its type). A non-recursive
+        // generic inlines (monomorphizes) at each call site; a RECURSIVE one cannot, so it lowers to a
+        // real function. Called at Int64 (`(loopn 3 40)` → 40) AND String (`(loopn 2 "hi")` → "hi"), the
+        // compiler MONOMORPHIZES it into two functions with distinct machine signatures (i64→i64 and
+        // i32-handle→i32-handle) — `lower::type_specialize` synthesizes one copy per concrete
+        // instantiation, re-annotating the generic param. Before, the second use was rejected CDZ0203
+        // (`x` pinned to Int64 by the first call). `40 + byte-len("hi") = 40 + 2 = 42`. Uses the value
+        // heap (the String "hi"), so it SKIPS (not fails) when the runtime store is absent.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 \"hi\")))) (export main))",
+        )))
+        .expect("a recursive generic instantiated at Int64 and String compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping recursive-generic monomorphization run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => {
+                assert_eq!(v, "42", "loopn instantiated at both Int64 and String")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_recursive_generic_instantiation_dedups_per_type() {
+        // The dedup companion (09-functions "a recursive generic function called at one type twice shares
+        // a single instantiation"): `loopn` called at Int64 in BOTH `(loopn 3 40)` and `(loopn 2 2)` is
+        // monomorphized ONCE — the two calls share a single function (the specialization memo is keyed by
+        // the concrete instantiation type, so the same type reuses one copy). This is a pure-scalar
+        // program (no heap), so it runs without the value-heap store. `40 + 2 = 42`.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main) (+ (loopn 3 40) (loopn 2 2))) (export main))",
+        )))
+        .expect("a recursive generic at one type twice dedups to one instantiation");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
     }
 
     #[test]
@@ -28041,17 +28247,36 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_the_condition_and_a_branch_declines_the_distribution() {
-        // ADVERSARIAL: distribution requires a STRONGLY-PURE condition (it runs once, before either branch).
-        // `(if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and a branch — a
-        // two-hole shape distribution must not touch (a performing condition would need its own frame). It
-        // declines cleanly (the pure-one-hole fold also declines: the condition hole makes the branch
-        // perform a SECOND hole). Never a mis-fold.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+    fn a_perform_in_the_condition_and_a_branch_folds_via_the_one_shot_refold() {
+        // E5 TWO-HOLE with the leading hole in an if-CONDITION composing with distribution: `(if (< (Amb.flip)
+        // 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and the then-branch. The one-shot refold
+        // takes the CONDITION flip as the leading hole → `C = (if (< □ 5) (+ 1 (Amb.flip)) 0)`; `(resume 10
+        // s)` re-reduces `C[10] = (if (< 10 5) (+ 1 (Amb.flip)) 0)` where the condition is now the constant
+        // `(< 10 5)` = false, so the ELSE branch (pure `0`) is taken and the then-branch perform never runs →
+        // 0; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 0)` = 1. (Was a clean decline; the refold turns the
+        // condition hole into a leading strict hole, and the now-constant condition selects a branch.)
+        let false_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a perform in the condition AND a branch must decline (distribution needs a pure condition)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(false_dir)))
+                    .expect("a condition-and-branch two-hole folds via the refold"),
+                "main"
+            ),
+            1
+        );
+        // The TRUE direction, where the taken (then) branch DOES perform: `(< 10 50)` = true → `(+ 1
+        // (Amb.flip))` (distribution serves the branch perform) → `(+ 1 (+ 1 10))` = 12; outer arm `(+ 1 12)`
+        // = 13. The refold composes with handler distribution for the surviving branch perform.
+        let true_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(true_dir)))
+                    .expect("a condition-and-taken-branch two-hole folds via the refold"),
+                "main"
+            ),
+            13
         );
     }
 
@@ -28079,15 +28304,24 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_a_match_scrutinee_and_an_arm_declines_the_distribution() {
-        // ADVERSARIAL: match distribution needs a STRONGLY-PURE scrutinee. `(match (Amb.flip) (0 5) (_ (+ 1
-        // (Amb.flip))))` performs in BOTH the scrutinee and an arm — distribution must not fire (a two-hole
-        // shape); declines cleanly (never a mis-fold).
+    fn a_perform_in_a_match_scrutinee_and_an_arm_folds_via_the_one_shot_refold() {
+        // E5 TWO-HOLE composing with match distribution: `(match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip))))`
+        // performs in BOTH the scrutinee and an arm. The one-shot refold takes the SCRUTINEE flip as the
+        // leading hole → `C = (match □ (0 5) (_ (+ 1 (Amb.flip))))`; `(resume 10 s)` re-reduces `C[10] =
+        // (match 10 (0 5) (_ (+ 1 (Amb.flip))))` — now the scrutinee is the pure constant 10, so match
+        // DISTRIBUTION fires over the arm perform: the `_` arm `(+ 1 (Amb.flip))` folds to `(+ 1 (+ 1 10))`
+        // = 12, and the match selects it → 12; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 12)` = 13. (Was a
+        // clean decline before the refold — the refold turns the scrutinee hole into a leading strict hole,
+        // and the residual arm perform is served by distribution.) One-shot, so no effect is duplicated.
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a perform in the scrutinee AND an arm must decline (distribution needs a pure scrutinee)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a scrutinee-and-arm two-hole folds via the refold + distribution"),
+                "main"
+            ),
+            13
         );
     }
 
@@ -28176,15 +28410,21 @@ mod stage1 {
     }
 
     #[test]
-    fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
-        // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
-        // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
-        // real continuations, not a single splice).
+    fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
+        // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
+        // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
+        // `C = (let ((x □)) (+ x (Amb.flip)))`; `(resume 10 s)` re-reduces `C[10] = (let ((x 10)) (+ x
+        // (Amb.flip)))` (x=10, body has the second flip in a pure one-hole context) → `(+ 1 (+ 10 10))` = 21;
+        // the outer arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22. (Was a clean decline before the refold.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "two performs across a let must decline the single-hole fold"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a one-shot two-hole across a let folds via the refold"),
+                "main"
+            ),
+            22
         );
     }
 
@@ -28425,13 +28665,24 @@ mod stage1 {
             ),
             33
         );
-        // MULTI-shot two-hole STILL DECLINES: splicing a continuation that itself performs, more than once,
-        // duplicates the inner effect — the frame vertical's job, not the frame-free refold.
+        // MULTI-shot two-hole now FOLDS too: the refold rewrites EACH `resume` node to its own
+        // `reduce_handle(s', arms, C[v])`, so a multi-shot arm re-reduces its continuation once per resume —
+        // which IS the correct deep-handler multi-shot semantics (each resumption independently continues,
+        // re-handling the discharged effect in `C`). `(+ (resume 1 s) (resume 2 s))` over `(+ (Amb.flip)
+        // (Amb.flip))`: the leading flip's arm is `(+ k(1) k(2))` where k(v) re-reduces `(+ v (Amb.flip))`;
+        // k(1) → `(+ (+ 1 1) (+ 1 2))` = 5, k(2) → `(+ (+ 2 1) (+ 2 2))` = 7, so `(+ 5 7)` = 12. (Was a
+        // decline — the one-shot gate was overly conservative; re-handling a DISCHARGED in-program effect per
+        // resumption is sound, not effect duplication. A multi-shot HOST effect would still be caught by the
+        // host-composition invariant elsewhere.)
         let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(multi))).is_err(),
-            "a MULTI-shot two-hole body must decline (a performing continuation spliced twice)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot two-hole body folds via the per-resume refold"),
+                "main"
+            ),
+            12
         );
     }
 
@@ -32036,6 +32287,45 @@ mod stage1 {
                 reject.code
             );
         }
+    }
+
+    #[test]
+    fn a_repeated_squaring_bigint_chain_diagnoses_in_bounded_time() {
+        // REGRESSION (perf): `collect_reached_poisons` — the reached-poison walk (`compile::diagnostics` /
+        // `cdz check`, the hot editor path) that descends a nullary def's lowered core to find a provable
+        // trap — followed `core_of` (which resolves a `Ref` to its target's body) with NO visited-set. A
+        // def used in BOTH operand positions of a binary op is a SHARED core DAG, and the naive recursion
+        // walked it as a TREE. Fixed-width `Int` never triggered it (a constant `(* a a)` folds to a
+        // `Core::ConstInt` leaf — no binary node to re-descend), but `BigInt` arithmetic DELIBERATELY does
+        // not constant-fold (exact unbounded math is a runtime op), so a `BigInt` repeated-squaring chain
+        // `a_i = (* a_{i-1} a_{i-1})` — the TEXTBOOK large-power idiom — left a `Core::BigIntBinOp` at every
+        // level, and each level reached `a_{i-1}` from both sides → O(2^depth) node visits. A depth-30
+        // chain (~30 tiny defs) took SECONDS and grew ×2 per level, an effective HANG of "diagnostics as
+        // you type" on a small realistic program. The fix records each fully-walked node in
+        // `Db::reached_visited` and skips it on re-reach (a poison's origin is its own node, so its
+        // contribution is path-independent and `dedup_faults` collapses the duplicates a shared DAG would
+        // otherwise yield). This depth would not TERMINATE pre-fix; that `diagnostics` returns is the gate.
+        // (The BACKEND'S emit genuinely inlines each nullary def per use → O(2^depth) INSTRUCTIONS, a
+        // distinct downstream cost; this test pins the diagnostics/check path the fix addresses.)
+        let mut defs = String::from("(def (a0) (BigInt.of 3))");
+        for i in 1..=30 {
+            defs.push_str(&format!(" (def (a{i}) (* a{prev} a{prev}))", prev = i - 1));
+        }
+        let src = format!("(module m {defs} (def (main) (= a30 (BigInt.of 0))) (export main))");
+        // The well-typed program has no faults: an empty diagnostics list, returned in bounded time.
+        // Through the host-stack guard the bin uses (`host.rs`): the reached-poison walk recurses ~per
+        // chain level (30 deep here), which OVERFLOWS a default `cargo test` worker's ≈2 MB stack (SIGABRT,
+        // EXIT=101 with 0 FAILED) even though the visited-set fix makes it TERMINATE — deep-but-finite, not
+        // a loop. Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth, not the native stack.
+        let diags = crate::host::run_with_compiler_stack(move || {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-typed repeated-squaring BigInt chain has no error diagnostics: {diags:?}"
+        );
     }
 
     #[test]

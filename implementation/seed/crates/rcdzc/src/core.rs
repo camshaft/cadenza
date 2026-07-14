@@ -241,6 +241,14 @@ pub enum Core {
     /// An integer constant at exact arbitrary precision. The narrowing to the machine width its
     /// solved type fixes is the backend's job at selection.
     ConstInt(IntValue),
+    /// An EXACT RATIONAL constant — a NORMALIZED pair of arbitrary-precision integers (numerator,
+    /// denominator): lowest terms (gcd-reduced), the sign on the numerator, the denominator strictly
+    /// positive (`> 0`, never zero — a zero denominator traps at construction, never reaching here). A
+    /// `Ty::Rational` value folded in `lower` (`Rational.of`/`of-int` + exact `+`/`-`/`*`/`/`/compare over
+    /// the pair, via `IntValue` bignum arithmetic — B4-1). Two equal rationals share ONE normalized pair,
+    /// so `=` is structural over `(num, den)`. Crossing the boundary as a `{numerator, denominator}` record
+    /// + a runtime rational compound are a later B4 slice (the escape/emit paths decline for now).
+    ConstRational(IntValue, IntValue),
     /// A boolean constant.
     ConstBool(bool),
     /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its

@@ -848,6 +848,37 @@ fn a_recursive_sum_emits_a_boxed_enum() {
 }
 
 #[test]
+fn rustc_roundtrip_generic_recursive_tree_boxes_and_counts() {
+    // A GENERIC recursive sum `(type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a))))` — the recursive
+    // `Tree` occurrence is a type PARAMETER instantiation nested inside a `Tuple`. The Box-decision
+    // (`variant_payloads_mention`) resolved a payload with `typeval_of`, which returns `None` for a payload
+    // mentioning a type param (unbound), so `Node`'s recursive tuple was NOT boxed → `Node((Tree<T0>,
+    // Tree<T0>))` had INFINITE size (rustc E0072). Resolving the payload PARAM-TOLERANTLY (at a sentinel
+    // instantiation, the same path the enum-field render uses) makes `reaches_decl` see the self-reference
+    // and box it: `Node(Box<(Tree<T0>, Tree<T0>)>)`. `cnt` counts leaves; a two-leaf node = 2.
+    let rs = compile_rust(
+        "(module m (type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a)))) \
+           (def (cnt (: t (Tree Int64))) (match t (((. Tree Leaf) _) 1) \
+                                                   (((. Tree Node) (tuple l r)) (+ (cnt l) (cnt r))))) \
+           (export cnt))",
+    );
+    assert!(
+        rs.contains("enum Tree<T0>") && rs.contains("Node(Box<"),
+        "the generic recursive variant's nested-tuple field is boxed (was E0072 infinite size): {rs}"
+    );
+    // End-to-end through rustc: builds (was E0072) and cnt of a two-leaf node = 2, matching wasm.
+    if let Some(out) = rustc_run(
+        &rs,
+        "cnt(Tree::Node(Box::new((Tree::Leaf(1), Tree::Leaf(2)))))",
+    ) {
+        assert_eq!(
+            out, "2",
+            "the generic recursive tree builds and counts:\n{rs}"
+        );
+    }
+}
+
+#[test]
 fn a_recursive_newtype_declines_the_whole_function() {
     // A RECURSIVE NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` erases to its inner type on the rust
     // backend — but the inner type mentions `Lst` (the μ back-edge), which erasure would render as a bare
@@ -929,6 +960,34 @@ fn rustc_roundtrip_recursive_sum_folds() {
     }
     if let Some(out) = rustc_run(&rs, "sm(L::Nil)") {
         assert_eq!(out, "0");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_boxed_payload_projected_more_than_once_clones() {
+    // A recursive sum whose `Cons` payload the Rust backend BOXES (`Cons(Box<(i64,L)>)`), where the bound
+    // payload field is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` uses the recursive
+    // tail `t` in both the `if` condition and the else-branch. A bare `(*box).1` read MOVES the non-`Copy`
+    // `L` field out of the box — the FIRST projection moves it, so the second is E0382 "use of moved
+    // value". The fix CLONES each boxed-payload projection, so each read is an owned copy that leaves the
+    // box intact. Pins that the emitted crate BUILDS and runs to f(Cons 5 Nil) = 5 (was a build failure);
+    // the wasm gate never saw this (it re-reads the heap slot with no move discipline).
+    let rs = compile_rust(
+        "(module m (type L (Nil) (Cons Int64 L)) \
+           (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((d (f t))) (if (= d 0) h d))))) \
+           (export f))",
+    );
+    // Each boxed-payload projection is cloned (not a bare moving `(*p).N`).
+    assert!(
+        rs.contains(".clone()"),
+        "a boxed payload projection clones to avoid moving out of the Box:\n{rs}"
+    );
+    // End-to-end through rustc: builds (was E0382) and f(Cons 5 Nil) = 5, matching the wasm oracle.
+    if let Some(out) = rustc_run(&rs, "f(L::Cons(Box::new((5, L::Nil))))") {
+        assert_eq!(
+            out, "5",
+            "the multiply-projected boxed payload builds and runs:\n{rs}"
+        );
     }
 }
 

@@ -170,7 +170,7 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         // scheme the construct (`Box::new(payload)`) and match (`*__pay`) sites agree on — simpler than
         // boxing each recursive sub-position (which would need the box/deref threaded through every tuple
         // element). A non-recursive variant is unboxed as before.
-        let recursive = variant_payloads_mention(db, variant, decl.occ);
+        let recursive = variant_payloads_mention(db, variant, &decl);
         let field = |ty: String| {
             if recursive { format!("Box<{ty}>") } else { ty }
         };
@@ -565,11 +565,23 @@ fn decl_emits(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
 fn variant_payloads_mention(
     db: &mut Db,
     variant: &crate::db::Variant,
-    decl_occ: crate::ast::StructId,
+    decl: &crate::db::TypeDecl,
 ) -> bool {
     let occs = variant.payloads.clone();
     occs.iter().any(|&pty| {
-        crate::eval::typeval_of(db, pty).is_some_and(|ty| reaches_decl(db, &ty, decl_occ))
+        // Resolve the payload type PARAM-TOLERANTLY, the same way `payload_rust_type` does: a GENERIC sum's
+        // payload mentions the decl's type PARAMETERS, so a plain `typeval_of` returns `None` (the params
+        // are unbound) and the recursion check would MISS it — a generic recursive sum `(type Tree (Leaf a)
+        // (Node (Tuple (Tree a) (Tree a))))` then emitted `Node((Tree<T0>, Tree<T0>))` UNBOXED → rustc E0072
+        // "recursive type has infinite size". Resolve at the SENTINEL instantiation (each param → a sentinel
+        // `Var`) so the self-reference `(Tree a)` appears as `Ty::Sum{Tree, [Var]}` and `reaches_decl` finds
+        // it. A MONOMORPHIC sum has no params, so `typeval_of` resolves directly (no sentinel needed).
+        let ty = if decl.params.is_empty() {
+            crate::eval::typeval_of(db, pty)
+        } else {
+            sentinel_payload_ty(db, decl, pty)
+        };
+        ty.is_some_and(|ty| reaches_decl(db, &ty, decl.occ))
     })
 }
 
@@ -721,14 +733,15 @@ pub(super) fn variant_is_recursive(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -
         crate::ty::Ty::Sum { decl, .. } => *decl,
         _ => return false,
     };
-    let variant = match db.type_decl_by_occ(decl_occ) {
-        Some(d) => match d.variants.get(disc as usize) {
-            Some(v) => v.clone(),
-            None => return false,
-        },
+    let decl = match db.type_decl_by_occ(decl_occ) {
+        Some(d) => d.clone(),
         None => return false,
     };
-    variant_payloads_mention(db, &variant, decl_occ)
+    let variant = match decl.variants.get(disc as usize) {
+        Some(v) => v.clone(),
+        None => return false,
+    };
+    variant_payloads_mention(db, &variant, &decl)
 }
 
 /// Whether the solved type `ty` mentions the sum declaration `decl` anywhere (directly or nested) — a
