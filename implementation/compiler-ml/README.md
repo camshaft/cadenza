@@ -69,6 +69,8 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
   (so `(+ (* 2 3) 4)` → `7`); leaves unknown-op / non-constant forms untouched.
 - `src/subst.cdz` — substitution (β-reduction / macro-expansion core): replaces each `Name` found in a
   `Map String Ast` environment with its `Ast`, recursively. Stresses a compound-VALUED `Map`.
+- `src/check.cdz` — an arity checker: counts call-forms `(Name op arg…)` whose arg count differs from
+  `op`'s declared arity in a `Map String Int64` arity table (recursing into every child).
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
