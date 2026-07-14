@@ -2971,50 +2971,53 @@ fn pattern_is_variant_ctor(db: &mut Db, pat: StructId) -> bool {
     crate::eval::variant_owner_decl(db, head).is_some()
 }
 
-/// Whether the lambda `head` REFERENCES its parameter whose name occurrence is `param_occ` anywhere in
-/// its body — i.e. the parameter is USED, so its argument appears (substituted) in the reduced body and
-/// need not be re-descended for faults. A body reference to a parameter resolves (via resolve's
-/// `binder_in`) to a `Resolved::Ref` whose transitive target is the parameter's binder, or to a
-/// `Resolved::Param { binder }`; the walk is a purely structural scan of the body's raw children (no
-/// reduction, no lowering), bounded by the body size. A `false` result means the parameter is DEAD (the
-/// body ignores it), so its argument's own faults are not otherwise collected and it must be descended.
-fn param_is_referenced(db: &mut Db, head: StructId, param_occ: StructId) -> bool {
-    let Some(body) = crate::eval::lambda_body(db, head) else {
-        return false;
-    };
-    references_binder(db, body, param_occ)
-}
-
-/// Structural scan: does the resolved subtree at `node` contain a reference that resolves to the binder
-/// `target` (a parameter's name occurrence)? Follows a `Resolved::Ref`/`Param` to its binder identity;
-/// recurses the raw AST children otherwise. Bounded by the subtree size (no reduction).
-fn references_binder(db: &mut Db, node: StructId, target: StructId) -> bool {
-    match resolved_of(db, node) {
-        Resolved::Param { binder } => binder == target,
-        Resolved::Ref { mut value } => {
-            // Follow the ref chain to a binder; a parameter reference's chain ends at the param binder.
-            loop {
-                if value == target {
-                    return true;
-                }
-                match resolved_of(db, value) {
-                    Resolved::Ref { value: next } => value = next,
-                    Resolved::Param { binder } => return binder == target,
-                    _ => break,
+/// The SET of parameter binders the lambda `head`'s body REFERENCES — the binder identity every body
+/// reference resolves to, collected in ONE structural walk. A parameter present here is USED (its argument
+/// appears substituted in the reduced body, so that argument's faults are already collected there and it
+/// need not be re-descended); one ABSENT is DEAD (the body ignores it, so its argument must be descended
+/// for its own faults). Replaces a per-parameter `references_binder` scan — asking this per argument was a
+/// full-body walk each, so a WIDE application `(f a0 … aN)` was O(args × body) = O(N²); one walk + O(1)
+/// membership per argument is O(body + args).
+///
+/// A body reference resolves (via resolve's `binder_in`) to a `Resolved::Ref` whose transitive chain ends
+/// at the parameter's binder, or to a `Resolved::Param { binder }`. The set collects EVERY identity a
+/// reference matches — each link of a `Ref` chain plus a terminal `Param`'s binder — so `p ∈ set` is
+/// byte-identical to the old `references_binder(body, p)` (which returned true if `p` equalled ANY chain
+/// link or the terminal binder). `Ref`/`Param` nodes are leaf references (not recursed); every other node
+/// recurses its raw AST children, visiting every value position (no reduction, no lowering).
+fn referenced_binders(db: &mut Db, body: StructId) -> std::collections::HashSet<StructId> {
+    fn walk(db: &mut Db, node: StructId, out: &mut std::collections::HashSet<StructId>) {
+        match resolved_of(db, node) {
+            Resolved::Param { binder } => {
+                out.insert(binder);
+            }
+            Resolved::Ref { mut value } => {
+                // Follow the ref chain, recording every link — a chain end at a `Param` records its binder.
+                loop {
+                    out.insert(value);
+                    match resolved_of(db, value) {
+                        Resolved::Ref { value: next } => value = next,
+                        Resolved::Param { binder } => {
+                            out.insert(binder);
+                            break;
+                        }
+                        _ => break,
+                    }
                 }
             }
-            false
-        }
-        _ => {
-            // Not a direct reference — recurse the raw children (a name in binder position, a literal, an
-            // operator head all simply do not match). This visits every value position of the body.
-            if let crate::ast::Struct::List(children) = db.ast.get(node) {
-                let children = children.clone();
-                return children.iter().any(|&c| references_binder(db, c, target));
+            _ => {
+                if let crate::ast::Struct::List(children) = db.ast.get(node) {
+                    let children = children.clone();
+                    for c in children {
+                        walk(db, c, out);
+                    }
+                }
             }
-            false
         }
     }
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
 }
 
 /// The diagnostic code for a LIST HOMOGENEITY violation between two element types that do not unify —
@@ -3788,11 +3791,18 @@ fn check_application(
         //     produce a body (a recursive callee, the depth limit), NOTHING covered the arguments, so
         //     descend them ALL — matching the pre-change behavior for that case.
         let params = crate::eval::lambda_params_of(db, head).unwrap_or_default();
+        // The set of parameters the body references, computed in ONE walk (was a full-body scan PER
+        // argument → O(args × body) = O(N²) for a WIDE application; now O(body) once + O(1) per arg).
+        // Only needed when the reduction succeeded — that is the only branch that skips a covered arg.
+        let referenced = if reduced_ok {
+            crate::eval::lambda_body(db, head)
+                .map(|body| referenced_binders(db, body))
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
         for (i, &arg) in args.iter().enumerate() {
-            let covered = reduced_ok
-                && params
-                    .get(i)
-                    .is_some_and(|&p| param_is_referenced(db, head, p));
+            let covered = reduced_ok && params.get(i).is_some_and(|&p| referenced.contains(&p));
             if !covered {
                 collect(db, arg, out);
             }

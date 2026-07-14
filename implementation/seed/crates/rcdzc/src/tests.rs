@@ -21012,6 +21012,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_application_checks_a_dead_argument_and_accepts_used_ones() {
+        // `check_application` computes the SET of parameters the body references in ONE walk (was a
+        // full-body scan PER argument → O(args × body) = O(N²) for a WIDE call). This locks in the
+        // dead-vs-used verdict at width: a function of N params whose body uses only the FIRST must still
+        // (a) descend a DEAD argument for its OWN fault, and (b) accept N well-typed arguments without
+        // over-rejecting — the set membership per arg must match the old per-arg `references_binder` scan.
+        let n = 40;
+        let params = (0..n)
+            .map(|i| format!("p{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Body references ONLY p0 — every other parameter is DEAD.
+        // (a) A dead argument (p_last) that is an UNBOUND NAME must still be caught (CDZ0101), even though
+        //     the body ignores that parameter — its own faults are collected because it is not covered.
+        let mut args_bad = vec!["1"; n];
+        args_bad[n - 1] = "nonexistent_wide_arg";
+        let bad = format!(
+            "(module m (def (f {params}) p0) (def (main) (f {})) (export main))",
+            args_bad.join(" ")
+        );
+        let err = compile_component(&crate::codec::encode(&parse(&bad)))
+            .expect_err("a malformed DEAD argument in a wide call must still reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
+        // (b) All N arguments well-typed → compiles and returns p0 (=7), no over-rejection at width.
+        let mut args_ok = vec!["1"; n];
+        args_ok[0] = "7";
+        let ok = format!(
+            "(module m (def (f {params}) p0) (def (main) (f {})) (export main))",
+            args_ok.join(" ")
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&ok))).expect("wide call compiles"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_function_typed_parameter_annotation_is_checked_against_the_argument() {
         // The HIGHER-ORDER analogue of the scalar arg-vs-param check: a parameter annotated with a
         // FUNCTION type `(-> A B)` must be checked against the passed function's type — RESULT included.
