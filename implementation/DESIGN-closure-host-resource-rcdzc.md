@@ -1000,9 +1000,15 @@ the component type. The new work:
   field bytes (NOT the full flattened list) — else a param-count mismatch. Corpus: scalar-then-tuple → 113,
   tuple-then-scalar → 113, scalar-tuple-scalar → 114. Still declines: an among-scalars tuple with a LIST result
   (list-result cores don't yet interleave — a follow-on); multi/mixed/distinct-sig among-scalars.
+- **✅ tuple-among-scalars on the MULTI-EXPORT path (scalar result)** (`@a7f5470f`, baseline `@b5c84cd3`). N
+  same-sig closures each taking a tuple among scalars share one interleaving `call`. `emit_multi_closure_
+  resource` uses `single_compound_among_scalars`; `assemble_mixed_closure_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_borrow_tuple` thread `tuple_prefix_bytes`/`tuple_suffix_bytes` into
+  the shared `call` functype (via `closure_call_tuple_arg_functype_interleaved`). Corpus: mk-a → 113, mk-b →
+  87. Mixed keeps sole-tuple only; among-scalars + list result still declines.
 - **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the
-  multi/mixed/distinct-sig paths OR with a list<u8>-crossing result (the interleaving generalization applied
-  to those cores); a
+  MIXED/distinct-sig paths OR with a list<u8>-crossing result (the interleaving generalization applied to
+  those cores' arg-push + functypes — mechanical, the helpers exist); a
   VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
