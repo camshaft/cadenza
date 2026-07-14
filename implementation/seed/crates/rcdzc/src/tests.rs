@@ -12347,6 +12347,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
+        // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
+        // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
+        // and Bool must be the same type here") that reads like an internal clash. The prelude-op analogue
+        // of the effect-op perform message + the variant-ctor payload message.
+        let push = reject_full(
+            "(module m (def (g (: xs (List Int64))) ((. List push) xs true)) (export g))",
+        )
+        .expect("a wrong-element-type List.push rejects");
+        assert_eq!(
+            push.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            push.message
+        );
+        assert!(
+            push.message
+                .contains("`List.push` expects an argument of type Int64")
+                && push.message.contains("Bool"),
+            "names the operation + expected/actual types: {}",
+            push.message
+        );
+        // A conversion op takes the same treatment: `Int64.of` on a String.
+        let of = reject_full("(module m (def (g (: s String)) ((. Int64 of) s)) (export g))")
+            .expect("Int64.of on a String rejects");
+        assert!(
+            of.message
+                .contains("`Int64.of` expects an argument of type Int64"),
+            "names the conversion op: {}",
+            of.message
+        );
+        // NO regression: a bare operator (`+`) is NOT a `(. Module member)` head, so it keeps the generic
+        // symmetric message (it reads fine — both operands named), not a `.`-member phrasing.
+        let bare =
+            reject_full("(module m (def (g) (+ 1 true)) (export g))").expect("(+ 1 true) rejects");
+        assert!(
+            !bare.message.contains("expects an argument of type"),
+            "a bare operator keeps the generic mismatch message: {}",
+            bare.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -17151,6 +17194,35 @@ mod match_engine {
         assert_eq!(
             v, "6",
             "tuple-threading accumulator with a call-site-filled hole"
+        );
+    }
+
+    #[test]
+    fn a_total_match_on_a_partly_unbuilt_sum_grounds_its_dead_arms_unconstrained_payload() {
+        // A total match over a sum whose type is only PARTLY determined by construction: the scrutinee only
+        // ever builds `Some(Ok (C.R k))` / `None`, so the `Result`'s Err type is never determined (a free
+        // var — the `Some(Result C ?e) ⊔ None` join leaves `?e` open). The match arms `Err e` for
+        // exhaustiveness, but that arm is DEAD (no `Err` value exists). Its payload read `e` has the
+        // unconstrained type, which the heap layout used to DECLINE ("projecting a tuple element of type ?N
+        // needs the value heap"). A free-var element now grounds to the uniform i64 heap cell — sound
+        // because the read is UNREACHABLE (no value of that type ever flows). `f(7)` takes the live
+        // `Ok(C.R 7)` path → 7; the dead `Err` arm never runs. This closes the recurring
+        // unconstrained-generic-param-through-a-join limit at the layout boundary (an ESCAPE of an
+        // under-determined value still rejects — that boundary is separate + unchanged).
+        let Some(v) = run_heap_value(
+            "(module m (type C (R Int64) (G)) \
+               (def (f (: k Int64)) (match (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None)) \
+                 ((Option.Some (Result.Ok (C.R n))) n) ((Option.Some (Result.Ok (C.G))) -1) \
+                 ((Option.Some (Result.Err e)) e) ((Option.None) -2))) \
+               (def (main) (f 7)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping dead-arm-grounding run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "the live Ok(C.R 7) path yields 7; the dead Err arm (grounded payload) never runs"
         );
     }
 

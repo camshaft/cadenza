@@ -2526,10 +2526,27 @@ fn emit_mixed_closure_resource(
             ));
         }
     }
-    let arg_bytes: Vec<u8> = arg_tys
-        .iter()
-        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
-        .collect::<Result<_, _>>()?;
+    // DIRECT-CALL COMPOUND ARG (mixed): a single fixed-shape scalar tuple/record arg shared by all closure
+    // exports crosses as a native component `tuple<…>` (the shared `call` rebuilds the cell via
+    // `TupleArgRebuild`); the plain exports ride alongside. Detected here so the scalar `arg_bytes` decline
+    // below doesn't reject it. SCOPE: EXACTLY one such compound arg, a scalar result.
+    let tuple_arg: Option<(
+        Vec<u8>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        serialize::TupleArgRebuild,
+    )> = if arg_tys.len() == 1 {
+        fixed_shape_scalar_tuple_arg(&arg_tys[0])
+    } else {
+        None
+    };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .collect::<Result<_, _>>()?
+    };
     // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` (the mixed bytes envelope);
     // a scalar result takes the by-value shared `call`. All closure exports share the signature.
     let ret_is_bytes = matches!(
@@ -2566,10 +2583,19 @@ fn emit_mixed_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
-        .iter()
-        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
-        .collect::<Result<_, _>>()?;
+    // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+        &tuple_arg
+    {
+        field_vts.clone()
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| {
+                valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+            })
+            .collect::<Result<_, _>>()?
+    };
     let ret_vt = valtype_of(&ret_ty)
         .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
@@ -2825,6 +2851,38 @@ fn emit_mixed_closure_resource(
             &arg_bytes,
             &abi_plain,
             true,
+        ));
+    }
+    // DIRECT-CALL COMPOUND ARG (mixed): the shared `call`'s single arg is a fixed-shape scalar tuple/record.
+    // The shared `call` receives the FLATTENED fields (`arg_vts`) + rebuilds the cell (`TupleArgRebuild`); the
+    // envelope's shared `call` functype takes a `tuple<…>` type, and the plain exports ride alongside as
+    // top-level funcs. `own<t>` (single-use) this cut — the rebuilt-arg cell drop is unconditional.
+    if let Some((field_bytes, _field_vts, rebuild)) = &tuple_arg {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the tuple arg is carried by `field_bytes`
+            result_byte,
+            &abi_plain,
+            false,
+            Some(field_bytes),
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across

@@ -2674,6 +2674,14 @@ fn op_str_get(h: Handle) -> String {
     if is_immediate(h) {
         return String::new(); // cross-kind totality: a string is never itself an immediate
     }
+    // A runtime String IS a bytes rope: `String.concat`/`.at`-slice build concat/slice nodes (a String
+    // shares the Bytes rope representation, `@b77b3ae0`), so `h` may be a rope whose `raw` holds the node's
+    // HEADER bytes (a concat's `[len]`, a slice's `[off, len]`), NOT the content. MATERIALIZE it to a flat
+    // leaf first (iterative `bytes_flatten`, so a deep rope can't overflow the stack; content-preserving,
+    // so unobservable even on a shared value) — exactly as `op_bytes_get` and value-encode's `Shape::Str`
+    // arm do. Without the flatten a rope String read back its raw handle/length bytes as UTF-8 (garbage).
+    // A flat leaf is left untouched (flatten is a no-op there), so a plain `str-new` string is unaffected.
+    bytes_flatten(h);
     with_node(h, String::new(), |n| {
         String::from_utf8_lossy(&n.raw).into_owned()
     })
@@ -11068,6 +11076,42 @@ mod tests {
             render(op_str_new("héllo☃".to_string()), &Shape::Str),
             "\"héllo☃\""
         );
+    }
+
+    /// `str-get` (op 18) on a ROPE String must return the logical CONTENT, not the rope node's header
+    /// bytes. A runtime String IS a bytes rope (`String.concat`/`.at`-slice build concat/slice nodes,
+    /// sharing the Bytes representation, `@b77b3ae0`), so a concat/slice String reaching `str-get` is NOT
+    /// a flat leaf — before the `bytes_flatten` fix, `op_str_get` read the concat node's `raw=[len]` (4
+    /// bytes) as UTF-8 and returned garbage ("\u{7}\0\0\0" for a 7-byte rope). This is the SAME latent bug
+    /// the value-encode `Shape::Str` arm was hardened against; `str-get` had no emit site yet (the compiler
+    /// returns a String via the value-encode escape, not `str-get`), so it was unreached — but wiring a
+    /// direct String return would have silently corrupted every rope. Build a rope with a multi-byte scalar
+    /// spanning a seam and assert it reads back byte-for-byte equal to the flat twin.
+    #[test]
+    fn str_get_on_a_rope_returns_the_flattened_content() {
+        reset();
+        let before = live_nodes();
+        let leaf = |s: &str| {
+            let b = op_bytes_alloc(s.len() as u32);
+            for (i, &by) in s.as_bytes().iter().enumerate() {
+                op_bytes_set(b, i as u32, by as u32);
+            }
+            b
+        };
+        // "caf" + "é" (é = 0xC3 0xA9, spanning the seam) + "XY" — the `String.concat` shape → "caféXY".
+        let rope = op_bytes_concat(leaf("caf"), leaf("é"));
+        let rope = op_bytes_concat(rope, leaf("XY"));
+        assert_eq!(op_str_get(rope), "caféXY", "a rope String reads back its logical content, not header bytes");
+        // Identical to the flat twin (the whole point of the flatten).
+        let flat = op_str_new(String::from("caféXY"));
+        assert_eq!(op_str_get(rope), op_str_get(flat));
+        op_drop(flat);
+        op_drop(rope);
+        // An empty rope (concat of two empties) reads as "" — the degenerate case.
+        let empty_rope = op_bytes_concat(op_bytes_alloc(0), op_bytes_alloc(0));
+        assert_eq!(op_str_get(empty_rope), "");
+        op_drop(empty_rope);
+        assert_eq!(live_nodes(), before, "no leak: ropes + twin dropped");
     }
 
     // ── Map ─────────────────────────────────────────────────────────────────────────────────

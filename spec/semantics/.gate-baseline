@@ -2,6 +2,8 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
+pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
@@ -26,6 +28,7 @@ pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
+pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
@@ -73,6 +76,7 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
+pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -353,7 +357,9 @@ pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handler accumulates into a list and a read-out operation reads it back
+pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handler arm interposes on another intra-program effect and forwards
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution

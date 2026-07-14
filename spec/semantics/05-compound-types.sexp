@@ -2215,9 +2215,9 @@
            `(Some (Ok (C.R 7)))` → 7. Pins that a nested constructor pattern composes to three sum levels
            with a user sum at the leaf (Option/Result are built-in; `C` is user-declared), the decision tree
            descending `[Payload]`→Some, `[Payload]`→Ok, `[Payload]`→R. The param annotation `(Option (Result
-           C Int64))` fully determines the Err type (Int64) — an UNANNOTATED build that never constructs an
-           `Err` leaves Err's type a free var and correctly declines (the unconstrained-generic-param
-           boundary, annotate to resolve), so this case pins the DETERMINED shape.")
+           C Int64))` fully determines the Err type (Int64); the sibling case below pins that even an
+           UNANNOTATED build whose Err type stays a free var (no `Err` ever constructed) now compiles — its
+           dead `Err` arm grounds to the uniform heap cell.")
   (needs  sum-type-declaration)
   (input  (do
             (type C (R Int64) (G))
@@ -2228,6 +2228,32 @@
                 ((Option.Some (Result.Err e))      e)
                 ((Option.None)                     -2)))
             (def (main (: k Int64)) (f (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a total match on a partly-un-built sum compiles its dead arm's unconstrained payload"
+  (doc    "The scrutinee `(if … (Some (Ok (C.R k))) None)` only ever builds `Some(Ok …)` or `None` — NO
+           `Err` is ever constructed, so the `Result`'s Err type is never determined (a free var: the
+           `Some(Result C ?e) ⊔ None` join leaves `?e` open, as `None` says nothing about the Result's Err
+           type). The match is TOTAL (it arms `Err e` for exhaustiveness), and that `((Some (Err e)) e)` arm
+           is DEAD — unreachable, since no `Err` value exists. Its payload read `e` has the unconstrained
+           type, which the heap-layout used to decline (`projecting a tuple element of type ?N needs the
+           value heap`). Now a free-var element grounds to the uniform i64 heap cell — sound because the
+           read is unreachable (no value of that type ever flows), so the emitted op need only be VALID,
+           never value-correct. `(f 7)` takes the live `Ok(C.R 7)` path → 7; the dead `Err` arm never runs.
+           Pins that a total match over a sum whose type is only PARTLY determined by construction compiles
+           (an ESCAPE of such an under-determined value still rejects — that boundary is unchanged).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (R Int64) (G))
+            (def (f (: k Int64))
+              (match (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None))
+                ((Option.Some (Result.Ok (C.R n))) n)
+                ((Option.Some (Result.Ok (C.G)))   -1)
+                ((Option.Some (Result.Err e))      e)
+                ((Option.None)                     -2)))
+            (def (main (: k Int64)) (f k))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
