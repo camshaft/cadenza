@@ -26,9 +26,9 @@
 270	set_union x1000
 1000	sum_new x1000
 1000	tuple2_build x1000
-9200	value_encode x100
-2065	value_encode_largemap N=1000
-10200	value_encode_stringkeymap x100
+4300	value_encode x100
+67	value_encode_largemap N=1000
+7100	value_encode_stringkeymap x100
 0	value_eq_nested x1000
 1200	vec_concat x100
 0	vec_get x1000
