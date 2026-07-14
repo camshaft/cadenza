@@ -329,6 +329,23 @@
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "a CONSTANT recursive sum compares equal to a differently-built RUNTIME one"
+  (doc    "A mixed-provenance equality: the LEFT operand `(S (S Z))` is a COMPILE-TIME-CONSTANT recursive
+           `Nat`, the RIGHT `(mk k)` is a RUNTIME-built spine of the same shape (`mk` recurses `k` times).
+           `value-eq` must reconcile a folded constant sum with a heap-walked runtime one — the const side
+           has a statically-known spine, the runtime side is discovered variant-by-variant. At `k = 2` both
+           are `S(S(Z))` → equal → 1; at `k = 3` the runtime spine is one deeper → unequal → 0 (the
+           companion case). Pins that structural equality composes a CONSTANT operand with a RUNTIME operand
+           over a recursive sum, not only two runtime operands.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (main (: k Int64)) (if (= (Nat.S (Nat.S (Nat.Z))) (mk k)) 1 0))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 (case "two runtime Ok values of a multi-parameter sum compare equal by a heap walk"
   (doc    "The MULTI-PARAMETER-sum companion: `Result` has TWO type parameters (`Ok a`, `Err b`), and
            `(Ok (sumto 3))` fixes only `a = Int64` — the `Err` parameter `b` is a PHANTOM no value here
