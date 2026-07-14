@@ -615,9 +615,12 @@ impl<'a, 'b> Reader<'a, 'b> {
         let s = String::from_utf8(bytes).map_err(|_| ReadError("non-utf8 string".into()))?;
         // NFC-normalize string contents (the value form normalizes text) — so a string's identity is its
         // NORMALIZED contents: two literals with different byte spellings of the same text normalize to
-        // one value and are therefore equal.
+        // one value and are therefore equal. Both the scalar length and the byte length therefore count
+        // these normalized contents (a length is a function of the value, not its pre-normalization spelling).
         //= spec/capabilities/collections-and-text.md#string-equality-follows-normalized-contents
         //# Two strings MUST be equal exactly when their normalized contents are identical, under the text normalization the hashing-and-encoding choice pins.
+        //= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+        //# The scalar length and the byte length MUST count the string's normalized contents, so that a length is a function of the string's value rather than of an incidental byte spelling that normalization removes.
         let s: String = s.chars().nfc().collect();
         // The string atom spans the opening quote through the closing quote (now consumed).
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))

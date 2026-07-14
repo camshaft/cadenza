@@ -612,6 +612,8 @@ pub enum Ty {
     //# A set MUST be a collection of elements of one type.
     //= spec/capabilities/collections-and-text.md#a-set-is-a-collection-of-unique-elements
     //# A set MUST contain each element at most once.
+    //= spec/capabilities/collections-and-text.md#a-set-is-a-collection-of-unique-elements
+    //# Two sets MUST be equal exactly when they contain equal elements, independent of insertion order.
     Set(Box<Ty>),
     /// A BYTES sequence: a homogeneous, variable-length sequence of BYTES (`collections-and-text.md` §A
     /// Byte Sequence Is A Sequence Of Bytes). NOT parametric — a byte is a byte, so unlike `List` it
