@@ -10,8 +10,52 @@
 //! temp files, so it proves the whole compile→run→report path.
 
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// `cdz test` shells out to the sibling `cdz-run` binary (kept separate — it carries wasmtime + the
+/// runtime store). `cargo test --workspace` builds the crate under test's OWN bin (`CARGO_BIN_EXE_cdz`)
+/// but NOT a sibling workspace bin, so `target/<profile>/cdz-run` may be absent under CI's bare
+/// `cargo test --workspace` (no artifact-dependency without nightly `-Z bindeps`). Build it ONCE, into
+/// the same directory as the `cdz` test binary, before the first spawn — idempotent and cheap when the
+/// binary is already current.
+fn ensure_cdz_run() {
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        // `CARGO_BIN_EXE_cdz` = `<target>/<profile>/cdz`; its grandparent is `<target>`, the dir
+        // `cargo build` writes into. `cdz test`'s `locate_cdz_run` looks for `cdz-run` beside `cdz`.
+        let cdz = std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"));
+        let profile_dir = cdz.parent().expect("cdz exe has a parent dir");
+        if profile_dir
+            .join(if cfg!(windows) {
+                "cdz-run.exe"
+            } else {
+                "cdz-run"
+            })
+            .exists()
+        {
+            return;
+        }
+        let profile = profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("debug");
+        // `-p cdz-run`: the test's working directory is the `cdz` crate, so an unqualified
+        // `--bin cdz-run` looks for the bin in `cdz` (not found). Select the owning package explicitly.
+        let mut cmd = Command::new(env!("CARGO"));
+        cmd.args(["build", "-p", "cdz-run", "--bin", "cdz-run"]);
+        if profile == "release" {
+            cmd.arg("--release");
+        }
+        let status = cmd.status().expect("spawn cargo build -p cdz-run");
+        assert!(
+            status.success(),
+            "building the sibling cdz-run binary failed"
+        );
+    });
+}
 
 fn run(args: &[&str]) -> (bool, String, String) {
+    ensure_cdz_run();
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe).args(args).output().expect("spawn cdz");
     (
@@ -24,6 +68,7 @@ fn run(args: &[&str]) -> (bool, String, String) {
 /// Run `cdz <args…>` with the process's working directory set to `cwd` — for exercising the no-argument
 /// "search up for Project.cdz" path, which is relative to the current directory.
 fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
+    ensure_cdz_run();
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe)
         .args(args)
