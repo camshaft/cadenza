@@ -23909,6 +23909,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
+        // 09-functions "a recursive function over a generic recursive sum is monomorphized per element
+        // type": the canonical idiom — a polymorphic linked list `(type Lst Nil (Cons a (Lst a)))` and a
+        // `len` that recurses on the tail without fixing the element type. Called on a `Lst Int64` (len 2)
+        // and a `Lst String` (len 3), `len` is monomorphized into one function per element type — the
+        // recursive-DATA analogue of the scalar `loopn` case. Uses the value heap (the sum boxes + the
+        // String leaves), so it SKIPS (not fails) when the runtime store is absent. 2 + 3 = 5.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Lst Nil (Cons a (Lst a))) \
+               (def (len l) (match l ((Lst.Nil) 0) ((Lst.Cons h t) (+ 1 (len t))))) \
+               (def (main) (+ (len (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                              (len (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
+               (export main))",
+        )))
+        .expect("a recursive generic function over a generic recursive sum compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found; skipping generic-recursive-sum monomorphization run"
+            );
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => {
+                assert_eq!(
+                    v, "5",
+                    "len monomorphized over Lst Int64 (2) + Lst String (3)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
