@@ -3625,6 +3625,119 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_boolean_compared_to_a_literal_folds_to_the_boolean_or_its_negation() {
+        // `(= c true)` → `c` (a bare `local.get`), `(= c false)` → `!c` (`i32.eqz`) — either operand order.
+        // The redundant `i32.const K ; i32.eq` the runtime compare would emit is dropped. A derived bool
+        // operand composes: `(= (< x 0) false)` → `(>= x 0)` (the `not` folds into the complementary op).
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(= c true)` and `(= true c)` → just `c`: NO `i32.eq`, NO `i32.const`, NO `i32.eqz`.
+        for body in ["(= c true)", "(= true c)"] {
+            let code = lir("(: c Bool)", body);
+            assert!(
+                !code
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+                "{body} folds to the bare condition, got: {code:?}"
+            );
+        }
+        // `(= c false)` and `(= false c)` → `!c`: one `i32.eqz`, NO `i32.eq`, NO `i32.const`.
+        for body in ["(= c false)", "(= false c)"] {
+            let code = lir("(: c Bool)", body);
+            assert_eq!(
+                code.iter().filter(|i| matches!(i, Lir::I32Eqz)).count(),
+                1,
+                "{body} is one eqz, got: {code:?}"
+            );
+            assert!(
+                !code
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::ConstI32(_))),
+                "{body} drops the const+eq, got: {code:?}"
+            );
+        }
+        // VALUE PARITY: the full truth table, all four operand orders, c ∈ {true, false}.
+        for (body, at_true, at_false) in [
+            ("(= c true)", true, false),
+            ("(= true c)", true, false),
+            ("(= c false)", false, true),
+            ("(= false c)", false, true),
+        ] {
+            assert_eq!(
+                run::<bool>("(: c Bool)", body, &[Val::Bool(true)]),
+                at_true,
+                "{body} @true"
+            );
+            assert_eq!(
+                run::<bool>("(: c Bool)", body, &[Val::Bool(false)]),
+                at_false,
+                "{body} @false"
+            );
+        }
+        // A DERIVED bool operand composes: `(= (< x 0) true)` → `(< x 0)`, `(= (< x 0) false)` → `(>= x 0)`
+        // (the negation folds into the complementary comparison — one compare, no eq/eqz).
+        let dt = lir("(: x Int64)", "(= (< x 0) true)");
+        assert!(
+            dt.iter().filter(|i| matches!(i, Lir::I64LtS)).count() == 1
+                && !dt
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+            "(= (< x 0) true) → (< x 0), got: {dt:?}"
+        );
+        let df = lir("(: x Int64)", "(= (< x 0) false)");
+        assert!(
+            df.iter().filter(|i| matches!(i, Lir::I64GeS)).count() == 1
+                && !df
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+            "(= (< x 0) false) → (>= x 0), got: {df:?}"
+        );
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) true)",
+            &[Val::S64(-5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) true)",
+            &[Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) false)",
+            &[Val::S64(-5)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) false)",
+            &[Val::S64(5)]
+        ));
+    }
+
+    #[test]
     fn a_comparison_against_a_derived_range_bound_is_simplified() {
         use crate::backend::wasm::lir::Lir;
         use crate::backend::wasm::select::select_function;

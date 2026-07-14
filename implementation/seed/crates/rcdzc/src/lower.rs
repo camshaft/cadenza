@@ -8510,6 +8510,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", "(= (if c 1 0) 0/1) folds to c / !c");
                 return folded;
             }
+            // BOOL-CONST EQUALITY: `(= c true)` → `c`, `(= c false)` → `!c` (either order) — a bool compared
+            // to a bool literal is itself / its negation, dropping the `i32.const K ; i32.eq`.
+            if matches!(op, Prim::Eq)
+                && let Some(folded) = fold_bool_const_eq(db, args[0], args[1])
+            {
+                trace!(target: "rcdzc::fold", "(= c true/false) folds to c / !c");
+                return folded;
+            }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
                 // SELF-COMPARISON: the two operands are the SAME value (`core_equiv`), so the ordering is
                 // fixed regardless of what that value is — `x < x`/`x > x` → false, `x <= x`/`x >= x`/`x =
@@ -8623,6 +8631,41 @@ fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
         Some(core_of(db, cond)) // (= (if c 1 0) 1) → c ;  (= (if c 0 1) 0) → c
     } else {
         Some(Core::Not { operand: cond }) // (= (if c 1 0) 0) → !c ; (= (if c 0 1) 1) → !c
+    }
+}
+
+/// Fold a BOOLEAN EQUALITY against a boolean LITERAL: `(= c true)` → `c`, `(= c false)` → `(not c)` (and
+/// the mirrored operand order). A boolean compared to a constant boolean IS that boolean (compared to
+/// `true`) or its negation (compared to `false`) — dropping the redundant `i32.const K ; i32.eq` the
+/// runtime `Core::Compare` would emit. Returns the runtime operand's core (`== true`) or `Core::Not` of it
+/// (`== false`); `None` unless exactly one operand is a constant `Bool` and the OTHER a runtime `Bool`
+/// (a `ConstBool`/`ConstBool` pair already folded in the caller's earlier arm; a NON-`Bool` operand is not
+/// this fold). The runtime operand is REUSED (its evaluation/traps preserved — no synthesis, no dropped
+/// trap; the discarded operand is a constant, trivially trap-free). Only `Eq` — a `Bool` has no order, so
+/// `<`/`>` never reach here (the caller routes them past `is_scalar` then declines for a non-total order).
+fn fold_bool_const_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
+    // One side a constant bool `k`, the other a RUNTIME bool `v` (not itself a constant — a const/const
+    // pair folded earlier). `v` must be Bool-typed so the result is the operand as-is / negated.
+    let as_const_bool = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstBool(b) => Some(b),
+        _ => None,
+    };
+    let (v, k) = if let Some(k) = as_const_bool(db, rhs) {
+        (lhs, k)
+    } else if let Some(k) = as_const_bool(db, lhs) {
+        (rhs, k)
+    } else {
+        return None;
+    };
+    // The runtime operand must be a Bool (its machine value is the 0/1 the fold returns directly). A
+    // constant `v` would already have folded via the caller's `ConstBool`/`ConstBool` arm.
+    if !matches!(crate::infer::type_of(db, v), crate::ty::Ty::Bool) {
+        return None;
+    }
+    if k {
+        Some(core_of(db, v)) // (= c true) → c
+    } else {
+        Some(Core::Not { operand: v }) // (= c false) → !c
     }
 }
 
