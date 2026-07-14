@@ -1401,6 +1401,74 @@ fn closure_boundary_byte(ty: &crate::ty::Ty) -> Option<u8> {
     }
 }
 
+/// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
+/// component `tuple<…>` (the canonical ABI flattens it into scalar core params). Returns, for such a `ty`:
+/// the per-field component boundary bytes (the envelope's `tuple<…>` type + the flattened core `call`
+/// params), the per-field core valtypes, and the [`serialize::TupleArgRebuild`] the core `call` uses to
+/// reassemble the cell from the flat fields. `None` if `ty` is not a tuple/record, or ANY field is not a
+/// genuine aliased-width scalar (a NESTED compound or a variable-length collection field would need
+/// recursive rebuild / runtime decode — out of this increment). A RECORD's fields are taken in the
+/// canonical SORTED-key order (the value-heap cell's field order), matching how `Core::Record` lays them.
+fn fixed_shape_scalar_tuple_arg(
+    ty: &crate::ty::Ty,
+) -> Option<(
+    Vec<u8>,
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::TupleArgRebuild,
+)> {
+    use crate::ty::Ty;
+    // The field types in cell order: a tuple's positional elements, or a record's sorted-key values.
+    let fields: Vec<Ty> = match ty.strip_nominal() {
+        Ty::Tuple(elems) => elems.iter().cloned().collect(),
+        Ty::Record(map) => map.values().cloned().collect(), // BTreeMap → sorted-key order
+        _ => return None,
+    };
+    if fields.is_empty() {
+        return None; // a 0-field tuple/record has no host-constructible flattened form here
+    }
+    let mut comp_bytes = Vec::new();
+    let mut core_vts = Vec::new();
+    let mut field_box_ops = Vec::new();
+    let mut field_extend_signed = Vec::new();
+    for f in &fields {
+        // Each field must be a genuine aliased-width scalar (Int/Bool/Float) — the only shapes the canonical
+        // ABI flattens AND the cell rebuild boxes with a single op. A nested compound / collection → None.
+        let cb = closure_boundary_byte(f)?;
+        let vt = crate::backend::wasm::lir::valtype_of(f)?;
+        // The cell's box op + whether an integer field needs an i32→i64 extend before `box-int` (a NARROW
+        // int is an i32 core param → extend to the i64 `box-int` takes; a 64-bit int is already i64 → no
+        // extend). A bool/float boxes at its native width, no extend. Mirrors `select::box_op_ty` +
+        // `emit_box_i32_to_i64_extend`.
+        let (box_op, extend) = match f.strip_nominal() {
+            Ty::Int(it) => {
+                let signed = it.ground_signed();
+                let extend = if it.ground_width() < 64 {
+                    Some(signed)
+                } else {
+                    None
+                };
+                (Some("box-int"), extend)
+            }
+            Ty::Bool => (Some("box-bool"), None),
+            Ty::Float(ft) if ft.ground_width() == 64 => (Some("box-float"), None),
+            Ty::Float(ft) if ft.ground_width() == 32 => (Some("box-float32"), None),
+            _ => return None,
+        };
+        comp_bytes.push(cb);
+        core_vts.push(vt);
+        field_box_ops.push(box_op);
+        field_extend_signed.push(extend);
+    }
+    Some((
+        comp_bytes,
+        core_vts,
+        crate::backend::wasm::serialize::TupleArgRebuild {
+            field_box_ops,
+            field_extend_signed,
+        },
+    ))
+}
+
 fn emit_closure_resource(
     db: &mut Db,
     layout: &Layout,
@@ -1461,12 +1529,32 @@ fn emit_closure_resource(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    // Boundary bytes (component valtypes) for the `call` method's ARGS — always aliased scalar widths (a
-    // compound closure arg is the host→guest DECODE direction, not yet supported).
-    let arg_bytes: Vec<u8> = arg_tys
-        .iter()
-        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
-        .collect::<Result<_, _>>()?;
+    // DIRECT-CALL COMPOUND ARG (fixed-shape scalar tuple/record): a single closure arg that is a tuple/record
+    // of aliased-width scalars crosses as a NATIVE component `tuple<…>` the canonical ABI flattens into scalar
+    // core params; the core `call` rebuilds the cell from the flat fields (`TupleArgRebuild`). Detected here
+    // so the scalar `arg_bytes` decline below doesn't reject it. SCOPE this increment: EXACTLY one such
+    // compound arg, a scalar result, no build-time host effect (each a clean later widening). A collection /
+    // nested-compound field, or a compound arg ALONGSIDE other args, returns `None` and falls to the decline.
+    let tuple_arg: Option<(
+        Vec<u8>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        serialize::TupleArgRebuild,
+    )> = if arg_tys.len() == 1 && host_imports.is_empty() {
+        fixed_shape_scalar_tuple_arg(&arg_tys[0])
+    } else {
+        None
+    };
+    // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
+    // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
+    // tuple/record; any other compound arg declines here — host→guest decode is not supported).
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .collect::<Result<_, _>>()?
+    };
     // The RESULT: either a scalar (crosses by value) OR a BYTE-ROPE (`Bytes` OR `String`) which crosses as
     // `list<u8>` through linear memory — the compound-result path, reusing the value-escape's list machinery.
     // A `String` is a UTF-8 byte-rope handle representationally IDENTICAL to `Bytes` (same `bytes-*` store),
@@ -1548,12 +1636,22 @@ fn emit_closure_resource(
             &ret_ty,
         );
     }
-    // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
-    // the `call_indirect` lifted functype shape). A `Bytes` result is an i32 heap handle.
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
-        .iter()
-        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
-        .collect::<Result<_, _>>()?;
+    // Core valtypes for the `call` method's args (used to build the core `call` signature). For a FIXED-SHAPE
+    // tuple arg the canonical ABI FLATTENS the tuple into its scalar fields, so the core `call` receives the
+    // FIELD valtypes (not one i32 handle) — the `call` body rebuilds the cell from them. Otherwise each arg's
+    // own machine valtype (a scalar; a `Bytes` result is an i32 heap handle).
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+        &tuple_arg
+    {
+        field_vts.clone()
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| {
+                valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+            })
+            .collect::<Result<_, _>>()?
+    };
     let ret_vt = valtype_of(&ret_ty)
         .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
@@ -1732,6 +1830,44 @@ fn emit_closure_resource(
             &make_param_bytes,
             &arg_bytes,
             true,
+        ));
+    }
+    // DIRECT-CALL COMPOUND ARG: a fixed-shape scalar tuple/record closure argument crosses as a native
+    // component `tuple<…>` the canonical ABI flattens into scalar core params. The core `call` receives the
+    // flattened fields (`arg_vts` = the field valtypes, set above) and REBUILDS the tuple cell from them via
+    // the `TupleArgRebuild`; the envelope's `call` functype takes a `tuple<field-bytes…>` type. Scalar result,
+    // no host effect (verified when `tuple_arg` was detected). Uses `own<t>` (single-use) — the borrow lift's
+    // directly-passed rep is orthogonal, and this first cut keeps the simpler own/self-drop posture; the
+    // rebuilt-arg drop is unconditional regardless (a per-call temporary), so it stays leak-free.
+    if let Some((field_bytes, _field_vts, rebuild)) = &tuple_arg {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: make_param_vts.clone(),
+            }],
+            &[],
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes, // empty — the tuple arg is carried by `field_bytes`
+            result_byte,
+            false,
+            Some(field_bytes),
         ));
     }
     // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a

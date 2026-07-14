@@ -1144,6 +1144,15 @@ pub enum Resolved {
     /// §Effects Are Classified First And Resolved By Monomorphization). Until that lowering lands, a
     /// `handle` DECLINES (the surface is recognized so a handled perform stops erroring on unbound
     /// `resume`; it does not yet run).
+    ///
+    /// `init` is the initial state the handler establishes for the sub-computation, fixed where the
+    /// handle is installed (no ambient state); the whole form evaluates to `body`'s value, and the
+    /// accumulated state is observable only THROUGH the effect's operations (reading state is the same
+    /// mechanism as any other operation — no separate result form).
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-threads-state-across-the-operations-it-discharges
+    //# A handler MUST establish an initial state for the sub-computation it wraps, fixed where the handler is installed, so that a handler that carries state receives its seed explicitly and no state is ambient.
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-threads-state-across-the-operations-it-discharges
+    //# A handler MUST evaluate to the value of its body, with the state it accumulated observable only through the operations the effect declares, so that reading the accumulated state is the same mechanism as any other operation and a handler needs no separate result form. Mutation is the instance of this that reads and updates the threaded state, so that a program expresses mutable-looking computation without the value heap becoming mutable.
     Handle {
         init: StructId,
         /// The handler arms, behind an `Arc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
@@ -1157,7 +1166,11 @@ pub enum Resolved {
     },
     /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that
     /// performed the operation and thread `next_state` forward as the state the rest of the handled region
-    /// sees (`capabilities-and-effects.md` §A Handler Threads State`). Modeled as a NODE (not a
+    /// sees (`capabilities-and-effects.md` §A Handler Threads State`). Discharging an operation thus
+    /// produces BOTH the delivered value AND the next state, folding a state across the operations purely
+    /// (no mutable value heap). Modeled as a NODE (not a
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-threads-state-across-the-operations-it-discharges
+    //# Discharging an operation MUST produce both the value delivered to the point that performed the operation and the next state carried forward to the rest of the sub-computation, so that a handler folds a state across the sequence of operations its body performs and threads it purely, without the value heap becoming mutable.
     /// fold-time-only rewrite marker) so the tail-resumptive rewrite (`Resume{v,s'}` → `v`, thread `s'`) is
     /// a structural classification, and so an abortive arm (no `Resume`) and a general arm (a non-tail
     /// `Resume`, or `k` captured as a value) are representable without an IR migration

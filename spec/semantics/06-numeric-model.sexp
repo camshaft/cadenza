@@ -2035,3 +2035,33 @@
             (def (main) (loop 70 (BigInt.of 1)))
             (export main)))
   (output (: 1180591620717411303424 BigInt)))
+
+(case "a BigInt factorial accumulator computes 25! exactly"
+  (doc    "THE canonical BigInt program: `fac(25)` with a BigInt accumulator — `(* acc (BigInt.of n))` at
+           each level, `n` a RUNTIME loop variable widened to BigInt — computes 25! =
+           15511210043330985984000000, a 26-digit value ~1.7 million× beyond Int64.max. Every intermediate
+           (13!… onward already exceeds Int64) is carried exactly on the runtime limb library, the
+           accumulator threaded through the recursion as a heap handle, and the exact result crosses to the
+           host. The definitive end-to-end proof of unbounded BigInt arithmetic in the factorial idiom —
+           the same program over Int64 would trap at the first intermediate past 2^63.")
+  (input  (do
+            (def (fac (: n Int64) (: acc BigInt))
+              (if (= n 0) acc (fac (- n 1) (* acc (BigInt.of n)))))
+            (def (main) (fac 25 (BigInt.of 1)))
+            (export main)))
+  (output (: 15511210043330985984000000 BigInt)))
+
+(case "a BigInt is usable as a map key, matched by its arbitrary-precision value"
+  (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (BigInt.of 100) 1) (BigInt.of 200) 2) (BigInt.of
+           200))` = `Some 2`: a BigInt KEY is inserted and looked up by VALUE — the CHAMP map hashes and
+           compares it over its canonical sign-magnitude bytes (`champ_hash`/`champ_eq`, the same raw-byte
+           basis as a Bytes/String key), so the second key `200` finds its stored value 2. Pins that a
+           BigInt is a first-class map key. (A constant BigInt key materializes as a heap handle at the
+           insert/lookup site — the `Core::ConstInt`-typed-BigInt emit routes through `bigint-of-i64` —
+           rather than a raw i64, which would be an invalid module.)")
+  (input  (match (Map.lookup
+                   (Map.insert (Map.insert Map.empty (BigInt.of 100) 1) (BigInt.of 200) 2)
+                   (BigInt.of 200))
+                 ((Some v) v)
+                 ((None) 0)))
+  (output (: 2 Int64)))

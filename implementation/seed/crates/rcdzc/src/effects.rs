@@ -661,6 +661,31 @@ pub fn arm_op_key_occ(db: &Db, op: StructId) -> Option<StructId> {
     db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())
 }
 
+/// If a handler arm's op projection `(. E k)` has a head `E` that names a VALUE DEFINITION rather than an
+/// effect — `(handle foo 0 …)` where `foo` is a `(def foo …)` — the operand occurrence `E`. A `handle`'s
+/// HEAD must name an effect (the arms ARE that effect's operations); a value head is a malformed handle,
+/// but with the head desugared into `(. E k)` projections it surfaces as a leaky cascade ("member access
+/// requires a record, found Int64" from `(. foo k)`, plus an uncoded fold-decline) instead of naming the
+/// real problem. `None` when the head is an effect, an UNBOUND name (the resolver's own CDZ0101 is
+/// primary — mirrors the host-delegation check's conservatism), or `op` is not a projection. CONSERVATIVE
+/// like `check_no_home`'s host-delegation check: flags ONLY a head unambiguously bound to a value def
+/// (`def_by_name`), never a nested-module effect (absent from the top-level registry).
+pub fn arm_op_head_names_a_value(db: &mut Db, op: StructId) -> Option<StructId> {
+    let Resolved::Member { operand, .. } = resolved_of(db, op) else {
+        return None;
+    };
+    // Already a real effect head → fine.
+    if effect_decl_of_value(db, operand).is_some() {
+        return None;
+    }
+    // Flag ONLY a head that is unambiguously a top-level value def (never a nested-module effect / unbound).
+    let names_value_def = db
+        .ast
+        .as_name(operand)
+        .is_some_and(|n| db.def_by_name(n).is_some());
+    names_value_def.then_some(operand)
+}
+
 /// For an undeclared handler-arm op `(. E k)` (one `arm_op_names_undeclared_operation` flagged), the
 /// nearest DECLARED operation name of the effect `E` to the mistyped `k` — the "did you mean?"
 /// suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect-op

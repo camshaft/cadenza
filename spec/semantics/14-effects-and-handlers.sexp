@@ -1299,6 +1299,18 @@
             (def (main) (host (A A) (A.a))) (export main)))
   (error  CDZ0201))
 
+(case "a handle whose head names a value rather than an effect is rejected"
+  (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
+           operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).
+           `(handle foo 0 …)` where `foo` is a value definition names a VALUE, not an effect — a malformed
+           handle. Rejected at compile time (CDZ0201) with a message naming the head, rather than surfacing
+           as a leaky desugar artifact (the head folds into each arm's member-access projection). Pins that
+           a handle head names a declared effect.")
+  (input  (do
+            (def foo 5)
+            (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0201))
+
 (case "an effect operation declared with no name is rejected"
   (doc    "An operation clause is `(op <name> <type>)` — the name is a bare identifier, the type its arrow.
            `(op (-> Unit Int64))` puts the TYPE where the name belongs, declaring a NAMELESS operation:

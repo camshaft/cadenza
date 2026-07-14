@@ -1891,6 +1891,27 @@ fn emit_sum_payload(
             return Ok(expr);
         }
     }
+    // A TOP-LEVEL TUPLE-PATTERN read off a RUNTIME tuple scrutinee — `(match (if … (tuple …) (tuple …))
+    // ((tuple a b) …))` — where the scrutinee is neither a constant `Core::Tuple` (folded above) nor a
+    // bound `__pay` (a top-level tuple match mints no `Switch` arm, so no bind): the binders `a`/`b` read
+    // `[Elem(0)]`/`[Elem(1)]` DIRECTLY off the scrutinee. Emit the scrutinee value and index it (`(<t>).i`)
+    // — the runtime-tuple twin of the constant fold. Gate on the path being pure `Elem` steps over a tuple-
+    // typed scrutinee (a `Payload`/`RestFrom` here is a different shape). Without this, a tuple built by a
+    // runtime `if` (or returned from a branchy fn) and matched declined "no bound match arm" (wasm reads it
+    // via `arr-get`, which needs no bind).
+    if path
+        .iter()
+        .all(|s| matches!(s, crate::core::PathStep::Elem(_)))
+        && matches!(type_of(db, scrutinee).strip_nominal(), Ty::Tuple(_))
+    {
+        let mut expr = emit(db, scrutinee, env, ctx)?;
+        for step in path {
+            if let crate::core::PathStep::Elem(i) = step {
+                expr = format!("({expr}).{i}");
+            }
+        }
+        return Ok(expr);
+    }
     Err(Reject::decline(
         "sum payload has no bound match arm (unsupported pattern shape)",
     ))

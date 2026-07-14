@@ -11740,6 +11740,38 @@ mod match_engine {
     }
 
     #[test]
+    fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
+        // `import` is a KNOWN surface keyword (the ML reader parses `import { … } from "…"` → an
+        // `(import …)` top-level form) that this compiler does not yet model. Because `import`→`export` is
+        // only 2 edits, the generic keyword-typo path would suggest "did you mean `export`?" — an actively
+        // MISLEADING fix (an author who wrote `import` never meant its opposite). It now gets a specific
+        // "not yet modeled" message with NO export swap.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("import"))
+                .expect("the import form is reported")
+        };
+        for src in [
+            "(module m (import \"lib\" (foo)) (def (main) 1) (export main))",
+            "(do (import \"lib\" (foo)) (def (main) 1) (export main))",
+        ] {
+            let d = find(src);
+            assert!(
+                d.message.contains("does not yet model") && d.message.contains("`import`"),
+                "names import as an unmodeled form: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("did you mean `export`?"),
+                "no misleading export suggestion: {}",
+                d.message
+            );
+            assert!(d.fix.is_none(), "no export swap fix: {:?}", d.fix);
+        }
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
@@ -25075,6 +25107,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_meta_channel_field_is_not_offered_as_a_member_suggestion() {
+        // A prelude sum module (`Option`) carries internal META CHANNELS — `(meta t)`/`(meta apply)`/… —
+        // keyed in the `"meta"` namespace. They are the compiler's type/apply channels, NOT user-facing
+        // members. `(Option.Ok 5)` used to suggest "closest matches: `t`, `None`, `Some`" — the internal
+        // `t` a baseless variant suggestion. `record_field_names` now filters meta-namespaced fields, so
+        // only real members/variants are offered.
+        let d = expect_error("(Option.Ok 5)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("closest matches:")
+                && d.message.contains("`Some`")
+                && d.message.contains("`None`"),
+            "offers the real variants: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("`t`"),
+            "the internal `(meta t)` channel is not offered as a member: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_misspelled_field_call_head_reports_one_error_not_a_dup() {
         // A misspelled field access used as a CALL HEAD (`((. r fld-typo) 5)`) is checked by BOTH the
         // infer member-check (which adds the did-you-mean fix) AND the emit-side member fold — at two
@@ -28815,6 +28870,47 @@ mod stage1 {
             )))
             .is_ok(),
             "a single valid host delegation must compile"
+        );
+    }
+
+    #[test]
+    fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
+        // A `handle`'s head must name an EFFECT (the arms ARE that effect's operations). `(handle foo 0 …)`
+        // where `foo` is a value def used to surface ONLY as a leaky cascade — a CDZ0201 "member access
+        // requires a record, found Int64" (from the desugared `(. foo op)`) plus an uncoded "not yet
+        // reducible by the tail-resumptive fold" decline — neither naming the real problem. Now the primary
+        // is a clear CDZ0201 at the head, and `dedup_faults` drops both cascade faults, so `cdz check` shows
+        // exactly ONE actionable diagnostic.
+        let src = "(module m (def foo 5) (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let ds = crate::diagnostics(&mut db);
+        assert_eq!(
+            ds.len(),
+            1,
+            "exactly one diagnostic (cascade dropped): {ds:?}"
+        );
+        assert_eq!(
+            ds[0].code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            ds[0].message
+        );
+        assert!(
+            ds[0].message.contains("head must name an EFFECT") && ds[0].message.contains("foo"),
+            "names the real problem — a value head, not a member-access artifact: {}",
+            ds[0].message
+        );
+        // An UNBOUND head keeps its own CDZ0101 (the resolver's primary — not shadowed by this check, which
+        // is conservative to a value def). A valid effect head compiles clean.
+        let unbound = crate::db::Db::load(parse(
+            "(module m (def (main) (handle Nonesuch 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+        ));
+        let mut unbound = unbound;
+        assert!(
+            crate::diagnostics(&mut unbound)
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101")),
+            "an unbound handle head keeps its CDZ0101"
         );
     }
 
@@ -36169,7 +36265,9 @@ mod sidecar_driven {
     #[test]
     fn a_type_of_query_for_an_unknown_name_is_total() {
         // Querying a name that names no definition yields a DEFINED result, never an error — the
-        // oracle contract (a query is total over every input).
+        // oracle contract (a query is total over every input). The result names the missing definition
+        // and, like the compiler's unbound-name sites, offers the nearest defined name as a "did you
+        // mean?"/"closest matches" hint (a `TypeOf` for a near-typo of a real def is almost always a typo).
         let src = "(module m (def (main) 42) (export main))";
         let out = compile(
             &inputs(
@@ -36181,9 +36279,25 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
+        let text = artifact_text(&out, KIND_TYPE_INFO).unwrap_or_default();
+        assert!(
+            text.starts_with("no such definition `ghost`"),
+            "names the missing definition: {text}"
+        );
+
+        // A NEAR-typo of a real def gets a confident "did you mean?" pointing at it.
+        let out2 = compile(
+            &inputs(
+                "(module m (def (compute) 42) (export compute))",
+                &[Request::Query(Query::TypeOf {
+                    name: "computee".into(),
+                })],
+            ),
+            &[],
+        );
         assert_eq!(
-            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-            Some("no such definition `ghost`")
+            artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
+            Some("no such definition `computee` — did you mean `compute`?"),
         );
     }
 
@@ -42374,24 +42488,31 @@ mod closure_host_resource {
         );
     }
 
-    /// The closure `call` boundary crosses every aliased-width SCALAR, but a COMPOUND arg/result (a tuple,
-    /// record, list, …) must still DECLINE — `comp_valtype_of` returns a u32 byte for a `Tuple` (the opaque
-    /// handle it is threaded as between in-program functions), but that handle is meaningless across the
-    /// host boundary, so `closure_boundary_byte` restricts to Int/Bool/Float. Pins that the width-widening
-    /// did NOT accidentally let a compound closure arg cross as a bare handle (the compound-closure-arg
-    /// widening is a separate later increment).
+    /// A FIXED-SHAPE SCALAR tuple closure ARG on the direct-call path now COMPILES (the tuple crosses as a
+    /// native component `tuple<s64,s64>` the canonical ABI flattens; the core `call` rebuilds the cell). But
+    /// a compound arg with a VARIABLE-LENGTH element (a tuple/record CONTAINING a List/Map/Set) must still
+    /// DECLINE — such a field has no fixed flattened form and would need host→guest runtime decode (a
+    /// nonexistent `value-decode` op). Pins both sides of the boundary: the fixed-shape scalar case emits, the
+    /// collection-bearing case declines cleanly.
     #[test]
-    fn a_closure_with_a_compound_argument_declines() {
+    fn a_fixed_shape_scalar_tuple_arg_emits_but_a_collection_bearing_one_declines() {
         use crate::testkit::parse;
-        let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a closure whose ARG is a tuple must DECLINE (a compound is not a scalar boundary)",
-        );
+        // (a) a fixed-shape SCALAR tuple arg → emits a valid component (was a decline before the emit vertical).
+        let ok_src =
+            "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(ok_src)))
+            .expect("a fixed-shape scalar tuple closure arg now emits (native tuple flattening)");
+        // (b) a tuple whose field is a variable-length LIST → still declines (no fixed flattened form).
+        let bad_src = "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_src)))
+            .expect_err(
+                "a tuple arg with a variable-length List field must DECLINE (needs runtime decode)",
+            );
         assert!(
             err.message
                 .contains("no scalar host-boundary representation")
                 && err.code.is_none(),
-            "expected the compound-closure-arg decline, got: {:?} / {}",
+            "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
             err.code,
             err.message
         );
