@@ -1005,38 +1005,36 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     // DETERMINED argument type constrains (an `Any`/var arg adds nothing), so a well-solved def is
     // byte-identical. Skips a self/recursive call (its args reference this def's own unsolved params —
     // no new information) and is re-entry-guarded by `solving_params`.
+    // The per-position call-site argument types, computed lazily only when a param is still open, then
+    // used in the grounding loop to `fill_holes` each open param.
+    let mut call_seed_arg_tys: Vec<Option<Ty>> = Vec::new();
     if let Some(body) = db.defs[def].body {
-        // A param is "open" if its body-solved type is `Any` OR still CONTAINS a free var — a bare
-        // unsolved param (`Var`) OR a PARTIALLY-solved compound (`(List (Tuple Int64 ?10))`, where the
-        // body pinned the first tuple field but left the second). A call site's concrete argument fills
-        // the remaining holes by unification. (`has_free_var` catches the partial-compound case a bare
-        // `Var`/`Any` match would miss — the assoc-list `xs` whose value field stays open in the body.)
-        let still_open: Vec<usize> = param_binders
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, v))| {
-                let t = subst.apply(v);
-                matches!(t, Ty::Any) || t.has_free_var()
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if !still_open.is_empty() {
-            let arg_tys = call_site_arg_types(db, def, body);
-            for i in still_open {
-                if let Some(Some(at)) = arg_tys.get(i)
-                    && !matches!(at, Ty::Any | Ty::Var(_))
-                {
-                    let (_, pvar) = &param_binders[i];
-                    let _ = crate::unify::unify(&mut subst, pvar, at);
-                }
-            }
+        // A param is "open" if its body-solved type still has a HOLE the body could not pin — a free
+        // `Var` (`has_free_var`) OR an `Any` anywhere (`has_any`; the body grounds an UNCONSTRAINED
+        // position to `Any`, not a `Var`, so a `(. t 1)` the body never uses lands `(Tuple Int64 Any)`).
+        // A call site's concrete argument fills those holes.
+        let any_open = param_binders.iter().any(|(_, v)| {
+            let t = subst.apply(v);
+            t.has_free_var() || t.has_any()
+        });
+        if any_open {
+            call_seed_arg_tys = call_site_arg_types(db, def, body);
         }
     }
 
-    // Ground each parameter: apply the substitution, then default a still-unsolved NUMERIC variable to
-    // the signed-64 integer (a bare literal's default) and leave anything else `Any` (unconstrained).
-    for (binder, var) in param_binders {
-        let solved = subst.apply(&var);
+    // Ground each parameter: apply the substitution, FILL any remaining hole (`Any`/free `Var`) from the
+    // call-site argument type — a plain unify cannot repair an `Any` (`Any` absorbs), so `fill_holes`
+    // merges the determined call-site type into the open positions while keeping the body-pinned parts —
+    // then default a still-unsolved NUMERIC variable to the signed-64 integer (a bare literal's default)
+    // and leave anything else `Any` (genuinely unconstrained — no call site fixed it).
+    for (i, (binder, var)) in param_binders.into_iter().enumerate() {
+        let mut solved = subst.apply(&var);
+        if (solved.has_free_var() || solved.has_any())
+            && let Some(Some(at)) = call_seed_arg_tys.get(i)
+            && !matches!(at, Ty::Any | Ty::Var(_))
+        {
+            solved = solved.fill_holes(at);
+        }
         let grounded = ground_param(solved);
         trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %grounded.render_name(), "A2: solved recursive param");
         db.param_types.insert(binder, grounded);

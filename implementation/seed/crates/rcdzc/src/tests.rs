@@ -14362,6 +14362,30 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tuple_threading_accumulator_fills_its_hole_from_the_call_site() {
+        // `go` THREADS a tuple accumulator `t`: the body pins `t`'s FIRST field (`(+ (. t 0) n)` → Int64)
+        // but reconstructs the second UNCHANGED (`(. t 1)`), so the body alone leaves `t = (Tuple Int64
+        // Any)` — the second field is an `Any` HOLE (unconstrained, grounded to `Any` not a free `Var`).
+        // Before, this declined "projecting a tuple element of type Any needs the value heap". Call-site
+        // seeding now FILLS the hole: `main`'s `(go 3 (tuple 0 0))` gives `(Tuple Int64 Int64)`, and
+        // `fill_holes` merges the concrete second field in while keeping the body-pinned first — a plain
+        // unify could not (an `Any` absorbs). `go 3 (tuple 0 0)` accumulates 0+3+2+1 = 6 in field 0.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1))))) \
+               (def (main) (. (go 3 (tuple 0 0)) 0)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping tuple-threading run");
+            return;
+        };
+        assert_eq!(
+            v, "6",
+            "tuple-threading accumulator with a call-site-filled hole"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
