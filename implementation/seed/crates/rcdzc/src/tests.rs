@@ -15404,6 +15404,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_byte_aligned_int_bin_segment_names_the_supported_widths() {
+        // A fixed-width integer bin segment is one of the byte-aligned widths — `u8/u16/u32/u64` or
+        // `i8/i16/i32/i64`. A `uNN`/`iNN` head with any OTHER width (`u24`, `u7`, `u128`, `i0`) IS the
+        // `uNN` SHAPE the generic "unrecognized kind (expected uNN/iNN/…)" message points at, so that
+        // message misled — it told the author to write what they already wrote. Now such a head names the
+        // real limit (the supported widths) and points a non-byte-aligned width at the `(bits v k)` segment.
+        for bad in ["u24", "u17", "u7", "u128", "i24", "i0"] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({bad} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{bad}` must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{bad}: {}", d.message);
+            assert!(
+                d.message.contains("u8/u16/u32/u64")
+                    && d.message.contains("(bits v k)")
+                    && d.message.contains(bad),
+                "`{bad}` names the supported widths + the bits alternative: {}",
+                d.message
+            );
+        }
+        // A GENUINELY unrecognized kind (not the `uNN`/`iNN` shape) keeps the generic message — no
+        // over-reach onto a `u`/`i` with no digits or an arbitrary word.
+        for generic in ["frob", "u", "i", "xyz"] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({generic} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{generic}` must reject"));
+            assert!(
+                d.message.contains("unrecognized bin segment kind"),
+                "`{generic}` keeps the generic kind message: {}",
+                d.message
+            );
+        }
+        // The valid byte-aligned widths still parse (no false positive).
+        for ok in ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"] {
+            assert!(
+                reject_code(&format!(
+                    "(module m (def (main) (if (= (bin ({ok} 1)) (bin ({ok} 1))) 1 0)) (export main))"
+                ))
+                .is_none(),
+                "`{ok}` is a valid integer segment width"
+            );
+        }
+    }
+
+    #[test]
     fn a_constant_bin_pattern_decodes_and_binds_its_segments() {
         // A `(bin …)` PATTERN over a constant Bytes scrutinee: decode + bind each segment, dispatch on
         // literal segments, and match the WHOLE scrutinee (leftover / overrun → fall to the catch-all).

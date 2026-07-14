@@ -2684,6 +2684,25 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
             });
             continue;
         }
+        // A `uNN`/`iNN` head whose NN is not one of the aliased byte widths {8, 16, 32, 64} — `u24`, `u7`,
+        // `u128`. It IS the `uNN`/`iNN` SHAPE the generic message points at, so blaming an "unrecognized
+        // kind" misleads (the author wrote what the hint says). Name the real limit — the supported widths
+        // — and point a non-byte-aligned width at the `(bits v k)` segment, which takes an arbitrary width.
+        if let Some(rest) = kind_name
+            .strip_prefix('u')
+            .or_else(|| kind_name.strip_prefix('i'))
+            && !rest.is_empty()
+            && rest.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a fixed-width integer bin segment must be one of u8/u16/u32/u64 or i8/i16/i32/i64 \
+                     (the byte-aligned widths) — `{kind_name}` is not; for an arbitrary bit width use a \
+                     `(bits v k)` segment"
+                ),
+            ));
+        }
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
             "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)",
