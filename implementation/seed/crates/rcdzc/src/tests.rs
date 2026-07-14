@@ -37761,22 +37761,33 @@ mod stage1 {
         // A TYPE head — `(handle C …)` where `C` is a sum type — is the same "head is not an effect" root
         // cause (it leaked "record has no field `op`" + the fold-decline before). It now names the head as
         // `a type`, not the misleading "not yet reducible by the tail-resumptive fold".
+        // Use an arm-op name (`a`) that is NOT a variant of `C` so the desugared `(. C a)` would report
+        // "the type `C` has no variant `a`" — the type-head analogue of the value head's "member access
+        // requires a record" consequent. That consequent is now suppressed too, so ONLY the head reject
+        // remains.
         let mut ty_head = crate::db::Db::load(parse(
-            "(module m (type C (Red)) (def (main) (handle C 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+            "(module m (type C (Red)) (def (main) (handle C 0 ((a (u) s (resume 1 s))) 5)) (export main))",
         ));
-        let td = crate::diagnostics(&mut ty_head);
-        let d = td
-            .iter()
-            .find(|d| d.message.contains("head must name an EFFECT"))
-            .expect("a type handle head names the real problem");
-        assert!(
-            d.message.contains("`C`") && d.message.contains("is a type"),
-            "names the head as a type: {}",
-            d.message
+        let td: Vec<crate::abi::Diagnostic> = crate::diagnostics(&mut ty_head)
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            td.len(),
+            1,
+            "a type handle head reports exactly one error (consequents dropped): {:?}",
+            td.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            !td.iter().any(|d| d.message.contains("not yet reducible")),
-            "the misleading fold-decline is dropped: {td:?}"
+            td[0].message.contains("`C`") && td[0].message.contains("is a type"),
+            "names the head as a type: {}",
+            td[0].message
+        );
+        assert!(
+            !td.iter()
+                .any(|d| d.message.contains("not yet reducible")
+                    || d.message.contains("has no variant")),
+            "the misleading fold-decline + no-variant consequents are dropped: {td:?}"
         );
         // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
         // prelude type has NO user decl (neither `def_by_name` nor `type_decl_by_name`), so it slipped
