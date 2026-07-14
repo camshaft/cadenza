@@ -929,6 +929,17 @@ the component type. The new work:
   tuple-cell handle) NOT the flattened `arg_vts` — else "no matching lifted lambda". A tuple arg + a byte-rope/
   compound/collection result declines cleanly. Corpus: mk-sum(→Int64) + mk-eq(→Bool) both taking a Tuple;
   `call(sum,(3,4))`→7 AND `call(eq,(5,5))`→true e2e. gate 1741p/0f.
+- **🐛→✅ MISCOMPILE FIXED: a compound ARG + a compound/byte-rope/collection RESULT now DECLINES** (`@68ac2bd8`,
+  baseline `@e7b00e12`). A latent miscompile across single/multi/mixed direct-call paths (distinct-sig already
+  guarded): a fixed-shape compound ARG detection set `arg_vts` to the flattened fields, but the list-returning
+  RESULT cores (`closure_bytes_/value_/value_encode_resource_core_module`) inline their own `call` bodies +
+  do NOT thread the `TupleArgRebuild`, and their envelopes take the scalar `arg_bytes` (empty for a tuple arg)
+  — so the two combined emitted a scalar-arg envelope over a flattened-field core (wasmtime "lowered param
+  types [I32] do not match [I32,I64,I64]" / "failed to parse"). Guards in `emit_closure_resource`/
+  `emit_multi_closure_resource`/`emit_mixed_closure_resource` now decline cleanly; a scalar-result compound
+  arg still emits. +1 corpus todo anchor + `a_compound_arg_with_a_compound_result_declines_not_miscompiles`.
+  🔑 the FIX for this = thread `TupleArgRebuild` through the 3 list-result serializers + their envelopes (the
+  next real widening); this tick made it an honest decline first (correctness over the miscompile).
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
   SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (above); still to
   widen: a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE
