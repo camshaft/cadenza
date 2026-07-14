@@ -1786,19 +1786,29 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 // declared); name the real reason instead, so the author knows the export is not a typo but
                 // a category error (there is no mechanical fix — removing the export or defining a value of
                 // that name is the author's choice).
-                let kind = if db.type_decl_by_name(&name).is_some() {
-                    Some("a type")
+                // A declared TYPE named bare in `(export T)` is the OPAQUE-TYPES handle export — a valid
+                // form whose consumer is an IMPORTING peer (`(import "lib" (T …))`), which exists only in a
+                // linked PACKAGE. In a single-module compile there is no importer, so the handle export has
+                // no effect here; but it is NOT the "only definitions are exported" category error the old
+                // message claimed (opaque types made a type handle first-class exportable). Say THAT — the
+                // export is meaningful only across a package boundary — so an author writing an abstract
+                // type is not misled into thinking a type can never be exported. An EFFECT is still a true
+                // category error (an effect is not an exportable entity), and an unknown name stays "names
+                // no definition".
+                let message = if db.type_decl_by_name(&name).is_some() {
+                    format!(
+                        "export `{name}` names a TYPE — a bare type export is the abstract-type HANDLE \
+                         export (opaque types), meaningful only when a peer module imports it; in a \
+                         single module it has no importer, so it exports nothing here. Export a value \
+                         `(def …)`, or `(export (. {name} *))` to publish its constructors too."
+                    )
                 } else if db.effect_decl_by_name(&name).is_some() {
-                    Some("an effect")
+                    format!(
+                        "export `{name}` names an effect, not a value definition — only definitions are \
+                         exported (a module's exports are the values its definitions bind)"
+                    )
                 } else {
-                    None
-                };
-                let message = match kind {
-                    Some(k) => format!(
-                        "export `{name}` names {k}, not a value definition — only definitions are exported \
-                         (a module's exports are the values its definitions bind)"
-                    ),
-                    None => format!("export `{name}` names no definition"),
+                    format!("export `{name}` names no definition")
                 };
                 faults.push(Reject::coded(Code::Unbound, message).at(occ));
             }
