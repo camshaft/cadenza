@@ -1843,6 +1843,7 @@ pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
+pass	intersection with the empty set is the empty set
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
@@ -2108,6 +2109,7 @@ pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
+pass	the difference of a set with itself is empty
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
@@ -2127,6 +2129,7 @@ pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the intersection contains the elements in both sets
+pass	the intersection of disjoint sets is empty
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the length of a byte sequence is its byte count
@@ -2258,6 +2261,9 @@ pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	union cardinality with a runtime-element operand
+pass	union is commutative
+pass	union of a set with itself is the set (idempotent)
+pass	union with the empty set is the set itself
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
