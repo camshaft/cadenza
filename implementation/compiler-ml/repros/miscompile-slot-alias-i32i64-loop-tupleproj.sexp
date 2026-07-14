@@ -1,5 +1,11 @@
-;; MINIMAL, ROOT-CAUSED reproducer (2026-07-14) of the i32/i64 SLOT-ALIASING miscompile — the core of
-;; the sum-in-tuple/loop family. `cdz check` CLEAN; `cdz compile -t wasm` emits INVALID WASM
+;; ✅ FIXED (INVALID-WASM face, 2026-07-14): this reproducer now COMPILES to valid wasm AND returns the
+;; correct value (`main` = 1 = `nc` of `Ast.Int`). A sibling fixed the i32/i64 slot type-mismatch in the
+;; loop-transform emit. ⚠ BUT the WRONG-VALUE face of the same family SURVIVES — see
+;; `miscompile-tail-loop-projected-sum-wrong-value.sexp` (compiles clean, silently returns 0 not 5).
+;; Kept as a regression witness for the invalid-wasm face.
+;;
+;; ORIGINAL (2026-07-14): MINIMAL, ROOT-CAUSED reproducer of the i32/i64 SLOT-ALIASING miscompile — the
+;; core of the sum-in-tuple/loop family. `cdz check` CLEAN; `cdz compile -t wasm` emitted INVALID WASM
 ;; ("type mismatch: expected i32, found i64" in the `read-leaves` loop function).
 ;;
 ;; TRIGGER: a self-tail-recursive loop that (a) advances its position via `leaf-end`, which PROJECTS
