@@ -733,6 +733,32 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a wildcard-exported variant whose name shadows a prelude type is constructible in an importer"
+  (doc    "The prelude-collision case of the wildcard import above: `lib` declares `(type T (Foo Int64)
+           (List (List T)))` — a variant NAMED `List`, which also names a prelude type — and exports it
+           concretely with `(. T *)`. The entry imports `T` and constructs `(T.List (list))`, which `sz`'s
+           `((T.List es) 9)` arm yields 9 for. The constructor selector `T.List` must resolve through `T`'s
+           OWN imported constructor set, NOT as the free prelude name `List`: a member-access tail on a
+           known nominal type is a constructor selector, not a shadowable name. This was wrongly rejected
+           CDZ0214 ('`T`'s constructor `List` is withheld') when the importer resolved the tail to the
+           prelude `List` — not List-specific (a `Bool` variant collided identically) and not construct-only
+           (a match arm failed too), while the SAME construction in the declaring file worked. The
+           non-colliding-names control (`NInt`/`NList`) always ran to 9, pinning the oracle. Pins that an
+           imported type's constructor is reachable through its wildcard export even when its name shadows a
+           prelude type — the shape the compiler port's `Ast` (with `List`/`Bool` variants) needs across
+           files.")
+  (module "lib"
+    (do
+      (type T (Foo Int64) (List (List T)))
+      (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.List es) 9)))
+      (export (. T *))
+      (export sz)))
+  (input  (do
+            (import "lib" (T sz))
+            (def (main) (sz (T.List (list))))
+            (export main)))
+  (output (: 9 Int64)))
+
 ; --- ABSTRACT (opaque) types: export the type HANDLE, keep the CONSTRUCTOR private -----------------
 ; A type declaration's handle and its constructors are INDEPENDENTLY exportable (modules-and-namespaces.md
 ; §Visibility Is Explicit — the one per-name export surface, applied to a type's handle vs its variants).

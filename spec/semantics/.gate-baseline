@@ -1470,6 +1470,7 @@ pass	a well-formed annotation still checks and accepts a matching type (the cont
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wildcard in a nested pattern position ignores that element
+pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
