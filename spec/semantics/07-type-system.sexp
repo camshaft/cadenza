@@ -262,6 +262,44 @@
   (input  (: (record (a 1)) (Record (a Bool))))
   (error  CDZ0203))
 
+; --- A record's field SET must match the annotation, not only each field's type ------------
+; The case above matches the field NAMES and rejects a wrong field TYPE. The dual failure is a field-SET
+; mismatch: the value's set of field names differs from the annotation's — a MISSING field (the value
+; lacks one the annotation names) or an EXTRA field (the value carries one the annotation does not). A
+; record's shape is its fixed set of named fields (type-system.md #A Record Has A Fixed Set Of Named
+; Fields), so `(Record (a Int64))` and `(Record (a Int64) (b Int64))` are DIFFERENT types — the check is
+; over the whole field set, not a subset/superset relaxation (that widening is row polymorphism, a
+; separate opt-in — 15-rows-and-open-sums). Each mismatch is CDZ0203 and the diagnostic names the
+; offending field (missing `b` / no such field `c`), the actionable add-missing / delete-extra repair.
+
+(case "a record missing a field the annotation names is rejected"
+  (doc    "`(: (record (a 1)) (Record (a Int64) (b Int64)))` annotates a one-field record as a two-field
+           type — the value is MISSING field `b`. The field sets differ, so the value's type `(Record (a
+           Int64))` does not match the annotation `(Record (a Int64) (b Int64))` (CDZ0203, naming the
+           missing `b`). A record type is not satisfied by a value carrying a subset of its fields — field
+           presence is static (the row-poly widening that would accept this is a separate opt-in). The
+           field-SET companion of the wrong-field-TYPE case above.")
+  (input  (: (record (a 1)) (Record (a Int64) (b Int64))))
+  (error  CDZ0203))
+
+(case "a record carrying a field the annotation does not name is rejected"
+  (doc    "The dual: `(: (record (a 1) (b 2) (c 3)) (Record (a Int64) (b Int64)))` carries an EXTRA field
+           `c` the annotation does not name. The field sets differ, so it is rejected (CDZ0203, 'no such
+           field `c` on the expected record'). A record value is not accepted against a type with FEWER
+           fields — the extra field is not silently dropped. Pins the superset direction of the field-set
+           check (the value has more fields than the type).")
+  (input  (: (record (a 1) (b 2) (c 3)) (Record (a Int64) (b Int64))))
+  (error  CDZ0203))
+
+(case "a record whose field is misnamed is both missing and extra"
+  (doc    "`(: (record (a 1) (x 2)) (Record (a Int64) (b Int64)))` names its second field `x` where the
+           annotation expects `b` — so relative to the annotation the value is simultaneously MISSING `b`
+           and carrying an EXTRA `x`. Rejected (CDZ0203) with both faults named ('missing field `b`; no
+           such field `x`'). Pins that a single misnamed field surfaces as the combined field-set
+           mismatch, the shape a field-name typo takes.")
+  (input  (: (record (a 1) (x 2)) (Record (a Int64) (b Int64))))
+  (error  CDZ0203))
+
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
 ; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
 ; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed

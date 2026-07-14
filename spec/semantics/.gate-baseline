@@ -995,13 +995,16 @@ pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
 pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
+pass	a record carrying a field the annotation does not name is rejected
 pass	a record field VALUE still reads the parameter it names after the call
 pass	a record field holding a sum is projected then matched
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
+pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
 pass	a record whose field is a runtime tuple nests across the boundary
+pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
