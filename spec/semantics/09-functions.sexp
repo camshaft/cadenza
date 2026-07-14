@@ -2616,6 +2616,26 @@
   (call   main (: 3074457345618258603 Int64))
   (trap   "integer overflow"))
 
+(case "a repeated runtime subexpression is computed once (CSE) and reused across an operator"
+  (doc    "`(def (main (: x Int64)) (+ (& x 7) (& x 7)))` — the subexpression `(& x 7)` appears twice, so
+           common-subexpression elimination computes it ONCE into a slot and both operands of the `+` read
+           that slot (no recompute, no redundant spill). Called with 13: `13 & 7 = 5`, and `5 + 5 = 10`.
+           Pins that a value-equal repeated operand is shared and that the shared value feeds the addition
+           correctly (the CSE slot is read directly as the operand source).")
+  (input  (do (def (main (: x Int64)) (+ (& x 7) (& x 7))) (export main)))
+  (call   main (: 13 Int64))
+  (output (: 10 Int64)))
+
+(case "a repeated runtime checked-multiply is computed once and still traps on overflow"
+  (doc    "`(def (main (: x Int64)) (+ (* x x) (* x x)))` — the checked square `(* x x)` is CSE'd (computed
+           once with its overflow guard) and the outer `+` doubles it. Called with a large x whose square
+           already overflows Int64, so the shared `(* x x)` traps — CSE preserves the trap (the shared
+           computation traps at its single evaluation point, exactly as an un-shared one would). Pins that
+           sharing a CHECKED operation keeps its overflow semantics.")
+  (input  (do (def (main (: x Int64)) (+ (* x x) (* x x))) (export main)))
+  (call   main (: 9223372036 Int64))
+  (trap   "integer overflow"))
+
 (case "the entrypoint sums its two runtime arguments"
   (doc    "A two-parameter entry `(def (main (: a Int64) (: b Int64)) (+ a b))` called with 20 and 22.
            BOTH operands are runtime arguments, so the `+` is a runtime `i64.add` over two parameter
