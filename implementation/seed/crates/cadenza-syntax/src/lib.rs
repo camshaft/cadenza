@@ -41,6 +41,11 @@ pub mod markdown;
 pub mod parser;
 pub mod printer;
 pub mod query;
+/// Shared REPL module-assembly: assemble "a buffer of definitions + one expression" into one runnable
+/// program (`(do item… (def (cdz-repl-eval) <expr>) (export cdz-repl-eval))`). The surface half of a
+/// calculator/REPL, reused by every surface (`cdz-wasm::repl_eval`, the native `cdz calc`) so they
+/// never drift in how the program is built.
+pub mod repl;
 pub mod sexpr;
 pub mod span;
 pub mod spans;

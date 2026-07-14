@@ -323,83 +323,6 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     })
 }
 
-/// The synthesized entry a REPL evaluation is wrapped in. Must be KEBAB-CASE: it becomes a
-/// component-model export name, and the component model requires extern names in kebab case (an
-/// underscore/camel name fails jco transpile with "not a valid extern name"). The `cdz-` prefix +
-/// `-eval` make a collision with a reader's own definition very unlikely. The playground's REPL
-/// compiles the buffer's definitions plus this one nullary entry whose body is the expression the
-/// reader typed, then runs it through the SAME pipeline `compile()` + the run worker use — so a REPL
-/// result (scalar OR compound) renders exactly as a normal run would, in the reader's surface.
-const REPL_ENTRY: &str = "cdz-repl-eval";
-
-/// Does form `id` start with the name `head` (`(head …)`)?
-fn is_form_head(
-    src: &cadenza_syntax::ast::Arenas,
-    id: cadenza_syntax::ast::StructId,
-    head: &str,
-) -> bool {
-    use cadenza_syntax::ast::Struct;
-    matches!(src.get(id), Struct::List(kids) if kids.first().is_some_and(|&h| src.as_name(h) == Some(head)))
-}
-
-/// The buffer's top-level item forms (defs/types) — the definitions a REPL expression can call —
-/// unwrapping whatever shell the buffer arrived in. The guide's editor wraps a snippet as a `(do item…)`
-/// block; a hand-written program may use `(module NAME item…)`; and either may present a bare single
-/// form. `(export …)` clauses are dropped (the REPL supplies its own sole export). Any leading shell
-/// head (`do`/`module`) is skipped so only the real item forms remain.
-fn buffer_items(src: &cadenza_syntax::ast::Arenas) -> Vec<cadenza_syntax::ast::StructId> {
-    use cadenza_syntax::ast::Struct;
-    let root = src.root;
-    match src.get(root) {
-        // A `(do item…)` (guide wrap) or `(module NAME item…)` (hand-written) shell. `module` carries a
-        // NAME child after the head; `do` does not — skip past the head, and for `module` the name too.
-        Struct::List(kids)
-            if is_form_head(src, root, "do") || is_form_head(src, root, "module") =>
-        {
-            let skip = if src.as_name(kids[0]) == Some("module") {
-                2
-            } else {
-                1
-            };
-            kids.iter()
-                .skip(skip)
-                .copied()
-                .filter(|&it| !is_form_head(src, it, "export"))
-                .collect()
-        }
-        // A bare `(def …)` / `(type …)` buffer: keep it. A bare expression has nothing to call.
-        _ if is_form_head(src, root, "def") || is_form_head(src, root, "type") => vec![root],
-        _ => Vec::new(),
-    }
-}
-
-/// The NAME a top-level `def` item binds, if `item` is a `def`. Two shapes: `(def (name param…) body)`
-/// — a function, whose name is the head of the signature list — and `(def name body)` — a bare value
-/// binding, whose name is the second child directly. Returns `None` for a non-`def` item (e.g. a
-/// `type`) or a malformed one.
-fn def_name(
-    src: &cadenza_syntax::ast::Arenas,
-    item: cadenza_syntax::ast::StructId,
-) -> Option<String> {
-    use cadenza_syntax::ast::Struct;
-    let Struct::List(kids) = src.get(item) else {
-        return None;
-    };
-    if src.as_name(*kids.first()?) != Some("def") {
-        return None;
-    }
-    let target = *kids.get(1)?;
-    match src.get(target) {
-        // `(def (name param…) body)` — the signature list; its head is the function name.
-        Struct::List(sig) => sig
-            .first()
-            .and_then(|&h| src.as_name(h))
-            .map(str::to_string),
-        // `(def name body)` — a bare value binding.
-        Struct::Atom(_) => src.as_name(target).map(str::to_string),
-    }
-}
-
 /// The names of every top-level `def` the buffer declares — for the playground REPL's autocomplete.
 /// Parses the buffer (surface-aware) and reads each definition's bound name, in source order. A parse
 /// error yields an empty list (autocomplete is a nicety; a mid-edit unparseable buffer just offers
@@ -413,10 +336,7 @@ pub fn defined_names(buffer: &str, from: &str) -> Result<Vec<String>, JsError> {
     let Some(arenas) = cadenza_syntax::codec::decode(&bytes) else {
         return Ok(Vec::new());
     };
-    Ok(buffer_items(&arenas)
-        .into_iter()
-        .filter_map(|it| def_name(&arenas, it))
-        .collect())
+    Ok(cadenza_syntax::repl::defined_names(&arenas))
 }
 
 /// Evaluate an EXPRESSION against the reader's BUFFER of definitions — the playground's mini-REPL.
@@ -437,8 +357,6 @@ pub fn defined_names(buffer: &str, from: &str) -> Result<Vec<String>, JsError> {
 /// block (the guide editor's wrap), a `(module NAME …)` (a hand-written program), or a bare form.
 #[wasm_bindgen]
 pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, JsError> {
-    use cadenza_syntax::ast::{Arenas, Builder, Struct, StructId};
-
     let from = parse_format(from)?;
 
     // A parse failure in either piece → one codeless error diagnostic (uniform with `compile`).
@@ -476,46 +394,10 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
     let expr_arenas = cadenza_syntax::codec::decode(&expr_bytes)
         .ok_or_else(|| JsError::new("internal: REPL expression AST failed to decode"))?;
 
-    // Copy a subtree from `src` into `b`, preserving structure and leaf values. Leaves re-intern (dedup
-    // is fine — an atom occurrence is what carries identity), lists rebuild child-by-child.
-    fn copy_subtree(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-        match src.get(id) {
-            Struct::Atom(leaf_id) => b.atom_leaf(src.leaf(*leaf_id).clone()),
-            Struct::List(kids) => {
-                let copied: Vec<StructId> = kids.iter().map(|&k| copy_subtree(b, src, k)).collect();
-                b.list(copied)
-            }
-        }
-    }
-
-    // The buffer's kept top-level items (defs/types) — the definitions the REPL expression can call,
-    // shell unwrapped and exports dropped (see `buffer_items`).
-    let buf_items = buffer_items(&buf_arenas);
-
-    // Assemble the combined program into one fresh arena as a top-level `(do item… entry export)` block
-    // — NO `(module …)` wrapping (the compiler accepts a bare `(do …)`, which is exactly what the guide
-    // editor emits, so the REPL synthesizes the same shell rather than adding a module shell of its own).
-    let mut b = Builder::new();
-    let do_head = b.name("do");
-    let mut do_kids = vec![do_head];
-    for it in buf_items {
-        do_kids.push(copy_subtree(&mut b, &buf_arenas, it));
-    }
-    // The synthesized entry: `(def (cdz-repl-eval) <expr>)`.
-    let entry_def_head = b.name("def");
-    let entry_name = b.name(REPL_ENTRY);
-    let entry_sig = b.list(vec![entry_name]); // `(cdz-repl-eval)` — a nullary signature
-    let entry_body = copy_subtree(&mut b, &expr_arenas, expr_arenas.root);
-    let entry_def = b.list(vec![entry_def_head, entry_sig, entry_body]);
-    do_kids.push(entry_def);
-    // `(export cdz-repl-eval)`.
-    let export_head = b.name("export");
-    let export_name = b.name(REPL_ENTRY);
-    let export_form = b.list(vec![export_head, export_name]);
-    do_kids.push(export_form);
-
-    let program = b.list(do_kids);
-    let arenas = b.finish(program);
+    // Assemble the combined program via the SHARED assembler (`cadenza_syntax::repl`) — the same one the
+    // native `cdz calc` REPL uses, so the two surfaces never drift in how the buffer's items are
+    // unwrapped and the `(def (cdz-repl-eval) <expr>)` entry synthesized + exported.
+    let arenas = cadenza_syntax::repl::assemble_repl_program(&buf_arenas, &expr_arenas);
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
 
     // Compile the synthesized module (plain Wasm — a REPL call is run, not stepped). Diagnostics from a
