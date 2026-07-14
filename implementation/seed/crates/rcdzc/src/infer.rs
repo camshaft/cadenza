@@ -4553,14 +4553,39 @@ fn check_application(
                     // Read the head's source name first (releasing the `&db.ast` borrow), THEN check it
                     // denotes a type via `typeval_of` (which needs `&mut db`) — a name AND a type-value.
                     let head_name = db.ast.as_name(head).map(str::to_string);
-                    let type_name =
-                        head_name.filter(|_| crate::eval::typeval_of(db, head).is_some());
-                    let message = match type_name {
-                        Some(name) => format!(
+                    let head_typeval = crate::eval::typeval_of(db, head);
+                    let type_name = head_name.filter(|_| head_typeval.is_some());
+                    // A type applied to arguments where a function was expected. Distinguish the common
+                    // sum-ANNOTATION slip — a MONOMORPHIC type given type arguments (`(: t (T Int64))` where
+                    // `(type T (Leaf Int64) …)` takes no parameters) — from a type used in value call
+                    // position (`(T 5)`). A type-value that is a sum/nominal with ZERO declared parameters,
+                    // applied to args, is over-applied: say it takes no type parameters and spell the fix
+                    // (`T`, not `(T Int64)`), rather than the generic "not in call position" (which reads
+                    // wrong when the type IS in annotation position, just over-applied). Read the declared
+                    // param count off the type-value's decl (a GENERIC type given args is handled correctly
+                    // elsewhere; only a nullary-param type reaches here with args).
+                    let mono_type_params = match &head_typeval {
+                        Some(crate::ty::Ty::Sum { decl, .. })
+                        | Some(crate::ty::Ty::Nominal { decl, .. }) => {
+                            db.type_decl_by_occ(*decl).map(|d| d.params.len())
+                        }
+                        _ => None,
+                    };
+                    let message = match (&type_name, mono_type_params) {
+                        // A monomorphic type (0 declared params) applied to arguments — most often the
+                        // sum-annotation slip `(: t (T Int64))` where `T` takes no parameters. Name the
+                        // exact fix (`T`, not `(T …)`) without asserting a context, since the same
+                        // over-application can appear in value call position (`(T 5)`) too.
+                        (Some(name), Some(0)) => format!(
+                            "`{name}` is a type that takes no type parameters — write `{name}`, not \
+                             `({name} …)` (a type belongs in an annotation `(: value {name})`, not \
+                             applied to arguments)"
+                        ),
+                        (Some(name), _) => format!(
                             "`{name}` is a type, not a function — a type appears in an annotation \
                              `(: value {name})`, not in call position"
                         ),
-                        None => format!(
+                        (None, _) => format!(
                             "{} {}",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             other.render_name()

@@ -14162,16 +14162,14 @@ mod match_engine {
 
     #[test]
     fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
-        // `(Color 5)` / `(Option 5)` / `(Int64 5)` apply a TYPE name in call position. The head reduces to
+        // `(Option 5)` / `(Int64 5)` apply a TYPE name where a function was expected. The head reduces to
         // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
         // list — the no-keys-outside-the-prelude rule) and the message names the CATEGORY + where a type
-        // belongs: "`Color` is a type, not a function — a type appears in an annotation `(: value Color)`,
-        // not in call position". Covers a USER type (Color) and PRELUDE types (Option/Int64).
+        // belongs: "`Option` is a type, not a function — a type appears in an annotation `(: value Option)`,
+        // not in call position". `Option` (a GENERIC type, params > 0) and `Int64` (a prelude type with no
+        // sum/nominal decl) both take this generic message. A MONOMORPHIC USER SUM applied to arguments
+        // takes the more precise "takes no type parameters" message — see the sibling test below.
         for (src, name) in [
-            (
-                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
-                "Color",
-            ),
             ("(module m (def (main) (Option 5)) (export main))", "Option"),
             ("(module m (def (main) (Int64 5)) (export main))", "Int64"),
         ] {
@@ -14181,6 +14179,39 @@ mod match_engine {
                     .contains(&format!("`{name}` is a type, not a function"))
                     && d.message.contains("appears in an annotation"),
                 "names the type category + annotation position for {name}: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters() {
+        // The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) …)` is MONOMORPHIC
+        // (takes no type parameters). The reader parses `(T Int64)` as applying `T` to `Int64`; since `T`
+        // reduces to a type-value with ZERO declared params, the message names the exact fix — write `T`,
+        // not `(T …)` — rather than the generic "not in call position" (which reads wrong when the type is
+        // in annotation position, just over-applied). A user `(Color 5)` in value call position takes the
+        // same precise message (a nullary sum can't be applied to anything, and the fix is the same). A
+        // GENERIC sum given args is a different (correct) path; a prelude scalar like `Int64` has no decl
+        // and keeps the generic message (the sibling test above).
+        for (src, name) in [
+            (
+                "(module m (type T (Leaf Int64) (Node Int64)) \
+                   (def (f (: t (T Int64))) (match t ((T.Leaf n) n) ((T.Node n) n))) \
+                   (def (main) (f (T.Leaf 5))) (export main))",
+                "T",
+            ),
+            (
+                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
+                "Color",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
+            assert!(
+                d.message
+                    .contains(&format!("`{name}` is a type that takes no type parameters"))
+                    && d.message.contains(&format!("write `{name}`, not `({name} …)`")),
+                "names the no-type-parameters fix for {name}: {}",
                 d.message
             );
         }
