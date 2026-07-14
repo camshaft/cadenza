@@ -1936,6 +1936,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // and an unbound name surfaces its own CDZ0101 at the reference; only an unambiguous non-effect def is a
     // certain mis-bind. Uses `def_by_name` — a top-level value def — exactly as the host-delegates-a-value
     // check does, since `effect_decl_by_name` is a top-level-only registry.)
+    let mut bound_effects: std::collections::HashSet<String> = std::collections::HashSet::new();
     for form in (0..db.ast.structure.len() as u32).map(StructId) {
         let Some(btail) = db.ast.as_form(form, "bind").map(<[_]>::to_vec) else {
             continue;
@@ -1959,6 +1960,26 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             faults.push(
                 Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE)
                     .at(name_occ),
+            );
+            continue;
+        }
+        // A DUPLICATE `(bind E …)` — the same effect bound to a peer TWICE in source. `scan_effect_bindings`
+        // silently keeps the FIRST (`.or_insert_with`), so a second directive is a dead, ambiguous line: the
+        // author wrote two different routes for one effect and only one takes. This is the same fixed-set
+        // ill-formedness a duplicate `(host (A A) …)` delegation is rejected for (CDZ0201) — report each
+        // occurrence after the first, anchored at the redundant one. (A compile-request `--bind` REBIND is a
+        // SEPARATE layer — an input artifact merged AFTER load, not a second source `(bind …)` — so it is
+        // unaffected: this flags only two source directives for one effect.)
+        if !bound_effects.insert(name.clone()) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "the effect `{name}` is bound to a peer more than once — a `(bind …)` route is a \
+                         SET (one peer per effect); remove the redundant binding"
+                    ),
+                )
+                .at(name_occ),
             );
         }
     }

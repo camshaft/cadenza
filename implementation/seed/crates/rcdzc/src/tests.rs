@@ -50381,6 +50381,17 @@ mod cross_component_oracle {
             "a well-formed (bind …) must not be flagged: {:?}",
             d3.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (d) a DUPLICATE `(bind E …)` — the same effect bound twice in source — is CDZ0201 (a route is a
+        // set, one peer per effect), the `bind` analogue of the duplicate-`(host (A A) …)` reject.
+        let dup = "(do (effect E (op e (-> Int64 Int64))) (bind E \"cadenza:a/x\") (bind E \"cadenza:b/y\") \
+                   (def (main) (handle E 0 ((e (n) s (resume n s))) (E.e 1))) (export main))";
+        let d4 = crate::diagnostics(&mut crate::db::Db::load(parse(dup)));
+        assert!(
+            d4.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("bound to a peer more than once")),
+            "a duplicate (bind E …) is CDZ0201: {:?}",
+            d4.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component

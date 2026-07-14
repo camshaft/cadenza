@@ -1950,6 +1950,22 @@
             (def (main) (host (A A) (A.a))) (export main)))
   (error  CDZ0201))
 
+(case "binding the same effect to a peer twice is rejected"
+  (doc    "The `(bind …)` peer-routing analogue of the duplicate-host-delegation reject above (the U-pivot
+           unifies a peer dependency with an effect). A `(bind E \"iface\")` route is a SET — one peer per
+           effect — so `(bind E \"cadenza:a/x\") (bind E \"cadenza:b/y\")` binds `E` twice: the same
+           fixed-set-no-duplicates ill-formedness (`scan_effect_bindings` silently keeps only the FIRST, so
+           the second is a dead, ambiguous line — the author wrote two routes and only one takes). Rejected
+           at compile time (CDZ0201) rather than silently dropped. (A compile-request `--bind` REBIND is a
+           separate layer — merged after load — and is unaffected; this flags two SOURCE `(bind …)` for one
+           effect.)")
+  (input  (do
+            (effect E (op e (-> Int64 Int64)))
+            (bind E "cadenza:a/x")
+            (bind E "cadenza:b/y")
+            (def (main) (handle E 0 ((e (n) s (resume n s))) (E.e 1))) (export main)))
+  (error  CDZ0201))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).
