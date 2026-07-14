@@ -28736,6 +28736,33 @@ mod stage1 {
     }
 
     #[test]
+    fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
+        // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
+        // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
+        // fix is a numeric index. It now names the tuple's arity and spells the index form, so the reader
+        // reaches for `(. t 0)`. A SCALAR operand (no index route) keeps the plain "requires a record".
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (g (: t (Tuple Int64 Int64))) (. t x)) (export g))",
+        )))
+        .expect_err("named access on a tuple must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("a tuple is accessed by position, not by name `x`")
+                && d.message.contains("numeric index `(. <tuple> N)`")
+                && d.message.contains("0..=1")
+                && d.message.contains("has 2 elements"),
+            "names the index form + the tuple's arity range: {}",
+            d.message
+        );
+        // A scalar operand keeps the generic message (no index route exists).
+        assert!(
+            expect_decline("(. 5 x)").contains("requires a record"),
+            "a scalar member access keeps the record message"
+        );
+    }
+
+    #[test]
     fn member_access_of_a_missing_field_is_a_type_error() {
         // (. (record (x 1)) y) — the user record is CLOSED; a missing field rejects (CDZ0201).
         assert!(expect_decline("(. (record (x 1)) y)").contains("no field"));

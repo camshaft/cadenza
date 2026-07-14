@@ -6796,6 +6796,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // in). Rejecting here spuriously fails a well-typed program `(def (get-x r) (. r
                         // x))`, exactly as arithmetic on an `Any` param (`(+ r 1)`) does not fault.
                         Ty::Any => {}
+                        // A TUPLE accessed by NAME — `(. t x)` on a `(Tuple …)`. A tuple IS a member-access
+                        // operand, just by POSITION not name (`type-system.md` §A Tuple Is Accessed By
+                        // Position): the generic "requires a record" reads as a dead end when the real fix
+                        // is a numeric index. Name the tuple's arity + spell the index form, so the reader
+                        // reaches for `(. t 0)` rather than thinking a tuple is unindexable.
+                        Ty::Tuple(elems) => {
+                            trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a tuple (CDZ0201)");
+                            let last = elems.len().saturating_sub(1);
+                            out.push(Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "a tuple is accessed by position, not by name `{}` — use a numeric \
+                                     index `(. <tuple> N)` with N in 0..={last} (this tuple has {} \
+                                     element{})",
+                                    key.name,
+                                    elems.len(),
+                                    if elems.len() == 1 { "" } else { "s" },
+                                ),
+                            ))
+                        }
                         other => {
                             trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
                             out.push(Reject::coded(
