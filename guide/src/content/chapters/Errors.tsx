@@ -103,8 +103,7 @@ export default function Errors() {
         exactly <C>(Some 0)</C>; a different <C>Some</C> falls through to the binding arm.
       </P>
       <Runnable
-        source={`(type Opt (Some Int64) (None unit))
-(def (describe o)
+        source={`(def (describe o)
   (match o
     ((Some 0) 100)
     ((Some x) x)
