@@ -8080,9 +8080,15 @@ fn emit_shift(
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.
     // ELIDED for a VALID constant count (`0 <= k < N`, established above): the guard's condition is a
-    // compile-time `false`, so it is dead (mirrors `lower`'s const-`if` fold). Only a RUNTIME count needs
-    // the runtime test. (An OOR constant count already returned a bare `unreachable` at the top.)
-    if const_count.is_none() {
+    // compile-time `false`, so it is dead (mirrors `lower`'s const-`if` fold). Also elided for a RUNTIME
+    // count the value-range lattice proves is already in `[0, N-1]` — the common masked-count idiom
+    // `(<< x (& k 63))` / `(>> x (& k 7))`, where `(& k M)` with `M < N` bounds the count to `[0, M]`, so
+    // the `>=ᵤ N` test can never fire. `value_range_within(rhs, 0, N-1)` confirms both bounds (the lower
+    // bound also rules out a negative count reading huge unsigned). Only a count of genuinely unknown range
+    // keeps the runtime test. (An OOR constant count already returned a bare `unreachable` at the top.)
+    let count_in_range =
+        const_count.is_some() || crate::lower::value_range_within(db, rhs, 0, m.width as i64 - 1);
+    if !count_in_range {
         sb.push(out);
         out.push(m.konst(m.width as i64));
         out.push(m.ge_u());

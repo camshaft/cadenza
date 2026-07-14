@@ -5645,6 +5645,121 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_masked_runtime_shift_count_elides_the_count_guard() {
+        // A RUNTIME shift count the value-range lattice proves is in `[0, N-1]` — the masked-count idiom
+        // `(<< x (& k 63))` / `(>> x (& k 7))`, where `(& k M)` with `M < N` bounds the count — needs no
+        // `count >=ᵤ N` trap guard (it can never fire). Elided; `<<`'s overflow round-trip is unaffected
+        // (a masked count can still shift bits out), and an UNMASKED (unknown-range) count keeps the guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The count guard is the `i64.const N ; i64.ge_u ; if unreachable` triple. For `>>` (no overflow
+        // round-trip) a masked count leaves ONLY the machine `shr` — no `ge_u` at all.
+        let shr = lir("(: x Int64) (: k Int64)", "(>> x (& k 63))");
+        assert!(
+            !shr.iter().any(|i| matches!(i, Lir::I64GeU)),
+            ">> by a masked count elides the count guard, got: {shr:?}"
+        );
+        // `<<` by a masked count: the count guard (`ge_u`) is gone, but the overflow round-trip (`i64.ne`)
+        // STAYS — a masked count can still shift bits out of the type.
+        let shl = lir("(: x Int64) (: k Int64)", "(<< x (& k 63))");
+        assert!(
+            !shl.iter().any(|i| matches!(i, Lir::I64GeU)),
+            "<< by a masked count elides the count guard, got: {shl:?}"
+        );
+        assert!(
+            shl.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "<< keeps its overflow round-trip even with a masked count, got: {shl:?}"
+        );
+        // An UNMASKED (unknown-range) count KEEPS the count guard.
+        let unmasked = lir("(: x Int64) (: k Int64)", "(>> x k)");
+        assert!(
+            unmasked.iter().any(|i| matches!(i, Lir::I64GeU)),
+            "an unmasked count keeps the count guard, got: {unmasked:?}"
+        );
+
+        // VALUE PARITY: the mask semantics are preserved (a count ≥ N wraps mod the mask, exactly as the
+        // machine shift does after the mask). `256 >> (k & 63)`.
+        for (k, want) in [
+            (0i64, 256),
+            (1, 128),
+            (4, 16),
+            (63, 0),
+            (64, 256),
+            (65, 128),
+        ] {
+            assert_eq!(
+                run::<i64>(
+                    "(: x Int64) (: k Int64)",
+                    "(>> x (& k 63))",
+                    &[Val::S64(256), Val::S64(k)]
+                ),
+                want,
+                ">> masked count @k={k}"
+            );
+        }
+        // `<<` overflow STILL traps with a masked count (1 << 63 overflows signed i64); a valid one computes.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: k Int64)",
+                "(<< x (& k 63))",
+                &[Val::S64(1), Val::S64(4)]
+            ),
+            16
+        );
+        assert!(traps(
+            "(: x Int64) (: k Int64)",
+            "(<< x (& k 63))",
+            &[Val::S64(1), Val::S64(63)]
+        ));
+        // NARROW type: `(& k 7)` on UInt8 (width 8) is in `[0,7]` → count guard elided; `(& k 15)` ([0,15])
+        // is NOT within [0,7], so the guard STAYS. The COUNT guard is `ConstI32(width=8) ; I32GeU` — the
+        // separate `<<` range-check compares against `ConstI32(2^8=256)`, so look for the `8`-valued bound
+        // specifically. A run confirms the trap behavior end to end.
+        let count_guard_u8 = |code: &[Lir]| {
+            code.windows(2)
+                .any(|w| matches!(w, [Lir::ConstI32(8), Lir::I32GeU]))
+        };
+        assert!(
+            !count_guard_u8(&lir("(: x UInt8) (: k UInt8)", "(<< x (& k 7))")),
+            "UInt8 << (& k 7) elides the count guard"
+        );
+        assert!(
+            count_guard_u8(&lir("(: x UInt8) (: k UInt8)", "(<< x (& k 15))")),
+            "UInt8 << (& k 15) keeps the count guard (mask exceeds width)"
+        );
+        assert!(traps(
+            "(: x UInt8) (: k UInt8)",
+            "(<< x (& k 15))",
+            &[Val::U8(3), Val::U8(10)]
+        ));
+    }
+
+    #[test]
     fn runtime_shift_with_a_nested_value_operand() {
         // `(<< (+ a b) c)` — the shift's VALUE operand is a nested checked add, so `emit_operand_into`
         // routes it through `emit_checked_arith_to` writing the shift's value slot directly. Both the
