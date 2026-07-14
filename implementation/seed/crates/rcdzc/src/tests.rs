@@ -45585,3 +45585,476 @@ mod closure_host_resource {
         );
     }
 }
+
+/// X1 — the cross-component composition ORACLE (`DESIGN-cross-component-interop-rcdzc.md`).
+///
+/// De-risks the shared-runtime cross-component transport BEFORE any compiler change, the oracle-first
+/// move the resource/closure verticals used at every seam. Two SEPARATELY-built Cadenza-shaped
+/// components — a provider A that exports `f`, and a consumer B that IMPORTS A's interface and calls
+/// it — are composed by a `ComponentBuilder` into one component whose sole export is B's `main`. The
+/// point being proved: (X1a) a component can bind a PEER component's export and call across the live
+/// boundary; (X1b) two program cores can share ONE value-heap runtime instance, so a handle one
+/// produces is meaningful to the other (the load-bearing rule in component-abi.md §A Cross-Component
+/// Handle Is Meaningful Only In The Shared Runtime Instance).
+mod cross_component_oracle {
+    use wasm_encoder::*;
+
+    /// Provider core A: exports `f : (i32) -> i32` computing `x + 1`. A leaf core module, no imports.
+    fn provider_core_a() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("f", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Consumer core B: imports `f : (i32) -> i32` from module `"peer"`, exports `main : (i32) -> i32`
+    /// computing `f(x) * 10` — the cross-component call is the imported `call 0`.
+    fn consumer_core_b() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32
+        m.section(&types);
+        let mut imports = ImportSection::new();
+        imports.import("peer", "f", EntityType::Function(0)); // core func 0 = the peer's f
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0); // main is core func 1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, 1);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        main.instruction(&Instruction::LocalGet(0));
+        main.instruction(&Instruction::Call(0)); // f(x) — the cross-component call
+        main.instruction(&Instruction::I32Const(10));
+        main.instruction(&Instruction::I32Mul);
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Inner component wrapping provider A: exports interface `cadenza:peer/api` with `f : func(s32) -> s32`.
+    fn provider_component_a() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&provider_core_a());
+        let inst = c.core_instantiate::<[(&str, ModuleArg); 0]>(core_idx, []);
+        let f_core = c.core_alias_export(inst, "f", ExportKind::Func);
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.lift_func(f_core, f_ty, []);
+        // Export `f` as a top-level component func the consumer imports by name. (X1 is a de-risk
+        // oracle for the cross-component CALL + shared runtime; the production envelope in X3 wraps
+        // this in a named interface via the inner-re-export-component pattern the resource oracle uses.)
+        c.export(
+            "f",
+            ComponentExportKind::Func,
+            f_comp,
+            Some(ComponentTypeRef::Func(f_ty)),
+        );
+        c
+    }
+
+    /// Inner component wrapping consumer B: IMPORTS interface `cadenza:peer/api` (with `f`), lowers `f`
+    /// into B's core under module `"peer"`, and exports B's `main : func(s32) -> s32` at the top level.
+    fn consumer_component_b() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        // Import the peer's `f : func(s32)->s32` as a top-level component func.
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.import("f", ComponentTypeRef::Func(f_ty));
+        let f_core = c.lower_func(f_comp, []);
+        let peer_inst = c.core_instantiate_exports([("f", ExportKind::Func, f_core)]);
+        let core_idx = c.core_module_raw(&consumer_core_b());
+        let prog_inst = c.core_instantiate(core_idx, [("peer", ModuleArg::Instance(peer_inst))]);
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let (main_ty, mut mf) = c.type_function();
+        mf.params([("x", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let main_comp = c.lift_func(main_core, main_ty, []);
+        c.export(
+            "main",
+            ComponentExportKind::Func,
+            main_comp,
+            Some(ComponentTypeRef::Func(main_ty)),
+        );
+        c
+    }
+
+    /// The OUTER composition: instantiate provider A, then consumer B binding B's `f` import to A's
+    /// exported `f`, and re-export B's `main`.
+    fn composed_scalar_component() -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        let a_idx = c.component(provider_component_a());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let a_inst = c.instantiate(a_idx, no_args);
+        let a_f = c.alias_export(a_inst, "f", ComponentExportKind::Func);
+        let b_idx = c.component(consumer_component_b());
+        let b_inst = c.instantiate(b_idx, [("f", ComponentExportKind::Func, a_f)]);
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x1a_a_consumer_binds_and_calls_a_provider_export_across_a_component_boundary() {
+        // B calls A's `f` (x+1) then *10. main(5) = (5+1)*10 = 60. Proves the cross-component call
+        // wiring works end-to-end under wasmtime with NO shared runtime (scalar transport).
+        let comp = composed_scalar_component();
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("composed cross-component component validates");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run composed cross-component") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "60", "(5+1)*10 across the boundary"),
+            cdz_run::Outcome::Trap(t) => panic!("cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X1b — TWO program cores share ONE value-heap runtime instance; a handle A builds is meaningful to
+    // B (component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared Runtime Instance).
+    // The genuinely novel de-risk: a runtime value crosses A→B as an opaque handle over a SHARED heap.
+    // ------------------------------------------------------------------------------------------------
+
+    use crate::backend::wasm::runtime_abi::{OPS, RtOp};
+
+    /// The five heap ops both cores import, sorted by name (arr-alloc, arr-get, arr-set, box-int, get-int).
+    /// Both cores import them under module `"heap"` in THIS order, so a call index is the op's position.
+    fn heap_ops() -> [&'static RtOp; 5] {
+        [
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ]
+    }
+
+    /// The component valtype of an ABI type (local copy of the r2-module helper).
+    fn abi_comp(p: crate::backend::wasm::runtime_abi::AbiValType) -> ComponentValType {
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        ComponentValType::Primitive(match p {
+            AbiValType::U32 => PrimitiveValType::U32,
+            AbiValType::S64 => PrimitiveValType::S64,
+            AbiValType::Bool => PrimitiveValType::Bool,
+            AbiValType::F64 => PrimitiveValType::F64,
+            AbiValType::F32 => PrimitiveValType::F32,
+        })
+    }
+
+    /// The CORE functype `(params)->(result?)` of a runtime op (local copy of the r2-module helper).
+    fn op_core_functype(op: &RtOp) -> (Vec<ValType>, Vec<ValType>) {
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        let core = |p: AbiValType| match p {
+            AbiValType::U32 | AbiValType::Bool => ValType::I32,
+            AbiValType::S64 => ValType::I64,
+            AbiValType::F64 => ValType::F64,
+            AbiValType::F32 => ValType::F32,
+        };
+        let params = op.params.iter().map(|p| core(*p)).collect();
+        let results = op.result.map(|r| vec![core(r)]).unwrap_or_default();
+        (params, results)
+    }
+
+    /// Emit the import section (module `"heap"`) declaring the five ops, and the type section they use.
+    /// Returns the count of imported funcs (= 5) so the caller knows where its own funcs start.
+    fn heap_import_prologue(
+        m: &mut Module,
+        types: &mut TypeSection,
+        imports: &mut ImportSection,
+    ) -> u32 {
+        for (i, op) in heap_ops().iter().enumerate() {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            imports.import("heap", op.name, EntityType::Function(i as u32));
+        }
+        heap_ops().len() as u32
+    }
+    // Import indices within the shared `"heap"` order:
+    const H_ARR_ALLOC: u32 = 0;
+    const H_ARR_GET: u32 = 1;
+    const H_ARR_SET: u32 = 2;
+    const H_BOX_INT: u32 = 3;
+    const H_GET_INT: u32 = 4;
+
+    /// Provider core A': imports the heap ops; exports `build : () -> i32` returning a runtime handle for
+    /// a 1-element array `[99]` built on the value heap. The handle is an opaque `u32` at the boundary.
+    fn provider_core_a_heap() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        let base = heap_import_prologue(&mut m, &mut types, &mut imports);
+        // build : () -> i32   (new functype after the 5 op types)
+        let build_ty = base; // type index for () -> i32
+        types.ty().function(vec![], vec![ValType::I32]);
+        m.section(&types);
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        funcs.function(build_ty); // build = core func `base`
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("build", ExportKind::Func, base);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut build = Function::new(vec![(1, ValType::I32)]); // local 0 = the array handle
+        // a = arr-alloc(1)
+        build.instruction(&Instruction::I32Const(1));
+        build.instruction(&Instruction::Call(H_ARR_ALLOC));
+        build.instruction(&Instruction::LocalSet(0));
+        // a = arr-set(a, 0, box-int(99))
+        build.instruction(&Instruction::LocalGet(0));
+        build.instruction(&Instruction::I32Const(0));
+        build.instruction(&Instruction::I64Const(99));
+        build.instruction(&Instruction::Call(H_BOX_INT));
+        build.instruction(&Instruction::Call(H_ARR_SET));
+        build.instruction(&Instruction::LocalSet(0));
+        // return a
+        build.instruction(&Instruction::LocalGet(0));
+        build.instruction(&Instruction::End);
+        code.function(&build);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Consumer core B': imports the heap ops AND `build : () -> i32` from module `"peer"`; exports
+    /// `main : () -> i64` = `get-int(arr-get(build(), 0))`. Reads the element out of the handle A built
+    /// on the SHARED heap — if it reads 99, the shared runtime instance is genuinely shared across A & B.
+    fn consumer_core_b_heap() -> Vec<u8> {
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        let base = heap_import_prologue(&mut m, &mut types, &mut imports);
+        // build : () -> i32  imported from "peer" (type index `base`, import func index `base`)
+        types.ty().function(vec![], vec![ValType::I32]);
+        imports.import("peer", "build", EntityType::Function(base));
+        // main : () -> i64   (type index base+1)
+        let main_ty = base + 1;
+        types.ty().function(vec![], vec![ValType::I64]);
+        m.section(&types);
+        m.section(&imports);
+        let peer_build = base; // the imported build is core func `base`
+        let mut funcs = FunctionSection::new();
+        funcs.function(main_ty); // main = core func base+1
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("main", ExportKind::Func, base + 1);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        // get-int(arr-get(build(), 0))
+        main.instruction(&Instruction::Call(peer_build));
+        main.instruction(&Instruction::I32Const(0));
+        main.instruction(&Instruction::Call(H_ARR_GET));
+        main.instruction(&Instruction::Call(H_GET_INT));
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// Provider inner component A': imports the heap interface, lowers the ops into A's core, exports
+    /// `build : func() -> u32` at the top level.
+    fn provider_component_a_heap(import_name: &str) -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let core_idx = c.core_module_raw(&provider_core_a_heap());
+        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let build_core = c.core_alias_export(prog_inst, "build", ExportKind::Func);
+        let (build_ty, mut bf) = c.type_function();
+        bf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let build_comp = c.lift_func(build_core, build_ty, []);
+        c.export(
+            "build",
+            ComponentExportKind::Func,
+            build_comp,
+            Some(ComponentTypeRef::Func(build_ty)),
+        );
+        c
+    }
+
+    /// Consumer inner component B': imports the heap interface AND `build : func() -> u32`; lowers both
+    /// into B's core (heap under `"heap"`, build under `"peer"`), exports `main : func() -> s64`.
+    fn consumer_component_b_heap(import_name: &str) -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        // Import `build : func() -> u32` as a top-level component func, lower into `"peer"`.
+        let (build_ty, mut bf) = c.type_function();
+        bf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let build_comp = c.import("build", ComponentTypeRef::Func(build_ty));
+        let build_core = c.lower_func(build_comp, []);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let peer_inst = c.core_instantiate_exports([("build", ExportKind::Func, build_core)]);
+        let core_idx = c.core_module_raw(&consumer_core_b_heap());
+        let prog_inst = c.core_instantiate(
+            core_idx,
+            [
+                ("heap", ModuleArg::Instance(heap_inst)),
+                ("peer", ModuleArg::Instance(peer_inst)),
+            ],
+        );
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let (main_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let main_comp = c.lift_func(main_core, main_ty, []);
+        c.export(
+            "main",
+            ComponentExportKind::Func,
+            main_comp,
+            Some(ComponentTypeRef::Func(main_ty)),
+        );
+        c
+    }
+
+    /// Import the value-heap `heap` interface declaring the five ops and lower them into core funcs.
+    /// Returns `(name, core_func_index)` per op, in `heap_ops()` order.
+    fn import_and_lower_heap(
+        c: &mut ComponentBuilder,
+        import_name: &str,
+    ) -> (Vec<(&'static str, u32)>, u32) {
+        let ops = heap_ops();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+        (lowered, ops.len() as u32)
+    }
+
+    /// The OUTER composition for X1b: A' and B' each import the SAME `heap` interface (the host binds
+    /// both imports to ONE runtime instance when it composes the runtime), B' imports A's `build`, and
+    /// the composition re-exports B's `main`.
+    fn composed_shared_heap_component(import_name: &str) -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        // Re-import the heap interface at the OUTER level and forward it into both inner components, so
+        // the whole composition declares exactly ONE `heap` import the host satisfies with one instance.
+        let ops = heap_ops();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let heap = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+
+        let a_idx = c.component(provider_component_a_heap(import_name));
+        let a_inst = c.instantiate(a_idx, [(import_name, ComponentExportKind::Instance, heap)]);
+        let a_build = c.alias_export(a_inst, "build", ComponentExportKind::Func);
+
+        let b_idx = c.component(consumer_component_b_heap(import_name));
+        let b_inst = c.instantiate(
+            b_idx,
+            [
+                (import_name, ComponentExportKind::Instance, heap),
+                ("build", ComponentExportKind::Func, a_build),
+            ],
+        );
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x1b_two_cores_share_one_runtime_instance_and_a_handle_crosses() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = composed_shared_heap_component(&import_name);
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("shared-heap cross-component component validates");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!(
+                "[X1b] runtime wasm not found (run `cargo xtask build`); skipping shared-heap run"
+            );
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run shared-heap cross-component") {
+            // A built [99] on the shared heap; B read element 0 back → 99. The handle A produced is
+            // meaningful to B because both index the ONE shared runtime instance.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "99", "B reads A's handle over the shared heap")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("shared-heap cross-component run trapped: {t}"),
+        }
+    }
+}
