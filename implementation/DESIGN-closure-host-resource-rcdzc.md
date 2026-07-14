@@ -1113,9 +1113,13 @@ the component type. The new work:
   lagged). The direct-call RESULT surface is as deep as the arg surface.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
-  compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
-  envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) a **SUM
+  compound args** (two tuple args) — 🏗️ VERTICAL STARTED: brick 1 (`d4099fad`, oracle
+  `two_fixed_shape_tuple_closure_args_cross_by_independent_flattening`) PROVES two `tuple<s64,s64>` args flatten
+  INDEPENDENTLY to 4 core params (no `value-decode` — an impl gap, not an ABI wall). Remaining bricks:
+  generalize the classifier + boundary types from ONE tuple to a `Vec<TupleArgRebuild>` (one per tuple at its
+  own `base_param`), generalize `emit_closure_call_args` to push N rebuilds interleaved with scalars, + mint N
+  `tuple<…>` types in the envelope (like the nested `mint_tuple_type_nested` running-counter approach). A large
+  multi-tick vertical (~16 functype sites), decompose like nested-compound. (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
