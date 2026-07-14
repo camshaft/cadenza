@@ -7743,7 +7743,16 @@ fn try_emit_disc_br_table(
             out,
             TailPos::NonTail,
         )?;
-        out.push(Lir::Br((m - 1 - k as u32) + join_from_arm_extra)); // br to $join, carrying the value
+        // `br` the value to $join — EXCEPT the last arm of an EXHAUSTIVE match (no $default block), whose
+        // `br` depth is 0: its body is the final code inside $join, so control falls THROUGH to $join's
+        // `end` anyway. A `br 0` there jumps to exactly the next instruction (the `End` below) — a dead
+        // branch. Skip it: the value stays on the stack and the block ends, identical behavior, one fewer
+        // instruction. (A $default block, when present, sits between the last arm and $join, so the last
+        // arm's depth is ≥1 and the `br` is real — the guard `!has_default_block` covers that.)
+        let depth = (m - 1 - k as u32) + join_from_arm_extra;
+        if depth != 0 {
+            out.push(Lir::Br(depth)); // br to $join, carrying the value
+        }
     }
     // Close $default and emit its continuation (falls through to $join's end — no `br` needed). Only when
     // a real default arm exists; an exhaustive match has no $default block (the last arm covered it).

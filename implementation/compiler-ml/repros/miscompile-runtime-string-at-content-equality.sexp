@@ -64,6 +64,17 @@
 ;;     So `String.at` on a borrowed, reused string has a latent lifetime bug (it should `dup` `str` before
 ;;     the consuming `bytes-slice`, like other consuming ops dup a borrowed operand). The content-equality
 ;;     fix and this lifetime fix must land TOGETHER. Reverted; two-bug interaction documented.
+;;
+;;   THIRD FIX ATTEMPT (iter 21) — LAYER-2 ownership: classify `Core::SumExpect { scrutinee: StrAt }`
+;;     as OWNED in `heap_operand_ownership` (a `String.at` slice IS a fresh owned `bytes-slice`), so
+;;     `value-eq`'s existing OWNED-compact path canonicalizes it. Result: the isolated value path (`su2`,
+;;     `String.at` in a loop, no `==`) stays correct (6), but the EQ loop now DOUBLE-FREES (out-of-bounds
+;;     memory fault): `value-eq`'s owned path compacts-consumes the slice AND the slice was already the
+;;     source-buffer view, so the drop accounting frees it twice. Reverted. So NEITHER a StrAt-emit
+;;     compact NOR a value-eq owned-compact works alone — the `bytes-slice`-view + reused-source +
+;;     equality-compact interaction needs a coordinated fix (e.g. `String.at` returns an INDEPENDENT
+;;     compacted leaf AND `bytes-slice` on a borrowed source dups it first), which is the real increment.
+;;     Three failed local approaches now documented for whoever builds it.
 (do
   (def (count-a (: s String) (: i Int64) (: n Int64) (: acc Int64))
     (if (= i n)

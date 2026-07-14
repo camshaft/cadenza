@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 149 tests total across 17 modules):
+top. Current `src/` modules (each with same-file `@test`s — 161 tests total across 18 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -124,6 +124,11 @@ top. Current `src/` modules (each with same-file `@test`s — 149 tests total ac
   through recursion. 10 `@test`s incl. shadowing (`λx.λx.x` closed) and a name free-and-bound at once
   (`(x (λx.x))` — outer x free). Confirmed WORKING (no new bug). ⚠ minor API inconsistency: a `Set`'s
   count is `Set.len` but a `Map`'s is `Map.size` (same "count" concept, two names).
+- `src/compare.cdz` — a TOTAL ORDER over `Ast`: a three-way `cmp` returning -1/0/1, ordering by node tag
+  then by payload (Nums by value, Nodes lexicographically by children — a proper prefix is smaller). The
+  canonical ordering a compiler uses to sort / dedup / hash-cons terms. Fully recursive; returns scalars
+  (dodges the runtime-String pitfall). 12 `@test`s incl. an antisymmetry invariant (`cmp(a,b) ==
+  -cmp(b,a)`) and deep-leaf differences. Confirmed WORKING (no new bug).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP

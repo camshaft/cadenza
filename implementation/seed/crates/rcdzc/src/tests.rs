@@ -13867,6 +13867,72 @@ mod match_engine {
     }
 
     #[test]
+    fn a_join_site_record_field_typo_offers_the_rename_fix() {
+        // The PEER-JOIN twin of the argument/annotation/let-binder record-field-typo rename: two branches /
+        // arms / list-elements are records differing only by a misspelled field (`(record (foo 1))` vs
+        // `(record (fooo 2))`). Each join site now offers the `fooo`→`foo` key rename on whichever side is
+        // the OUTLIER (the one that broke homogeneity against the established first type), consistent with
+        // where the diagnostic anchors. Verified fixes.
+        // LIST-element.
+        let list = reject_full(
+            "(module m (def (g) (list (record (foo 1)) (record (fooo 2)))) (export g))",
+        )
+        .expect("a list of records with a field typo rejects");
+        assert_eq!(
+            list.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            list.message
+        );
+        assert!(
+            list.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the list-element record typo carries the rename: {} fix={:?}",
+            list.message,
+            list.fix
+        );
+        // IF-branch.
+        let iff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (foo 1)) (record (fooo 2)))) (export f))",
+        )
+        .expect("if branches with a record field typo reject");
+        assert!(
+            iff.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the if-branch record typo carries the rename: {} fix={:?}",
+            iff.message,
+            iff.fix
+        );
+        // MATCH-arm.
+        let m = reject_full(
+            "(module m (type C (A) (B)) \
+               (def (f (: c C)) (match c ((A) (record (foo 1))) ((B) (record (fooo 2))))) (export f))",
+        )
+        .expect("match arms with a record field typo reject");
+        assert!(
+            m.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("foo")),
+            "the match-arm record typo carries the rename: {} fix={:?}",
+            m.message,
+            m.fix
+        );
+        // NO false rename: a genuinely different field-SET across branches (not a typo) → message only.
+        let diff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (a 1) (b 2)) (record (a 3)))) (export f))",
+        )
+        .expect("if branches with a differing field set reject");
+        assert!(
+            diff.fix.is_none(),
+            "a genuine field-set difference gets no rename: {} fix={:?}",
+            diff.message,
+            diff.fix
+        );
+    }
+
+    #[test]
     fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
         // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
         // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
@@ -22002,6 +22068,61 @@ mod match_engine {
             ),
             10,
             "a well-typed map-pattern key matches and binds its value"
+        );
+        // A RUNTIME map (built by a conditional, not a constant `MapNew`) is matched through
+        // `desugar_runtime_map_match`, a SEPARATE path from the const matcher. A wrong-type key there used
+        // to slip past the const-path key check (the runtime desugar returned first); the key check now
+        // runs at the TOP of `lower_match_map`, before the desugar, so a runtime map's wrong-type key is
+        // rejected too.
+        let runtime_bad = "(module m \
+            (def (pick (: b Bool)) \
+              (if b (Map.insert (Map.empty) 1 10) (Map.insert (Map.empty) 2 20))) \
+            (def (look (: m (Map Int64 Int64))) (match m ((map (\"x\" v) .. rest) v) (_ -1))) \
+            (def (main (: b Bool)) (look (pick b))) (export main))";
+        assert_eq!(
+            reject_code(runtime_bad).as_deref(),
+            Some("CDZ0201"),
+            "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
+        );
+    }
+
+    #[test]
+    fn a_list_element_literal_pattern_of_the_wrong_type_is_a_type_error() {
+        // A refutable LITERAL leading element `(list "x" .. r)` on an `(List Int64)` writes a String where
+        // an Int64 is required. Before, it desugared to a `(= __le "x")` guard that silently never matched
+        // (String-vs-Int folds to `false`), accepting a mistyped element as dead code. It is now CDZ0201
+        // naming both types, anchored at the literal (the list-element twin of the scalar-match + map-key
+        // pattern-type checks).
+        let d = reject_full(
+            "(module m (def (main) (match (list 1 2 3) ((list \"x\" .. r) 1) (_ 0))) (export main))",
+        )
+        .expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("list-element pattern is String")
+                && d.message.contains("the list's elements are Int64"),
+            "names both element types: {}",
+            d.message
+        );
+        // The symmetric case (an Int element on a String list) rejects too.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (list \"a\" \"b\") ((list 5 .. r) 1) (_ 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a well-typed literal element matches + runs (an Int literal on an Int list).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (match (list 1 2 3) ((list 1 .. _r) 10) (_ 0))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            10,
+            "a well-typed list-element literal dispatches by value"
         );
     }
 
