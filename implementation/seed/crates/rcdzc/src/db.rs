@@ -2731,6 +2731,13 @@ type TopScan = (
 //# Any definition MUST be able to carry documentation, so that every part of a program can be documented.
 //= spec/capabilities/agent-authoring.md#documentation-is-machine-readable
 //# Documentation MUST NOT change the runtime meaning of a program.
+// The `(doc "…")` rides as an ordinary node of the binary AST attached to its def — the codec's generic
+// encode/decode round-trips it like any list node, and this load-time pass captures it into the doc
+// column (post-decode). So the AST carries documentation attached to a definition, per ast-encoding.
+// (The COMMENT half of that section — a comment as a tree node — is not realized: the codec has no
+// comment node.)
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
     let mut docs: crate::fxhash::FxHashMap<StructId, String> = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
