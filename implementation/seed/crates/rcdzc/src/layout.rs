@@ -376,6 +376,21 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
 /// is a dead lift. Descends every sub-position (both `if` branches, arm bodies, operands) like the call
 /// walk. A `Core::CallClosure` dispatches dynamically (no static code), so it adds no slot itself.
 fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<usize>) {
+    // WALK-DEPTH GUARD (see [`crate::db::WALK_DEPTH_LIMIT`] and `collect_call_callees`): a non-normalizing
+    // self-application in a sum-constructor payload materializes a deep `Core::SumNew` chain this walk would
+    // descend until the native stack overflows. Bound the walk's OWN recursion with the dedicated
+    // `walk_depth` counter (NOT `core_of`'s `descent_depth`, which this walk also drives — sharing would
+    // spuriously decline a valid moderately-deep program). Past the limit stop descending; the program is
+    // rejected by `collect_faults` anyway, so a clipped closure set changes no accepted program.
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    collect_closure_codes_at(db, id, out);
+    db.walk_depth -= 1;
+}
+
+fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<usize>) {
     use crate::core::Core;
     match crate::lower::core_of(db, id) {
         Core::Closure { code, captures } => {
@@ -583,7 +598,29 @@ fn collect_cont_closure_codes(
 /// core form at `id`, descending through every sub-position (both `if` branches are reachable code, so
 /// a callee in either counts). Reads the core column on demand. A callee's OWN calls are found when it
 /// is itself expanded from the worklist, so this walk does not recurse into a callee's body.
+///
+/// WALK-DEPTH GUARD (see [`crate::db::WALK_DEPTH_LIMIT`]): a non-normalizing self-application in a
+/// SUM-CONSTRUCTOR payload — `((fn v (Some (v v))) (fn v (Some (v v))))` — β-reduces (bounded, so inference
+/// declines CDZ0999) into a `Core::SumNew` chain this walk materializes+descends without bound (each
+/// `core_of` on a payload β-reduces one more level, unbounded by the reduction-DEPTH guard which sum
+/// construction does not hold across its payload), OVERFLOWING THE COMPILER'S STACK on `cdz compile` — the
+/// shape `82410c6d` fixed for the tuple/record/list walks, now reached via the sum node. Bound the walk's
+/// OWN recursion with the dedicated `walk_depth` counter — NOT `core_of`'s `descent_depth`, which this walk
+/// also drives at each node (sharing would inflate `core_of`'s view and spuriously decline a valid
+/// moderately-deep program). Past the limit STOP descending: this walk only gathers the reachable-callee
+/// set for layout, and a callee buried past the limit belongs to a program `collect_faults` REJECTS anyway
+/// (the fault walk's own descent bound clips it to a coded decline), so omitting it changes no ACCEPTED
+/// program. A compiler must never crash on well-formed input, only decline or complete.
 fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    collect_call_callees_at(db, id, out);
+    db.walk_depth -= 1;
+}
+
+fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
     match crate::lower::core_of(db, id) {
         crate::core::Core::Call { callee, args } => {
             if !out.contains(&callee) {

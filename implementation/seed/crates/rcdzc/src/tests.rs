@@ -29314,6 +29314,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_sum_payload_wrapped_self_application_declines_not_a_stack_overflow() {
+        // The SUM-CONSTRUCTOR-payload sibling of the tuple/record shape above: `(fn v (Some (v v)))` applied
+        // to a copy of itself. `cdz check` (inference) already declines CDZ0999 (the reduction budget), but
+        // `cdz compile` HUNG — the LAYOUT reachability walks (`collect_call_callees`/`collect_closure_codes`)
+        // descend a `Core::SumNew` payload by calling `core_of`, which β-reduces one more level per call
+        // WITHOUT holding the reduction-DEPTH guard (unlike tuple lowering), materializing an unbounded
+        // `Core::SumNew` chain the walk descends in ONE native recursion until the stack OVERFLOWS. The fix
+        // bounds those walks with a DEDICATED `walk_depth` counter (not `core_of`'s `descent_depth`, which
+        // the walk also drives — sharing would spuriously decline a valid moderately-deep program). Past the
+        // limit the walk stops descending; `collect_faults` then reports the coded CDZ0999 decline. The
+        // property is 'never crash' — TERMINATE with a coded rejection on `compile`, not just `check`.
+        let some = "(module m (def (main) ((fn (v0) (Some (v0 v0))) (fn (v2) (Some (v2 v2))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(some)))
+            .expect_err("a Some-payload-wrapped self-application must decline, not crash");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a sum-payload diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // `(Ok (v v))` is the same class (a different built-in sum), and a user MULTI-payload variant
+        // `(P (v v) 1)` too — both must TERMINATE with a coded rejection (the user one surfaces a CDZ0201
+        // payload-type conflict before the blowup, which is fine: a prompt diagnostic, not a hang).
+        for src in [
+            "(module m (def (main) ((fn (v0) (Ok (v0 v0))) (fn (v2) (Ok (v2 v2))))) (export main))",
+            "(module m (type B (P Int64 Int64)) (def (main) ((fn (v0) (P (v0 v0) 1)) (fn (v2) (P (v2 v2) 1)))) (export main))",
+        ] {
+            let reject = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a sum-payload self-application must decline, not crash");
+            assert!(
+                reject.code.is_some(),
+                "a sum-payload diverging reduction is a coded decline, not a crash: {} / {:?}",
+                reject.message,
+                reject.code
+            );
+        }
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,

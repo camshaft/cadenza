@@ -1352,6 +1352,22 @@
   (input  (do (def (main) ((fn (v0) (tuple (v0 v0) 1)) (fn (v2) (tuple (v2 v2) 1)))) (export main)))
   (error  CDZ0999))
 
+(case "a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow"
+  (doc    "The SUM-CONSTRUCTOR-payload sibling of the tuple-wrapped case above: `(fn v (Some (v v)))` applied
+           to a copy of itself. `cdz check` (inference) already declines CDZ0999 (the reduction work budget),
+           but `cdz compile` HUNG at a later phase — the LAYOUT reachability walks (`collect_call_callees` /
+           `collect_closure_codes`) descend a `Core::SumNew` payload by calling `core_of`, which β-reduces one
+           more level per call WITHOUT holding the reduction-DEPTH guard (unlike tuple lowering), so the walk
+           materializes an unbounded `Core::SumNew` chain and descends it in ONE native recursion until the
+           stack OVERFLOWS. The tuple/record/list walks were bounded earlier; this bounds the sum path too, by
+           a DEDICATED walk-depth counter (kept separate from `core_of`'s descent counter, which the walk also
+           drives — sharing would spuriously decline a valid moderately-deep program). Past the limit the walk
+           stops descending and `collect_faults` reports the coded CDZ0999. Also `(Ok (v v))` and a user
+           multi-payload `(P (v v) 1)`. The point is 'never crash' — a compiler completes or declines on any
+           input from BOTH check and compile, regardless of the compound the divergence hides in.")
+  (input  (do (def (main) ((fn (v0) (Some (v0 v0))) (fn (v2) (Some (v2 v2))))) (export main)))
+  (error  CDZ0999))
+
 (case "a deeply nested constant expression compiles or declines without crashing"
   (doc    "A 64-deep nest of `(+ 1 …)` folds to 65 — well within any reasonable bound. The point is the
            companion the gate cannot record: the SAME shape thousands deep must DECLINE (a
