@@ -3537,7 +3537,7 @@ pub(crate) fn record_op_pair(db: &Db, node: StructId) -> Option<(Symbol, StructI
     Some((label, items[1]))
 }
 
-fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
+pub(crate) fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
     if let Some(n) = db.ast.as_name(node) {
         return Some(Symbol::plain(n));
     }
