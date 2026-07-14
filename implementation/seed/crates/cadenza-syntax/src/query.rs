@@ -1141,8 +1141,8 @@ pub mod driver {
                 // matchable). This is the point: an agent restructures a policy with the same tools.
                 let text =
                     std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
-                let (arena, spans) =
-                    crate::cedar::read_spanned(text).map_err(|e| format!("Cedar parse: {}", e.0))?;
+                let (arena, spans) = crate::cedar::read_spanned(text)
+                    .map_err(|e| format!("Cedar parse: {}", e.0))?;
                 Ok((
                     Target {
                         tree: Tree::of(&arena),

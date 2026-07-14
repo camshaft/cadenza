@@ -214,7 +214,8 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             // Cedar can fail; its error is a multi-line `ParseErrors` with a source excerpt (not an
             // `at byte N`), so the reader already reduced it to a headline — surface it as-is.
             let text = utf8(input)?;
-            crate::cedar::read(text).map_err(|e| ConvertError(format!("Cedar parse error: {}", e.0)))
+            crate::cedar::read(text)
+                .map_err(|e| ConvertError(format!("Cedar parse error: {}", e.0)))
         }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
@@ -443,8 +444,12 @@ mod tests {
 
     #[test]
     fn cedar_parse_error_is_surfaced() {
-        let err = convert(b"allow (principal, action, resource);", Format::Cedar, Format::Sexpr)
-            .unwrap_err();
+        let err = convert(
+            b"allow (principal, action, resource);",
+            Format::Cedar,
+            Format::Sexpr,
+        )
+        .unwrap_err();
         assert!(
             err.0.contains("Cedar parse error"),
             "expected a Cedar parse error, got {}",

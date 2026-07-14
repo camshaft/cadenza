@@ -961,13 +961,22 @@ impl<'a> Printer<'a> {
     /// swallow the following `; rest` on re-parse (`match … | _ => 99` then `; next` becomes the arm body
     /// `(99; next)`). `if` is NOT greedy-tailed (its branches parse at `PREC_SEQ + 1`), so it never needs
     /// this. The LAST statement takes no `;` and so needs no wrapping.
+    ///
+    /// A non-final `def` is the same hazard: a function/value def body is a greedy `expr(0)` sequence
+    /// position, so a NESTED `def fac(n) = <e>` followed by `; fac(x)` in an enclosing body would read
+    /// `fac`'s body as `(do <e> (fac x))`, swallowing the enclosing block's next statement. Unlike a
+    /// top-level def (delimited by wrapping just its `= body`, since a following `def` re-parses as a
+    /// sibling), a body-local def followed by an EXPRESSION must wrap the WHOLE form — `(def fac(n) = <e>)`
+    /// — so the `)` bounds the def body and the `; fac(x)` sequences at the enclosing level. (Wrapping only
+    /// the `= body`, `def fac(n) = (<e>)`, does NOT help: the def body's `expr(0)` continues its `;`-run
+    /// past the group's `)`.)
     fn print_do_stmts(&mut self, stmts: &[StructId]) {
         for (i, &s) in stmts.iter().enumerate() {
             if i > 0 {
                 self.doc.hardbreak();
             }
             let last = i + 1 == stmts.len();
-            if !last && self.has_greedy_tail(s) {
+            if !last && (self.has_greedy_tail(s) || self.form_routes_delimit(s)) {
                 self.doc.word("(");
                 self.expr(s, 0);
                 self.doc.word(")");

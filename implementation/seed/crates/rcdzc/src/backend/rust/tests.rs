@@ -971,8 +971,14 @@ fn rustc_roundtrip_erased_newtype_wrapping_a_sum_nested_match() {
            (export f))",
     );
     // The erased newtype emits NO `enum W`; the match dispatches on the inner Result directly.
-    assert!(!rs.contains("enum W "), "erased newtype emits no enum:\n{rs}");
-    assert!(rs.contains("Result::Ok(__pay"), "dispatches on inner sum:\n{rs}");
+    assert!(
+        !rs.contains("enum W "),
+        "erased newtype emits no enum:\n{rs}"
+    );
+    assert!(
+        rs.contains("Result::Ok(__pay"),
+        "dispatches on inner sum:\n{rs}"
+    );
     if let Some(out) = rustc_run(&rs, "f(Ok(5))") {
         assert_eq!(out, "5");
     }
@@ -997,7 +1003,10 @@ fn rustc_roundtrip_erased_newtype_wrapping_a_sum_binder_reads_the_inner_not_the_
                                                  (((. W V) (Result.Err e)) e))) (export run))",
     );
     if let Some(out) = rustc_run(&rs, "run()") {
-        assert_eq!(out, "7", "binder reads the inner Int, not the wrapper:\n{rs}");
+        assert_eq!(
+            out, "7",
+            "binder reads the inner Int, not the wrapper:\n{rs}"
+        );
     }
 }
 
@@ -1040,7 +1049,10 @@ fn rustc_roundtrip_nested_match_on_a_variant_at_disc_ge_1() {
            (export f))",
     );
     // Dispatches on the INNER Option (V's payload), not A's Int64.
-    assert!(rs.contains("Option::Some(__pay"), "inner Option switch:\n{rs}");
+    assert!(
+        rs.contains("Option::Some(__pay"),
+        "inner Option switch:\n{rs}"
+    );
     if let Some(out) = rustc_run(&rs, "f(7)") {
         assert_eq!(out, "7");
     }
@@ -1201,8 +1213,14 @@ fn rustc_roundtrip_async_recursive_sum_folds() {
          (def (main) (sm (L.Cons 1 (L.Cons 2 (L.Cons 3 (L.Nil)))))) (export main))",
     );
     // A recursive `async fn` sizes its future via `Box::pin`; the recursive payload sizes via `Box`.
-    assert!(module.contains("Cons(Box<(i64, L)>)"), "boxed payload:\n{module}");
-    assert!(module.contains("Box::pin(sm(env,"), "boxed recursive call:\n{module}");
+    assert!(
+        module.contains("Cons(Box<(i64, L)>)"),
+        "boxed payload:\n{module}"
+    );
+    assert!(
+        module.contains("Box::pin(sm(env,"),
+        "boxed recursive call:\n{module}"
+    );
     let driver = r#"
 struct Meter { spent: u64 }
 impl cdz_rt::CdzEnv for Meter {
