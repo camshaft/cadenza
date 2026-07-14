@@ -4439,6 +4439,15 @@ fn emit_distinct_sig_resource(
         /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
         /// flattened fields. The `call-<g>` wrapper flattens/rebuilds between the boundary and the lambda.
         match_vts: Vec<ValType>,
+        /// N-COMPOUND-ARGS for this group: `Some((slots, rebuilds))` when its closure takes ≥2 fixed-shape
+        /// tuple/record args. `slots` drives the per-group `call-<g>` functype mint (the `ArgSlot` model);
+        /// `rebuilds` is one `TupleArgRebuild` per tuple, threaded into the core's `SigGroup.tuples`. `None`
+        /// unless ≥2 tuple args (the ≤1-tuple cases stay `tuple_arg`/`nested_shape`).
+        #[allow(clippy::type_complexity)]
+        multi_args: Option<(
+            Vec<crate::backend::wasm::envelope::ArgSlot>,
+            Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+        )>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -4470,16 +4479,31 @@ fn emit_distinct_sig_resource(
         } else {
             nested_sole_or_among_scalars(arg_tys.as_slice())
         };
-        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() || group_nested.is_some() {
-            Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_shape`
+        // ≥2 fixed-shape tuple/record args for this group (the N-compound-args path): the per-group `call-<g>`
+        // rebuilds each cell (a slice of `TupleArgRebuild`) + mints N `tuple<…>` types via the `ArgSlot` model.
+        // Detected only when neither single-tuple classifier fired.
+        #[allow(clippy::type_complexity)]
+        let group_multi_args: Option<(
+            Vec<crate::backend::wasm::envelope::ArgSlot>,
+            Vec<crate::backend::wasm::lir::ValType>,
+            Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+        )> = if group_tuple_arg.is_none() && group_nested.is_none() {
+            multi_compound_args(arg_tys.as_slice())
         } else {
-            arg_tys
-                .iter()
-                .map(|t| {
-                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t))
-                })
-                .collect::<Result<_, _>>()?
+            None
         };
+        let arg_bytes: Vec<u8> =
+            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
+                Vec::new() // the flattened fields are carried by tuple_arg/nested_shape/multi_args
+            } else {
+                arg_tys
+                    .iter()
+                    .map(|t| {
+                        closure_boundary_byte(t)
+                            .ok_or_else(|| closure_boundary_reject("argument", t))
+                    })
+                    .collect::<Result<_, _>>()?
+            };
         // A byte-rope (`Bytes`/`String`) result crosses `call-<g>` as `list<u8>` (not an inline scalar), so
         // it skips the scalar-boundary-byte check; `result_byte` is a placeholder (unused for byte-rope).
         let ret_is_bytes = matches!(
@@ -4516,6 +4540,8 @@ fn emit_distinct_sig_resource(
             all_vts.clone()
         } else if let Some((_, all_vts, _, _, _, _)) = &group_nested {
             all_vts.clone() // prefix scalars, then the nested tuple's depth-first leaves, then suffix scalars
+        } else if let Some((_, all_vts, _)) = &group_multi_args {
+            all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
         } else {
             arg_tys
                 .iter()
@@ -4533,23 +4559,25 @@ fn emit_distinct_sig_resource(
         // The lifted lambda's own param shape: it takes each ARG's OWN valtype — a tuple arg is ONE i32
         // tuple-cell handle (the `call-<g>` wrapper rebuilds it from the flattened fields), scalars are
         // themselves. So `match_vts` is per-arg (NOT the flattened boundary fields in `arg_vts`).
-        let match_vts: Vec<ValType> = if group_tuple_arg.is_some() || group_nested.is_some() {
-            // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
-            // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
-            arg_tys
-                .iter()
-                .map(|t| {
-                    if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some() {
-                        Some(ValType::I32)
-                    } else {
-                        valtype_of(t)
-                    }
-                    .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
-                })
-                .collect::<Result<_, _>>()?
-        } else {
-            arg_vts.clone()
-        };
+        let match_vts: Vec<ValType> =
+            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
+                // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
+                // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
+                arg_tys
+                    .iter()
+                    .map(|t| {
+                        if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some()
+                        {
+                            Some(ValType::I32)
+                        } else {
+                            valtype_of(t)
+                        }
+                        .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                arg_vts.clone()
+            };
         // A nested group carries its recursive rebuild + prefix/suffix in `tuple_arg` (field_bytes unused) + its
         // shape in `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape`
         // None.
@@ -4559,6 +4587,8 @@ fn emit_distinct_sig_resource(
         let tuple_arg = group_tuple_arg
             .map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb))
             .or_else(|| group_nested.map(|(_, _, rb, _, pre, suf)| (Vec::new(), pre, suf, rb)));
+        // ≥2 tuple args: carry the slot list (for the per-group envelope mint) + the rebuilds (for the core).
+        let multi_args = group_multi_args.map(|(slots, _, rebuilds)| (slots, rebuilds));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -4570,6 +4600,7 @@ fn emit_distinct_sig_resource(
             tuple_arg,
             nested_shape,
             match_vts,
+            multi_args,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -4695,10 +4726,22 @@ fn emit_distinct_sig_resource(
                     });
                 }
             }
+            // ≥2 tuple args: each tuple's rebuild box ops (a Bool/Float field in any of them).
+            if let Some((_, rebuilds)) = gi.multi_args.as_ref() {
+                for rb in rebuilds {
+                    for f in &rb.fields {
+                        f.collect_box_ops(&mut |bop| {
+                            ops.insert(bop);
+                        });
+                    }
+                }
+            }
         }
         ops
     };
-    let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
+    let any_tuple_arg = ginfos
+        .iter()
+        .any(|gi| gi.tuple_arg.is_some() || gi.multi_args.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -4788,6 +4831,16 @@ fn emit_distinct_sig_resource(
                 make_param_bytes: m.param_bytes.clone(),
             });
         }
+        // The core's per-group tuple rebuilds: ≥2 args carries one rebuild per tuple; a single flat/nested arg
+        // carries exactly one; a scalar-arg group carries none.
+        let group_tuples: Vec<serialize::TupleArgRebuild> =
+            if let Some((_, rebuilds)) = &ginfos[gi].multi_args {
+                rebuilds.clone()
+            } else if let Some((_, _, _, rb)) = &ginfos[gi].tuple_arg {
+                vec![rb.clone()]
+            } else {
+                Vec::new()
+            };
         ser_groups.push(serialize::SigGroup {
             makes: ser_makes,
             arg_vts: ginfos[gi].arg_vts.clone(),
@@ -4796,10 +4849,7 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes,
             ret_template: ginfos[gi].ret_template.clone(),
             ret_descriptor: ginfos[gi].ret_descriptor.clone(),
-            tuple_arg: ginfos[gi]
-                .tuple_arg
-                .as_ref()
-                .map(|(_, _, _, rb)| rb.clone()),
+            tuples: group_tuples,
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
@@ -4825,6 +4875,11 @@ fn emit_distinct_sig_resource(
                 .map(|(_, _, suf, _)| suf.clone())
                 .unwrap_or_default(),
             tuple_shape: ginfos[gi].nested_shape.clone(),
+            // ≥2 tuple args → the slot list drives the per-group `call-<g>` mint; ≤1-tuple groups leave it None.
+            call_arg_slots: ginfos[gi]
+                .multi_args
+                .as_ref()
+                .map(|(slots, _)| slots.clone()),
         });
     }
 

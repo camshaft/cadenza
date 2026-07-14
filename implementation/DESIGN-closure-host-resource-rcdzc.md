@@ -1155,10 +1155,19 @@ the component type. The new work:
   `list_slots` (like the single-export path) and the ≥2-compound list-decline guards are GONE. Corpus (all
   e2e): MULTI 2 tuples→List (+driving the other), →Tuple, →Bytes, 3 tuples→List; MIXED 2 tuples→List (+driving
   the plain export→42).
-  **REMAINING within this feature:** the DISTINCT-SIG export shape with ≥2 compound args
-  (`emit_distinct_sig_resource` detects one compound per group today — its `GroupCompoundArg` + per-group
-  `call-g<n>` envelope would take the same `ArgSlot` slot generalization). ✅ single-export, multi-export, and
-  mixed are all DONE × the full result matrix (scalar + byte-rope + fixed-compound + collection).
+  brick 8 (THIS increment) — **N compound args × the DISTINCT-SIG export shape — the LAST shape.** Generalized
+  `serialize::SigGroup.tuple_arg: Option<TupleArgRebuild>` → `tuples: Vec<TupleArgRebuild>` (all 4 `call-<g>`
+  body branches — value-encode/value-form/bytes/scalar — rebuild + drop each tuple, byte-neutral for ≤1); added
+  `SigGroupAbi.call_arg_slots: Option<Vec<ArgSlot>>`, minted per-group at ALL 6 functype sites (outer lift list
+  + scalar; inner import list + scalar; inner export list + scalar) via `mint_call_arg_tuple_types` +
+  `closure_call_functype_slots`/`closure_call_list_functype_slots`; `n_tuple` counts slot types.
+  `emit_distinct_sig_resource` binds `multi_compound_args` per group (a `GroupInfo.multi_args`), so distinct
+  groups may each take a DIFFERENT number of tuple args at different widths with any result shape. Removed the
+  now-dead `tuple_arg_slice` helper (all cores take `&[TupleArgRebuild]` directly). Corpus (all e2e): two
+  distinct-sig two-tuple closures (Int64 vs Int32, driving each), one-group-two-tuples-other-one-tuple, a
+  two-tuple group with a List result, capturing, and alongside a plain export.
+  **✅ N-COMPOUND-ARGS COMPLETE across ALL FOUR export shapes** (single/multi/mixed/distinct-sig), each × the
+  full result matrix (scalar + byte-rope + fixed-compound + collection).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of

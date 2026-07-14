@@ -49075,7 +49075,7 @@ mod closure_host_resource {
                 ret_is_bytes: false,
                 ret_template: None,
                 ret_descriptor: None,
-                tuple_arg: None,
+                tuples: vec![],
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -49089,7 +49089,7 @@ mod closure_host_resource {
                 ret_is_bytes: false,
                 ret_template: None,
                 ret_descriptor: None,
-                tuple_arg: None,
+                tuples: vec![],
             },
         ];
 

@@ -1628,16 +1628,6 @@ fn emit_tuple_rebuilt_drop(tuple_local: u32, imp: &dyn Fn(&str) -> u64, out: &mu
     uleb128(imp("drop"), out);
 }
 
-/// View a single-tuple `Option<&TupleArgRebuild>` as the 0-or-1-element slice `emit_closure_call_args` (and
-/// the multi-tuple paths) take. `None` → `&[]`, `Some(rb)` → the one-element slice. (Not `Option::as_slice`,
-/// which would yield `&[&TupleArgRebuild]`.)
-fn tuple_arg_slice(tuple_arg: Option<&TupleArgRebuild>) -> &[TupleArgRebuild] {
-    match tuple_arg {
-        Some(rb) => std::slice::from_ref(rb),
-        None => &[],
-    }
-}
-
 /// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
 /// preserved for the single-closure-export path (`emit_closure_resource`) and its serializer unit test.
 #[allow(clippy::too_many_arguments)]
@@ -4216,13 +4206,13 @@ pub struct SigGroup {
     /// PAST all compound-template data (`bytes_out_off`), so a compound group + a collection group + a
     /// byte-rope group never collide. Mutually exclusive with `ret_is_bytes`/`ret_template`.
     pub ret_descriptor: Option<Vec<u8>>,
-    /// `Some(rebuild)` when this group's closure takes a single FIXED-SHAPE SCALAR tuple/record ARGUMENT (the
-    /// direct-call compound-arg path). The arg crossed the boundary FLATTENED into its N scalar fields (core
-    /// params `1..1+N` of `call-<g>`), so the group's SCALAR `call-<g>` rebuilds the tuple cell from them
-    /// (`arr-alloc N` + per field box/`arr-set`) before `call_indirect`, then drops the rebuilt cell (an owned
-    /// per-call temporary). `arg_vts` for such a group is the FLATTENED field valtypes. This increment
-    /// supports it only on a SCALAR-result group (`ret_is_bytes`/`ret_template`/`ret_descriptor` all `None`).
-    pub tuple_arg: Option<TupleArgRebuild>,
+    /// ZERO OR MORE fixed-shape tuple/record ARGUMENTS this group's closure takes (the direct-call
+    /// compound-arg path). Each arg crossed the boundary FLATTENED into its scalar fields, so the group's
+    /// `call-<g>` rebuilds each tuple cell (`arr-alloc N` + per field box/`arr-set`, at `tuple_local + i`)
+    /// before `call_indirect`, then drops each rebuilt cell (an owned per-call temporary). `arg_vts` for such
+    /// a group is the FULL flattened field valtypes of every arg. `&[]` = scalar args (byte-identical); a
+    /// single rebuild reproduces the one-tuple body byte-for-byte; ≥2 is the N-compound-args case.
+    pub tuples: Vec<TupleArgRebuild>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -4501,7 +4491,7 @@ pub fn distinct_sig_resource_core_module(
             let nlen = doc + 1;
             let iv = nlen + 1;
             let tuple_local = iv + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 7 } else { 6 };
+            let n_locals = 6 + gr.tuples.len() as u32; // cell/rep/desc/doc/n/i + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4527,13 +4517,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4545,9 +4529,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient collection handle `rep` is separate and released after value-encode.
@@ -4636,9 +4620,9 @@ pub fn distinct_sig_resource_core_module(
                 compound_place[gi].expect("a compound group has a data placement");
             let cell = 1 + arity;
             let rep = cell + 1;
-            // i32 group FIRST (cell, rep, [tuple]) then the i64 scratch — scratch index = cell + n_i32.
-            let n_i32: u32 = if gr.tuple_arg.is_some() { 3 } else { 2 };
-            let tuple_local = rep + 1; // only valid when tuple_arg.is_some()
+            // i32 group FIRST (cell, rep, [one per tuple]) then the i64 scratch — scratch index = cell + n_i32.
+            let n_i32: u32 = 2 + gr.tuples.len() as u32; // cell, rep, + one i32 per rebuilt tuple cell
+            let tuple_local = rep + 1; // the first rebuilt tuple cell (only valid when !gr.tuples.is_empty())
             let scratch = cell + n_i32;
             inner.extend_from_slice(&wasm_vec(2, &{
                 let mut gl = uleb_bytes(n_i32 as u64);
@@ -4664,13 +4648,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             inner.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -4683,9 +4661,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(rep, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient compound handle `rep` is separate and dropped after the walk.
@@ -4710,7 +4688,7 @@ pub fn distinct_sig_resource_core_module(
             let nlen = bh + 1;
             let iv = nlen + 1;
             let tuple_local = iv + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 5 } else { 4 };
+            let n_locals = 4 + gr.tuples.len() as u32; // cell/bh/n/i + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4736,13 +4714,7 @@ pub fn distinct_sig_resource_core_module(
             }
             set(cell, &mut inner);
             get(cell, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             get(cell, &mut inner);
             ci32(0, &mut inner);
             inner.push(op::CALL);
@@ -4754,9 +4726,9 @@ pub fn distinct_sig_resource_core_module(
             uleb128(lifted_tyi as u64, &mut inner);
             uleb128(0, &mut inner);
             set(bh, &mut inner);
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
-            if gr.tuple_arg.is_some() {
-                emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally).
+            for ti in 0..gr.tuples.len() as u32 {
+                emit_tuple_rebuilt_drop(tuple_local + ti, &imp, &mut inner);
             }
             // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
             // transient Bytes handle `bh` is separate and dropped after the copy.
@@ -4814,12 +4786,12 @@ pub fn distinct_sig_resource_core_module(
             ci32(bytes_ret_off as i64, &mut inner);
             inner.push(op::END);
         } else {
-            // A tuple-arg group needs a SECOND i32 local for the rebuilt tuple cell (the closure's single
-            // argument, reassembled from the flattened field params); a plain scalar group needs just the
-            // closure-cell local.
+            // A tuple-arg group needs one MORE i32 local per rebuilt tuple cell (the closure's compound args,
+            // reassembled from the flattened field params, at `tuple_local + i`); a plain scalar group needs
+            // just the closure-cell local.
             let cell_local = 1 + arity;
             let tuple_local = cell_local + 1;
-            let n_locals = if gr.tuple_arg.is_some() { 2 } else { 1 };
+            let n_locals = 1 + gr.tuples.len() as u32; // the closure cell + one i32 per rebuilt tuple cell
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4834,16 +4806,10 @@ pub fn distinct_sig_resource_core_module(
             }
             inner.push(op::LOCAL_SET);
             uleb128(cell_local as u64, &mut inner);
-            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuple, suffix scalars).
+            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuples, suffix scalars).
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            emit_closure_call_args(
-                tuple_arg_slice(gr.tuple_arg.as_ref()),
-                tuple_local,
-                arity,
-                &imp,
-                &mut inner,
-            );
+            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::I32_CONST);
@@ -4868,11 +4834,11 @@ pub fn distinct_sig_resource_core_module(
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }
-            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
+            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
             // dispatch (both own + borrow), balancing its `arr-alloc`.
-            if gr.tuple_arg.is_some() {
+            for ti in 0..gr.tuples.len() as u32 {
                 inner.push(op::LOCAL_GET);
-                uleb128(tuple_local as u64, &mut inner);
+                uleb128((tuple_local + ti) as u64, &mut inner);
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }

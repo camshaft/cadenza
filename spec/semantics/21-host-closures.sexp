@@ -3994,6 +3994,82 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; N-COMPOUND-ARGS × DISTINCT-SIGNATURE: the ≥2-fixed-shape-compound-arg path now reaches the LAST export shape
+; — closures of DIFFERENT signatures crossing as G distinct resource types, each with its own per-signature
+; `call-g<n>`. A group whose closure takes ≥2 tuple args rebuilds each arg cell (a slice of `TupleArgRebuild`)
+; in its `call-g<n>` and mints N `tuple<…>` arg types via the SAME `ArgSlot` slot model — independently per
+; group, so distinct groups may each take a different number of tuple args, at different widths, with any
+; result shape. This CLOSES the N-compound-args feature across ALL FOUR export shapes (single/multi/mixed/
+; distinct-sig).
+
+(case "DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary"
+  (doc    "`mk-i : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64)` and `mk-b : (-> (Tuple Int32 Int32)
+           (Tuple Int32 Int32) Int32)` — two closures of DIFFERENT signatures (Int64 vs Int32 tuples), each
+           taking TWO tuple args, crossing as TWO distinct resource types with their own `call-g0`/`call-g1`.
+           Driving `mk-i`: `make-i()` → a handle, `call-g0(handle, (5,5), (5,10))` → `p.0 + q.1` = 15. Each
+           group mints its own two `tuple<…>` arg types via the slot model.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 15 Int64)))
+
+(case "DISTINCT-SIG: driving the Int32 two-Tuple-arg group"
+  (doc    "The SAME distinct-sig component, driving `mk-b` (the Int32 group, subtract): `call-g1(handle,
+           (10,3), (1,2))` → `p.0 - q.1` = `10 - 2` = 8. Confirms the second resource type's `call-g1` rebuilds
+           its own two `tuple<s32,s32>` args independently of group 0.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-b (: (tuple 10 3) (Tuple Int32 Int32)) (: (tuple 1 2) (Tuple Int32 Int32)))
+  (output (: 8 Int32)))
+
+(case "DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple"
+  (doc    "Distinct groups may take a DIFFERENT NUMBER of tuple args: `mk-i : (-> (Tuple Int64 Int64) (Tuple
+           Int64 Int64) Int64)` takes two, `mk-b : (-> (Tuple Int32 Int32) Int32)` takes one. Each group's
+           `call-g<n>` mints exactly its own arg tuples. Driving `mk-i`: `call-g0(handle, (5,5), (5,10))` →
+           `p.0 + q.1` = 15. Proves the slot model (≥2 tuples) and the single-tuple path coexist per group.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32))) (- (. p 0) (. p 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 15 Int64)))
+
+(case "DISTINCT-SIG: a two-Tuple-arg group with a LIST result"
+  (doc    "The distinct-sig ≥2-compound-arg path composes with a LIST result: `mk-i : (-> (Tuple Int64 Int64)
+           (Tuple Int64 Int64) (List Int64))` returns a list, alongside a scalar-result Int32 group `mk-b`. The
+           group's value-encode `call-g0` rebuilds both arg tuples then renders the returned List. Driving
+           `mk-i`: `call-g0(handle, (5,5), (5,10))` → `(list 5 10)`.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10) (List Int64))))
+
+(case "DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures"
+  (doc    "Distinct-sig ≥2-compound-args composes with capture: `mk-i (: k Int64)` and `mk-b (: k Int32)` each
+           close over `k` AND take two tuple args of their own width. `make-i(100)` → a handle over k=100;
+           `call-g0(handle, (5,5), (5,10))` → `p.0 + q.1 + k` = 115. The forwarded capture cell + both rebuilt
+           arg cells coexist in the group's `call-g0`.")
+  (input  (do (def (mk-i (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (+ (+ (. p 0) (. q 1)) k)))
+              (def (mk-b (: k Int32)) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32)))
+                (- (. p 0) k)))
+              (export mk-i) (export mk-b)))
+  (call   mk-i (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 115 Int64)))
+
+(case "DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export"
+  (doc    "The distinct-sig ≥2-compound-arg path coexists with a PLAIN (non-closure) export: two closures of
+           different tuple-arg signatures cross as two resource types WHILE `twice` rides alongside as an
+           ordinary top-level func. Driving the plain export: `twice(21)` → 42.")
+  (input  (do (def (mk-i) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (+ (. p 0) (. q 1))))
+              (def (mk-b) (fn ((: p (Tuple Int32 Int32)) (: q (Tuple Int32 Int32))) (- (. p 0) (. q 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk-i) (export mk-b) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
