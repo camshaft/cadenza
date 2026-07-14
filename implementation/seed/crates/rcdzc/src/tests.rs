@@ -17969,6 +17969,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_arm_head_survives_a_sibling_rest_binders_consuming_slice() {
+        // ⚠ MISCOMPILE REGRESSION: a `(list x .. rest)` arm binds the head `x` via `vec-get` (BORROWS the
+        // shared arm handle) AND the tail `rest` via `vec-drop` (CONSUMES it). If the `vec-drop` runs while
+        // the handle still has a live head read pending — as in a TAIL fold `(f rest (+ acc x))`, where the
+        // recursive call's arg 0 (`rest`, the consuming slice) is emitted before arg 1 reads `x` — the
+        // vector is reclaimed and the head read returns GARBAGE (0). The `vec-drop` now `dup`s the handle
+        // first (rc++), so the arm handle stays live for every co-binder. Before: `sum-acc([a],0)` → 0.
+        let tail_sum = run_heap_value(
+            "(module m \
+               (def (sa xs acc) (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+               (def (main) (sa (list 10 20 30) 0)) (export main))",
+            vec![],
+        );
+        let Some(tail_sum) = tail_sum else {
+            eprintln!("runtime wasm not found; skipping tail list-fold run");
+            return;
+        };
+        assert_eq!(
+            tail_sum, "60",
+            "tail-accumulator list fold reads each head element"
+        );
+        // A head read AND the tail sliced in the SAME arm, head used after the slice arg: the head must
+        // still read its real value, not 0. `(sa (list 7) 1000)` → 1000 + 7 = 1007.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (sa xs acc) (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                   (def (main) (sa (list 7) 1000)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1007",
+            "single-element tail fold reads the head (not 0)"
+        );
+        // A MULTI-binder cons `(list a b .. rest)` (two head reads + a consuming rest) must emit valid wasm
+        // and read both heads — the `dup` uses no fresh scratch slot (re-reads the scrutinee), so it never
+        // aliases a sibling element binder's i64 slot. `(g (list 1 2 3 4) 0)` sums pairs (1+2)+(3+4) = 10.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (g xs acc) (match xs ((list) acc) ((list a b .. rest) (g rest (+ acc (+ a b)))) ((list z) (+ acc z)))) \
+                   (def (main) (g (list 1 2 3 4) 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "10",
+            "multi-binder cons arm reads both heads across the consuming rest slice"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder

@@ -1376,14 +1376,21 @@ pub fn collect_used_ops(
         Core::SumPayload { scrutinee, path } => {
             for step in &path {
                 match step {
-                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Payload => {
+                        out.insert(OP_SUM_PAYLOAD);
+                    }
                     // An `Elem` may read a tuple `arr` OR a list `vec`; insert both (emit picks by type).
                     crate::core::PathStep::Elem(_) => {
                         out.insert(OP_ARR_GET);
-                        out.insert(OP_VEC_GET)
+                        out.insert(OP_VEC_GET);
                     }
-                    // A list REST binder slices the tail with `vec-drop` (single-result tail).
-                    crate::core::PathStep::RestFrom(_) => out.insert(OP_VEC_DROP),
+                    // A list REST binder slices the tail with `vec-drop` (single-result tail), preceded by
+                    // a `dup` to RETAIN the shared arm handle across the consuming slice (so a sibling
+                    // element binder in the same arm still reads a live handle — see the `RestFrom` emit).
+                    crate::core::PathStep::RestFrom(_) => {
+                        out.insert(OP_VEC_DROP);
+                        out.insert(OP_DUP);
+                    }
                 };
             }
             if let Ok(Some(op)) = get_op(db, id) {
@@ -4187,8 +4194,25 @@ fn emit(
                     }
                     crate::core::PathStep::RestFrom(k) => {
                         // Tail sublist from `k`: `vec-drop(list, k)` returns the `[k, len)` tail as ONE
-                        // handle (dropping the `[0, k)` prefix internally), CONSUMING the list handle. A
-                        // single-result op — no retarea, no scratch. `cur` stays the same list type.
+                        // handle (dropping the `[0, k)` prefix internally). ⚠ `vec-drop` CONSUMES its
+                        // argument (rc--). But the handle on the stack here is a BORROW of the shared match-
+                        // arm scrutinee slot (from `emit(scrutinee)` = a plain `local.get`), and a SIBLING
+                        // binder in the SAME arm may still read it — e.g. `((list x .. rest) (f rest (+ acc
+                        // x)))`, where `x` is a `vec-get` (BORROW) off the same handle. If `vec-drop` runs
+                        // first and drops the arm handle's last reference, the vector is reclaimed and the
+                        // sibling `x` read returns garbage (0) — a MISCOMPILE (the head element reads 0).
+                        // So RETAIN the handle before consuming: rc++ it (`dup`) so `vec-drop` decrements a
+                        // fresh reference and the arm handle's own count is unchanged (every co-binder + the
+                        // arm's end-of-scope drop still sees a live handle). `dup` POPS a handle (rc++,
+                        // returns nothing), so RE-READ the scrutinee's slot for the extra reference rather
+                        // than teeing into a new scratch slot — the scrutinee is a `Core::Param`/`LocalRef`
+                        // (the materialized arm handle) with a stable slot, so `emit(scrutinee)` is a pure
+                        // `local.get`. This needs NO fresh scratch slot (which could alias a sibling
+                        // element binder's i64 slot in a multi-binder pattern `(list a b .. rest)`).
+                        // Stack here: [handle] (the copy vec-drop will consume). Push another read, dup it
+                        // (rc++, pops it), leaving the original copy for vec-drop.
+                        emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle, handle]
+                        out.push(Lir::CallImport(OP_DUP)); // pops the 2nd read, rc++ → [handle]
                         out.push(Lir::ConstI32(*k as i32));
                         out.push(Lir::CallImport(OP_VEC_DROP)); // → [tail-handle]
                     }
