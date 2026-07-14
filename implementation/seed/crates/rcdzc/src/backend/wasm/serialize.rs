@@ -234,6 +234,22 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::UNREACHABLE);
             out.push(op::END);
         }
+        // `if (empty) i32.const INT_MIN ; i32.const -1 ; i32.div_s ; drop ; end` — trap with wasm's
+        // native INTEGER-OVERFLOW reason when the i32 condition is nonzero, leaving nothing. `i32.div_s`
+        // of `i32::MIN / -1` is the one arithmetic op that traps as "integer overflow" (a bare
+        // `unreachable` reports only "unreachable"), so a runtime integer overflow surfaces its kind. The
+        // `drop` balances the block's stack (the divide result never materializes — the op traps first).
+        Lir::IfIntegerOverflowEnd => {
+            out.push(op::IF);
+            out.push(wasm_abi::BLOCK_EMPTY); // empty block type
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(i32::MIN as i64, out);
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(-1, out);
+            out.push(op::I32_DIV_S);
+            out.push(op::DROP);
+            out.push(op::END);
+        }
         Lir::I64Add => out.push(op::I64_ADD),
         Lir::I64Sub => out.push(op::I64_SUB),
         Lir::I64Mul => out.push(op::I64_MUL),
