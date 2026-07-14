@@ -2968,6 +2968,14 @@ fn emit_distinct_sig_resource(
         ret_is_bytes: bool,
         ret_template: Option<crate::lower::ValueFormTemplate>,
         ret_descriptor: Option<Vec<u8>>,
+        /// The direct-call compound ARG for this group (a single fixed-shape scalar tuple/record): the tuple's
+        /// per-field component bytes + the `TupleArgRebuild`. `None` = scalar args. Scalar-result group only.
+        tuple_arg: Option<(Vec<u8>, serialize::TupleArgRebuild)>,
+        /// The LIFTED lambda's OWN param valtypes for this group — used to match a representative lifted slot.
+        /// For a scalar-arg group this equals `arg_vts`; for a TUPLE-arg group `arg_vts` is the FLATTENED
+        /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
+        /// flattened fields. The `call-<g>` wrapper flattens/rebuilds between the boundary and the lambda.
+        match_vts: Vec<ValType>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -2978,10 +2986,25 @@ fn emit_distinct_sig_resource(
             cur = *rng;
         }
         let ret_ty = cur;
-        let arg_bytes: Vec<u8> = arg_tys
-            .iter()
-            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
-            .collect::<Result<_, _>>()?;
+        // DIRECT-CALL COMPOUND ARG (distinct-sig): a single fixed-shape scalar tuple/record arg crosses as a
+        // native component `tuple<…>` the shared `call-<g>` rebuilds. Detected per group so the scalar
+        // `arg_bytes` decline doesn't reject it. SCOPE: exactly one such arg, scalar result.
+        let group_tuple_arg: Option<(Vec<u8>, Vec<ValType>, serialize::TupleArgRebuild)> =
+            if arg_tys.len() == 1 {
+                fixed_shape_scalar_tuple_arg(&arg_tys[0])
+            } else {
+                None
+            };
+        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() {
+            Vec::new() // the flattened tuple fields are carried by `tuple_arg`
+        } else {
+            arg_tys
+                .iter()
+                .map(|t| {
+                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t))
+                })
+                .collect::<Result<_, _>>()?
+        };
         // A byte-rope (`Bytes`/`String`) result crosses `call-<g>` as `list<u8>` (not an inline scalar), so
         // it skips the scalar-boundary-byte check; `result_byte` is a placeholder (unused for byte-rope).
         let ret_is_bytes = matches!(
@@ -3012,14 +3035,39 @@ fn emit_distinct_sig_resource(
             closure_boundary_byte(&ret_ty)
                 .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
         };
-        let arg_vts: Vec<ValType> = arg_tys
-            .iter()
-            .map(|t| {
-                valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
-            })
-            .collect::<Result<_, _>>()?;
+        // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
+        let arg_vts: Vec<ValType> = if let Some((_, field_vts, _)) = &group_tuple_arg {
+            field_vts.clone()
+        } else {
+            arg_tys
+                .iter()
+                .map(|t| {
+                    valtype_of(t)
+                        .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+                })
+                .collect::<Result<_, _>>()?
+        };
         let ret_vt = valtype_of(&ret_ty)
             .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+        // A tuple arg is only supported on a SCALAR-result group this increment (a list-returning group's
+        // `call-<g>` body shape + a rebuilt tuple arg is a further widening). Decline that combination cleanly.
+        if group_tuple_arg.is_some()
+            && (ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some())
+        {
+            return Err(Reject::decline(
+                "a distinct-signature closure with BOTH a compound argument AND a byte-rope/compound/\
+                 collection result is not yet emitted (the tuple-arg rebuild + a list-returning call-g body \
+                 compose in a later increment)",
+            ));
+        }
+        // The lifted lambda's own param shape: for a tuple-arg group it takes ONE i32 tuple-cell handle (the
+        // `call-<g>` wrapper rebuilds it from the flattened fields), NOT the flattened field vts.
+        let match_vts: Vec<ValType> = if group_tuple_arg.is_some() {
+            vec![ValType::I32]
+        } else {
+            arg_vts.clone()
+        };
+        let tuple_arg = group_tuple_arg.map(|(fb, _, rb)| (fb, rb));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -3028,6 +3076,8 @@ fn emit_distinct_sig_resource(
             ret_is_bytes,
             ret_template,
             ret_descriptor,
+            tuple_arg,
+            match_vts,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -3190,8 +3240,10 @@ fn emit_distinct_sig_resource(
     // lambda's env param (slot 0, an i32) is prepended at emission, so match the lambda's OWN params.
     let group_slot = |gi: usize| -> Option<usize> {
         let ginfo = &ginfos[gi];
+        // Match on the lifted lambda's OWN param shape (`match_vts`) — for a tuple-arg group this is the ONE
+        // i32 tuple-cell handle the lambda takes, NOT the flattened boundary fields in `arg_vts`.
         lifted_shapes.iter().position(|(ps, rv)| {
-            ps.as_slice() == ginfo.arg_vts.as_slice() && *rv == Some(ginfo.ret_vt)
+            ps.as_slice() == ginfo.match_vts.as_slice() && *rv == Some(ginfo.ret_vt)
         })
     };
 
@@ -3228,6 +3280,7 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes,
             ret_template: ginfos[gi].ret_template.clone(),
             ret_descriptor: ginfos[gi].ret_descriptor.clone(),
+            tuple_arg: ginfos[gi].tuple_arg.as_ref().map(|(_, rb)| rb.clone()),
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
@@ -3238,6 +3291,7 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes
                 || ginfos[gi].ret_template.is_some()
                 || ginfos[gi].ret_descriptor.is_some(),
+            tuple_arg_bytes: ginfos[gi].tuple_arg.as_ref().map(|(fb, _)| fb.clone()),
         });
     }
 

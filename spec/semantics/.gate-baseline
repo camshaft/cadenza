@@ -2,6 +2,8 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
+pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
@@ -371,6 +373,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler folds a counter across the operations it discharges
+pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
 pass	a header of packed nibbles and a length-prefixed body round-trips
