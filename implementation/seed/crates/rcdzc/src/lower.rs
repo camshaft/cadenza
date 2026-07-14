@@ -3894,6 +3894,162 @@ fn list_element_irrefutable_or_decline(
     }
 }
 
+/// Whether a map-pattern value sub-pattern `v` is a BARE binder / `_` (the shape the const-fold + runtime
+/// paths handle directly). A NON-bare value (`(tuple x y)`, `(Some n)`, a literal `0`) needs
+/// `desugar_map_value_subpatterns` to lift it into the body as a destructuring match on a fresh binder.
+fn is_bare_map_value(db: &Db, v: StructId) -> bool {
+    db.ast.as_name(v).is_some()
+}
+
+/// Whether a map-pattern value sub-pattern `v` introduces NO binders — a literal `0` / `true` / `"s"`, or a
+/// compound of only wildcards `(tuple _ _)`. Only such a value is safe to lift into the body by
+/// `desugar_map_value_subpatterns`: its destructure-match `(match __mv (v body) …)` reuses the ORIGINAL
+/// body unchanged (no binder to re-resolve), so the lowering-time desugar suffices. A value that
+/// INTRODUCES binders (`(tuple x y)`, `(Some n)`) needs those binders to resolve at the RESOLVE/fault
+/// stage (before lowering) — a lowering-time desugar is too late (fault-collection over the original AST
+/// reports the nested binder unbound first). That is a resolve-descent increment (the map analogue of
+/// Inc-1's list-element `SumPayload` sub-path); until then a binder-introducing value declines in
+/// `lower_match_map`. Uses `collect_pattern_binders` into a throwaway set — empty ⇒ binder-free.
+fn map_value_is_binder_free(db: &mut Db, v: StructId) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    // A malformed sub-pattern (Err) is not our concern here — treat as NOT binder-free so it declines
+    // downstream rather than being lifted.
+    collect_pattern_binders(db, v, &mut seen).is_ok() && seen.is_empty()
+}
+
+/// PRE-PASS for `lower_match_map` (the map analogue of the Inc-1 list-element compose + Inc-11/12
+/// refutable-element dispatch): a map-pattern VALUE sub-pattern MAY itself be any pattern — `(map ("k"
+/// (tuple a b)))`, `(map ("k" (Some v)))`, `(map ("k" 0))` — not just a bare binder. Such a value is lifted
+/// into the body: bind a fresh `__mvN` at that key, then `(match __mvN (<subpat> body) (_ <else>))`
+/// destructures/tests it. An IRREFUTABLE sub-pattern (tuple, single-variant ctor) always matches (the `_`
+/// arm is dead); a REFUTABLE one (literal, multi-variant ctor) may fail → falls through to `<else>` (the
+/// next arm). This runs FIRST in `lower_match_map` — the rewritten arm's value positions are all bare
+/// `__mvN` binders, so the const-fold + runtime (`desugar_runtime_map_match`) paths handle it unchanged.
+/// `<else>` is threaded backward from the catch-all (as `desugar_runtime_map_match` does), so a refutable
+/// value's non-match falls to the next arm. NO new IR. Returns `Some(Core)` iff some arm has a non-bare
+/// value sub-pattern (else `None` — the common bare-binder case pays only the scan).
+fn desugar_map_value_subpatterns(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Detect any non-bare, BINDER-FREE value sub-pattern in a map arm. Only these are lifted (a
+    // binder-introducing value needs resolve-stage descent, not this lowering desugar — see
+    // `map_value_is_binder_free`). Bail if none.
+    let mut any = false;
+    for &(pat, _) in arms {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        if let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) {
+            for (_, v) in entries {
+                if !is_bare_map_value(db, v) && map_value_is_binder_free(db, v) {
+                    any = true;
+                }
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    // Find the FIRST unguarded catch-all — the innermost `<else>` a refutable value falls through to. (A
+    // map match needs one anyway; mirror `desugar_runtime_map_match`.)
+    let catch_all_ix = arms.iter().position(|&(pat, _)| {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+    });
+    let Some(catch_all_ix) = catch_all_ix else {
+        return Some(Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
+        )));
+    };
+    // Rebuild the arms: for each arm before the catch-all, lift every non-bare value into the body. `else`
+    // is threaded backward so a refutable value's non-match falls to the next arm; but the REBUILT match is
+    // then re-lowered as a whole (the const/runtime paths dispatch), so `else` here is only the innermost
+    // destructure-match fall-through. Keep the arm STRUCTURE (a `(map …)` arm) and rewrite in place; the
+    // subsequent passes handle dispatch. Because a value-destructure can only be observed AFTER the arm's
+    // keys are known present, the `(match __mv (<subpat> body) (_ <else>))` fall-through must go to the
+    // catch-all body (the next arm's dispatch is handled by re-lowering the rebuilt match).
+    let catch_all_body = arms[catch_all_ix].1;
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let Some((entries, rest)) = crate::resolve::map_pattern_of(db, inner) else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        // Which entries have a non-bare value? Rebuild the map pattern with those values replaced by fresh
+        // `__mvN` binders, and collect `(fresh-name, original-subpattern)` to wrap the body.
+        let map_head = match db.ast.get(inner) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("map"),
+        };
+        let mut new_entry_nodes: Vec<StructId> = Vec::with_capacity(entries.len());
+        let mut lifts: Vec<(String, StructId)> = Vec::new();
+        for (ei, &(k, v)) in entries.iter().enumerate() {
+            // Lift ONLY a non-bare, binder-free value; a bare binder / a binder-introducing value is left in
+            // place (the latter declines downstream — resolve-descent is a later increment).
+            if !is_bare_map_value(db, v) && map_value_is_binder_free(db, v) {
+                let name = format!("__mv{ai}_{ei}");
+                let fresh = db.push_name(&name);
+                let entry = db.push_list(vec![k, fresh]);
+                new_entry_nodes.push(entry);
+                lifts.push((name, v));
+            } else {
+                // Reuse the entry verbatim (keep the original key + value nodes).
+                let entry = db.push_list(vec![k, v]);
+                new_entry_nodes.push(entry);
+            }
+        }
+        // Reassemble the `(map <entries…> [.. rest])` pattern.
+        let mut map_children = vec![map_head];
+        map_children.extend(new_entry_nodes.iter().copied());
+        if let Some(rest_occ) = rest {
+            let dd = db.push_name("..");
+            map_children.push(dd);
+            map_children.push(rest_occ);
+        }
+        let new_map = db.push_list(map_children);
+        // Wrap the body: innermost-first, `(match __mvN (<subpat> body) (_ <catch-all-body>))` per lifted
+        // value. A body reference to a sub-pattern binder resolves against the synthesized `(<subpat> …)`
+        // (fresh nodes — nothing pre-memoized, unlike the map-value-binder case). The `_ → catch-all-body`
+        // fall-through covers a refutable sub-pattern's non-match.
+        let mut wrapped = body;
+        for (name, subpat) in lifts.into_iter().rev() {
+            let mv_ref = db.push_name(&name);
+            let true_arm = db.push_list(vec![subpat, wrapped]);
+            let wild = db.push_name("_");
+            let else_arm = db.push_list(vec![wild, catch_all_body]);
+            let match_head = db.push_name("match");
+            wrapped = db.push_list(vec![match_head, mv_ref, true_arm, else_arm]);
+        }
+        // Re-attach the guard (if any) around the whole rewritten pattern.
+        let new_pat = match guard {
+            Some(g) => {
+                let guard_head = db.push_name("guard");
+                db.push_list(vec![guard_head, new_map, g])
+            }
+            None => new_map,
+        };
+        new_arms.push(db.push_list(vec![new_pat, wrapped]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "map match with a binder-free value sub-pattern → fresh-binder + body destructure-match");
+    Some(core_of(db, rewritten))
+}
+
 /// PRE-PASS for `lower_match_map`: match a RUNTIME map by rewriting the whole match to a nested
 /// PRESENCE-TEST `if`-chain the existing machinery lowers (the Inc-9 blocker, unblocked via the
 /// Inc-11/12/14 desugar idiom). A runtime map's keys are not known at compile time, so the const-fold path
@@ -4061,6 +4217,13 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 // DECLINED: a value sub-pattern that is not a bare binder is not yet supported — a nested value pattern
 // declines here and in `desugar_runtime_map_match`.)
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS (value sub-patterns): a non-bare map VALUE sub-pattern `(map ("k" (tuple a b)))` /
+    // `(map ("k" (Some v)))` / `(map ("k" 0))` is lifted into the body as `(match __mv (<subpat> body) (_
+    // <catch-all>))` on a fresh `__mv` binder. Runs FIRST: the rewritten arm's values are all bare binders,
+    // so the const/runtime paths below handle it unchanged. Fires only when some arm has a non-bare value.
+    if let Some(core) = desugar_map_value_subpatterns(db, scrutinee, arms) {
+        return core;
+    }
     // PRE-PASS: a RUNTIME map scrutinee desugars to a nested `Map.lookup` chain (the const path below only
     // handles a compile-time-constant `MapNew`). Fires only for a non-constant map. The desugar rebuilds
     // the WHOLE match (dispatch by key presence) so the arm-selection is a runtime `Map.lookup`/`None`
