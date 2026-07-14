@@ -65,6 +65,8 @@
 //! an effect therefore cannot enlarge the authority of a program that uses it.
 //= spec/capabilities/capabilities-and-effects.md#an-entrypoint-delegates-the-capabilities-it-grants-to-the-host
 //# Declaring an effect and its operations MUST NOT by itself grant any host capability: an effect declaration is a routing-agnostic contract, and only an entrypoint's delegation routes an effect's operations to the host, so that a library that declares or performs an effect cannot enlarge the authority of a program that uses it.
+//= spec/capabilities/capabilities-and-effects.md#host-binding-is-a-routing-decision-made-at-the-entrypoint
+//# An effect declaration MUST NOT determine whether the effect is discharged in-program or at the host boundary, so that an effect is a routing-agnostic contract and the same declared effect may be handled in one program and delegated to the host in another.
 //!
 //! **Deferred to E1.** These records carry the op TYPE + identity; the `(meta apply)` perform intrinsic
 //! declines at lowering until E1 makes the compile-time evaluator handler-context-aware and rewrites a
