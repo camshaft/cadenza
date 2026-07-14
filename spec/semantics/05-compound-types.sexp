@@ -647,6 +647,30 @@
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 30 Int64)))
 
+(case "two fallible reads of one collection parameter share its resident handle slot"
+  (doc    "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its
+           own parameter slot for the whole body, and each read only BORROWS it (the bounds-check `vec-len`
+           and the element `vec-get`), so both reads address that slot directly — the handle is not copied
+           into a scratch slot per read. Value parity is the observable proof: element 0 (10) + element 2
+           (30) = 40. The Bytes companion below pins the same reuse for `bytes-len`/`bytes-get`.")
+  (input  (do
+            (def (rd (: xs (List Int64)))
+              (+ (Option.expect (List.at xs 0) "a") (Option.expect (List.at xs 2) "b")))
+            (def (main) (rd (list 10 20 30)))
+            (export main)))
+  (output (: 40 Int64)))
+
+(case "two fallible reads of one Bytes parameter share its resident handle slot"
+  (doc    "The Bytes companion — two `Bytes.at` reads of the same parameter `bs` at different offsets read
+           its resident handle slot directly (no per-read copy), verified by value: byte 0 (10) + byte 3
+           (40) = 50.")
+  (input  (do
+            (def (rd (: bs Bytes))
+              (+ (Option.expect (Bytes.at bs 0) "a") (Option.expect (Bytes.at bs 3) "b")))
+            (def (main) (rd b"\x0a\x14\x1e\x28"))
+            (export main)))
+  (output (: 50 Int64)))
+
 (case "a non-tail recursion with a fallible read in its base arm composes"
   (doc    "The non-tail spine: the recursive call is under `(+ 0 …)` (not a tail call), and the base arm
            still does the fallible read `(Option.expect (Bytes.at b p) …)` = 7 for `b\"\\x07\"` at p=0. Pins
@@ -3366,6 +3390,29 @@
                 ((list (None) .. r) 99)))
             (def (main) (f (mk 2))) (export main)))
   (output (: 99 Int64)))
+
+(case "a list of a nullary sum written in the bare-member form is exhaustive across every variant"
+  (doc    "The BARE-MEMBER spelling of the list-of-sum saturation: `(match xs ((list) …) ((list C.R .. r) …)
+           ((list C.G .. r) …) ((list C.B .. r) …))` over `(List C)` for `(type C R G B)` is exhaustive
+           WITHOUT a `_`, exactly as the applied `(Some x)` / paren-nullary `(R)` spellings are — the empty
+           arm covers length 0 and the three variant arms saturate the first element's variant set. The
+           bare-member `C.R` (= `(. C R)`) lead element is NORMALIZED to the paren-applied form `((. C R))`
+           so it resolves as a nullary-variant pattern (the bare member alone would re-lower as member
+           access). `mk 2` builds `[C.B]`, whose first element selects the (last, now unconditional) `C.B`
+           arm → 3.")
+  (input  (do
+            (type C R G B)
+            (def (mk (: n Int64))
+              (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B))))
+            (def (f (: xs (List C)))
+              (match xs
+                ((list) 0)
+                ((list C.R .. r) 1)
+                ((list C.G .. r) 2)
+                ((list C.B .. r) 3)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64)))
 
 (case "a sum variant's list payload split across empty and rest arms is exhaustive and dispatches"
   (doc    "A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —

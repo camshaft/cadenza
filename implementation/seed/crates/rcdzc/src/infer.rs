@@ -6432,6 +6432,65 @@ fn check_application(
             }
             return;
         }
+        // A COMPARISON (`< > <= >= = compare`) over a NUMERIC MIX — `(< n 3.0)` for `n : Int64`, or the
+        // order-flipped `(< 3 x)` for `x : Float64`. Comparisons ride the generic `∀a. a→a→Bool` scheme
+        // (which accepts two equal numeric types), so a mix would fall through to the generic scheme-unify,
+        // whose CDZ0301 depends on WHICH operand unified as "expected" — giving the two-way coercion fix in
+        // some operand orders (`(< n 3.0)` retypes `3.0`→`3`) but NONE in others (`(< 3 x)` left bare). Fault
+        // it HERE with the SAME two-way `numeric_text_coercion_fix` the arithmetic mix uses (M168), so the
+        // int/float-literal retype is offered regardless of operand order. Only a definite int-vs-float (or
+        // float-width) mix between two NUMERIC operands — a `BigInt`/`Rational`/`Qty` operand is handled by
+        // its own block above; an `Any`/`Var` operand is not yet a definite mix; a non-numeric operand is a
+        // kind-boundary handled elsewhere. Same CDZ0301 the generic path gives, just with the fix + a
+        // stable message.
+        let is_comparison = matches!(
+            prim,
+            Some(
+                crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Compare
+            )
+        );
+        let is_fixed_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_));
+        if is_comparison && is_fixed_numeric(&a0) && is_fixed_numeric(&b0) && !a0.agrees_with(&b0) {
+            let both_float = matches!(a0, Ty::Float(_)) && matches!(b0, Ty::Float(_));
+            let msg = if both_float {
+                let (Ty::Float(fa), Ty::Float(fb)) = (&a0, &b0) else {
+                    unreachable!("both_float guarantees two Ty::Float")
+                };
+                format!(
+                    "floating-point precisions differ: {}-bit vs {}-bit — convert explicitly \
+                     (Cadenza never silently widens or narrows a float)",
+                    fa.ground_width(),
+                    fb.ground_width(),
+                )
+            } else {
+                format!(
+                    "no implicit conversion between numeric types {} and {} — convert explicitly \
+                     (Cadenza never silently promotes a numeric type)",
+                    a0.render_name(),
+                    b0.render_name()
+                )
+            };
+            let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
+            // Two-way coercion (M168): conform the SECOND operand to the first, else the FIRST to the
+            // second — so an int LITERAL retypes to `.0` (or drops it) whichever side it sits on, and a
+            // computed int gets the `(<Float>.of-int …)` wrap. A mix with no clean one-shot (a runtime
+            // int-vs-float pair) leaves the bare CDZ0301.
+            let fix = numeric_text_coercion_fix(db, &a0, &b0, args[1])
+                .or_else(|| numeric_text_coercion_fix(db, &b0, &a0, args[0]));
+            if let Some(fix) = fix {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         if is_additive {
             let a = a0;
             let b = b0;

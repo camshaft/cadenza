@@ -204,10 +204,19 @@ pub(crate) struct FileScopeTable {
     /// (`Variant::ctor`). Populated from `visible_types` gated by each import's constructor visibility:
     /// a file's OWN types + CONCRETELY-imported types bring their ctors; an ABSTRACTLY-imported type
     /// (handle only) brings none; a PARTIALLY-concrete import brings only its named ctors. A ctor name
-    /// absent here is not a visible bare variant in that file. This is also the surface the CDZ0214 check
-    /// consults for a QUALIFIED `(. T A)`: `T`'s handle visible + `A` a genuine variant of `T` but `A`
-    /// NOT here = a withheld constructor (an abstract or partially-concrete import).
+    /// absent here is not a visible bare variant in that file. A variant whose name COLLIDES with a
+    /// prelude type/module name (`Int`/`Bool`/`List`/…) is DELIBERATELY omitted so bare `Int` stays the
+    /// width constructor (mirrors `variant_ctor_index`); such a ctor is reached only QUALIFIED, so it
+    /// lives in `visible_ctors_qualified` instead — see there.
     visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>>,
+    /// Per file, EVERY admitted VARIANT-CONSTRUCTOR name → its ctor occurrence — the same admission
+    /// gate as `visible_ctors` but WITHOUT the prelude-collision omission. A prelude-named variant
+    /// (`Ast.Int`) is unreachable BARE (would shadow the width type) yet perfectly reachable QUALIFIED,
+    /// so it belongs to this file's public constructor surface. This is the surface the CDZ0214 withheld
+    /// check (`file_scoped_variant_ctor_qualified`) and `is_abstract_type_at` consult for a QUALIFIED
+    /// `(. T A)`: `T`'s handle visible + `A` a genuine variant of `T` but `A` NOT here = a withheld
+    /// constructor (an abstract or partially-concrete import). Superset of `visible_ctors`.
+    visible_ctors_qualified: Vec<crate::fxhash::FxHashMap<String, StructId>>,
 }
 
 impl FileScopeTable {
@@ -254,6 +263,11 @@ fn build_file_scope(
         vec![crate::fxhash::FxHashMap::default(); files.len()];
     let mut visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>> =
         vec![crate::fxhash::FxHashMap::default(); files.len()];
+    // The QUALIFIED-access surface: every admitted ctor, INCLUDING prelude-named ones (`Ast.Int`) that
+    // `visible_ctors` omits so bare `Int` stays the width type. Reachable only via `(. T A)`, so the
+    // CDZ0214 withheld check + `is_abstract_type_at` consult THIS, never the bare map.
+    let mut visible_ctors_qualified: Vec<crate::fxhash::FxHashMap<String, StructId>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
 
     // Own defs: assign each def to the file whose range contains its signature occurrence. First-wins
     // per (file, name) mirrors the flat `def_name_index` (a duplicate name within a file is a separate
@@ -277,16 +291,14 @@ fn build_file_scope(
          local_name: &str,
          ctor_vis: Option<&crate::link::CtorVis>,
          visible_types: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
-         visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
+         visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
+         visible_ctors_qualified: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
             if let Some(synth) = decl.synth {
                 visible_types[fi]
                     .entry(local_name.to_string())
                     .or_insert(synth);
             }
             for v in &decl.variants {
-                if prelude_type_module_names.contains(&v.name) {
-                    continue;
-                }
                 // Bring this variant's ctor into the file only if `ctor_vis` admits it. `All` (own
                 // decl, or a wildcard `T.*` import) brings every ctor; `Named(set)` brings only the
                 // explicitly-exported ctors; a `None` `ctor_vis` (an ABSTRACT import — handle only)
@@ -297,7 +309,17 @@ fn build_file_scope(
                     Some(crate::link::CtorVis::Named(set)) => set.iter().any(|n| n == &v.name),
                 };
                 if admit && let Some(ctor) = v.ctor {
-                    visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
+                    // The QUALIFIED surface admits EVERY visible ctor — a prelude-named one (`Ast.Int`)
+                    // is reachable through the `(. T A)` path even though bare `Int` is not.
+                    visible_ctors_qualified[fi]
+                        .entry(v.name.clone())
+                        .or_insert(ctor);
+                    // The BARE surface omits a prelude type/module-name collision (`Int`/`List`/…) so
+                    // bare `Int` keeps resolving to the width type — such a variant is qualified-only
+                    // (mirrors `variant_ctor_index`).
+                    if !prelude_type_module_names.contains(&v.name) {
+                        visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
+                    }
                 }
             }
         };
@@ -312,6 +334,7 @@ fn build_file_scope(
                 Some(&crate::link::CtorVis::All),
                 &mut visible_types,
                 &mut visible_ctors,
+                &mut visible_ctors_qualified,
             );
         }
     }
@@ -350,6 +373,7 @@ fn build_file_scope(
                     ctor_vis,
                     &mut visible_types,
                     &mut visible_ctors,
+                    &mut visible_ctors_qualified,
                 );
             }
             // Value import: the exporting file's def under the exported name.
@@ -368,6 +392,7 @@ fn build_file_scope(
         visible,
         visible_types,
         visible_ctors,
+        visible_ctors_qualified,
     }
 }
 
@@ -2600,6 +2625,27 @@ impl Db {
         Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
+    /// The QUALIFIED-access analogue of [`Db::file_scoped_variant_ctor`] — resolves a variant name
+    /// against `at`'s file including a prelude-named ctor (`Ast.Int`) that the BARE map omits. Used by
+    /// the CDZ0214 withheld check and `is_abstract_type_at` to judge a `(. T A)` access: `Some(Ok(_))`
+    /// means `A` is a visible constructor of `T` here (own type / wildcard / named import), so the
+    /// qualified access is legitimate even when `A` collides with a prelude type name. Same tri-state as
+    /// `file_scoped_variant_ctor`.
+    pub(crate) fn file_scoped_variant_ctor_qualified(
+        &self,
+        at: StructId,
+        name: &str,
+    ) -> Option<Result<StructId, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(
+            fs.visible_ctors_qualified[file]
+                .get(name)
+                .copied()
+                .ok_or(()),
+        )
+    }
+
     /// Whether the sum type whose DECLARATION OCCURRENCE is `decl` is ABSTRACT in the file containing
     /// node `at` — its handle is visible there but NONE of its constructors are (imported handle-only).
     /// A value of such a type may be named and held but not constructed, matched, stripped, or compared
@@ -2625,9 +2671,13 @@ impl Db {
         if !handle_visible {
             return false;
         }
+        // Consult the QUALIFIED ctor surface: a variant reachable only via `(. T A)` — e.g. a
+        // prelude-named ctor like `Ast.Int`, omitted from the bare map — still makes the type CONCRETE
+        // (not abstract) in this file. Using the bare map would wrongly call a type abstract when all its
+        // visible constructors happen to collide with prelude names.
         !td.variants.iter().any(|v| {
             v.ctor
-                .is_some_and(|c| fs.visible_ctors[file].values().any(|&vc| vc == c))
+                .is_some_and(|c| fs.visible_ctors_qualified[file].values().any(|&vc| vc == c))
         })
     }
 

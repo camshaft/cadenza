@@ -109,15 +109,30 @@ export default function ControlFlow() {
 
       <Exercise
         id="control-flow:2"
-        prompt={<>Finish <C>in-range</C> so it returns <C>1</C> only when <C>x</C> is between 0 and 10 — here <C>(in-range 5)</C> should give <C>1</C>.</>}
-        starter={`(def (in-range x)
-  (if (and (< 0 x) ?) 1 0))
-(def (main) (in-range 5))`}
-        solution={`(def (in-range x)
-  (if (and (< 0 x) (< x 10)) 1 0))
-(def (main) (in-range 5))`}
-        expected="1"
-        hint={<>The second half of the <C>and</C> is the upper bound: <C>(&lt; x 10)</C>.</>}
+        prompt={
+          <>
+            <C>fare</C> picks a ticket price by age tier: under 5 rides free (<C>0</C>), 65 and over pays{" "}
+            <C>5</C>, everyone in between pays <C>10</C>. The free case is done; fill the hole with the{" "}
+            <em>nested</em> <C>if</C> that decides between the adult and senior fares — here{" "}
+            <C>(fare 70)</C> should give <C>5</C>.
+          </>
+        }
+        starter={`(def (fare age)
+  (if (< age 5) 0
+      ?))
+(def (main) (fare 70))`}
+        solution={`(def (fare age)
+  (if (< age 5) 0
+      (if (< age 65) 10 5)))
+(def (main) (fare 70))`}
+        expected="5"
+        hint={
+          <>
+            The hole is a second <C>if</C> in the else position, like the sign-of-<C>n</C> example above:{" "}
+            <C>(if (&lt; age 65) 10 5)</C> — under 65 is the adult fare <C>10</C>, otherwise the senior{" "}
+            <C>5</C>.
+          </>
+        }
       />
     </article>
   );

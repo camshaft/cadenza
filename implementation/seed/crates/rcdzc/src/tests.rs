@@ -18228,6 +18228,68 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_int_float_comparison_offers_the_retype_fix_regardless_of_operand_order() {
+        // A COMPARISON (`< > = …`) over an int/float mix rides the generic `∀a. a→a→Bool` scheme, so it
+        // fell to the generic scheme-unify — whose fix depended on WHICH operand unified as "expected":
+        // `(< n 3.0)` retyped `3.0`, but the flipped `(< 3 x)` (int literal first, float var second) got
+        // the bare "no implicit conversion" with NO fix. Now a comparison numeric mix faults with the SAME
+        // two-way coercion the arithmetic mix uses (M168), so the int-literal retype fires either order.
+        // INT-literal FIRST, float var second — the previously-fix-less order.
+        let flipped =
+            reject_full("(module m (def (f (: x Float64)) (< 3 x)) (export f))").expect("reject");
+        assert_eq!(
+            flipped.code.as_deref(),
+            Some("CDZ0301"),
+            "got: {}",
+            flipped.message
+        );
+        assert_eq!(
+            flipped.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("3.0"),
+            "int-literal-first comparison retypes the literal up: {}",
+            flipped.message
+        );
+        // FLOAT var first, int literal second — retype the literal too (the mirror).
+        let normal =
+            reject_full("(module m (def (f (: x Float64)) (< x 3)) (export f))").expect("reject");
+        assert_eq!(
+            normal.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("3.0"),
+            "the mirror order retypes the same literal: {}",
+            normal.message
+        );
+        // INT var, float LITERAL — drop the fractional form (`3.0` → `3`), either order.
+        let int_var =
+            reject_full("(module m (def (f (: n Int64)) (< n 3.0)) (export f))").expect("reject");
+        assert_eq!(
+            int_var.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("3"),
+            "an int var vs a float literal drops the fractional form: {}",
+            int_var.message
+        );
+        // `=` (equality) gets it too, not just ordering.
+        let eq =
+            reject_full("(module m (def (f (: x Float64)) (= 3 x)) (export f))").expect("reject");
+        assert_eq!(
+            eq.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("3.0"),
+            "equality gets the retype fix too: {}",
+            eq.message
+        );
+        // NO false change: a SAME-TYPE numeric comparison is valid (no error).
+        assert!(
+            reject_code("(module m (def (f (: a Int64) (: b Int64)) (< a b)) (export f))")
+                .is_none(),
+            "a same-type Int64 comparison is valid"
+        );
+        assert!(
+            reject_code("(module m (def (f (: a Float64) (: b Float64)) (< a b)) (export f))")
+                .is_none(),
+            "a same-type Float64 comparison is valid"
+        );
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text
@@ -23066,22 +23128,44 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bare_member_nullary_ctor_list_saturation_declines_to_require_a_wildcard() {
-        // KNOWN LIMITATION (honest decline, NOT a miscompile): the bare-MEMBER nullary form `C.R` (=
-        // `(. C R)`) is EXCLUDED from ctor-saturation — reusing a `(. C R)` node as a synthesized inner-match
-        // pattern head re-lowers as member ACCESS (CDZ0201) in the emit path (a synthesized-member-pattern
-        // resolve gap). So `(list) + (list C.R ..) + (list C.G ..) + (list C.B ..)` does NOT saturate here and
-        // correctly stays CDZ0210 (add a `_`). The paren-nullary `(R)` and applied `(Some x)` forms DO
-        // saturate (above). `bare_member_ctor_element` gates it; the honest length-coverage error stands.
-        assert_eq!(
+    fn a_bare_member_nullary_ctor_list_saturation_is_exhaustive_and_dispatches() {
+        // The bare-MEMBER nullary form `C.R` (= `(. C R)`) now SATURATES too (was Inc-24's known decline):
+        // `(list) + (list C.R ..) + (list C.G ..) + (list C.B ..)` over `(List C)` is total without a `_`.
+        // The pass NORMALIZES a bare-member lead element to the paren-applied `((. C R))` form
+        // (`wrap_bare_member_element`), which resolves cleanly as a nullary-variant pattern where the bare
+        // member alone re-lowered as member ACCESS (CDZ0201) in the emit path.
+        assert!(
             reject_code(
                 "(module m (type C R G B) (def (f (: xs (List C))) \
                    (match xs ((list) 0) ((list C.R .. _r) 1) ((list C.G .. _r) 2) ((list C.B .. _r) 3))) \
                  (def (main) (f (list C.R))) (export main))"
             )
-            .as_deref(),
-            Some("CDZ0210"),
-            "the bare-member nullary form declines to saturation → the honest add-`_` error stands"
+            .is_none(),
+            "a bare-member nullary-variant list saturation is exhaustive without a wildcard"
+        );
+        // Runtime: build a list of one nullary variant internally and dispatch by discriminant. mk(0) →
+        // [C.R] → arm 1; mk(1) → [C.G] → arm 2; mk(2) → [C.B] → the (now unconditional, normalized) C.B arm 3.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m (type C R G B) \
+                   (def (mk (: n Int64)) (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B)))) \
+                   (def (f (: xs (List C))) \
+                     (match xs ((list) 0) ((list C.R .. _r) 1) ((list C.G .. _r) 2) ((list C.B .. _r) 3))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping bare-member-saturation run");
+            return;
+        }
+        assert_eq!(run("0"), "1", "[C.R] matches the C.R arm");
+        assert_eq!(run("1"), "2", "[C.G] matches the C.G arm");
+        assert_eq!(
+            run("2"),
+            "3",
+            "[C.B] matches the (normalized, unconditional) C.B arm"
         );
     }
 
