@@ -11608,16 +11608,16 @@ mod match_engine {
         let find_export_fault = |src: &str| {
             crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
-                .find(|d| d.message.contains("an export names a single definition"))
+                .find(|d| d.message.contains("an export names a definition"))
         };
-        // A compound whose HEAD is a name recovers the likely intent — replace the clause with `(export g)`.
+        // A compound whose HEAD is a name recovers the likely intent — replace that element with `g`.
         let d = find_export_fault("(module m (def (g) 1) (export (g x)))")
             .expect("a malformed compound export clause is rejected");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         let fix = d.fix.as_ref().expect("carries a recover-the-name fix");
         assert_eq!(fix.kind, crate::abi::FixKind::Replace);
         assert_eq!(
-            fix.replacement, "(export g)",
+            fix.replacement, "g",
             "recovers the head name: {}",
             d.message
         );
@@ -11635,11 +11635,24 @@ mod match_engine {
             "an empty export clause is rejected"
         );
 
-        // NO false positive: a well-formed `(export g)` produces no malformed-export fault.
+        // A MALFORMED ELEMENT of a MULTI-NAME export (`(export a b …)` is valid; a non-name element is not)
+        // is caught too — the scan publishes the well-formed names and defers the bad element's check here,
+        // so `(export a 5)` must flag `5` rather than silently drop it.
         assert!(
-            find_export_fault("(module m (def (g) 1) (export g))").is_none(),
-            "a well-formed export is not flagged"
+            find_export_fault("(module m (def (a) 1) (export a 5))").is_some(),
+            "a non-name element of a multi-name export is caught, not silently dropped"
         );
+
+        // NO false positive: a well-formed single OR multi-name export produces no malformed-export fault.
+        for ok in [
+            "(module m (def (g) 1) (export g))",
+            "(module m (def (a) 1) (def (b) 2) (export a b))",
+        ] {
+            assert!(
+                find_export_fault(ok).is_none(),
+                "a well-formed export is not flagged: {ok}"
+            );
+        }
     }
 
     #[test]

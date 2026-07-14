@@ -2022,22 +2022,31 @@ impl Db {
         out
     }
 
-    /// Top-level `(export …)` forms whose argument is NOT a bare name — `(export (g x))`, `(export 5)`,
-    /// `(export)`. The scan (`scan_module`) only records an `Export` when the clause's first tail element
-    /// `as_name`s, so a MALFORMED export clause is otherwise SILENTLY DROPPED: no `Export` is registered,
-    /// `unknown_top_forms` skips it (its head IS `export`, a known top form), and the program compiles as
-    /// if the export were never written — the author's public-surface intent vanishes with no diagnostic
-    /// (the emit path then reports the misleading "nothing is public"). Return each such clause occurrence
-    /// so `collect_faults` can reject it with the actionable "an export names a definition: `(export g)`"
-    /// (a scan-and-drop correctness hazard, the export-clause analogue of the malformed-variant reject).
-    /// The bad-argument occurrence (for a fix anchor) is the clause's first tail element, if any.
+    /// Malformed elements of top-level `(export …)` clauses. An export clause names one or more
+    /// definitions — `(export a)` / `(export a b …)` (the multi-name surface) — so EVERY tail element must
+    /// be a bare NAME. A NON-name element — `(export (g x))`, `(export 5)`, `(export a 5)` — and an EMPTY
+    /// `(export)` are otherwise SILENTLY DROPPED: the module scan records an `Export` only for the elements
+    /// that `as_name`, dropping the rest with no diagnostic (and the scan's own comment defers the check
+    /// HERE); an all-malformed clause registers nothing, `unknown_top_forms` skips it (its head IS the
+    /// known `export`), and the program compiles as if the author never wrote it — the emit path then
+    /// reports the misleading "nothing is public". Return `(clause_occ, bad_element_occ)` for each bad
+    /// element (and `(clause_occ, None)` for an empty clause) so `collect_faults` can reject it with the
+    /// actionable "an export names a definition: `(export g)`" (a scan-and-drop correctness hazard). One
+    /// entry PER bad element so `(export 5 6)` reports both.
     pub fn malformed_exports(&self) -> Vec<(StructId, Option<StructId>)> {
         let mut out = Vec::new();
         for item in top_items(&self.ast) {
-            if let Some(tail) = self.ast.as_form(item, "export")
-                && tail.first().is_none_or(|&s| self.ast.as_name(s).is_none())
-            {
-                out.push((item, tail.first().copied()));
+            let Some(tail) = self.ast.as_form(item, "export") else {
+                continue;
+            };
+            if tail.is_empty() {
+                out.push((item, None));
+                continue;
+            }
+            for &s in tail {
+                if self.ast.as_name(s).is_none() {
+                    out.push((item, Some(s)));
+                }
             }
         }
         out
