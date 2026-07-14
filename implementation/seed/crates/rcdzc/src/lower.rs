@@ -5268,12 +5268,20 @@ fn classify_binding_ctor(
         },
     };
     let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
-        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor).
-        return Err(Reject::coded(
+        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
+        // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
+        // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here
+        // (an unbound name is not a ctor), giving the opaque shape message. When the matched type is a sum,
+        // ENRICH with the same "did you mean `Add`?" + rename fix a top-level match arm gets
+        // (`enrich_pattern_head_suggestion` over the element sum's variants) — so a misspelled variant in a
+        // LIST-ELEMENT pattern reads as well as one in a direct match arm. A non-sum element type, or a head
+        // with no near variant, keeps the bare shape message.
+        let base = Reject::coded(
             Code::Malformed,
             "a binding pattern head is not a tuple, record, or constructor",
         )
-        .at(pat));
+        .at(pat);
+        return Err(enrich_pattern_head_suggestion(db, head, value_ty, base));
     };
     let variant_count = db
         .type_decl_by_occ(decl)
