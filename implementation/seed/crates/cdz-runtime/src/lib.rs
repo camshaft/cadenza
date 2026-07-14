@@ -17091,6 +17091,113 @@ mod tests {
         assert_eq!(live_nodes(), before);
     }
 
+    /// A DEEP CHAMP trie. The map/set FUZZERS use a u8 keyspace (≤256 keys) which only builds a trie of
+    /// DEPTH 1 (measured); even 4096 sequential int keys reach only depth 2. But a 32-bit hash supports up
+    /// to 7 levels (`level_index` shifts 5 bits/level), and the multi-level insert/lookup/remove DESCENT
+    /// through interior subnodes at levels ≥3 — the `champ_insert_node`/`champ_remove_node` recursion +
+    /// the subnode-index bookkeeping (`subnode_index_for_slot`, `data_count`) at deep levels — was
+    /// UNEXERCISED. This forces a DEPTH-3 trie with 6 keys that all share the low 15 bits of their
+    /// `champ_hash` (prefix `0x1a4f`), so levels 0/1/2 each descend a subnode. A PRECONDITION guard
+    /// asserts the shared prefix still holds — if the frozen FNV hash ever changes, the test fails LOUDLY
+    /// (re-find keys) rather than silently degrading to a shallow trie. Verifies deep lookup (each key its
+    /// own value), size, remove-at-depth (one key gone, the rest intact, the deep spine collapses
+    /// correctly), and no leak.
+    #[test]
+    fn deep_champ_trie_insert_lookup_remove_at_depth_3() {
+        reset();
+        let before = live_nodes();
+        // Keys found by a birthday search: all six share the low 15 bits (`& 0x7FFF == 0x1a4f`) of their
+        // champ_hash → they collide at levels 0,1,2 and split only at level 3.
+        let keys: [i64; 6] = [21471, 52398, 90452, 123525, 195537, 212302];
+        // PRECONDITION: the shared low-15-bit hash prefix still holds (else the frozen hash changed —
+        // re-find a group; this test is only meaningful when the keys force a deep descent).
+        for &k in &keys {
+            let kh = op_box_int(k);
+            assert_eq!(
+                champ_hash(kh) & 0x7FFF,
+                0x1a4f,
+                "PRECONDITION: key {k} must share the low-15-bit hash prefix 0x1a4f (else re-find keys)"
+            );
+            op_drop(kh);
+        }
+        // Measure the trie depth of a key's descent (walk subnodes until the data slot).
+        let depth_of = |m: Handle, k: i64| -> u32 {
+            let kh = op_box_int(k);
+            let hash = champ_hash(kh);
+            let mut node = m;
+            let mut level = 0u32;
+            loop {
+                let child = with_node(node, None, |n| {
+                    let dm = champ_datamap(&n.raw);
+                    let nm = champ_nodemap(&n.raw);
+                    if dm == 0 && nm == 0 {
+                        return None; // collision/empty — descent ends
+                    }
+                    let i = level_index(hash, level);
+                    let bit = 1u32 << i;
+                    if nm & bit != 0 {
+                        let sidx = subnode_index_for_slot(nm, i) as usize;
+                        let sbase = 2 * data_count(dm) as usize;
+                        Some(n.handles[sbase + sidx])
+                    } else {
+                        None // data slot (or absent) here — descent ends
+                    }
+                });
+                match child {
+                    Some(c) => {
+                        node = c;
+                        level += 1;
+                    }
+                    None => break,
+                }
+            }
+            op_drop(kh);
+            level
+        };
+
+        // Build the deep map: key i → value 1000+i.
+        let mut m = op_map_empty();
+        for (i, &k) in keys.iter().enumerate() {
+            m = minsert_int(m, k, 1000 + i as i64);
+        }
+        assert_eq!(op_map_size(m), 6, "all six deep keys present");
+        // The shared 15-bit prefix forces descent through levels 0,1,2 → depth ≥ 3.
+        let d = depth_of(m, keys[0]);
+        assert!(
+            d >= 3,
+            "the shared low-15-bit prefix forces a DEEP trie (depth {d}, expected ≥3) — deeper than the \
+             fuzzer's depth-1 u8 keyspace"
+        );
+        // Deep LOOKUP: every key resolves to its own value (descent through 3 subnode levels).
+        for (i, &k) in keys.iter().enumerate() {
+            assert_eq!(
+                mlookup_int(m, k),
+                Some(1000 + i as i64),
+                "deep key {k} resolves through the multi-level descent"
+            );
+        }
+        // Deep REMOVE: remove one key; the deep spine collapses, the rest stay intact.
+        m = mremove_int(m, keys[2]);
+        assert_eq!(op_map_size(m), 5, "one deep key removed");
+        assert_eq!(
+            mlookup_int(m, keys[2]),
+            None,
+            "the removed deep key is gone"
+        );
+        for (i, &k) in keys.iter().enumerate() {
+            if i == 2 {
+                continue;
+            }
+            assert_eq!(
+                mlookup_int(m, k),
+                Some(1000 + i as i64),
+                "surviving deep key {k} still resolves after the deep remove"
+            );
+        }
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak across the deep-trie ops");
+    }
+
     /// A STRING-KEY collision node — the string sibling of `map_forces_collision_node` (which uses INT
     /// keys). The compiler-in-Cadenza port's maps are STRING-keyed, and a string key takes the arity-0
     /// HEAP-BYTE-LEAF champ path: the collision node's linear scan compares keys by `champ_eq` = RAW-BYTE
