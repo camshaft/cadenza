@@ -3019,6 +3019,8 @@ fn collect_pattern_binders(
 //# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
 //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
 //# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
 /// Enrich the propagated "record has no field `Q`" poison of a MATCH-PATTERN head `(. Sum Q)` — where `Q`
 /// is not a variant of the scrutinee sum — with a "did you mean?" over the sum's VARIANT NAMES, plus a
 /// replace fix on the mistyped key. The pattern-position twin of `infer::no_field_reject`'s value-position

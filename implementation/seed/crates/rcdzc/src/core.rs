@@ -534,9 +534,12 @@ pub enum Core {
     ///
     /// A NULLARY variant is a constructor whose ARGUMENT is the unit value — `None` builds `sum-new(disc,
     /// arr-alloc(0))`, the empty array standing for the unit payload — NOT a value pre-constructed at the
-    /// prelude; `(None unit)` is the application that produces it, uniform with `(Some 5)`.
+    /// prelude; `(None unit)` is the application that produces it, uniform with `(Some 5)`. Every sum value
+    /// is built this way — by APPLICATION of its constructor, in all cases.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
+    //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+    //# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
     SumNew { disc: u32, payloads: Vec<StructId> },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf

@@ -52,6 +52,10 @@ use tracing::trace;
 /// ignore the binding is gone). See `core-semantics.md` §A Compound Value Has A Symbol Constructor And
 /// A Shadowable Alias. ("The strings are the symbols" — the reserved primitive names are string
 /// literals, needing no invented sigils and no reader change.)
+//= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+//# A compound value — a tuple, a record — MUST have a **primitive constructor named by a string literal** in head position: a tuple is constructed by `("tuple" …)` and a record by `("record" …)`.
+//= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+//# A string literal is not something a name binding can introduce (a binding introduces an identifier, never a string), so the primitive constructor MUST NOT be shadowable, and the language recognizes the string-headed form structurally.
 const GRAMMAR: &[&str] = &[
     "let",
     "if",
