@@ -1078,9 +1078,22 @@ fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, Stru
                 out.push((n.to_string(), pat));
             }
         }
-        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `.`
-        // member / `guard`), recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the
-        // recursion reaches its `k`/`v` leaves naturally.
+        // A `.`-MEMBER form `(. Sum V)` — a NULLARY-variant ctor reference used as a whole pattern (`C.R`).
+        // Its segments after `.` are the TYPE and VARIANT names, NOT binders — so it binds NOTHING. Without
+        // this arm the generic `skip(1)` recursion below collected the first segment (`C`) as a spurious
+        // binder → a bogus CDZ0306 "unused binding `C`" (with a nonsense `_C` rename) on every `(match c
+        // (C.R …) …)` arm. (An APPLIED ctor `(C.V arg…)` still recurses its ARGS below — its head is a
+        // separate node, correctly skipped; only the bare-member-as-whole-pattern case is the ctor here.)
+        Struct::List(children)
+            if children
+                .first()
+                .is_some_and(|&h| db.ast.as_name(h) == Some(".")) =>
+        {
+            // A member form binds nothing.
+        }
+        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `guard`),
+        // recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the recursion reaches its
+        // `k`/`v` leaves naturally.
         Struct::List(children) => {
             for &arg in children.iter().skip(1) {
                 collect_arm_binder_leaves(db, arg, out);

@@ -30173,6 +30173,29 @@ mod diagnostics {
         assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
     }
 
+    /// A `.`-MEMBER pattern `C.R` (a NULLARY variant used as a whole arm pattern, printed `(. C R)`) binds
+    /// NOTHING — its segments are the TYPE and VARIANT names, not binders. The unused-binding pass must not
+    /// treat the first segment (`C`) as a spuriously-unused binder. (Regression: `collect_arm_binder_leaves`
+    /// recursed a compound's args generically, collecting `C` from `(. C R)` → a bogus CDZ0306 "unused
+    /// binding `C`" with a nonsense `_C` rename on every nullary-variant match arm.)
+    #[test]
+    fn a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused() {
+        // A total match over a three-nullary-variant sum, each arm a bare `C.x` member — no binders, so
+        // NO CDZ0306 at all.
+        let clean = "(module m (type C R G B) (def (f (: c C)) (match c (C.R 1) (C.G 2) (C.B 3))) (export f))";
+        assert!(
+            unused_of(clean).is_empty(),
+            "a dotted nullary-variant arm binds nothing — no spurious `C` warning: {:?}",
+            unused_of(clean)
+        );
+        // The suppression is SURGICAL — it silences only the member HEAD, not real binders. A genuinely
+        // unused payload binder alongside a dotted arm still warns (only `n`, never `C`).
+        let mixed = "(module m (type C R G B) (def (f (: c C) (: o (Option Int64))) (match o ((Some n) (match c (C.R 1) (C.G 2) (C.B 3))) ((None) 0))) (export f))";
+        let u = unused_of(mixed);
+        assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
+        assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
+    }
+
     /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
     /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
     /// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
