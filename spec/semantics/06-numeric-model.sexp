@@ -2075,3 +2075,16 @@
                  ((Some v) v)
                  ((None) 0)))
   (output (: 2 Int64)))
+
+(case "a match on a BigInt with a single catch-all binder binds and uses it"
+  (doc    "`(match (BigInt.of n) (z (* z z)))` with n=6 → 36: a match whose ONLY arm is a plain binder
+           `z` binds the (runtime) BigInt scrutinee to `z` and yields `(* z z)` — it inspects no structure,
+           so it needs no probe chain and no heap walk, and lowers straight to the body (the `bigint-mul`).
+           Pins that a catch-all binding match works over a BigInt scrutinee (before, the match engine
+           rejected a non-scalar scrutinee `matching a compound value needs a heap walk` even for a
+           bare-binder arm that never looks at it).")
+  (input  (do
+            (def (main (: n Int64)) (Int64.of (match (BigInt.of n) (z (* z z)))))
+            (export main)))
+  (call   main (: 6 Int64))
+  (output (: 36 Int64)))

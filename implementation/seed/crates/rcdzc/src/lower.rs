@@ -2458,6 +2458,22 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             ));
         }
     }
+    // A SINGLE unguarded CATCH-ALL BINDING arm `(match s (z <body>))` over a NON-SCALAR scrutinee binds
+    // `z` to the scrutinee and yields the body — it inspects NO structure, so it needs no probe chain and
+    // no heap walk. Lower it to the body directly (the binder resolves to the scrutinee via the Case-5
+    // binder→scrutinee rule, so `(match (BigInt.of n) (z (* z z)))` becomes the `bigint-mul`). This must
+    // come BEFORE the non-scalar decline below, which would otherwise reject a `BigInt`/compound scrutinee
+    // even though a bare-binder match never looks at it. Restricted to a NON-scalar scrutinee: a SCALAR
+    // single-binder match keeps its existing `Core::Match` path below (it carries the binder's
+    // lexical-block DWARF — a scratch-slot variable fenced to the match — which a body-collapse would
+    // drop; the debug-info tests pin that). The scrutinee is still evaluated for effects/traps: the body
+    // reads it through the binder, or a trap-free unused scrutinee simply is not mentioned by `core_of`.
+    if !is_scalar(db, scrutinee)
+        && let [(crate::core::Probe::Wild, None, body)] = probes.as_slice()
+    {
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "non-scalar match with a single catch-all binder lowers to its body");
+        return core_of(db, *body);
+    }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
         return Core::Poison(Reject::decline(
@@ -7971,6 +7987,26 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // the identities that are SAFE at every width and never trap are applied (see `arith_identity`);
         // the RESULT keeps the op's solved type because the runtime operand shares it (binary-op
         // unification), and a `0`/`1` constant grounds to that width at selection.
+        // A CONSTANT-ZERO DIVISOR with a RUNTIME numerator — `(/ n 0)` / `(% n 0)`. The divisor is the
+        // compile-time literal `0`, so the operation ALWAYS traps regardless of `n` — there is no runtime
+        // value of `n` that makes it valid. Reject CDZ0304 (the same code the both-constant `(/ 10 0)`
+        // gets), rather than emitting a component that traps at run time (`numeric-model.md` §A Constant
+        // Operation With No Value Is Rejected At Compile Time). This inherits the const-trap machinery's
+        // BRANCH SHIELDING: the reached-poison walk does not descend an untaken `if` branch, so `(if false
+        // (/ n 0) 1)` is NOT rejected (the trap is unreachable), exactly as the both-constant case is
+        // shielded there. Distinct from `(/ n z)` with a runtime `z` that HAPPENS to be 0 at a call (a
+        // genuine runtime trap — `z` is a variable, not the literal `0`, so this never fires for it).
+        (_, Core::ConstInt(ref b)) if matches!(op, Prim::Div | Prim::Rem) && b.is_zero() => {
+            trace!(target: "rcdzc::lower", op = intrinsic_name(op), "divide by a constant zero → CDZ0304 (always traps)");
+            Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                format!(
+                    "`{}` by the constant 0 always traps (divide by zero) — guard the divisor or remove \
+                     the division",
+                    intrinsic_name(op)
+                ),
+            ))
+        }
         (lc, rc) => {
             if let Some(simplified) = arith_identity(db, op, args[0], &lc, args[1], &rc) {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic identity simplified (op elided)");
