@@ -476,8 +476,11 @@ fn list_module(ast: &mut Arenas) -> StructId {
 /// `lookup : ∀k v. (Map k v) → k → (Option v)`, `remove : ∀k v. (Map k v) → k → (Map k v)`, `size :
 /// ∀k v. (Map k v) → Int64`. Mirrors `list_module`, but the type constructor and every scheme take two
 /// parameters instead of one. `empty`/`insert`/`remove` are the functional-construction surface (each
-/// yields a NEW map, operand unchanged, on the persistent CHAMP heap); `lookup` is total (`Option v`,
-/// `None` for an absent key, never a trap); `size` reports the key count. `swap`/`take` are the
+/// yields a NEW map, operand unchanged, on the persistent CHAMP heap): `insert` is add-OR-REPLACE (a key
+/// already present has its value replaced, never a second entry — the CHAMP holds each key once), and
+/// `remove` of an ABSENT key returns a map equal to the operand rather than trapping (removal is total).
+/// `lookup` is total (`Option v`, `None` for an absent key, never a trap); `size` reports the key count.
+/// `swap`/`take` are the
 /// VALUE-YIELDING second forms of insert/remove — each returns `(tuple <prior value as Option> <new
 /// map>)`, agreeing with the plain form on the resulting map and additionally reporting what the key
 /// held before, so a program observes a replaced/dropped value without a separate `lookup`.
@@ -485,6 +488,10 @@ fn list_module(ast: &mut Arenas) -> StructId {
 //# A map MUST offer an empty map value, an operation that adds or replaces the association for a key, and an operation that removes the association for a key.
 //= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
 //# Each MUST produce a new map value and leave its operand map unchanged, so that a map is immutable under update exactly as a list is under growth (*A List Is Grown By Functional Construction*).
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# Adding a key already present MUST replace that key's value rather than introduce a second entry, preserving the *A Map Associates Keys With Values* rule that a map contains each key at most once.
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# Removing a key the map does not contain MUST yield a map equal to the operand rather than trapping, so that removal is total.
 //= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
 //# A map MUST report the number of keys it associates, and that count MUST equal the number of distinct keys added and not since removed.
 //= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
