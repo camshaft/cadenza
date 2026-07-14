@@ -220,6 +220,7 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
+pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)

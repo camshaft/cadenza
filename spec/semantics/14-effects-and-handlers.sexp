@@ -1232,6 +1232,22 @@
                 (+ (Acc.add2 1 2) (Acc.add2 10 20)))) (export main)))
   (output (: 234 Int64)))
 
+(case "a THREE-parameter op arm binds all three parameters and the state"
+  (doc    "The arity extension of the two-parameter case: an operation with THREE scalar parameters whose
+           arm binds all three plus the state. `Acc.add3 : Int64 -> Int64 -> Int64 -> Int64`, arm `(add3 (a
+           b c) s (resume (+ (+ (+ a b) c) s) (+ s 1)))` — sums its three args plus the current state,
+           threading `s + 1`. Seeded 1000: `(Acc.add3 1 2 3)` = `1 + 2 + 3 + 1000` = 1006 (state → 1001),
+           then `(Acc.add3 10 20 30)` = `10 + 20 + 30 + 1001` = 1061 (state → 1002), so `(+ 1006 1061)` =
+           2067. Pins that arm-parameter binding scales past two — all three op parameters AND the state
+           binder resolve in the arm body, and the state still threads between successive performs on the
+           spine.")
+  (input  (do
+            (effect Acc (op add3 (-> Int64 Int64 Int64 Int64)))
+            (def (main)
+              (handle Acc 1000 ((add3 (a b c) s (resume (+ (+ (+ a b) c) s) (+ s 1))))
+                (+ (Acc.add3 1 2 3) (Acc.add3 10 20 30)))) (export main)))
+  (output (: 2067 Int64)))
+
 (case "a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer"
   (doc    "The data dependency runs THROUGH the argument position rather than through a let: the inner
            perform's result is the very argument the outer perform consumes — `(Acc.step (Acc.step 1))`.
