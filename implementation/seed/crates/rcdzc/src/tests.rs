@@ -18547,6 +18547,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_sub_pattern_destructures_a_sum_variant_payload() {
+        // The decision-tree matcher destructures a `(list …)` sub-pattern inside a sum-variant PAYLOAD —
+        // the general capability quote patterns rest on (`` `(+ ,a ,b) `` desugars to `(Ast.List (list
+        // (Ast.Name "+") a b))`, whose `(list …)` payload binds element-wise). A fixed-arity list pattern
+        // tests length + descends each element at `[Payload, Elem(i)]` (folded against a constant list —
+        // the corpus quote-pattern scrutinees are constant `(quote …)` values). SCOPE: constant fold only
+        // (a runtime list payload declines); a `.. rest` in a payload declines (task #51 runtime tail).
+        // A user sum wrapping a list, binding two elements — checks clean (it compiles + folds to 3).
+        assert!(
+            reject_code(
+                "(module m (type W (Wrap (List Int64))) \
+                   (def (main) (match (W.Wrap (list 1 2)) ((W.Wrap (list a b)) (+ a b)) (_ 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a (list a b) sub-pattern binds a sum variant's list payload"
+        );
+        // A quote pattern `` `(+ ,a ,b) `` IS `(Ast.List (list (Ast.Name "+") a b))` — the literal head
+        // `+` matches `(Ast.Name "+")` by equality, `,a`/`,b` bind the operand sub-ASTs. Against `(quote
+        // (+ 3 5))` the arm returns `b` = `(Ast.Int 5)`; the desugar + list-payload matcher compose.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (+ 3 5)) (`(+ ,a ,b) b) (other other))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quote pattern binds an unquoted operand via the Ast.List list-payload matcher"
+        );
+        // A literal HEAD constrains by equality: `` `(+ ,a ,b) `` does NOT match a `-`-headed form, so
+        // control falls to the catch-all. (The string-literal payload `(Ast.Name "+")` folds by value.)
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (- 3 5)) (`(+ ,a ,b) 1) (other 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a literal head in a quote pattern constrains by equality (falls through on a mismatch)"
+        );
+        // A `.. rest` tail inside a variant payload needs the runtime sublist matcher (task #51) — it
+        // DECLINES (a Todo), never a miscompile.
+        assert_eq!(
+            reject_code(
+                "(module m (type W (Wrap (List Int64))) \
+                   (def (main) (match (W.Wrap (list 1 2 3)) ((W.Wrap (list a .. rest)) a) (_ 0))) \
+                 (export main))"
+            ),
+            None,
+            "a rest-binder list sub-pattern declines cleanly (no artifact, no coded rejection)"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_linked_list_folds_at_runtime() {
         // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
         // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length

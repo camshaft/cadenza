@@ -1079,6 +1079,13 @@ fn emit_match_impl(
                     "a runtime string-literal match is not yet emitted",
                 ));
             }
+            // A `ListLen` probe only ever FOLDS (a constant list payload); a runtime list payload declines
+            // at `build_lit_test` before a decision tree is emitted, so it never reaches a runtime match.
+            crate::core::Probe::ListLen(_) => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime list-pattern match is not yet emitted",
+                ));
+            }
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {
@@ -1440,7 +1447,9 @@ fn emit_sum_cont(
                     format!("{}{target}", int_value_signed_decimal(v))
                 }
                 crate::core::Probe::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
-                crate::core::Probe::Str(_) | crate::core::Probe::Wild => {
+                crate::core::Probe::Str(_)
+                | crate::core::Probe::ListLen(_)
+                | crate::core::Probe::Wild => {
                     return Err(Reject::decline(
                         "a non-scalar literal-payload probe is not rendered by the Rust backend",
                     ));

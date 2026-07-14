@@ -1796,6 +1796,8 @@ fn find_binder_in_pattern(
                 arg_name == name && arg_name != "_"
             } else if is_tuple_pattern(db, arg) {
                 find_binder_in_tuple(db, arg, name, path, heads)
+            } else if is_list_pattern(db, arg) {
+                find_binder_in_list(db, arg, name, path, heads)
             } else {
                 find_binder_in_pattern(db, arg, name, path, heads)
             };
@@ -1827,7 +1829,50 @@ fn find_binder_in_pattern(
     if is_tuple_pattern(db, arg) {
         return find_binder_in_tuple(db, arg, name, path, heads);
     }
+    if is_list_pattern(db, arg) {
+        return find_binder_in_list(db, arg, name, path, heads);
+    }
     find_binder_in_pattern(db, arg, name, path, heads)
+}
+
+/// Descend a LIST pattern `(list p0 p1…)` (a variant's list payload) looking for the element binder
+/// `name`, appending its access-path steps. The list analogue of [`find_binder_in_tuple`] — each element
+/// binds at `Elem(i)` from the list handle (the SAME step `const_at_path`'s `ListNew` arm reads), so a
+/// `(Ast.List (list (Ast.Name "+") a b))` quote pattern binds `a`/`b` at `Payload, Elem(1)`/`Elem(2)`.
+/// A rest binder `.. rest` is NOT handled here (a runtime sublist — declines in `pattern_constraints`).
+fn find_binder_in_list(
+    db: &Db,
+    pattern: StructId,
+    name: &str,
+    path: &mut Vec<crate::core::PathStep>,
+    heads: &mut Vec<StructId>,
+) -> bool {
+    let elems: Vec<StructId> = db
+        .ast
+        .as_form(pattern, "list")
+        .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+        .unwrap_or(&[])
+        .to_vec();
+    for (i, &elem) in elems.iter().enumerate() {
+        let path_len = path.len();
+        let heads_len = heads.len();
+        path.push(crate::core::PathStep::Elem(i));
+        let found = if let Some(elem_name) = db.ast.as_name(elem) {
+            elem_name == name && elem_name != "_"
+        } else if is_tuple_pattern(db, elem) {
+            find_binder_in_tuple(db, elem, name, path, heads)
+        } else if is_list_pattern(db, elem) {
+            find_binder_in_list(db, elem, name, path, heads)
+        } else {
+            find_binder_in_pattern(db, elem, name, path, heads)
+        };
+        if found {
+            return true;
+        }
+        path.truncate(path_len);
+        heads.truncate(heads_len);
+    }
+    false
 }
 
 /// Whether `id` is a tuple PATTERN `(tuple p0 p1…)` — a `tuple` NAME head (the shadowable alias the
@@ -1835,6 +1880,13 @@ fn find_binder_in_pattern(
 /// tuple payload into element-by-element descent.
 fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
+}
+
+/// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias) or the
+/// `"list"` string-literal primitive. Routes a variant's list payload into element-by-element binder
+/// descent ([`find_binder_in_list`]), the list analogue of [`is_tuple_pattern`].
+fn is_list_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
 }
 
 /// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
@@ -1864,6 +1916,8 @@ fn find_binder_in_tuple(
             elem_name == name && elem_name != "_"
         } else if is_tuple_pattern(db, elem) {
             find_binder_in_tuple(db, elem, name, path, heads)
+        } else if is_list_pattern(db, elem) {
+            find_binder_in_list(db, elem, name, path, heads)
         } else {
             find_binder_in_pattern(db, elem, name, path, heads)
         };

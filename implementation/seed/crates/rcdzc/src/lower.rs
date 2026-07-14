@@ -1920,6 +1920,9 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
             crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
+            // A `ListLen` probe never arises in the SCALAR match path (it comes from a list PAYLOAD
+            // sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type check applies.
+            crate::core::Probe::ListLen(_) => None,
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -3094,6 +3097,14 @@ fn pattern_constraints(
         crate::resolved::Resolved::Bool(b) => {
             Some((crate::core::Probe::Bool(b), crate::ty::Ty::Bool))
         }
+        // A STRING-literal payload sub-pattern — `(Ast.Name "+")` matches an `Ast.Name` carrying exactly
+        // "+". Like the Int/Bool literal, it imposes no discriminant, adds a `Probe::Str` lit-test gated
+        // at the leaf, and folds against a constant `Core::ConstStr` (a runtime String payload declines
+        // at `build_lit_test`, like the scalar string match). Enables the quote-pattern literal head
+        // (`` `(+ …) `` → `(Ast.Name "+")`), matched by string equality.
+        crate::resolved::Resolved::Str(s) => {
+            Some((crate::core::Probe::Str(s), crate::ty::Ty::String))
+        }
         _ => None,
     };
     if let Some((probe, lit_ty)) = probe {
@@ -3179,6 +3190,52 @@ fn pattern_constraints(
                 deeper,
                 lit_tests,
             )?);
+        }
+        return Ok(out);
+    }
+    // A LIST pattern `(list p0 p1…)` at `path` — a variant's LIST payload, destructured element-by-element
+    // (`metaprogramming.md` quote patterns desugar `` `(+ ,a ,b) `` to `(Ast.List (list (Ast.Name "+") a
+    // b))`, whose `(list …)` payload sub-pattern this handles; also a user `(W.Wrap (list a b))`). A list
+    // has a RUNTIME length, so a fixed-arity list pattern imposes a `ListLen(n)` test (like a literal
+    // test — gated once the discriminant constraints hold, folded against a constant list); each element
+    // sub-pattern then descends at `path + [Elem(i)]`, of the list's element type. SCOPE: fixed arity only
+    // (no `.. rest` tail) and the CONSTANT-scrutinee fold — a runtime list payload's `ListLen`/element
+    // reads decline (the runtime list matcher is task #51). A `.. rest` in a payload declines cleanly here.
+    if is_list_pattern(db, pat) {
+        let elems: Vec<StructId> = db
+            .ast
+            .as_form(pat, "list")
+            .or_else(|| db.ast.as_ctor_form(pat, "list"))
+            .unwrap_or(&[])
+            .to_vec();
+        // A `.. rest` tail (a `..` marker among the elements) needs the runtime sublist matcher — not this
+        // increment. Decline so the match is a Todo (never a wrong match).
+        if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+            return Err(Reject::decline(
+                "a list rest pattern `.. rest` inside a variant payload is not yet supported",
+            ));
+        }
+        let elem_ty = match ty {
+            crate::ty::Ty::List(e) => (**e).clone(),
+            crate::ty::Ty::Any => crate::ty::Ty::Any,
+            _ => {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a list pattern does not match the payload type {}",
+                        ty.render_name()
+                    ),
+                ));
+            }
+        };
+        // The fixed-arity LENGTH test — the list at `path` must have exactly `elems.len()` elements. Gated
+        // like a literal test (folded against a constant `Core::ListNew`); a mismatch falls through.
+        lit_tests.push((path.clone(), crate::core::Probe::ListLen(elems.len())));
+        let mut out = Vec::new();
+        for (i, &elem) in elems.iter().enumerate() {
+            let mut deeper = path.clone();
+            deeper.push(crate::core::PathStep::Elem(i));
+            out.extend(pattern_constraints(db, elem, &elem_ty, deeper, lit_tests)?);
         }
         return Ok(out);
     }
@@ -3418,6 +3475,13 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias the reader
+/// keeps) or the `"list"` string-literal primitive. Routes a variant's list payload into element-by-
+/// element descent (`pattern_constraints`'s list arm), the list analogue of [`is_tuple_pattern`].
+fn is_list_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
+}
+
 /// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
 /// `Resolved::Tuple { elems }` or the `tuple` NAME-alias application (`Prim::TupleNew`). `None` for a
 /// non-tuple. Used by `type_at_path` to type a tuple-scrutinee's element from the constructor directly,
@@ -3625,6 +3689,14 @@ fn build_tree(
                 let hit = match (&probe, &c) {
                     (crate::core::Probe::Int(v), Core::ConstInt(cv)) => v.eq_value(cv),
                     (crate::core::Probe::Bool(b), Core::ConstBool(cb)) => b == cb,
+                    // A string-literal payload test folds against a constant `Core::ConstStr` by value
+                    // equality (both NFC-normalized by the reader) — `(Ast.Name "+")` matches an
+                    // `Ast.Name` carrying "+". A runtime string payload has no `ConstStr` → declines below.
+                    (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s == cs,
+                    // A fixed-arity list pattern's length test folds against a CONSTANT list: the
+                    // `Core::ListNew` must have exactly `n` elements. (A runtime list has no `ListNew`
+                    // here, so it falls to the runtime-test arm below, which declines — task #51.)
+                    (crate::core::Probe::ListLen(n), Core::ListNew { elems }) => elems.len() == *n,
                     // A non-constant / type-mismatched sub-value can't fold — emit the runtime test.
                     _ => {
                         return build_lit_test(
@@ -3708,7 +3780,13 @@ fn build_tree(
     let switch_path = shallowest_path(rows);
     let sub_ty = match path_types.get(&switch_path) {
         Some(t) => t.clone(),
-        None => match type_at_path(db, scrutinee, &switch_path) {
+        // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
+        // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
+        // PREFIX in `path_types` — a list-element switch `[Payload, Elem(1)]` resolves from the seeded
+        // `[Payload]` = `(List Ast)` even though the raw `Payload` walk over the boxed sum returns None.
+        None => match type_at_path(db, scrutinee, &switch_path)
+            .or_else(|| type_from_seeded_prefix(path_types, &switch_path))
+        {
             Some(t) => t,
             None => {
                 return Err(Reject::decline(
@@ -3856,6 +3934,18 @@ fn build_lit_test(
     else_rows: &[MatchRow],
     path_types: &PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
+    // A `ListLen` or `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant
+    // `Core::ListNew`/`Core::ConstStr`) needs a runtime length/string test the backends don't emit — the
+    // runtime list/string matcher, not this increment. Decline so the match is a Todo (never emitted to
+    // the backend). The CONSTANT case folded in `build_tree` and never reaches here.
+    if matches!(
+        probe,
+        crate::core::Probe::ListLen(_) | crate::core::Probe::Str(_)
+    ) {
+        return Err(Reject::decline(
+            "a list/string pattern over a runtime payload is not yet supported (only a constant folds)",
+        ));
+    }
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
     let els = build_tree(db, scrutinee, else_rows, path_types)?;
     Ok(crate::core::SumCont::LitTest {
@@ -3899,6 +3989,8 @@ fn type_at_path(
         cur = match step {
             crate::core::PathStep::Elem(i) => match &cur {
                 crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                // A LIST element (a `(list …)` payload sub-pattern) — every element has the list's one
+                // element type (homogeneous), so `Elem(i)` over a `Ty::List(e)` is `e` for any `i`.
                 crate::ty::Ty::List(elem) => (**elem).clone(),
                 _ => return None,
             },
@@ -3921,6 +4013,43 @@ fn type_at_path(
         };
     }
     Some(cur)
+}
+
+/// Resolve `path`'s type by walking its SUFFIX from the longest PREFIX present in `path_types`. Used
+/// when a raw scrutinee type-walk can't cross a boxed-sum `Payload` step but `path_types` seeded a
+/// prefix (e.g. `[Payload]` = a variant's payload type): the remaining `Elem` steps then walk the seeded
+/// type structurally. Only `Elem` suffix steps are walked (over a `Tuple`/`List`); a further `Payload`
+/// in the suffix is a nested boxed sum a plain type-walk can't cross → `None` (declines, as before).
+fn type_from_seeded_prefix(
+    path_types: &PathTypes,
+    path: &[crate::core::PathStep],
+) -> Option<crate::ty::Ty> {
+    // Longest seeded prefix (try the full path down to the empty prefix).
+    for cut in (0..path.len()).rev() {
+        if let Some(base) = path_types.get(&path[..cut].to_vec()) {
+            let mut cur = base.clone();
+            for step in &path[cut..] {
+                cur = match step {
+                    crate::core::PathStep::Elem(i) => match &cur {
+                        crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
+                        crate::ty::Ty::List(elem) => (**elem).clone(),
+                        _ => return None,
+                    },
+                    // A rest sublist `.. rest` has the SAME `List` type as its scrutinee (the tail is a
+                    // list of the same element type).
+                    crate::core::PathStep::RestFrom(_) => match &cur {
+                        crate::ty::Ty::List(_) => cur.clone(),
+                        _ => return None,
+                    },
+                    // A `Payload` in the suffix crosses a nested boxed sum — a plain type-walk can't
+                    // supply its instantiation, so decline (the same limit `type_at_path` has).
+                    crate::core::PathStep::Payload => return None,
+                };
+            }
+            return Some(cur);
+        }
+    }
+    None
 }
 
 /// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
@@ -4089,7 +4218,9 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
     match probe {
         crate::core::Probe::Int(p) => p.eq_value(v),
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Bool(_) | crate::core::Probe::Str(_) => false,
+        crate::core::Probe::Bool(_)
+        | crate::core::Probe::Str(_)
+        | crate::core::Probe::ListLen(_) => false,
     }
 }
 
@@ -4098,7 +4229,9 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
     match probe {
         crate::core::Probe::Bool(p) => *p == b,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) | crate::core::Probe::Str(_) => false,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Str(_)
+        | crate::core::Probe::ListLen(_) => false,
     }
 }
 
@@ -4109,7 +4242,9 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
     match probe {
         crate::core::Probe::Str(p) => p == s,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) => false,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Bool(_)
+        | crate::core::Probe::ListLen(_) => false,
     }
 }
 

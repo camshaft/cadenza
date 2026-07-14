@@ -134,6 +134,13 @@ pub enum Probe {
     /// string scrutinee is not a scalar (`is_scalar` is Int/Bool), so its match declines until the runtime
     /// string-equality probe is emitted (a later increment).
     Str(String),
+    /// A fixed-arity LIST pattern's length test — the list at this path must have exactly `n` elements
+    /// (`(list p0 … p{n-1})`). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a constant
+    /// `Core::ListNew` of the right length passes, then each element is destructured at `Elem(i)`); a
+    /// RUNTIME list payload is not a scalar, so its match declines until the runtime list matcher (the
+    /// `.. rest` tail + a runtime length probe) arrives. Carried as DATA, gated once the enclosing
+    /// discriminant constraints are satisfied, exactly like a literal test.
+    ListLen(usize),
     /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }
