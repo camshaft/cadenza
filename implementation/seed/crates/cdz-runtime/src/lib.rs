@@ -8695,6 +8695,110 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// The Set/Map canonical-render-order tests above use only POSITIVE keys (256 vs 1), where
+    /// little-endian byte order already disagrees with numeric order. But NEGATIVE ints are the SEVERE
+    /// divergence: a negative's little-endian `raw` bytes are `0xFF…` (large unsigned), so a raw-byte
+    /// comparison — exactly what `champ_key_cmp` (the CHAMP KEY comparator) uses — sorts every negative
+    /// AFTER every positive, the OPPOSITE of numeric order. The value-encode render order comes from a
+    /// SEPARATE function, `canonical_scalar_order`, which reads `op_get_int` (SIGNED) — so negatives
+    /// render correctly BEFORE positives. This pins that: a signed-key map/set (symbol tables with
+    /// sentinels, coordinate/offset maps) renders in true numeric order, and guards against a future
+    /// "optimization" that makes `canonical_scalar_order` reuse the raw-byte `champ_key_cmp` rule (which
+    /// would silently mis-order every negative — a bug the positive-only 256-vs-1 tests can't catch).
+    ///
+    /// Reconstructs each int leaf's SIGNED value from the wire (kind 0 = KIND_INT_POS_DEC positive, kind
+    /// 3 = its negative variant; magnitude is big-endian) and asserts strict ascending numeric order.
+    #[test]
+    fn value_encode_renders_negative_int_keys_in_numeric_not_byte_order() {
+        reset();
+        let before = live_nodes();
+
+        // Decode the int leaves of a document (KIND_INT: 0 positive / 3 negative, LEB len + BE magnitude;
+        // KIND_NAME=10 skipped) into their SIGNED values, in emission order.
+        fn int_leaves_signed(doc: &[u8]) -> Vec<i64> {
+            let mut vals = Vec::new();
+            let leaf_count = doc[8] as usize;
+            let mut i = 9usize;
+            for _ in 0..leaf_count {
+                let kind = doc[i];
+                i += 1;
+                match kind {
+                    0 | 3 => {
+                        let len = doc[i] as usize;
+                        i += 1;
+                        let mut m: i64 = 0;
+                        for &b in &doc[i..i + len] {
+                            m = (m << 8) | (b as i64);
+                        }
+                        i += len;
+                        vals.push(if kind == 3 { -m } else { m });
+                    }
+                    10 => {
+                        let len = doc[i] as usize;
+                        i += 1 + len;
+                    }
+                    other => panic!("unexpected leaf kind {other} in an int document"),
+                }
+            }
+            vals
+        }
+
+        // (A) a SET of mixed negative/positive ints, inserted in scrambled order.
+        let set_desc: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01]; // [0]=Int [1]=Set(elem0) root1
+        let mut s = op_set_empty();
+        for &v in &[3i64, -5, 0, -1, 2, -128, 127] {
+            s = op_set_insert(s, op_box_int(v));
+        }
+        let sdoc = op_value_encode_form(s, set_desc).expect("encode a Set of signed ints");
+        // Differential: the recursive oracle agrees byte-for-byte.
+        let sdescr = decode_descriptor(set_desc).expect("set descriptor");
+        let mut sb = DocBuilder::default();
+        let sroot =
+            encode_value_recursive(&sdescr, &mut sb, s, sdescr.root, 0).expect("recursive set");
+        assert_eq!(
+            sdoc,
+            sb.finish(sroot),
+            "iterative and recursive Set encode agree (signed)"
+        );
+        assert_eq!(
+            int_leaves_signed(&sdoc),
+            vec![-128, -5, -1, 0, 2, 3, 127],
+            "a Set of signed ints renders in NUMERIC order (negatives BEFORE positives), NOT the raw \
+             little-endian byte order champ_key_cmp uses (which would sort negatives last)"
+        );
+        op_drop(s);
+
+        // (B) a MAP with signed keys, value = key so the pairing is checkable in the interleaved leaves.
+        let map_desc: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02]; // [0]Int [1]Int [2]Map(k0,v1) root2
+        let mut m = op_map_empty();
+        for &k in &[3i64, -5, 0, -1, 2] {
+            m = op_map_insert(m, op_box_int(k), op_box_int(k));
+        }
+        let mdoc = op_value_encode_form(m, map_desc).expect("encode a Map of signed keys");
+        let mdescr = decode_descriptor(map_desc).expect("map descriptor");
+        let mut mb = DocBuilder::default();
+        let mroot =
+            encode_value_recursive(&mdescr, &mut mb, m, mdescr.root, 0).expect("recursive map");
+        assert_eq!(
+            mdoc,
+            mb.finish(mroot),
+            "iterative and recursive Map encode agree (signed)"
+        );
+        // key,value interleaved in canonical KEY order; value == key here, so each key appears twice.
+        assert_eq!(
+            int_leaves_signed(&mdoc),
+            vec![-5, -5, -1, -1, 0, 0, 2, 2, 3, 3],
+            "a Map with signed keys renders entries in NUMERIC KEY order (negatives first)"
+        );
+        op_drop(m);
+
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the signed-key set/map encodes"
+        );
+    }
+
     /// value-encode of a NESTED-COLLECTION value: a `Map Int (List Int)` — the map VALUE is itself a
     /// collection walked recursively (`Shape::Map`'s `val` shape can be any encodable shape, not just a
     /// scalar; the arm's comment says so but every other map/set test uses a scalar value). This is the
