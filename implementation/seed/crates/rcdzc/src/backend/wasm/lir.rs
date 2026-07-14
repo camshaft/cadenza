@@ -382,7 +382,11 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // to a bare `Float64`. A `Ty::Qty` should not survive to selection, but classify it by its inner
         // type defensively (never inventing a slot the erased value would not have).
         Ty::Qty { inner, .. } => valtype_of(inner),
-        // A type value is compile-time-only (erased before runtime) — no machine representation.
+        // A type value is compile-time-only (erased before runtime) — no machine representation. So a
+        // type parameter is resolvable to a concrete type at compile time and a type-value never flows
+        // from RUNTIME data into a type-determining position (a runtime `(UInt m)` width faults CDZ0302).
+        //= spec/capabilities/type-system.md#generics-are-type-valued-parameters-not-a-separate-polymorphism-mechanism
+        //# A type parameter MUST be resolvable to a concrete type at compile time, so that a type-value never flows from runtime data into a position that determines a type.
         Ty::Type => None,
         // An unresolved variable has no machine representation — an undetermined type never reaches a
         // real slot (it is a rejection at the boundary, not a defaulted representation).

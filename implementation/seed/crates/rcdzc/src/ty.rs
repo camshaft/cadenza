@@ -788,7 +788,13 @@ pub enum Ty {
     /// The type of a type VALUE — the type of `Bool`, of `(Int 64)`, of the result of `(-> A B)`.
     /// Because a type is a first-class value, it has a type, and that type is `Type`. It is
     /// compile-time-only (a value of type `Type` is erased before the runtime boundary, like any
-    /// type-value).
+    /// type-value). A type is an ORDINARY value — bound to a name (`Int64`, a prelude type ctor), passed,
+    /// and returned — so the language needs no separate term-and-type syntax; and its type being `Type`
+    /// makes the kind level itself a type in the system rather than an untyped meta-level.
+    //= spec/capabilities/type-system.md#types-are-first-class-values-whose-type-is-the-type-of-types
+    //# A type MUST be expressible as an ordinary first-class value that can be bound, passed, and returned, so that the language needs no separate term-and-type syntax to name a type.
+    //= spec/capabilities/type-system.md#types-are-first-class-values-whose-type-is-the-type-of-types
+    //# The type of a type-value MUST be the type of types, so that the kind level is itself a type in the system rather than an untyped meta-level.
     Type,
     /// A unification variable — an as-yet-unsolved type inference introduces (e.g. a fresh operand
     /// type before it is constrained). Resolved to a concrete type by the Hindley-Milner solve in
