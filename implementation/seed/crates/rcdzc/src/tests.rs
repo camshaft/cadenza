@@ -22078,23 +22078,41 @@ mod match_engine {
             .is_none(),
             "a tuple whose first Bool column is fully covered is exhaustive without `_`"
         );
-        // All 4 combinations, no `_` → EXHAUSTIVE, and dispatch is CORRECT per combination.
-        let run = |a: &str, b: &str| -> String {
+        // All 4 combinations, no `_` → EXHAUSTIVE, and dispatch is CORRECT per combination. The run needs
+        // the value-heap runtime store; when it is absent (CI's storeless `cargo test`), `run_heap_value`
+        // returns `None` — skip the per-combination dispatch checks rather than assert against an empty
+        // default (the exhaustiveness rejections below still run and are the core of this test).
+        let run = |a: &str, b: &str| -> Option<String> {
             run_heap_value(
-                &format!(
-                    "(module m (def (f (: t (Tuple Bool Bool))) \
-                       (match t ((tuple true true) 1) ((tuple true false) 2) \
-                               ((tuple false true) 3) ((tuple false false) 4))) \
-                     (def (main (: x Bool) (: y Bool)) (f (tuple x y))) (export main))"
-                ),
+                "(module m (def (f (: t (Tuple Bool Bool))) \
+                   (match t ((tuple true true) 1) ((tuple true false) 2) \
+                           ((tuple false true) 3) ((tuple false false) 4))) \
+                 (def (main (: x Bool) (: y Bool)) (f (tuple x y))) (export main))",
                 vec![a.to_string(), b.to_string()],
             )
-            .unwrap_or_default()
         };
-        assert_eq!(run("true", "true"), "1", "(true,true) → arm 1");
-        assert_eq!(run("true", "false"), "2", "(true,false) → arm 2");
-        assert_eq!(run("false", "true"), "3", "(false,true) → arm 3");
-        assert_eq!(run("false", "false"), "4", "(false,false) → arm 4");
+        if let Some(v) = run("true", "true") {
+            assert_eq!(v, "1", "(true,true) → arm 1");
+            assert_eq!(
+                run("true", "false").as_deref(),
+                Some("2"),
+                "(true,false) → arm 2"
+            );
+            assert_eq!(
+                run("false", "true").as_deref(),
+                Some("3"),
+                "(false,true) → arm 3"
+            );
+            assert_eq!(
+                run("false", "false").as_deref(),
+                Some("4"),
+                "(false,false) → arm 4"
+            );
+        } else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping tuple-of-bools dispatch run"
+            );
+        }
         // SOUNDNESS the other way: 3 of 4 combinations, no `_` → STILL non-exhaustive (the fix must not
         // over-accept — it only closes coverage when the finite type is fully enumerated).
         assert_eq!(
