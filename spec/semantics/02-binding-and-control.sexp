@@ -226,6 +226,17 @@
   (call   main (: 5000000000000000000 Int64))
   (trap   "integer overflow"))
 
+(case "a loop-invariant computed in both the condition and the body is shared, computing correctly"
+  (doc    "`(def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc (* n 2))) acc))`
+           — the invariant `(* n 2)` appears in BOTH the loop condition and the body accumulation. LICM
+           computes it once before the loop and BOTH occurrences read that one value (value-numbered
+           hoist), so the body no longer recomputes `n * 2` each iteration. Called via `(go 0 x 0)` with
+           x = 3: the bound is 6, the loop runs for i in [0, 6), adding `n*2 = 6` each iteration → 6 * 6 =
+           36. Pins that sharing the invariant across the condition and body preserves the value.")
+  (input  (do (def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc (* n 2))) acc)) (def (main (: x Int64)) (go 0 x 0)) (export main)))
+  (call   main (: 3 Int64))
+  (output (: 36 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
