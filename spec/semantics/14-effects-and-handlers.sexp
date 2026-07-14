@@ -1570,6 +1570,31 @@
               (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
 
+(case "a recursive walk threads THREE nested handlers' states at once"
+  (doc    "Generalizes the two-nested-handler case to THREE: one recursive `walk` performs `A.a`, `B.b`, and
+           `C.c` at each step, under three nested stateful handlers, and each handler's state threads
+           INDEPENDENTLY — the merged effect context carries THREE distinct slots (a shared per-effect slot
+           would clobber on re-entry). Each handler hands back `s` and threads `s + 1`: seeded A=100, B=200,
+           C=300, over `(walk 2)`, the `A.a` reads are 100, 101 (sum 201), the `B.b` reads 200, 201 (401),
+           the `C.c` reads 300, 301 (601), so the total is `201 + 401 + 601` = 1203. Pins that effect-context
+           monomorphization scales past two effects — N handlers over one recursive walk thread N distinct
+           states — the shape of a self-hosting pass folding several pieces of context (a name counter, a
+           diagnostics list, a symbol table) at once. Identical on both backends.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect C (op c (-> Unit Int64)))
+            (def (walk (: n Int64))
+              (if (= n 0)
+                  0
+                  (+ (A.a) (+ (B.b) (+ (C.c) (walk (- n 1)))))))
+            (def (main)
+              (handle A 100 ((a (u) s (resume s (+ s 1))))
+                (handle B 200 ((b (u) s (resume s (+ s 1))))
+                  (handle C 300 ((c (u) s (resume s (+ s 1))))
+                    (walk 2))))) (export main)))
+  (output (: 1203 Int64)))
+
 (case "a mutually-recursive group threads two nested handlers' states at once"
   (doc    "The two-nested-handler state-threading of the case above, but over a MUTUALLY-RECURSIVE group
            rather than a single self-recursive `loop` — composing merge (two effects, two handler contexts)
