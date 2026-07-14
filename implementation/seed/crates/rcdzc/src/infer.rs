@@ -846,24 +846,48 @@ fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
     };
     let head = children[0];
     let supplied = children.len() - 1;
-    let (name, expected) = match crate::eval::meta_apply_of(db, head)? {
-        crate::resolved::Prim::ListCtor => ("List", 1),
-        crate::resolved::Prim::SetCtor => ("Set", 1),
-        crate::resolved::Prim::MapCtor => ("Map", 2),
+    // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
+    // names read naturally (`List Elem`, `Map Key Value`).
+    if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {
+        Some(crate::resolved::Prim::ListCtor) => Some(("List".to_string(), 1usize, "Elem")),
+        Some(crate::resolved::Prim::SetCtor) => Some(("Set".to_string(), 1, "Elem")),
+        Some(crate::resolved::Prim::MapCtor) => Some(("Map".to_string(), 2, "Key Value")),
+        _ => None,
+    } {
+        if supplied == expected {
+            return None;
+        }
+        let plural = if expected == 1 { "" } else { "s" };
+        return Some(format!(
+            "`{name}` takes {expected} type argument{plural}, but {supplied} {} supplied — write \
+             `({name} {placeholder})`",
+            if supplied == 1 { "was" } else { "were" },
+        ));
+    }
+    // A USER GENERIC SUM constructor — `(Box Int64 Bool)` where `(type Box (W a) …)` declares ONE type
+    // parameter. Its declared parameter count is the expected arity (read off the sum's decl). Unlike a
+    // prelude ctor whose wrong arity fails to reduce (→ the "not a type" path), a generic sum reduces to a
+    // `Ty::Sum` with WHATEVER args were given (the extra silently ignored / a missing one left a var), so
+    // this check must run even when `typeval_of` SUCCEEDS. Placeholder args echo the sum's own parameter
+    // names (`(type Pair (P a b))` → `(Pair a b)`). Fires only when the count DIFFERS and the sum is
+    // generic (a monomorphic sum applied to args is the M108 "takes no type parameters" message instead).
+    let head_typeval = crate::eval::typeval_of(db, head)?;
+    let decl = match &head_typeval {
+        Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => *decl,
         _ => return None,
     };
-    if supplied == expected {
-        return None; // correct arity — a different fault (a non-type argument) surfaces elsewhere
+    let td = db.type_decl_by_occ(decl)?;
+    let (name, params) = (td.name.clone(), td.params.clone());
+    let expected = params.len();
+    if expected == 0 || supplied == expected {
+        return None; // monomorphic (M108's message) or a correct arity
     }
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let plural = if expected == 1 { "" } else { "s" };
     Some(format!(
-        "`{name}` takes {expected} type argument{}, but {supplied} {} supplied — write `({name} {})`",
-        plural(expected),
+        "`{name}` takes {expected} type argument{plural}, but {supplied} {} supplied — write `({name} \
+         {})`",
         if supplied == 1 { "was" } else { "were" },
-        match name {
-            "Map" => "Key Value",
-            _ => "Elem",
-        },
+        params.join(" "),
     ))
 }
 
@@ -963,6 +987,16 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         );
         return;
     }
+    // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
+    // to reduce → the "not a type" path below) OR a user generic sum `(Box Int64 Bool)` (which REDUCES to
+    // a `Ty::Sum`, silently ignoring the extra arg, so `typeval_of` succeeds and the "not a type" branch
+    // never fires). Check arity FIRST, independent of whether the operand reduces, so a wrong-arity generic
+    // sum is caught. `type_ctor_arity_message` returns `None` for a correct arity / a non-ctor.
+    if let Some(msg) = type_ctor_arity_message(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: type constructor applied at the wrong arity (CDZ0203)");
+        out.push(Reject::coded(Code::TypeMismatch, msg).at(ty_expr));
+        return;
+    }
     // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
     // collect the operand's OWN faults (an unbound name → CDZ0101), and if none surfaced (a well-formed
     // non-type: a literal, a compound, `(Int64 Int64)`), add an "expected a type" TypeMismatch (CDZ0203).
@@ -971,12 +1005,13 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         collect(db, ty_expr, out);
         if out.len() == before {
             trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
-            // A misapplied prelude type CONSTRUCTOR (`(List Int64 Int64)`) names its arity; any other
-            // non-type keeps the generic "requires a type" message.
-            let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
-                non_type_annotation_message(db, ty_expr, "a parameter's annotation")
-            });
-            out.push(Reject::coded(Code::TypeMismatch, message).at(ty_expr));
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
+                )
+                .at(ty_expr),
+            );
         }
     }
 }
@@ -7977,6 +8012,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     "an integer width must be a compile-time natural, not runtime data",
                 ));
             }
+            // A TYPE CONSTRUCTOR applied at the WRONG arity in the annotation position — a prelude `(: 5
+            // (List Int64 Int64))` or a user generic sum `(: b (Box Int64 Bool))`. Checked FIRST, before
+            // the type is used below, because a generic sum REDUCES to a `Ty::Sum` (silently dropping the
+            // extra arg) so `typeval_of` succeeds and the "not a type" branch never fires — the arity fault
+            // would be lost. `type_ctor_arity_message` returns `None` for a correct arity / a non-ctor.
+            if !runtime_width
+                && let Some(msg) = type_ctor_arity_message(db, ty_expr)
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: type constructor applied at the wrong arity (CDZ0203)");
+                out.push(Reject::coded(Code::TypeMismatch, msg));
+                collect(db, expr, out);
+                return;
+            }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
                 // A FLOAT type annotating with a NON-ADMITTED width reduces (via the `Float` constructor)
                 // to the sentinel `Ty::Float(Fixed(0))` — a `(: 1.5 (Float 16))` / `(: 1.5 (Float 48))`.
@@ -8353,16 +8401,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, ty_expr, out);
                 if out.len() == before {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
-                    // A misapplied prelude type CONSTRUCTOR (`(: 5 (List Int64 Int64))`) names its arity;
-                    // any other non-type keeps the generic "requires a type" message.
-                    let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
-                        non_type_annotation_message(
-                            db,
-                            ty_expr,
-                            "the type position of an annotation",
-                        )
-                    });
-                    out.push(Reject::coded(Code::TypeMismatch, message));
+                    // A wrong-arity type constructor was already caught above (before the `typeval_of`
+                    // use), so here it is a genuine non-type — the generic "requires a type" message.
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        non_type_annotation_message(db, ty_expr, "the type position of an annotation"),
+                    ));
                 }
             }
             // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`

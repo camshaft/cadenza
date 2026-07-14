@@ -17289,6 +17289,56 @@ mod match_engine {
     }
 
     #[test]
+    fn a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity() {
+        // A USER generic sum applied to the wrong number of type args — `(Box Int64 Bool)` where `(type Box
+        // (W a) …)` declares ONE type parameter — REDUCES to a `Ty::Sum` (silently dropping the extra arg),
+        // so `typeval_of` succeeds and the "not a type" path never fires; it compiled clean. The arity is
+        // now checked independently (off the sum's declared param count) and names the fix, echoing the
+        // sum's own parameter names — the user-sum twin of M110's prelude-ctor arity check.
+        for (src, expect) in [
+            (
+                "(module m (type Box (W a) (E)) (def (g (: b (Box Int64 Bool))) b) (def (main) 0) (export main))",
+                "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
+            ),
+            (
+                "(module m (type Pair (P a b)) (def (g (: p (Pair Int64))) p) (def (main) 0) (export main))",
+                "`Pair` takes 2 type arguments, but 1 was supplied — write `(Pair a b)`",
+            ),
+            // The value-annotation site routes through the same check.
+            (
+                "(module m (type Box (W a) (E)) (def (g) (: 5 (Box Int64 Bool))) (export g))",
+                "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains(expect),
+                "names the generic-sum arity + fix:\n  expected: {expect}\n  got: {}",
+                d.message
+            );
+        }
+        // The CORRECT arity is clean, and a MONOMORPHIC sum applied to args keeps M108's "takes no type
+        // parameters" message (not this arity one — a 0-param sum is a different fault).
+        assert!(
+            reject_full(
+                "(module m (type Box (W a) (E)) (def (g (: b (Box Int64))) (match b ((W n) n) ((E) 0))) (def (main) 0) (export main))"
+            )
+            .is_none_or(|d| !d.message.contains("takes 1 type argument")),
+            "the correct arity `(Box Int64)` raises no arity fault"
+        );
+        let mono = reject_full(
+            "(module m (type Color R G) (def (g (: t (Color Int64))) t) (def (main) 0) (export main))",
+        )
+        .expect("a monomorphic sum applied to args rejects");
+        assert!(
+            mono.message.contains("takes no type parameters"),
+            "a monomorphic sum keeps the M108 message, not the arity one: {}",
+            mono.message
+        );
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not
