@@ -273,6 +273,58 @@
             (def (main) answer) (export main)))
   (output (: 42 Int64)))
 
+(case "a line comment wrapping a top-level form does not hide it"
+  (doc    "A leading `//` line comment on a top-level form reifies (by the reader) to `(comment \"<text>\"
+           <form>)` wrapping the WHOLE form — the comment companion of the leading `(doc …)` above. The
+           comment is SEMANTICALLY INERT (self-hosting-surface.md §the tree carries comments and
+           documentation — the compiler sees through comments as it sees through docs), so the compiler must
+           peel it to the wrapped form. `(comment \"note\" (def (f (: x Int64)) x))` defines `f`, and
+           `(f 7)` = 7. A compiler that peels a leading `(doc …)` but NOT a `(comment …)` reads `comment` as
+           an unknown top-level declaration head → the wrapped `def` is invisible ('unbound name comment' +
+           `f` unbound). Load-bearing for a Cadenza-authored compiler whose own sources carry ordinary
+           top-level `//` comments.")
+  (input  (do
+            (comment "note" (def (f (: x Int64)) x))
+            (def (main) (f 7))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "stacked line comments on a top-level form are all seen through"
+  (doc    "Stacked `//` lines on one form NEST — `// a` then `// b` above `def f` is `(comment \"a\"
+           (comment \"b\" (def …)))` — so the compiler must peel to the INNERMOST form, not just one layer.
+           `f` still defines and `(f 7)` = 7. Pins that the comment peel follows the whole nested chain, the
+           multi-line-comment shape a real source file's header block takes.")
+  (input  (do
+            (comment "a" (comment "b" (def (f (: x Int64)) x)))
+            (def (main) (f 7))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a line comment wrapping a type declaration is seen through"
+  (doc    "The comment peel is not `def`-specific — it must see through a comment wrapping ANY top-level
+           form. `(comment \"the color\" (type C (R) (G)))` declares the type `C`; the program then
+           constructs and matches its variants → 1 for `C.R`, 2 for `C.G`, selected by a runtime Bool. Pins
+           that a leading `//` on a `type` declaration does not hide it (the type-decl companion of the
+           def case above), so a commented type in a compiler's IR-sum module stays visible.")
+  (input  (do
+            (comment "the color" (type C (R) (G)))
+            (def (main (: b Bool)) (match (if b (C.R) (C.G)) ((C.R) 1) ((C.G) 2)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "a line comment wrapping the entry point is seen through"
+  (doc    "The comment peel reaches the ENTRY too: `(comment \"run it\" (def (main …) …))` wraps the exported
+           entry, which must still be found and run. `dbl` is defined plainly; the commented `main` doubles
+           its argument → 10 for 5. Pins that a `//` on the entry point does not hide it from the export
+           scan (a commented `main`/entry is the natural top of a source file), the entry companion of the
+           def and type cases.")
+  (input  (do
+            (def (dbl (: x Int64)) (+ x x))
+            (comment "run it" (def (main (: x Int64)) (dbl x)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
 (case "a module function calls a sibling export by name"
   (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope (2nd sentence:
            module bindings resolve under the same lexical scope rules as any other binding) together

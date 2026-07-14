@@ -906,13 +906,59 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
 /// a bound name misused as a type gets NAMED, not the opaque "found a non-type". A NON-name operand (a
 /// literal `5`, a compound `(+ 1 2)`) keeps the generic phrasing — naming a literal adds nothing. `lead`
 /// prefixes the sentence ("a parameter's annotation" / "the type position of an annotation").
-fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String {
-    match db.ast.as_name(ty_expr) {
+fn non_type_annotation_message(db: &mut Db, ty_expr: StructId, lead: &str) -> String {
+    match db.ast.as_name(ty_expr).map(str::to_string) {
+        // A bare type-CONSTRUCTOR name used with NO argument — `(: xs List)`, `(: m Map)`. `List` IS a
+        // type (constructor), so "is a value, not a type" misleads; name the missing argument + the fix,
+        // the bare-name twin of the `(List Int64 Int64)` wrong-arity message.
+        Some(_) if bare_type_ctor_needs_argument(db, ty_expr).is_some() => {
+            let (name, placeholder) = bare_type_ctor_needs_argument(db, ty_expr).unwrap();
+            format!(
+                "`{name}` is a type constructor — it needs a type argument here, e.g. `({name} {placeholder})`"
+            )
+        }
         Some(name) => format!(
             "`{name}` is a value, not a type — {lead} requires a type (e.g. annotate `(: value Int64)`)"
         ),
         None => format!("{lead} requires a type, but found a non-type"),
     }
+}
+
+/// When the bare NAME at `ty_expr` denotes a TYPE CONSTRUCTOR that requires at least one type argument —
+/// a prelude collection/quantity ctor (`List`/`Set`/`Map`/`Qty`) or a USER GENERIC sum (`(type Box (W a)
+/// …)`, ≥1 type parameter) — return `(name, placeholder)` for a "needs a type argument" message, where
+/// `placeholder` echoes the ctor's argument shape (`List Elem`, `Map Key Value`, `Box a`). `None` when the
+/// name is not such a constructor — a genuine value, or a monomorphic/nullary type that stands alone
+/// (`Int64`, a `(type C (R) (G))`). Used to turn a bare `(: xs List)` from the misleading "is a value" into
+/// the accurate missing-argument message (the bare-name twin of `type_ctor_arity_message`, which handles
+/// only the APPLIED `(List)` / `(List T T)` forms).
+fn bare_type_ctor_needs_argument(db: &mut Db, ty_expr: StructId) -> Option<(String, String)> {
+    let name = db.ast.as_name(ty_expr)?.to_string();
+    // A PRELUDE collection/quantity constructor — identified by its `(meta apply)` prim, placeholder names
+    // matching `type_ctor_arity_message_here`.
+    if let Some(placeholder) = match crate::eval::meta_apply_of(db, ty_expr) {
+        Some(crate::resolved::Prim::ListCtor) | Some(crate::resolved::Prim::SetCtor) => {
+            Some("Elem")
+        }
+        Some(crate::resolved::Prim::MapCtor) => Some("Key Value"),
+        Some(crate::resolved::Prim::QtyCtor) => Some("T u"),
+        _ => None,
+    } {
+        return Some((name, placeholder.to_string()));
+    }
+    // A USER GENERIC sum — a bare `Box` for `(type Box (W a) …)`. `typeval_of` a bare generic sum name
+    // yields a `Ty::Sum`/`Ty::Nominal` whose decl carries the type parameters; ≥1 param means the bare name
+    // is missing its argument(s). (A monomorphic sum — 0 params — stands alone, so `None`.)
+    let tv = crate::eval::typeval_of(db, ty_expr)?;
+    let decl = match &tv {
+        Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => *decl,
+        _ => return None,
+    };
+    let td = db.type_decl_by_occ(decl)?;
+    if td.params.is_empty() {
+        return None;
+    }
+    Some((td.name.clone(), td.params.join(" ")))
 }
 
 /// Validate a NON-type-denoting annotation type expression `ty_expr` (one `typeval_of` rejected), pushing

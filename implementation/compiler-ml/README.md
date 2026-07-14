@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 73 tests total across 9 modules):
+top. Current `src/` modules (each with same-file `@test`s — 83 tests total across 10 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -85,26 +85,33 @@ top. Current `src/` modules (each with same-file `@test`s — 73 tests total acr
   threaded through the recursion). Exercises occurs-check recursion, transitive var-chain `resolve`,
   arrow decomposition, and an Int64-keyed compound-valued `Map`.
 
-The next pass, an `infer` (HM inference over an expression language, composing `unify`), is written and
-`cdz check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
+- `src/decode.cdz` — reconstructs a recursive `Ast` from a flat byte buffer at RUN TIME (the stage
+  blocked since iteration 1). Now viable: the slot-alias bug's invalid-wasm face is fixed, and this
+  decoder threads its cursor SEPARATELY (a node's byte size is recomputed by `nsize`, so `buildc`
+  advances via `pos + nsize(…)` rather than projecting a `(tuple ast pos)` through a self-tail loop —
+  the shape that still miscompiles to a wrong value). Reconstructs the full tree STRUCTURE + every
+  Int/Bool leaf value EXACTLY (verified: nested lists, deep nesting, Int-value round-trip); Name/Str
+  leaf CONTENT is still a placeholder `""` (runtime `String.from-bytes` decline). 10 `@test`s.
+
+The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
+check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
 DECLINE at emit on the `Map.lookup`-returned-heap-value borrow bug (see the log). It was the port's
-first genuine cross-file module (importing `unify`), which is what drove this iteration's `cdz test`
-import-following fix; only the borrow bug — not the linking — keeps it out of the running suite.
+first genuine cross-file module (importing `unify`), which is what drove the `cdz test` import-following
+fix; only the borrow bug — not the linking — keeps it out of the running suite.
 
-Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
-· lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
+Planned, following the rcdzc pipeline: decode (binary AST → `Ast`, NOW RUNNING for structure + scalar
+leaves) · resolve · infer (Hindley-Milner) · lower (→ core) · encode/emit. Fundamentally bytes → bytes.
 
-### Decode — the current front (blocked on two seed issues, see the log)
+### Decode — RUNNING (structure + scalar leaves), one seed gap remains for string content
 
-`decode` reads the canonical binary AST (`implementation/seed/crates/rcdzc/src/codec.rs`: an 8-byte
-version header, a leaf table, a struct table, a root id — all LEB128) into the recursive `Ast`. The
-idiomatic-Cadenza job is to resolve the *flat wire arena* into a *recursive tree* (following struct
-ids), which is the whole point of the "a node contains its children" design. The decode LOGIC is
-proven (LEB128 varint reader, big-endian magnitude, per-leaf reader, struct reader, and the arena→tree
-`build`/`build-list` all verified in isolation against real `cdz convert --to binary` bytes), but two
-seed issues block landing it as a `.cdz` that compiles + runs end to end (both surfaced by decode; see
-the log). Until they're resolved, decode reconstructs the full tree STRUCTURE + every Int/Bool leaf
-exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is a placeholder.
+`src/decode.cdz` reconstructs a recursive `Ast` from a flat byte buffer at run time, over the port's own
+compact self-describing wire form (tag byte + payload; a List is a count then its children). It threads
+POSITION SEPARATELY (recompute the cursor via `nsize`, return the value bare) to sidestep the surviving
+loop-transform wrong-value bug. The full tree STRUCTURE + every Int/Bool leaf value decode exactly
+(10 `@test`s: leaf values, flat/nested/deep lists, empty list, Int-value round-trip). ONE gap remains:
+runtime `String.from-bytes` declines, so a Name/Str leaf's CONTENT is a placeholder `""` — the reason a
+faithful decoder against the full `rcdzc/src/codec.rs` container (which is dense with `Name` leaves)
+still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→tree design end to end.
 
 ## Language issues found (stress-test log)
 
@@ -213,14 +220,22 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
   (`cdz check` clean → invalid wasm "type mismatch: expected i32, found i64"). In the emitted
   `read-leaves` loop, ONE wasm local (slot 4 in the WAT) is `local.set` at **i64** for the `pos+1`
   arithmetic temp AND used as **i32** for the handle returned by the recursive tuple-returning
-  `read-varu` — the loop-transform's scratch allocator reuses a slot across the two widths. The
-  jointly-required ingredients (each removed individually → compiles + runs): (1) the loop advances its
-  position via a helper that PROJECTS BOTH fields of a recursive tuple-returning call
-  (`(+ (. v 1) (. v 0))`), (2) the loop pushes a COMPOUND-payload sum into a `(List …)` accumulator,
-  (3) it is a self-tail loop. THRESHOLD-DEPENDENT on total locals — smaller variants of the same shape
-  stay under the aliasing threshold and pass, which is why it resists further minimization. This is the
-  same defect as the tail-loop-wrong-value and sibling-ifs-invalid-wasm surfaces above — one slot-typing
-  root, several faces. It DIRECTLY blocks a `decode` that advances its cursor with a varint-width helper.
+  `read-varu` — the loop-transform's scratch allocator reuses a slot across the two widths.
+  ✅ **PARTIALLY FIXED (2026-07-14): the INVALID-WASM face is GONE** — a sibling fixed the slot-typing so
+  `miscompile-slot-alias-i32i64-loop-tupleproj.sexp`, `miscompile-if-tuple-sum-nontail-recursion.sexp`,
+  and `miscompile-two-sibling-ifs-invalid-wasm.sexp` all now COMPILE to valid wasm AND return correct
+  values. ⚠ **the SILENT WRONG-VALUE face SURVIVES** — new sharpened repro
+  `repros/miscompile-tail-loop-projected-sum-wrong-value.sexp` (compiles clean, `main 0` returns 0 not
+  5). Re-bisected against the fixed compiler, the surviving trigger is: (1) a self-tail loop threading a
+  BOXED-SUM handle projected from a tuple (`(. r 0)`) as a param, (2) the loop ALSO advances position
+  from the OTHER projection of the SAME tuple (`(. r 1)`) — advancing via `(+ pos 1)` instead returns 5,
+  (3) an `if` inside the builder (branch need not be taken). **BROADER than the old framing:** the sum
+  need only be a SCALAR-payload boxed sum now (`Atom Int64 | Zero`) — a compound-payload variant is NOT
+  required for the wrong-value face (it WAS for the old invalid-wasm face). Controls (return 5): remove
+  the `if`; advance pos via `(+ pos 1)`; or thread a plain unboxed `Int64`. 🔑 **UNBLOCK for `decode`:**
+  since the invalid-wasm face is fixed and the wrong-value face needs BOTH-fields-projected, a decoder
+  that threads POSITION SEPARATELY (recompute the cursor, project only the value) now sidesteps this —
+  worth re-attempting the decode stage.
 
 **Confirmed WORKING (stress-swept 2026-07-14):** recursive sum types (build + fold, const + runtime),
 HOFs (fn args, closures capturing env, curried/partial application, recursive HOF), Map insert/lookup,

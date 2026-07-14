@@ -287,6 +287,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a line comment wrapping a top-level form does not hide it
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list mixing integer and boolean elements is a type error
@@ -1737,6 +1738,7 @@ todo	slicing past the end of a byte sequence yields None
 todo	slicing with a negative start yields None
 todo	slicing with a start near i64::MAX is out of range, not a trap
 todo	slicing with start+len overflowing i64 is out of range, not a wrong slice
+pass	stacked line comments on a top-level form are all seen through
 todo	string concatenation
 todo	string indexing addresses Unicode scalar values, not bytes
 todo	string indexing at or beyond the length yields None

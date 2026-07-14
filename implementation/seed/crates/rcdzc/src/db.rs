@@ -1423,6 +1423,15 @@ impl Db {
     /// linked package is just one bigger arena with a resolution overlay.
     pub fn load_linked(ast: Arenas, linkage: Option<crate::link::Linkage>) -> Db {
         let mut ast = ast;
+        // Peel every `(comment "…" <form>)` wrapper to its inner `<form>` FIRST — before any other strip
+        // reads the form. A leading `//` comment on a form reifies (by the reader) to `(comment "text"
+        // <form>)`; the comment is SEMANTICALLY INERT (self-hosting-surface.md — the compiler sees through
+        // comments as it sees through docs), so an un-peeled wrapper would make `comment` an unknown
+        // top-level declaration head (the wrapped `def`/`type`/`export` invisible → "unbound name comment"
+        // + the def's name unbound). Done in place (the wrapper node adopts the inner form's children, ids
+        // unchanged) and FIRST, so `strip_def_docs`/`strip_const_params`/`strip_annotations` + the top-level
+        // scan all see the plain form. Mirrors `strip_annotations`'s in-place unwrap.
+        strip_comments(&mut ast);
         // Normalize away a leading `(doc …)` on every `(def …)` BEFORE anything reads a def body: a
         // documentation form after the signature is metadata, not the value, and every body reader takes
         // `tail.get(1)` — so an un-stripped doc would be mis-read as the body. Done once here, in place
@@ -3267,8 +3276,8 @@ type TopScan = (
 // The `(doc "…")` rides as an ordinary node of the binary AST attached to its def — the codec's generic
 // encode/decode round-trips it like any list node, and this load-time pass captures it into the doc
 // column (post-decode). So the AST carries documentation attached to a definition, per ast-encoding.
-// (The COMMENT half of that section — a comment as a tree node — is not realized: the codec has no
-// comment node.)
+// (The COMMENT half of that section — a comment as a tree node — is ALSO realized now: a `//` comment
+// reifies to a `(comment "text" <form>)` node that `strip_comments` peels; see there for its citations.)
 //= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
 //# The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String> {
@@ -3433,6 +3442,58 @@ pub(crate) struct StrippedAnnotations {
 /// effect; only its (unmodeled) name is ignored. An annotation around a NON-def (or a malformed def) is
 /// left untouched (a well-formedness concern elsewhere). A SINGLE annotation per def is the modeled case
 /// (as with the original inline-policy pass); stacking two known annotations on one def is not relied on.
+/// Peel every `(comment "…" <form>)` wrapper to its inner `<form>`, IN PLACE (the wrapper node adopts the
+/// inner form's children, ids unchanged), so the compiler sees THROUGH a comment exactly as it sees
+/// through a `(doc …)`. A comment is semantically inert (self-hosting-surface.md §the tree carries
+/// comments and documentation — "each a node the compiler sees through"); a leading `//` on a form reifies
+/// (by the reader) to `(comment "text" <form>)`, and without this pass the top-level scan reads `comment`
+/// as an unknown declaration head → the wrapped `def`/`type`/`export` is invisible ("unbound name
+/// `comment`" + the def's name unbound). Stacked comments NEST — `// a` then `// b` on one form is
+/// `(comment "a" (comment "b" <form>))` — so each wrapper is peeled to the INNERMOST non-comment form (the
+/// intervening comment nodes are then orphaned, harmless like `strip_annotations`'s unwrapped inner). A
+/// `(comment …)` of the wrong arity (not exactly `<string> <form>`) is left untouched (a malformed node a
+/// later pass handles). Runs FIRST in `load_linked`, before the doc/const/annotation strips + the scan.
+///
+/// The `(comment "text" <form>)` this pass peels IS a comment carried as a NODE of the AST — the reader
+/// reifies a `//` comment into it, wrapping (attached to) the form it annotates, and it is an ordinary
+/// `Struct::List` so it lives in the stored BINARY form (the codec's generic encode/decode round-trips it
+/// unchanged, exactly as it does the `(doc …)` node), not only in a textual rendering. That this pass can
+/// find and peel a `(comment …)` at load is the proof the tree carries it.
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
+//= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
+//# A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
+fn strip_comments(ast: &mut Arenas) {
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        if ast.as_form(id, "comment").is_none() {
+            continue;
+        }
+        // Follow the chain of nested `(comment "…" inner)` down to the first NON-comment form. Each step
+        // requires the tail to be exactly `[<string>, <form>]` where the string is the comment text; a
+        // malformed comment stops the descent (the node is left as-is for a later well-formedness pass).
+        let mut inner = id;
+        while let Some(tail) = ast.as_form(inner, "comment") {
+            let (Some(&text), Some(&form)) = (tail.first(), tail.get(1)) else {
+                break; // not `(comment <string> <form>)` — malformed, leave it
+            };
+            // The first tail element must be a STRING (the comment text); otherwise this is not a
+            // reader-produced comment node — leave it untouched.
+            if !matches!(ast.get(text), Struct::Atom(l) if matches!(ast.leaf(*l), Leaf::Str(_))) {
+                break;
+            }
+            inner = form;
+        }
+        // `inner` is the innermost non-comment form (or `id` itself if the chain was malformed at the top —
+        // then this is a no-op copy). Rewrite the OUTER comment node to BE that form (adopt its children),
+        // so its `StructId` now identifies the form and every parent pointing at the comment needs no update.
+        if inner != id {
+            let entry = ast.get(inner).clone();
+            ast.structure[i] = entry;
+        }
+    }
+}
+
 fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();

@@ -2586,6 +2586,36 @@
   (call   main (: 7 Int64))
   (output (: 21 Int64)))
 
+(case "a runtime const-multiply at its exact fitting boundary does not trap"
+  (doc    "`(def (main (: x Int64)) (* x 3))` called with MAX/3 = 3074457345618258602 — the LARGEST `x`
+           whose product `x*3` still fits Int64 (= 9223372036854775806, one below Int64.max). The
+           checked multiply's overflow guard is a single UNSIGNED range check `(x - MIN/3) >ᵤ
+           (MAX/3 - MIN/3) → trap`; at the exact upper endpoint the shifted value equals the interval
+           width, so `>ᵤ` is false and the product is returned. Pins the guard admits its own boundary.")
+  (input  (do (def (main (: x Int64)) (* x 3)) (export main)))
+  (call   main (: 3074457345618258602 Int64))
+  (output (: 9223372036854775806 Int64)))
+
+(case "a runtime const-multiply one past its fitting boundary traps"
+  (doc    "`(def (main (: x Int64)) (* x 3))` called with MAX/3 + 1 = 3074457345618258603 — one past the
+           largest fitting `x`, so `x*3` overflows Int64 and MUST trap. The single unsigned range check
+           `(x - MIN/3) >ᵤ (MAX/3 - MIN/3)`: shifting `x` one past the top wraps just above the interval
+           width, so `>ᵤ` fires. Companion to the boundary-fits case — together they pin the exact
+           inclusive interval endpoint the collapsed one-compare guard admits (parity with the two-compare
+           form it replaced, gate-verified both signs of the multiplier).")
+  (input  (do (def (main (: x Int64)) (* x 3)) (export main)))
+  (call   main (: 3074457345618258603 Int64))
+  (trap   "integer overflow"))
+
+(case "a runtime negative-const-multiply one past its lower fitting boundary traps"
+  (doc    "`(def (main (: x Int64)) (* x -3))` called with MAX/3 + 1 = 3074457345618258603 — a NEGATIVE
+           multiplier flips the fitting interval to `[MAX/-3, MIN/-3]`, and this `x` overshoots it, so
+           `x*-3` overflows and traps. Pins that the collapsed unsigned range check is correct for a
+           negative constant too (its `lo`/`hi` endpoints swap, the single `>ᵤ` still decides both sides).")
+  (input  (do (def (main (: x Int64)) (* x -3)) (export main)))
+  (call   main (: 3074457345618258603 Int64))
+  (trap   "integer overflow"))
+
 (case "the entrypoint sums its two runtime arguments"
   (doc    "A two-parameter entry `(def (main (: a Int64) (: b Int64)) (+ a b))` called with 20 and 22.
            BOTH operands are runtime arguments, so the `+` is a runtime `i64.add` over two parameter
