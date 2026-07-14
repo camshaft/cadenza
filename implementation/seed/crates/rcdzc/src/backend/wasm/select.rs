@@ -2999,11 +2999,12 @@ fn emit_tail(
                 }
             }
             // BRANCHLESS SELECT (see the non-tail `emit` arm for the full rationale): when both branches
-            // are cheap trap-free leaves and the result is a non-heap scalar, a `select` beats an `if`.
-            // A leaf branch is never a tail call, so dropping the tail context here loses no `return_call`
-            // /loop-`br` — the whole `if` becomes one value expression the caller consumes. (An exported
-            // body emitted in tail position — `(def (f p a b) (if p a b))` — reaches HERE, not the
-            // non-tail arm, so the select must be handled in both places.)
+            // are cheap trap-free scalar computations (`is_select_arm`) and the result is a non-heap
+            // scalar, a `select` beats an `if`. A trap-free arm is never a tail call (a call is not
+            // trap-free), so dropping the tail context here loses no `return_call`/loop-`br` — the whole
+            // `if` becomes one value expression the caller consumes. (An exported body emitted in tail
+            // position — `(def (f p a b) (if p a b))` — reaches HERE, not the non-tail arm, so the select
+            // must be handled in both places.)
             // BOOLEAN MATERIALIZATION: `(if c 1 0)`/`(if c 0 1)` → the condition coerced to the result
             // width (a leaf `if` can reach tail position — an exported `(def (f p) (if p 1 0))` body).
             if let Some(r) = try_bool_materialization(
@@ -3014,15 +3015,29 @@ fn emit_tail(
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
-                && is_select_leaf(db, then_)
-                && is_select_leaf(db, else_)
+                && is_select_arm(db, then_)
+                && is_select_arm(db, else_)
             {
-                emit_branch(
+                // Each arm is emitted UNDER its branch-refinement frame (see the non-tail `Core::If` arm's
+                // select block for the full rationale) — a `select` arm computes the same value the `if`
+                // arm would, so a refinement that simplifies the arm (elides a redundant mask under a
+                // proven range) must still apply. Sound: a trap-free arm has no guard to wrongly elide, the
+                // taken arm's refinement holds, and the untaken arm's value is discarded regardless.
+                let base_frame = db.current_refinements();
+                let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+                db.push_range_refinements(then_frame);
+                let then_res = emit_branch(
                     db, then_, &result, slots, base, high, scratch_ty, layout, out,
-                )?;
-                emit_branch(
+                );
+                db.pop_range_refinements();
+                then_res?;
+                let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+                db.push_range_refinements(else_frame);
+                let else_res = emit_branch(
                     db, else_, &result, slots, base, high, scratch_ty, layout, out,
-                )?;
+                );
+                db.pop_range_refinements();
+                else_res?;
                 emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
                 out.push(Lir::Select);
                 return Ok(());
@@ -5404,15 +5419,17 @@ fn emit(
                     }
                 }
             }
-            // BRANCHLESS SELECT: when both branches are cheap trap-free leaves (a param/local/constant)
-            // and the result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of
-            // an `if`/`else`/`end` block — one instruction, no branch. `select` pops `[a, b, cond]` and
-            // pushes `a` if `cond` is nonzero else `b`, evaluating BOTH unconditionally; that is sound
-            // here precisely because each leaf is trap-free, allocation-free, and cheap (so nothing is
-            // wasted vs the branch it replaces). A HEAP result is excluded: `select` would evaluate both
-            // handles and discard one WITHOUT the Perceus `drop` that owning branch would run, leaking
-            // its cell — the `if` (which evaluates only the taken branch) stays for those. This is the
-            // classic `min`/`max`/conditional-value idiom `(if (< a b) a b)`.
+            // BRANCHLESS SELECT: when both branches are cheap trap-free scalar computations (a
+            // param/local/constant, or a small trap-free op like `(& x 7)` — see `is_select_arm`) and the
+            // result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of an
+            // `if`/`else`/`end` block — no branch. `select` pops `[a, b, cond]` and pushes `a` if `cond` is
+            // nonzero else `b`, evaluating BOTH unconditionally; that is sound here precisely because each
+            // arm is trap-free, allocation-free, effect-free, and cheap (so little is wasted vs the branch
+            // it replaces). A HEAP result is excluded: `select` would evaluate both handles and discard one
+            // WITHOUT the Perceus `drop` that the owning branch would run, leaking its cell — the `if`
+            // (which evaluates only the taken branch) stays for those. This is the classic `min`/`max`/
+            // conditional-value idiom `(if (< a b) a b)` and the masked/bitwise conditional
+            // `(if c (& x 7) (| x 8))`.
             // BOOLEAN MATERIALIZATION first: `(if c 1 0)`/`(if c 0 1)` is the condition itself (coerced to
             // the result width), cheaper than the `const;const;select` a leaf select would emit.
             if let Some(r) = try_bool_materialization(
@@ -5423,15 +5440,31 @@ fn emit(
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
-                && is_select_leaf(db, then_)
-                && is_select_leaf(db, else_)
+                && is_select_arm(db, then_)
+                && is_select_arm(db, else_)
             {
-                emit_branch(
+                // Each arm is emitted UNDER its branch-refinement frame, exactly as the structured `if`
+                // below — a `select` arm computes the same value the `if` arm would, so a refinement that
+                // simplifies the arm (elides a redundant mask `(& x 255)` under `x∈[0,255]`, folds a
+                // now-constant subexpression) must still apply. Sound: a trap-free arm carries no guard to
+                // wrongly elide, the TAKEN arm's refinement always holds (so its refined value is its true
+                // value), and the untaken arm's value is discarded by `select` regardless of whether its
+                // refinement held. So refining both arms is strictly better (branchless AND still elided).
+                let base_frame = db.current_refinements();
+                let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+                db.push_range_refinements(then_frame);
+                let then_res = emit_branch(
                     db, then_, &result, slots, base, high, scratch_ty, layout, out,
-                )?;
-                emit_branch(
+                );
+                db.pop_range_refinements();
+                then_res?;
+                let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+                db.push_range_refinements(else_frame);
+                let else_res = emit_branch(
                     db, else_, &result, slots, base, high, scratch_ty, layout, out,
-                )?;
+                );
+                db.pop_range_refinements();
+                else_res?;
                 emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
                 out.push(Lir::Select);
                 return Ok(());
@@ -8580,6 +8613,28 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
     )
 }
 
+/// Whether an `if`'s BRANCH is a candidate for the branchless `select` — a generalization of
+/// [`is_select_leaf`] to a SMALL, TRAP-FREE scalar computation, not only a one-instruction leaf. A
+/// `select` evaluates BOTH arms unconditionally then picks, so an arm is convertible iff it (a) CANNOT
+/// TRAP when run on the untaken path (`is_trap_free` — bitwise/compare/not/wrap/proj/count/in-range
+/// shift/const-divisor div-rem over trap-free operands, and every leaf; EXCLUDES checked `+`/`-`/`*`, a
+/// runtime-count shift, a call, control flow, and any heap construct), and (b) is CHEAP — a bounded
+/// subtree (`<= SELECT_ARM_MAX_SIZE` nodes) so computing the untaken arm wastes at most a few
+/// instructions vs the branch it removes. `is_trap_free` also guarantees allocation-freedom and
+/// effect-freedom (a heap construct / call is not trap-free), so a converted arm leaks no cell and runs
+/// no side effect on the discarded path. The result-is-scalar / non-heap filter stays with the caller.
+/// (A leaf is trap-free with size 1, so this strictly widens `is_select_leaf`.)
+fn is_select_arm(db: &mut Db, id: StructId) -> bool {
+    crate::lower::is_trap_free(db, id) && subtree_size(db, id) <= SELECT_ARM_MAX_SIZE
+}
+
+/// The node-count ceiling for [`is_select_arm`]: a branch bigger than this is left as an `if` so a
+/// `select` never duplicates a non-trivial computation onto the untaken path. Sized to admit the common
+/// one-operator idioms — `(& x mask)`, `(| x bit)`, `(>> x k)`, `(not b)`, `(< a b)` (each an op over two
+/// leaves = 3 nodes) — plus a shallow nest (a masked shift `(& (>> x k) m)` = 5), while excluding a deep
+/// expression whose unconditional evaluation would cost more than the branch it replaces.
+const SELECT_ARM_MAX_SIZE: u32 = 5;
+
 /// Emit the LOGICAL NEGATION of a boolean expression `id` (a Bool i32 → its `0`/`1` complement). When
 /// `id` is a `Core::Compare`, the negation folds into the single COMPLEMENT comparison (`(not (< a b))`
 /// → `a >=ₛ b`, `(not (= a b))` → `a ≠ b`) — the operands emit exactly as the `Core::Compare` arm does
@@ -10476,6 +10531,66 @@ mod tests {
         assert!(
             !f.code.contains(&Lir::Select),
             "a non-leaf branch must NOT use select, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn selects_a_runtime_if_with_small_trap_free_arms_to_a_branchless_select() {
+        // A runtime `if` whose arms are NOT leaves but ARE small TRAP-FREE scalar ops — here `(& x 7)`
+        // and `(| x 8)`, each a total bitwise op — converts to a branchless `select` (the widened
+        // `is_select_arm` gate). Both arms + the condition are pushed, then `select`; no `if`/`else`/`end`
+        // block. Sound because a bitwise op can neither trap nor allocate when evaluated on the untaken
+        // path. Emitted arms: `(& x 7)` = get x ; const 7 ; and ; `(| x 8)` = get x ; const 8 ; or.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (< x 0) (& x 7) (| x 8))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::Select),
+            "small trap-free bitwise arms convert to a branchless select, got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::If(_) | Lir::Else | Lir::End)),
+            "the structured if/else block is gone (branchless), got: {:?}",
+            f.code
+        );
+        // The bitwise ops themselves are present (both arms evaluated, then select picks).
+        assert!(
+            f.code.contains(&Lir::I64And) && f.code.contains(&Lir::I64Or),
+            "both trap-free arms are emitted before the select, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn keeps_the_structured_if_when_a_trap_free_arm_exceeds_the_size_bound() {
+        // A TRAP-FREE arm that is TOO BIG (`> SELECT_ARM_MAX_SIZE` nodes) keeps the structured `if`: a
+        // `select` would compute the whole heavy arm on the untaken path, wasting more than the branch it
+        // removes. Here the then-arm `(& (| (& (>> x 1) 3) 4) 7)` is a 4-deep bitwise nest (>5 nodes) —
+        // trap-free but over the ceiling — so the branch survives. Pins the cost bound, not just the
+        // trap-freedom gate.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (< x 0) (& (| (& (>> x 1) 3) 4) 7) x)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::If(BlockType::Val(ValType::I64))),
+            "an over-size trap-free arm keeps the structured if, got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code.contains(&Lir::Select),
+            "an over-size trap-free arm must NOT use select, got: {:?}",
             f.code
         );
     }
