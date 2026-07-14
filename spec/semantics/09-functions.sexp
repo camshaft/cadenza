@@ -480,12 +480,30 @@
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
 
-; A nested lambda capturing a closure-typed DEF PARAMETER (rather than a let-bound closure) is NOT yet
-; supported: when the def is applied to a closure argument and inlined, the argument lambda is
+; The DISCRIMINATOR for the closure-param-capture gap: a returned lambda capturing the def's SCALAR parameter
+; works (below — the scalar argument substitutes cleanly), but capturing a CLOSURE-typed parameter declines
+; (the case after). So it is the closure-TYPEDNESS of the captured param that triggers the gap, not
+; "capturing a def param" in general — the closure argument is a `resolve_subtree`-pinned lambda whose own
+; params dangle when it is spliced into the returned lambda that then lifts.
+
+(case "a factory RETURNS a closure capturing the def's SCALAR parameter"
+  (doc    "`(def (mk (: k Int64)) (fn (x) (+ x k)))` — the returned closure captures the def's SCALAR param
+           `k`. Applied `((mk 10) n)` with n = 5 → 5 + 10 = 15. The scalar argument `10` substitutes cleanly
+           into the returned lambda's cell (this is the C-HOST-2 make-forwarding shape at the def level). The
+           companion of the closure-param case below — proving SCALAR-param capture in a returned lambda
+           works, so the decline there is specific to a CLOSURE-typed captured param.")
+  (input  (do (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (main (: n Int64)) ((mk 10) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+; A nested lambda capturing a closure-typed DEF PARAMETER (rather than a scalar param or a let-bound closure)
+; is NOT yet supported: when the def is applied to a closure argument and inlined, the argument lambda is
 ; `resolve_subtree`-pinned and later copied, leaving a body occurrence resolving to the ORIGINAL param binder
 ; with no local slot at the build site. The compiler DECLINES ("parameter reference has no local slot") rather
 ; than emit an invalid module — reject-don't-miscompile. A sound α-renaming fix to the copy machinery is a
-; separate, larger reduction-engine change. (Contrast the case ABOVE: capturing a LET-bound closure works.)
+; separate, larger reduction-engine change. (Contrast: capturing a LET-bound closure OR a scalar param works.)
 
 (case "a nested lambda capturing a closure-typed def PARAMETER is declined"
   (doc    "`(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returns a closure that captures the def's
