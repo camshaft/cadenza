@@ -1353,6 +1353,8 @@ pass	an argument bound to a used parameter IS observed, so its trap occurs (the 
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an arm chooses its resume value by an if on the handler state
+pass	an arm re-performing its own effect with no outer handler has no home
+pass	an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect
 pass	an arm that binds its resume in a lambda and applies it immediately folds
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee

@@ -228,6 +228,40 @@
                 (handle A 0 ((a (u) s (resume (B.b) s))) (A.a)))) (export main)))
   (output (: 100 Int64)))
 
+(case "an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect"
+  (doc    "The SAME-effect forwarding case: an arm resuming with a fresh perform of the effect IT discharges
+           re-performs OUTWARD — a handler arm's own-effect perform forwards to the next-OUTER handler of that
+           effect, not back into itself (`check_no_home` walks arm bodies under the OUTER handled set). Inner
+           `Inner`'s arm resumes with `(Outer.i-style)`… here spelled with two effects to show the forward
+           reaches an ENCLOSING handler: `Inner`'s arm resumes `(Outer.o)`, and `Outer` is handled outside —
+           `Outer` seeded 50 resumes its state, so `(Outer.o)` = 50, `Inner.i` resumes 50, `(+ 1 (Inner.i))` =
+           51. Pins that a resume value performing an effect handled FURTHER OUT folds (the forward reaches an
+           enclosing home) — the mechanism the interpose cases rely on, isolated to the resume-value position.")
+  (input  (do
+            (effect Outer (op o (-> Unit Int64)))
+            (effect Inner (op i (-> Unit Int64)))
+            (def (main)
+              (handle Outer 50 ((o (u) t (resume t t)))
+                (handle Inner 0 ((i (u) s (resume (Outer.o) s)))
+                  (+ 1 (Inner.i))))) (export main)))
+  (output (: 51 Int64)))
+
+(case "an arm re-performing its own effect with no outer handler has no home"
+  (doc    "The reject companion of the forwarding case above: when an arm resumes with a fresh perform of the
+           effect it discharges — `(flip (u) s (resume (Amb.flip) s))` — that own-effect perform re-performs
+           OUTWARD (arm bodies resolve under the outer handled set), so it needs an ENCLOSING `Amb` handler.
+           Here there is none (this is the only `Amb` handler), so the re-perform has no home: CDZ0401. This
+           is NOT a misleading message — under the forwarding model an arm's own-effect perform genuinely
+           escapes to an outer handler, and the outermost one has nowhere to forward. (A bare self-resume like
+           this would also be a non-terminating re-perform loop were it to fold; the no-home reject is the
+           correct diagnosis, the same check that flags forwarding a DIFFERENT unheld effect above.)")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume (Amb.flip) s)))
+                (+ 1 (Amb.flip)))) (export main)))
+  (error  CDZ0401))
+
 (case "an abortive handler abandons a host call in the path it discards"
   (doc    "Witnesses that an abortive perform's abandonment extends to a DELEGATED host call in the
            discarded continuation (capabilities-and-effects.md #A Handler Arm May Abandon The Computation It
