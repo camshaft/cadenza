@@ -1728,12 +1728,15 @@ fn emit_closure_resource(
     // of aliased-width scalars crosses as a NATIVE component `tuple<…>` the canonical ABI flattens into scalar
     // core params; the core `call` rebuilds the cell from the flat fields (`TupleArgRebuild`). Detected here
     // so the scalar `arg_bytes` decline below doesn't reject it. SCOPE this increment: EXACTLY one such
-    // compound arg, a scalar result, no build-time host effect (each a clean later widening). A collection /
-    // nested-compound field, or a compound arg ALONGSIDE other args, returns `None` and falls to the decline.
-    // `tuple_arg` = (full flattened field/scalar bytes, full flattened core vts, prefix scalar bytes, suffix
-    // scalar bytes, rebuild). The SOLE-tuple case (one compound arg, no scalars) has empty prefix/suffix and
-    // `base_param=1`; the AMONG-SCALARS case (one tuple + ≥1 scalar arg) carries the prefix/suffix + a shifted
-    // `base_param`. Both flatten the tuple into native `tuple<…>` fields the core `call` rebuilds.
+    // compound arg, a scalar result, no build-time host effect (each a clean later widening). The SOLE-tuple
+    // path (`fixed_shape_scalar_tuple_arg`) also accepts a NESTED fixed-shape compound FIELD, flattening its
+    // leaves depth-first and rebuilding the sub-cell recursively (brick 3). Still `None` (falls to the
+    // decline): a COLLECTION field, or the AMONG-SCALARS / multi-export path with a nested field (`tuple_field_abi`
+    // stays scalar-field-only). `tuple_arg` = (full flattened field/scalar bytes, full flattened core vts,
+    // prefix scalar bytes, suffix scalar bytes, rebuild). The SOLE-tuple case (one compound arg, no scalars)
+    // has empty prefix/suffix and `base_param=1`; the AMONG-SCALARS case (one tuple + ≥1 scalar arg) carries
+    // the prefix/suffix + a shifted `base_param`. Both flatten the tuple into native `tuple<…>` fields the
+    // core `call` rebuilds.
     let tuple_arg: Option<CompoundArgBoundary> = if host_imports.is_empty() {
         if arg_tys.len() == 1 {
             fixed_shape_scalar_tuple_arg(&arg_tys[0])
