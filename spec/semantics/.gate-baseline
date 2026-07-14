@@ -553,6 +553,7 @@ pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact va
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard over a variant pattern gates on the payload
+pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
@@ -697,6 +698,7 @@ pass	a literal-refined recursive-sum arm folds under a statically-known discrimi
 pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
+pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
@@ -1400,6 +1402,7 @@ pass	a variant carrying a Rational payload constructs and matches
 pass	a variant carrying a Symbol payload constructs, matches, and binds it
 pass	a variant carrying a record payload escapes to the host
 pass	a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches
+pass	a variant guard reads the payload binder AND an enclosing binding
 pass	a variant named Bool shadows the prelude Bool within its declaring module
 pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
