@@ -513,9 +513,13 @@ pub enum Core {
     /// variant's discriminant. The emitter carries NO source-level name into the value heap: a sum is a
     /// discriminated payload (`disc` + boxed value) and a record is a positional `arr-alloc` product (its
     /// field NAMES are the compile-time `Symbol` keys, never stored), so the runtime holds only structure
-    /// and data and the position→name association is compile-time knowledge:
+    /// and data and the position→name association is compile-time knowledge. The `disc` a sum carries is
+    /// the runtime datum recording WHICH variant a value is, never the sum's TYPE — the compiler knows the
+    /// static type at every use site (no type erasure) and maps a discriminant to a variant name itself:
     //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
     //# The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a discriminated payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
+    //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
+    //# The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on. The variant discriminant a sum carries is the runtime datum recording WHICH variant a value is, not the sum's type; the compiler maps a discriminant to a variant name.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
