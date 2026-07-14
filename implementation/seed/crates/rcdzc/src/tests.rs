@@ -23257,6 +23257,38 @@ mod stage1 {
         );
     }
 
+    #[test]
+    fn a_value_name_in_type_position_is_named_a_value_not_a_generic_non_type() {
+        // A bound VALUE name misused as a type (`(: x helper)` where `helper` is a value def) is CDZ0203,
+        // but the message now NAMES it — "`helper` is a value, not a type" — instead of the opaque "found
+        // a non-type", the type-position analogue of the M76 apply-position category message. Both the
+        // parameter annotation and the value annotation get it; a NON-name (a literal) keeps the generic
+        // phrasing (naming a literal adds nothing).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {src}"))
+                .message
+        };
+        let param = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
+        assert!(
+            param.contains("`helper` is a value, not a type"),
+            "param annotation names the value: {param}"
+        );
+        let value = msg("(module m (def helper 5) (def (main) (: 3 helper)) (export main))");
+        assert!(
+            value.contains("`helper` is a value, not a type"),
+            "value annotation names the value: {value}"
+        );
+        // A NON-name operand (a literal) keeps the generic "found a non-type" (no name to blame).
+        let lit = msg("(module m (def (main) (: 5 42)) (export main))");
+        assert!(
+            lit.contains("found a non-type") && !lit.contains("is a value"),
+            "a literal in type position keeps the generic message: {lit}"
+        );
+    }
+
     // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
 
     #[test]

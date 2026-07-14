@@ -654,6 +654,23 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     crate::eval::typeval_of(db, ty_expr)
 }
 
+/// The "type position holds a non-type" message for a `ty_expr` that `typeval_of` rejected and whose own
+/// `collect` surfaced no fault (so it is bound / well-formed, not an unbound-name typo). When `ty_expr` is
+/// a bare NAME, it is a bound VALUE (a def / parameter / prelude value — a type name would have made
+/// `typeval_of` succeed), so name it: "`helper` is a value, not a type — a type belongs here (annotate
+/// `(: value Int64)`)". This is the type-position analogue of the apply-position category message (M76):
+/// a bound name misused as a type gets NAMED, not the opaque "found a non-type". A NON-name operand (a
+/// literal `5`, a compound `(+ 1 2)`) keeps the generic phrasing — naming a literal adds nothing. `lead`
+/// prefixes the sentence ("a parameter's annotation" / "the type position of an annotation").
+fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String {
+    match db.ast.as_name(ty_expr) {
+        Some(name) => format!(
+            "`{name}` is a value, not a type — {lead} requires a type (e.g. annotate `(: value Int64)`)"
+        ),
+        None => format!("{lead} requires a type, but found a non-type"),
+    }
+}
+
 /// Faults in a DEF PARAMETER's annotation `(: name T)` — the signature-side companion of the value
 /// annotation checked in `collect_node`. A parameter's TYPE OPERAND `T` must denote a TYPE; a non-type
 /// (an unbound name, a value, a malformed type application `(Int64 Int64)`) is REJECTED, not
@@ -715,7 +732,7 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
             out.push(
                 Reject::coded(
                     Code::TypeMismatch,
-                    "a parameter's annotation requires a type, but found a non-type",
+                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
                 )
                 .at(ty_expr),
             );
@@ -5944,7 +5961,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
                     out.push(Reject::coded(
                         Code::TypeMismatch,
-                        "the type position of an annotation requires a type, but found a non-type",
+                        non_type_annotation_message(
+                            db,
+                            ty_expr,
+                            "the type position of an annotation",
+                        ),
                     ));
                 }
             }
