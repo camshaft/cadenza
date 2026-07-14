@@ -1101,6 +1101,7 @@ todo	an AST from quasiquoting a runtime value equals the same AST built by quote
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
+todo	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match

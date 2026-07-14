@@ -1533,6 +1533,7 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
+todo	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an empty scrutinee matches an empty bin pattern

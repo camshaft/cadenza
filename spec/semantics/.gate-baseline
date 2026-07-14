@@ -148,6 +148,7 @@ pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
