@@ -1426,3 +1426,217 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
   (output (8 99)))
+
+; A COMPOUND (tuple/record) closure RESULT — the closure's `call` returns the canonical VALUE FORM as
+; `list<u8>` (the value-heap escape's `runtime_value_form_template` + `encode_walk_body` walker, keyed on
+; the closure's returned handle), so the host DECODES + pretty-prints the typed `(: value T)` document (not
+; a bare byte sequence like the byte-rope path). cdz-run try-decodes the `call` result: the codec's 8-byte
+; schema header disambiguates a value form from a raw byte-rope, so both share the `list<u8>` boundary
+; unambiguously. Fixed-shape compounds (tuple/record/sum) are supported; a variable-length list still
+; declines (no fixed template).
+
+(case "a closure returning a tuple crosses as the typed value form"
+  (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`. `call(handle, 5)` walks the
+           returned tuple handle, writes the value form, and the host decodes it to `(: (tuple 5 6) (Tuple
+           Int64 Int64))` — the FULL typed document, not a bare byte list.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "a closure returning a record crosses as the typed value form"
+  (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (x Int64) (y
+           Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
+           walked at run time.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (x n) (y (+ n 10))))) (export mk)))
+  (call   mk (: 3 Int64))
+  (output (: (record (x 3) (y 13)) (Record (x Int64) (y Int64)))))
+
+(case "a closure returning a tuple with a Bool leaf"
+  (doc    "A mixed-leaf compound — `(tuple n (< n 5))` → `(: (tuple 2 true) (Tuple Int64 Bool))`. The Bool
+           leaf's hole is filled via `get-bool` (its kind byte flipped true/false), the int via `get-int`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (< n 5)))) (export mk)))
+  (call   mk (: 2 Int64))
+  (output (: (tuple 2 true) (Tuple Int64 Bool))))
+
+(case "a closure returning a NESTED tuple"
+  (doc    "`(tuple n (tuple n+1 n+2))` → `(: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))`. The
+           walker descends nested `arr-get` paths (the inner tuple is a boxed handle inside the outer).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (tuple (+ n 1) (+ n 2))))) (export mk)))
+  (call   mk (: 7 Int64))
+  (output (: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a CAPTURING closure returning a tuple"
+  (doc    "`mk : (Int64) -> (-> Int64 (Tuple Int64 Int64))` — `make(100)` captures `k=100`, then
+           `call(handle, 5)` → `(: (tuple 100 5) (Tuple Int64 Int64))`. Confirms a captured value flows into
+           the compound result across the boundary.")
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (tuple k n))) (export mk)))
+  (call   mk (: 100 Int64) (: 5 Int64))
+  (output (: (tuple 100 5) (Tuple Int64 Int64))))
+
+(case "a closure returning a tuple with a negative int leaf"
+  (doc    "`(tuple n (- 0 n))` → `(: (tuple 5 -5) (Tuple Int64 Int64))`. The negative leaf flips the value
+           form's kind byte to INT_NEG_DEC and writes the absolute magnitude (the escape's neg-int path).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (- 0 n)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 -5) (Tuple Int64 Int64))))
+
+; A COMPOUND (tuple/record) closure RESULT on the MULTI-EXPORT path — N same-signature closures each
+; returning a tuple/record share ONE `call` that returns the value form as `list<u8>`. The shared `call`
+; recovers each closure's code slot from the resource rep, dispatches it, and walks the returned compound
+; handle into the ONE value-form template (all exports share the result type → one template). The host
+; decodes each result to the typed `(: value T)` document. (Record fields render in CANONICAL sorted-name
+; order — `hi` before `lo` — same as the single-export path and the value-heap escape.)
+
+(case "multi-export compound result — the first closure's tuple"
+  (doc    "Two same-signature closures — `mkpair : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n
+           n+1)`, `mkdbl` returns `(tuple n 2n)`. `call(mkpair-handle, 5)` walks its returned tuple → `(:
+           (tuple 5 6) (Tuple Int64 Int64))`. Pins the compound value-form result on the shared-`call`
+           multi-export path.")
+  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+              (export mkpair) (export mkdbl)))
+  (call   mkpair (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "multi-export compound result — the second closure's tuple"
+  (doc    "The SAME two-closure program, driving the OTHER export: `call(mkdbl-handle, 5)` → `(tuple 5 10)`.
+           Confirms the shared `call` dispatches whichever closure a handle names and walks ITS distinct
+           result (the code slot rides in the rep, the value form is shared since the type is).")
+  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+              (export mkpair) (export mkdbl)))
+  (call   mkdbl (: 5 Int64))
+  (output (: (tuple 5 10) (Tuple Int64 Int64))))
+
+(case "multi-export record result — canonical field order"
+  (doc    "Two closures returning a `(Record (lo Int64) (hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
+           (hi 103))`, rendered in CANONICAL sorted-name order `(record (hi 103) (lo 3))`.")
+  (input  (do (def (mka) (fn ((: n Int64)) (record (lo n) (hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
+              (export mka) (export mkb)))
+  (call   mka (: 3 Int64))
+  (output (: (record (hi 103) (lo 3)) (Record (hi Int64) (lo Int64)))))
+
+(case "multi-export record result — the second closure, with a negative leaf"
+  (doc    "The SAME program's other export: `call(mkb-handle, 3)` → `(record (lo -3) (hi 3))` → canonical
+           `(record (hi 3) (lo -3))`. The negative `lo` leaf flips its value form's kind byte.")
+  (input  (do (def (mka) (fn ((: n Int64)) (record (lo n) (hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
+              (export mka) (export mkb)))
+  (call   mkb (: 3 Int64))
+  (output (: (record (hi 3) (lo -3)) (Record (hi Int64) (lo Int64)))))
+
+(case "multi-export compound result — three capturing closures share one call"
+  (doc    "THREE same-signature closures (two capturing `k`, one not) each returning `(Tuple Int64 Int64)`.
+           `b(7)` captures `k=7`; `call(b-handle, 2)` → `(tuple 2 7)`. Pins the shared value-form `call`
+           dispatching among 3 closures, with captured values flowing into the compound result.")
+  (input  (do (def (a (: k Int64)) (fn ((: n Int64)) (tuple k n)))
+              (def (b (: k Int64)) (fn ((: n Int64)) (tuple n k)))
+              (def (c) (fn ((: n Int64)) (tuple n n)))
+              (export a) (export b) (export c)))
+  (call   b (: 7 Int64) (: 2 Int64))
+  (output (: (tuple 2 7) (Tuple Int64 Int64))))
+
+; A COMPOUND (tuple/record) closure RESULT on the MIXED path — a compound-returning closure exported
+; ALONGSIDE a plain non-closure export. The closure crosses via the resource envelope (`make-<name>` + a
+; shared `call` returning the value form as `list<u8>`); each plain export rides as an ordinary top-level
+; component func. Same value-form core as the multi-export compound path, with the plain-export slots the
+; mixed shape threads. The host decodes the closure result to `(: value T)`; a plain scalar renders directly.
+
+(case "a tuple-returning closure alongside a plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`, alongside a plain `two : ()
+           -> 2`. `call(mk-handle, 5)` walks the returned tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins
+           the compound value-form result on the MIXED path (closure + plain export).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "a tuple-returning closure alongside a plain export — the plain"
+  (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, rendered directly — NOT a
+           value-form document). Confirms the plain top-level export is reachable when a compound-result
+           closure shares the component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a record-returning closure alongside a parameterized plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (Record (a Int64) (b Int64)))` returns `(record (a n) (b 2n))`, beside a
+           parameterized plain `inc : (Int64) -> Int64`. `call(mk-handle, 4)` → `(: (record (a 4) (b 8))
+           (Record (a Int64) (b Int64)))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   mk (: 4 Int64))
+  (output (: (record (a 4) (b 8)) (Record (a Int64) (b Int64)))))
+
+(case "a record-returning closure alongside a parameterized plain export — the plain"
+  (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
+           record-result closure.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))
+
+; A COMPOUND (tuple/record) closure RESULT on the DISTINCT-SIG path — closures of DIFFERENT signatures each
+; returning a fixed-shape compound cross as G distinct resource types, each with its OWN `call-g<n>`
+; returning THAT group's value form as `list<u8>` (a PER-GROUP template, since the result types differ). A
+; compound group, a byte-rope group, and a scalar group can all coexist in one component: compound templates
+; occupy their own data-section regions, byte-rope groups write dynamically PAST them, scalars return by
+; value — so the three list<u8>/scalar memory uses never collide.
+
+(case "distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure"
+  (doc    "`mki : () -> (-> Int64 (Tuple Int64 Int64))` and `mkb : () -> (-> Bool (Tuple Bool Int64))` are
+           distinct signatures WITH distinct RESULT types → two resource types, each with its own value-form
+           template. `call(mki-handle, 5)` walks its tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`.")
+  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mki (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "distinct-sig compound result — the Bool→(Tuple Bool Int64) closure"
+  (doc    "The SAME program's OTHER group, whose result type differs: `call(mkb-handle, true)` → `(: (tuple
+           true 1) (Tuple Bool Int64))`. Confirms each distinct-sig group walks its OWN per-group template.")
+  (input  (do (def (mki) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mkb (: true Bool))
+  (output (: (tuple true 1) (Tuple Bool Int64))))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the compound"
+  (doc    "THREE distinct signatures, THREE result MODES in one component: `mkt` returns a tuple (value
+           form), `mkb` a `Bytes` (raw byte-rope), `inc` an Int64 (by value). `call(mkt-handle, 9)` → `(:
+           (tuple 9 10) (Tuple Int64 Int64))`. Pins the disjoint-memory layout (compound template + byte-rope
+           payload + scalar all coexisting).")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   mkt (: 9 Int64))
+  (output (: (tuple 9 10) (Tuple Int64 Int64))))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope"
+  (doc    "The SAME 3-mode program, driving the byte-rope group: `call(mkb-handle, false)` → `(8)` (a raw
+           byte list, rendered bare — NOT a value-form document). Its payload is written PAST the compound
+           template region.")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   mkb (: false Bool))
+  (output (8)))
+
+(case "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
+  (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (returned by value, NOT list<u8>).
+           Confirms the scalar `call-<g>` is unaffected by the sibling list-returning groups' memory.")
+  (input  (do (def (mkt) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkt) (export mkb) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))

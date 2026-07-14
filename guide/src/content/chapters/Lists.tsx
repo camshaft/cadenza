@@ -91,6 +91,25 @@ export default function Lists() {
         source={`(def (count xs) (List.len xs))
 (def (main) (count (list 10 20 30 40)))`}
       />
+      <P>
+        To visit <em>every</em> element, walk the list by index with recursion (the loop you met in{" "}
+        <em>Control flow</em>): <C>List.at</C> hands back <C>(Some v)</C> while there's an element and{" "}
+        <C>(None _)</C> once you step past the end — which is exactly the base case. Here <C>sum-from</C>{" "}
+        adds up a list of numbers:
+      </P>
+      <Runnable
+        source={`(def (sum-from xs i)
+  (match (List.at xs i)
+    ((Some v) (+ v (sum-from xs (+ i 1))))
+    ((None _) 0)))
+(def (main) (sum-from (list 10 20 30) 0))`}
+      />
+      <P>
+        The <C>None</C> arm ends the recursion the moment the index runs off the end — no separate length
+        check, no way to read past the end, because the missing element <em>is</em> the stopping signal.
+        And you didn't have to tell it the elements are numbers: the type flows from <C>List.at</C>'s
+        result through the <C>+</C>, so <C>sum-from</C> is inferred to work on a list of <C>Int64</C>.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise
@@ -135,6 +154,33 @@ export default function Lists() {
           <>
             The joined list is <C>1 2 3 4 5</C>. Index <C>0</C> is the <C>1</C>, so index <C>3</C> is the{" "}
             <C>4</C>.
+          </>
+        }
+      />
+
+      <Exercise
+        id="lists:3"
+        prompt={
+          <>
+            Complete the recursive step of <C>sum-from</C> so it adds every element. The <C>None</C> base
+            case is done; in the <C>Some</C> arm, add this element to the sum of the rest. Over{" "}
+            <C>(list 1 2 3 4)</C> the total is <C>10</C>.
+          </>
+        }
+        starter={`(def (sum-from xs i)
+  (match (List.at xs i)
+    ((Some v) (+ v ?))
+    ((None _) 0)))
+(def (main) (sum-from (list 1 2 3 4) 0))`}
+        solution={`(def (sum-from xs i)
+  (match (List.at xs i)
+    ((Some v) (+ v (sum-from xs (+ i 1))))
+    ((None _) 0)))
+(def (main) (sum-from (list 1 2 3 4) 0))`}
+        expected="10"
+        hint={
+          <>
+            "The sum of the rest" is the same function on the next index: <C>(sum-from xs (+ i 1))</C>.
           </>
         }
       />

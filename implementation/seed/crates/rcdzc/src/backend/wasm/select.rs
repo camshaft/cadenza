@@ -6739,7 +6739,14 @@ fn emit_checked_arith_to(
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
     // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
     // an undefined value; the guard is emitted (or provably elided) at EVERY reachable overflow, so no
-    // integer op with undefined overflow behavior is ever emitted:
+    // integer op with undefined overflow behavior is ever emitted. This is the general partial-operation
+    // discipline for arithmetic: an operation with no in-type result for its inputs (an overflowing add,
+    // a `MIN/-1` divide) raises a trap of a defined kind here rather than producing an unspecified value —
+    // the total-or-trap alternative to the fallible ops that instead return an `Option` (e.g. `List.at`):
+    //= spec/capabilities/core-semantics.md#partial-operations-have-a-defined-outcome
+    //# An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
+    //= spec/capabilities/core-semantics.md#partial-operations-have-a-defined-outcome
+    //# An operation that has no result for some inputs MUST NOT produce an unspecified value.
     //= spec/capabilities/numeric-model.md#overflow-is-defined
     //# An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
     //= spec/capabilities/numeric-model.md#overflow-is-defined

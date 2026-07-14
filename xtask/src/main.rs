@@ -1845,8 +1845,18 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                 Ran::BadArtifact(_) => Grade::Todo,
             }
         }
-        // `trap …`: matching a trap reason needs machinery not yet wired (the runtime message). Count as
-        // todo unless a clear disagreement — a program the corpus says TRAPS that instead ran to a value.
+        // `trap <reason>`: the corpus says this program TRAPS at run time for the given reason. Grade by
+        // what the compiler DID:
+        //  - trapped, and the actual trap REASON matches the corpus reason → Pass;
+        //  - trapped for a DIFFERENT reason (or an unclassifiable message) → Todo (a real trap fired, but we
+        //    can't confirm it is the SAME one — treat conservatively, never a false Pass);
+        //  - ran to a VALUE → Fail (a program the corpus says traps produced a value — a miscompile);
+        //  - declined/rejected (compile-time refusal, e.g. a constant-folded overflow caught as CDZ0302) →
+        //    Todo (refused, not miscompiled — the runtime trap isn't reached because the compiler rejects
+        //    the ill-formed program first; aligning that is a separate design choice).
+        // Trap-reason matching normalizes both sides to a canonical trap KIND (`trap_kind`), so the
+        // corpus's `divide by zero` matches wasmtime's `integer divide by zero`, `overflow` matches
+        // `integer overflow`, `index out of bounds` matches `out of bounds memory access`, etc.
         "trap" => match ran {
             Ran::Value(v, _) => Grade::Fail(format!("expected a trap, ran → {v}")),
             // A broken artifact for a case that should TRAP is still a miscompile (the backend was asked
@@ -1854,9 +1864,46 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             Ran::BadArtifact(e) => {
                 Grade::Fail(format!("expected a trap, artifact did not build: {e}"))
             }
-            _ => Grade::Todo,
+            Ran::Trap(actual) => match (trap_kind(payload), trap_kind(actual)) {
+                // Both classify AND agree → the expected trap fired.
+                (Some(want), Some(got)) if want == got => Grade::Pass,
+                // Trapped, but the reason doesn't classify or doesn't match — a real trap, unconfirmed.
+                _ => Grade::Todo,
+            },
+            Ran::Declined { .. } => Grade::Todo,
         },
         _ => Grade::Todo,
+    }
+}
+
+/// Classify a trap-reason string (from EITHER the corpus's `(trap "<reason>")` or cdz-run's actual
+/// wasmtime trap message) into a canonical trap KIND, so the two vocabularies compare equal. Returns
+/// `None` for a reason that doesn't classify (so the grader stays conservative — an unclassifiable
+/// actual never Passes against a classifiable expectation, and vice versa).
+///
+/// The corpus writes human reasons (`divide by zero`, `integer overflow`, `index out of bounds`,
+/// `unreachable`, `out of range`); wasmtime writes its own (`integer divide by zero`, `integer
+/// overflow`, `out of bounds memory access`, `wasm 'unreachable' instruction executed`). Both are
+/// lowercased and matched by the distinguishing SUBSTRING, mapping to one token per underlying trap.
+fn trap_kind(reason: &str) -> Option<&'static str> {
+    let r = reason.to_ascii_lowercase();
+    // Order matters: check the most specific substrings first. "divide by zero" / "division by zero"
+    // both contain "zero"; "integer overflow" / "overflow" share "overflow".
+    if r.contains("divide by zero") || r.contains("division by zero") {
+        Some("div-by-zero")
+    } else if r.contains("out of bounds") || r.contains("out-of-bounds") {
+        // wasmtime "out of bounds memory access" (a guest bounds trap) and the corpus "index out of
+        // bounds" are the same underlying fault — a list/segment index past the end.
+        Some("out-of-bounds")
+    } else if r.contains("overflow") {
+        // "integer overflow" / bare "overflow" — an arithmetic result outside the type width.
+        Some("overflow")
+    } else if r.contains("unreachable") {
+        // wasmtime "wasm 'unreachable' instruction executed" / the corpus bare "unreachable" — the
+        // compiler lowers an explicit non-arithmetic trap (a `trap`/uninhabited-match) to `unreachable`.
+        Some("unreachable")
+    } else {
+        None
     }
 }
 
@@ -2637,4 +2684,78 @@ pub(crate) fn build_component_with_features(
     dir.join(format!(
         "target/wasm32-unknown-unknown/release/{artifact}.wasm"
     ))
+}
+
+#[cfg(test)]
+mod trap_grading_tests {
+    use super::*;
+
+    #[test]
+    fn trap_kind_maps_corpus_and_wasmtime_vocabularies_to_one_token() {
+        // The corpus's human reasons and wasmtime's actual trap messages must classify to the SAME token
+        // per underlying trap, so `grade_trial`'s `trap` arm recognizes an expected trap that fired.
+        // Division by zero — corpus writes both spellings; wasmtime prepends "integer".
+        assert_eq!(trap_kind("divide by zero"), Some("div-by-zero"));
+        assert_eq!(trap_kind("division by zero"), Some("div-by-zero"));
+        assert_eq!(
+            trap_kind("cdz-run: trap: wasm trap: integer divide by zero: error while executing"),
+            Some("div-by-zero")
+        );
+        // Overflow — bare and "integer" both, corpus + wasmtime.
+        assert_eq!(trap_kind("overflow"), Some("overflow"));
+        assert_eq!(trap_kind("integer overflow"), Some("overflow"));
+        assert_eq!(
+            trap_kind("cdz-run: trap: wasm trap: integer overflow: error"),
+            Some("overflow")
+        );
+        // Out of bounds — corpus "index out of bounds" vs wasmtime "out of bounds memory access".
+        assert_eq!(trap_kind("index out of bounds"), Some("out-of-bounds"));
+        assert_eq!(
+            trap_kind("wasm trap: out of bounds memory access"),
+            Some("out-of-bounds")
+        );
+        // Unreachable — corpus bare word vs wasmtime's full phrasing.
+        assert_eq!(trap_kind("unreachable"), Some("unreachable"));
+        assert_eq!(
+            trap_kind("wasm `unreachable` instruction executed"),
+            Some("unreachable")
+        );
+        // An unclassifiable reason yields None (grader stays conservative — never a false Pass).
+        assert_eq!(trap_kind("some novel host failure"), None);
+    }
+
+    #[test]
+    fn grade_trial_trap_arm_matches_by_reason() {
+        // A trapping run whose reason matches the corpus reason → Pass.
+        assert!(matches!(
+            grade_trial(
+                "trap divide by zero",
+                &Ran::Trap("cdz-run: trap: wasm trap: integer divide by zero: bt".to_string())
+            ),
+            Grade::Pass
+        ));
+        // Trapped, but the reason does not match (or classify) → Todo, never a false Pass.
+        assert!(matches!(
+            grade_trial(
+                "trap index out of bounds",
+                &Ran::Trap("cdz-run: trap: wasm trap: integer overflow: bt".to_string())
+            ),
+            Grade::Todo
+        ));
+        // A program the corpus says traps that instead ran to a value → Fail (the miscompile signal).
+        assert!(matches!(
+            grade_trial("trap divide by zero", &Ran::Value("5".to_string(), vec![])),
+            Grade::Fail(_)
+        ));
+        // A compile-time rejection (the overflow caught as CDZ0302 before running) → Todo, not Fail.
+        assert!(matches!(
+            grade_trial(
+                "trap integer overflow",
+                &Ran::Declined {
+                    code: Some("CDZ0302".to_string())
+                }
+            ),
+            Grade::Todo
+        ));
+    }
 }

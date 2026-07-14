@@ -65,7 +65,7 @@ fn module_record(
         .and_then(|tail| tail.get(1..))
         .map(<[StructId]>::to_vec)
         .unwrap_or_default();
-    for member in members {
+    for &member in &members {
         // A NESTED module member — a field `(inner <inner-record>)`. The inner record is built first (see
         // `synthesize`), so `synth_by_occ` carries it; an inner that FAILED to register (an unmodeled
         // member) has no entry, so it contributes no field and `(. outer inner)` is a closed-record
@@ -79,7 +79,75 @@ fn module_record(
             children.push(field);
         }
     }
+    // The module's MANIFEST as a `(meta capabilities)` metadata field — the union of the effects its
+    // members DELEGATE to the host via `(host (E…) …)` (`capabilities-and-effects.md` §The Program Manifest
+    // Is The Union Of Its Entrypoints' Delegations; the delegation, not the declaration, is the grant). The
+    // capabilities live in the `meta` namespace, DISTINCT from the export namespace, so they never collide
+    // with an export and are reached by `(. m (meta capabilities))` — never as a plain field (a declared
+    // effect `log` is not itself an export; projecting `(. m log)` is the closed-record CDZ0201). Only
+    // added when non-empty: an empty `(list)` has no determined element type, and a module that delegates
+    // nothing carries no capability metadata to observe. Built with the `"list"`/`"record"` STRING heads
+    // (like the record itself) so it resolves structurally, independent of any user binding of those names.
+    let caps = module_capabilities(ast, &members);
+    if !caps.is_empty() {
+        let list_head = push_atom(ast, Leaf::Str("list".to_string()));
+        let mut list_children = vec![list_head];
+        for name in caps {
+            list_children.push(push_atom(ast, Leaf::Str(name)));
+        }
+        let list_val = push_list(ast, list_children);
+        // The key `(meta capabilities)` — a `meta`-namespaced symbol, read by `resolve::read_key`.
+        let meta_head = push_atom(ast, Leaf::Name("meta".to_string()));
+        let caps_name = push_atom(ast, Leaf::Name("capabilities".to_string()));
+        let meta_key = push_list(ast, vec![meta_head, caps_name]);
+        children.push(push_list(ast, vec![meta_key, list_val]));
+    }
     push_list(ast, children)
+}
+
+/// The module's MANIFEST — the ordered, deduplicated list of effect NAMES its members delegate to the host
+/// via `(host (E…) …)`. A purely SYNTACTIC scan of the members' def bodies (synthesis runs pre-resolution):
+/// each `(host (<name>…) <body>)` contributes its bare effect-list names, and the walk descends every
+/// child so a nested/guarded delegation is still found. Order is first-seen; duplicates (the same effect
+/// delegated in two entrypoints, or twice in one) collapse to one entry — the manifest is a set rendered
+/// as a stable list.
+fn module_capabilities(ast: &Arenas, members: &[StructId]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for &member in members {
+        // Only a `(def …)` member has a body that can delegate — a nested module's delegations are its OWN
+        // manifest, not the outer's (the outer reaches it via member access, not by absorbing its effects).
+        if let Some(tail) = ast.as_form(member, "def")
+            && let Some(&body) = tail.get(1)
+        {
+            collect_host_names(ast, body, 0, &mut out);
+        }
+    }
+    out
+}
+
+/// Collect (append, first-seen, deduped) into `out` every bare effect NAME in a `(host (name…) body)`
+/// form's effect list, walking the whole subtree at `node`. Structural + depth-bounded.
+fn collect_host_names(ast: &Arenas, node: StructId, depth: u32, out: &mut Vec<String>) {
+    if depth > 128 {
+        return;
+    }
+    if let Some(tail) = ast.as_form(node, "host")
+        && let Some(&effects_occ) = tail.first()
+        && let Struct::List(effs) = ast.get(effects_occ)
+    {
+        for &e in effs {
+            if let Some(name) = ast.as_name(e)
+                && !out.iter().any(|n| n == name)
+            {
+                out.push(name.to_string());
+            }
+        }
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children.clone().iter() {
+            collect_host_names(ast, c, depth + 1, out);
+        }
+    }
 }
 
 /// The NAME of a `(module NAME …)` member, if `member` is a module form with a bare-name head — the field

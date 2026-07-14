@@ -1728,6 +1728,15 @@ fn last_binder_named(
             k
         }
     };
+    // FAST PATH: a bindings-list of all bare-name bindings is indexed by name (last-wins positions), so
+    // the answer is O(log N) — a `partition_point` for the last binding before `end`. This is byte-
+    // identical to the reverse scan below for such a list (both return the last bare `Ref { value }` in
+    // the window), and turns a wide accumulation `let` from O(N²) into O(N log N). A list with a
+    // DESTRUCTURING binding is absent from the index (`None`), so it falls through to the linear walk,
+    // which alone handles the `SumPayload` pattern-binder cases.
+    if let Some(hit) = db.let_binder_before(bindings_occ, name, end) {
+        return hit.map(|value| Resolved::Ref { value });
+    }
     // Scan the in-scope pairs in REVERSE and return the first match — the last binder wins, and a
     // reverse walk lets us stop as soon as we find it rather than scanning the whole prefix.
     for &pair in pairs[..end].iter().rev() {
@@ -1954,6 +1963,12 @@ fn resolve_if(db: &Db, id: StructId) -> Resolved {
 /// two operands; a wrong arity is malformed (CDZ0201). The operands stay AST occurrences resolved on
 /// demand — the RIGHT one only reached on the non-short-circuit branch at emit, so a trapping `B` is
 /// shielded (core-semantics.md §Boolean Connectives Short-Circuit).
+///
+/// This arm (with `resolve_not` below) is where the language offers the three boolean connectives —
+/// conjunction `(and …)`, disjunction `(or …)`, and negation `(not …)` — so a program composes
+/// conditions directly rather than nesting one conditional per condition.
+//= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+//# The language MUST offer a logical conjunction, a logical disjunction, and a logical negation over boolean values, so that a program composes conditions without nesting a conditional per condition.
 fn resolve_connective(db: &Db, id: StructId, is_and: bool) -> Resolved {
     let head = if is_and { "and" } else { "or" };
     let tail = db.ast.as_form(id, head).unwrap_or(&[]);

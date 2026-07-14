@@ -1183,7 +1183,14 @@ fn collect_param_constraints(
             // to a scrutinee that IS a parameter — a scrutinee that is a CALL RESULT (`(List.at xs i)`)
             // carries its own instantiation that this shape-unify would corrupt, so it is left to the
             // ordinary application constraints.
-            let st = arg_ty_in_env(db, scrutinee, env, subst, fresh);
+            // Type the scrutinee. When it is a SCHEME CALL (`(List.at xs i)`), type it INTO the outer
+            // subst (`type_scheme_apply_into`) so its result's generic var LINKS to the argument param's
+            // element (`(Option a)` with `a == xs`'s element); a later constraint on the result — a
+            // `(Some x)` arm's `x` pinned by the sibling `(None _) → 0` — then flows back to `xs`'s element,
+            // solving the recursive list-consumer's parameter. A non-call scrutinee (a param, a fn-param
+            // application) uses `arg_ty_in_env` as before.
+            let st = type_scheme_apply_into(db, scrutinee, env, subst, fresh)
+                .unwrap_or_else(|| arg_ty_in_env(db, scrutinee, env, subst, fresh));
             let scrut_is_param = matches!(
                 resolved_of(db, scrutinee),
                 Resolved::Ref { value } if env.contains_key(&value)
@@ -1201,10 +1208,22 @@ fn collect_param_constraints(
                 resolved_of(db, scrutinee),
                 Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some()
             );
+            // A SCHEME-CALL scrutinee (`(List.at xs i)`) whose type `type_scheme_apply_into` linked into
+            // the OUTER subst above — `st` is that call's real result instantiation (`(Option a)`, `a`
+            // tied to `xs`'s element), NOT a disconnected clone. So shape-unifying a pattern against it is
+            // SAFE and DESIRABLE: it binds the payload binder (`(Some x)`'s `x`) to the linked `a`, so a
+            // sibling arm's determined type pins `a` and thence the argument param's element. (The old
+            // "a call-result shape-unify corrupts the instantiation" caveat applied to the clone-typed
+            // `st`; with the outer-subst link there is nothing to corrupt — it IS the instantiation.)
+            let scrut_is_scheme_call = matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Apply { head, .. }
+                    if crate::eval::scheme_of(db, head, fresh).is_some()
+            );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
                     let _ = crate::unify::unify(subst, &st, &pt);
-                } else if (scrut_is_param || scrut_is_fn_param_app)
+                } else if (scrut_is_param || scrut_is_fn_param_app || scrut_is_scheme_call)
                     && let Some(pt) = pattern_implied_ty(db, *pat, fresh)
                 {
                     let _ = crate::unify::unify(subst, &st, &pt);
@@ -1254,17 +1273,12 @@ fn collect_param_constraints(
                     // sum's payload `a` not yet pinned) makes this arm a pass-through a sibling's
                     // determined type fixes — solving the generic arg. A binder whose type is already
                     // determined (a concrete-payload sum) is NOT open (falls through, supplies its type).
-                    Resolved::SumPayload { scrutinee, .. }
-                        if matches!(
-                            resolved_of(db, scrutinee),
-                            Resolved::Ref { value } if env.contains_key(&value)
-                        ) || matches!(
-                            resolved_of(db, scrutinee),
-                            Resolved::Param { binder } if env.contains_key(&binder)
-                        ) =>
-                    {
-                        arg_ty_in_env(db, body, env, subst, fresh)
-                    }
+                    // The scrutinee may be a PARAM (`t`) OR a CALL RESULT (`(List.at xs i)`) — `arg_ty_in_env`
+                    // types either through the local subst (the call via its scheme, `(Option ?a)`), so the
+                    // `(Some x) → x` arm of `(match (List.at xs i) ((Some x) x) ((None _) 0))` is open and a
+                    // sibling arm's `0` (Int64) pins `x`, hence `xs`'s element — a recursive list consumer
+                    // that indexes with `List.at` and returns the payload directly.
+                    Resolved::SumPayload { .. } => arg_ty_in_env(db, body, env, subst, fresh),
                     _ => return None,
                 };
                 // Open iff it applies to a bare var — a solved/annotated type supplies, not borrows.
@@ -1507,7 +1521,15 @@ fn arg_ty_in_env(
             let root = match resolved_of(db, scrutinee) {
                 Resolved::Ref { value } => env.get(&value).cloned(),
                 Resolved::Param { binder } => env.get(&binder).cloned(),
-                _ => None,
+                // The scrutinee is a CALL RESULT — `(match (List.at xs k) ((Some h) …))`, where the
+                // `Some` payload binder `h` reads the element out of `List.at`'s `(Option a)` result. Type
+                // the call THROUGH the local subst (`arg_ty_in_env`'s scheme-application arm returns
+                // `(Option ?a)` with `?a` linked to `xs`'s element var), then walk the payload path from
+                // that `Option`. Without this, the binder's type read `Any` and the list's element never
+                // got pinned by the arm body (`(+ h …)`) — the recursive list-consumer declined "projecting
+                // a tuple element of type ?N needs the value heap". The param-scrutinee cases above cover a
+                // binder read directly off a parameter sum; this covers one read off a call's result sum.
+                _ => Some(arg_ty_in_env(db, scrutinee, env, subst, fresh)),
             };
             if let Some(root) = root {
                 return walk_payload_ty(db, subst.apply(&root), &steps, &heads, subst);
@@ -1518,6 +1540,38 @@ fn arg_ty_in_env(
     // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
     // returns the op's result type, which the enclosing unify relates to the param var separately.)
     type_of(db, arg)
+}
+
+/// Type a scheme APPLICATION (`(List.at xs i)`) into the CALLER's `subst` — like `arg_ty_in_env`'s
+/// scheme arm, but the argument unifications persist in the passed `subst` instead of a discarded clone.
+/// Instantiate the head's `(meta t)` scheme with fresh vars, then unify each argument's local-subst type
+/// into the curried parameter positions; the RESULT type shares the same fresh vars, so a param
+/// argument's type var LINKS to the result (`(List.at xs i)` → `(Option a)` with `a == xs`'s element).
+/// Returns `None` when the head has no scheme or is under-applied. The persisting link is what lets a
+/// later constraint on the result (a `(Some x)` arm's `x` pinned by a sibling arm) flow back to the
+/// argument's parameter (`xs`'s element), which the clone-based `arg_ty_in_env` cannot do.
+fn type_scheme_apply_into(
+    db: &mut Db,
+    node: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+    subst: &mut Subst,
+    fresh: &mut Fresh,
+) -> Option<Ty> {
+    let Resolved::Apply { head, args } = resolved_of(db, node) else {
+        return None;
+    };
+    let scheme = crate::eval::scheme_of(db, head, fresh)?;
+    let mut cur = crate::unify::instantiate(&scheme, fresh);
+    for &arg in args.iter() {
+        let applied = subst.apply(&cur);
+        let Ty::Fn(param, result) = applied else {
+            return None; // under-applied / not a function chain
+        };
+        let at = arg_ty_in_env(db, arg, env, subst, fresh);
+        let _ = crate::unify::unify(subst, &param, &at);
+        cur = *result;
+    }
+    Some(subst.apply(&cur))
 }
 
 /// Walk `root` (a sum's LOCAL-subst instantiation) down a `SumPayload` access path — the same descent
@@ -1733,7 +1787,9 @@ fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
 /// The type of a tuple built from `elems`, EXCEPT the empty tuple IS the unit value (`Ty::Unit`) — the
 /// empty-tuple-is-unit convention (`core-semantics.md` §The Empty Tuple Is The Unit Value). Used by the
 /// tuple row ops' result-type arms (a `split-at 0` prefix / an all-consumed suffix is `Unit`, not a
-/// zero-arity tuple).
+/// zero-arity tuple). There is no zero-arity `Ty::Tuple`: `()` and `unit` are the same value.
+//= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+//# The empty tuple MUST be the unit value, so that unit and `()` are the same value.
 fn tuple_or_unit(elems: &[Ty]) -> Ty {
     if elems.is_empty() {
         Ty::Unit
@@ -2431,6 +2487,34 @@ fn integer_text_of_float_literal(
         return None;
     }
     Some(if negative { format!("-{s}") } else { s })
+}
+
+/// A homogeneity mismatch between an INTEGER LITERAL element and a FLOAT type has the SAME one-shot
+/// repair the annotation site's `(: 3 Float64)` does: rewrite the integer literal `n` as a FLOAT
+/// literal `n.0`, so a `(list 1 2.0)` / `(list 1.0 2)` unifies at the float type rather than staying a
+/// no-silent-promotion reject. `elem`'s type is `elem_ty`; `other_ty` is the type it clashed with. The
+/// fix applies exactly when the clashing pair is {integer literal, float}: `elem` is a bare integer
+/// LITERAL (an atom Int leaf — a computed integer expression cannot be retyped in one edit) whose type
+/// is `Ty::Int`, and `other_ty` is `Ty::Float`. Returns a `ReplaceNode` fix editing the literal token
+/// (`1` → `1.0`), or `None` when the pair is not this shape. Mirrors the annotation-site literal-retype
+/// (`Some((format!("{n}.0"), …))`) so the two sites suggest the identical rewrite.
+fn float_literal_retype_fix(
+    db: &mut Db,
+    elem: StructId,
+    elem_ty: &Ty,
+    other_ty: &Ty,
+) -> Option<crate::diag::Fix> {
+    if !(matches!(elem_ty, Ty::Int(_)) && matches!(other_ty, Ty::Float(_))) {
+        return None;
+    }
+    let crate::ast::Struct::Atom(lid) = db.ast.get(elem) else {
+        return None;
+    };
+    let crate::ast::Leaf::Int { value, .. } = db.ast.leaf(*lid).clone() else {
+        return None;
+    };
+    let n = value.to_i128()?;
+    Some(crate::diag::Fix::replace_heuristic(elem, format!("{n}.0")))
 }
 
 /// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
@@ -3439,14 +3523,25 @@ fn check_application(
                     // every other element disagreement keeps the unify's CDZ0203.
                     let code = list_homogeneity_code(&first_ty, &et);
                     trace!(target: "rcdzc::infer", head = head.0, ?code, "fault: list elements differ in type");
-                    out.push(Reject::coded(
+                    // An INT-LITERAL-vs-FLOAT clash has the same one-shot repair the annotation site gives
+                    // (`(: 3 Float64)` → `3.0`): rewrite the integer literal as a float literal so the list
+                    // unifies at the float type. The literal may be on EITHER side — the FIRST element
+                    // (`(list 1 2.0)`, fix `first`) or THIS one (`(list 1.0 2)`, fix `e`); offer the fix on
+                    // whichever side is the int literal (a computed integer expression yields no fix).
+                    let mut reject = Reject::coded(
                         code,
                         format!(
                             "list elements must share one type: {} and {}",
                             first_ty.render_name(),
                             et.render_name()
                         ),
-                    ));
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, first, &first_ty, &et)
+                        .or_else(|| float_literal_retype_fix(db, e, &et, &first_ty))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
             }
         }
@@ -4334,14 +4429,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
-                out.push(Reject::coded(
+                let mut reject = Reject::coded(
                     code,
                     format!(
                         "if branches differ: {} vs {}",
                         then_ty.render_name(),
                         else_ty.render_name()
                     ),
-                ));
+                );
+                // An INT-LITERAL-vs-FLOAT branch clash has the same one-shot repair the list-element and
+                // annotation sites give (`(: 3 Float64)` → `3.0`): rewrite the integer-literal branch as a
+                // float literal so both branches unify at the float type. The literal may be EITHER branch
+                // (`(if b 1 2.0)`, fix `then_`; `(if b 1.0 2)`, fix `else_`); offer on whichever is the int
+                // literal (a computed integer branch yields no fix).
+                if let Some(fix) = float_literal_retype_fix(db, then_, &then_ty, &else_ty)
+                    .or_else(|| float_literal_retype_fix(db, else_, &else_ty, &then_ty))
+                {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
             }
             collect(db, cond, out);
             collect(db, then_, out);
@@ -4352,7 +4458,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // operand is a MALFORMED program (CDZ0201) — the operand simply is not the required type, like a
         // binary operator's operand, NOT the structural-shape mismatch (CDZ0203) a cross-kind disagreement
         // is (02-binding "a boolean connective with a non-boolean operand is a type error" wants CDZ0201).
-        // Then descend for each operand's own faults.
+        // Then descend for each operand's own faults. Both operands are checked here EVEN THOUGH the right
+        // is short-circuited at run time, so an unevaluated operand can never carry a deferred type error —
+        // exactly as every branch of a conditional is type-checked whether or not it is taken.
+        //= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+        //# Each operand of a boolean connective MUST be type-checked as a boolean whether or not it is evaluated, so that an unevaluated operand cannot carry a deferred error, exactly as every branch of a conditional is type-checked.
         Resolved::And { lhs, rhs, is_and } => {
             let op = if is_and { "and" } else { "or" };
             for &operand in &[lhs, rhs] {
@@ -4678,14 +4788,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
-                        out.push(Reject::coded(
+                        let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "match arms differ: {} vs {}",
                                 first_ty.render_name(),
                                 bt.render_name()
                             ),
-                        ));
+                        );
+                        // An INT-LITERAL-vs-FLOAT arm clash has the same one-shot repair the if-branch,
+                        // list-element, and annotation sites give (`(: 3 Float64)` → `3.0`): rewrite the
+                        // integer-literal arm body as a float literal so the arms unify at the float type.
+                        // The literal may be the FIRST arm (`(match x (0 1) (_ 2.0))`, fix `first_body`) or
+                        // THIS one (`(match x (0 1.0) (_ 2))`, fix `body`); offer on whichever is the int
+                        // literal (a computed integer arm body yields no fix).
+                        if let Some(fix) = float_literal_retype_fix(db, *first_body, &first_ty, &bt)
+                            .or_else(|| float_literal_retype_fix(db, *body, &bt, &first_ty))
+                        {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     }
                 }
             }

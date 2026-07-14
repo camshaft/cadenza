@@ -1493,10 +1493,16 @@ fn canonical_scalar_order(shape: &Shape, a: Handle, b: Handle) -> Option<core::c
         Shape::Bool => Some(op_get_bool(a).cmp(&op_get_bool(b))),
         Shape::Unit => Some(core::cmp::Ordering::Equal),
         Shape::Str => {
-            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order).
-            let av = with_node(a, Vec::new(), |n| n.raw.as_slice().to_vec());
-            let bv = with_node(b, Vec::new(), |n| n.raw.as_slice().to_vec());
-            Some(av.cmp(&bv))
+            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order). BORROW
+            // both nodes' raw slices and compare IN PLACE — no `to_vec`. This runs inside a `sort_by`
+            // (O(N·log N) compares per string-keyed map/set encode), so a per-compare pair of transient
+            // Vec copies would be ~2·N·log N wasted allocations; the borrowed-slice compare is the same
+            // zero-alloc discipline `champ_eq` already uses on raw leaves. A null node reads as empty.
+            let av = unsafe { a.0.as_ref() };
+            let bv = unsafe { b.0.as_ref() };
+            let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+            let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+            Some(as_.cmp(bs))
         }
         _ => None,
     }
@@ -7744,10 +7750,13 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        // NOTE (inline-handles, step 2): the set ops rose slightly (union 373→376, ∩ 356→389, ∖ 362→395)
-        // because a set data-node that grows 2→3 entries spills inline→heap once (the cost of inlining a
-        // node that grows). Accepted as a small trade for the big wins (sum_new/tuple2/`[k,v]` −1000 each,
-        // vec push/update shared −1000); TODO next iteration: born-heap for growing CHAMP set nodes.
+        // NOTE (RESOLVED): inline-handles step 2 briefly raised the set ops (union 373→376, ∩ 356→389,
+        // ∖ 362→395) — a set data-node growing 2→3 entries spilled inline→heap once. `merge_entry_pair`
+        // then built the 2-entry SET split node + fresh CHAMP entry INLINE, recovering set-algebra to
+        // 270/263/266 (BELOW the pre-inline figures). The once-considered "born-heap for growing CHAMP set
+        // nodes" follow-up was investigated and DECLINED: cap=3 only partially recovers and costs +8 bytes
+        // on every Node; born-heap needs a will-grow flag threaded through the FBIP insert core (the
+        // crown-jewel path). The ~few-alloc residual is inherent to inline storage and not worth that risk.
         assert!(
             union <= 320,
             "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 320 (was 376 → 270 after merge_entry_pair inlines the 2-handle SET split node)"
@@ -8071,6 +8080,101 @@ mod tests {
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
 
+        // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
+        // `arr-alloc(n)` + n×`arr-set` then ONE `vec-of-arr` (NOT `vec-empty` + n×`vec-push`), so this op is
+        // on the hot path of every list construction yet was previously un-benched. Two shapes:
+        //   • SMALL (≤32): the arr node IS a valid single strict leaf — `vec-of-arr` MOVES it in as the root
+        //     (no per-element copy), so the only allocation beyond the caller's arr is the vec HEADER node.
+        //   • LARGE (>32): the elements are repacked into ≤32-element strict leaves + a bottom-up radix trie.
+        // Build the arr INSIDE the loop (its construction is the caller's cost, same as a real literal) and
+        // drop the resulting vec each iteration. A regression to a `vec-push` chain would be ~n allocs/list
+        // (trie churn per element) instead of the near-constant bulk build.
+        let voa_small = measure(&mut || {
+            for _ in 0..N {
+                let a = arr_of_ints(0, 8); // an 8-element list literal — fits one leaf
+                op_drop(op_vec_of_arr(a));
+            }
+        });
+        println!("ALLOC vec_of_arr_small x{N}: {voa_small}");
+        // MEASURED ~4/list: the arr (node Box + its 8-element heap handles Vec = 2) is the CALLER's cost (the
+        // 8 elements are immediate ints → no boxes); `vec-of-arr` adds the vec-header node + the header's raw
+        // (2) since the ≤32 arr is MOVED in as the leaf root — no per-element copy. A `vec-push`-chain
+        // regression would add ~8 trie-churn allocs/list (push down to N=8000+ here).
+        assert!(
+            voa_small <= 5000,
+            "vec_of_arr_small x{N} allocs {voa_small} exceeds ceiling 5000 (~4/list: caller's arr node+handles + vec-of-arr's zero-copy leaf move + header; a vec-push-chain regression would be ~8/list)"
+        );
+        const VOA_BIG: i64 = 100; // >32 → the bottom-up strict-trie repack path
+        let voa_big = measure(&mut || {
+            let a = arr_of_ints(0, VOA_BIG);
+            op_drop(op_vec_of_arr(a));
+        });
+        println!("ALLOC vec_of_arr_big len={VOA_BIG}: {voa_big}");
+        // MEASURED 18: 100 elements → ⌈100/32⌉=4 strict leaves (Box+Vec each) + 1 interior root (Box+Vec) +
+        // header (node+raw) + the moved `elems` buffer — all N-INDEPENDENT beyond ⌈n/32⌉. The element handles
+        // are MOVED out of the arr (`into_vec` on the Heap arm), not re-copied. Guards the bottom-up trie
+        // build against an O(n)-alloc regression (a push-chain or per-element node would be ~{VOA_BIG}).
+        assert!(
+            voa_big <= 40,
+            "vec_of_arr_big len={VOA_BIG} allocs {voa_big} exceeds ceiling 40 (⌈n/32⌉ strict leaves + interior spine + header, element handles MOVED not copied; a per-element regression would be ~{VOA_BIG})"
+        );
+
+        // (K3) FBIP IN-PLACE REUSE — the `reset` → `arr-alloc-reuse` → refill protocol the compiler emits
+        // for a `List.map` / functional rebuild over a UNIQUE value: instead of free+malloc a new shell,
+        // the dying node's shell (its node Box + handle-Vec backing) is RETAINED as a token and refit in
+        // place. This is the whole point of the FBIP ops (runtime-complete + correctness-tested via
+        // `fbip_map_over_unique_list_reuses_in_place`) yet the reuse WIN was un-benched. Measure a 3-element
+        // "map" done BOTH ways over the loop and prove the reuse path shell-node cost is ZERO. NOTE the ops
+        // are not yet compiler-EMITTED (that's compiler-side), so this guards the runtime's readiness.
+        const REUSE_LEN: u32 = 3;
+        // Baseline: a fresh-alloc rebuild — drop the old shell, arr-alloc a NEW one (what a non-FBIP
+        // emitter does). Per iteration: REUSE_LEN new leaves (immediate ints → 0) + a NEW node Box + its
+        // handle Vec = the shell cost we want reuse to eliminate.
+        let reuse_fresh = measure(&mut || {
+            for k in 0..N {
+                let xs = op_arr_alloc(REUSE_LEN);
+                for i in 0..REUSE_LEN {
+                    op_arr_set(xs, i, op_box_int(k + i as i64));
+                }
+                op_drop(xs); // free the shell — the fresh path will malloc a new one next iteration
+                let ys = op_arr_alloc(REUSE_LEN); // FRESH shell (node Box + handle Vec)
+                for i in 0..REUSE_LEN {
+                    op_arr_set(ys, i, op_box_int(k + i as i64 + 100));
+                }
+                op_drop(ys);
+            }
+        });
+        println!("ALLOC fbip_map_fresh x{N}: {reuse_fresh}");
+        // The FBIP path: reset the unique shell to a token, refit it (SAME node, no new Box/Vec), refill.
+        let reuse_fbip = measure(&mut || {
+            for k in 0..N {
+                let xs = op_arr_alloc(REUSE_LEN);
+                for i in 0..REUSE_LEN {
+                    op_arr_set(xs, i, op_box_int(k + i as i64));
+                }
+                let token = op_reset(xs); // unique → frees old leaves, RETAINS the shell as a token
+                let ys = op_arr_alloc_reuse(REUSE_LEN, token); // SAME shell refit — no new node/Vec
+                for i in 0..REUSE_LEN {
+                    op_arr_set(ys, i, op_box_int(k + i as i64 + 100));
+                }
+                op_drop(ys);
+            }
+        });
+        println!("ALLOC fbip_map_reuse x{N}: {reuse_fbip}");
+        // Reuse must allocate STRICTLY FEWER than fresh: it eliminates the second shell's node Box + handle
+        // Vec every iteration (same-length refit reuses the retained backing, capacity intact → no realloc).
+        // Guard the invariant that reuse never allocates MORE than fresh, and that it saves ≥ the per-iter
+        // shell (≥ N allocs saved over the batch). A regression that lost the shell-reuse would erase the gap.
+        assert!(
+            reuse_fbip < reuse_fresh,
+            "FBIP reuse x{N} ({reuse_fbip}) must allocate fewer than the fresh-alloc rebuild ({reuse_fresh}) — reuse refits the retained shell, saving a node Box + handle Vec per map"
+        );
+        assert!(
+            reuse_fresh - reuse_fbip >= N as u64,
+            "FBIP reuse should save ≥ the per-iteration shell node ({N} over the batch); saved {} (fresh {reuse_fresh} − reuse {reuse_fbip})",
+            reuse_fresh - reuse_fbip
+        );
+
         // (L) value-encode a recursive value (the op-62 escape walker): encode a FIXED 50-element IntList
         // repeatedly. Each encode builds a fresh value-form document — a leaf pool Vec + struct table Vec
         // + the output byte Vec + the returned Bytes leaf — so its allocation is INHERENTLY linear in the
@@ -8088,6 +8192,40 @@ mod tests {
             }
         });
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
+
+        // (L2) value-encode a STRING-KEYED MAP — exercises `map_entries_canonical`'s `sort_by`, whose
+        // comparator (`canonical_scalar_order` on `Shape::Str`) compares the keys' stored UTF-8 bytes.
+        // That comparator now BORROWS both nodes' raw slices and compares in place; a regression to
+        // `to_vec`-per-compare would allocate ~2·N·log N transient Vecs PURELY to sort (here ~2·32·5 ≈ 320
+        // per encode). The map is built ONCE outside the loop, so only the encode+sort is measured. A
+        // scalar-Int-keyed map sorts by `op_get_int` (no alloc) — this row specifically guards the STRING
+        // comparator, the only ordering path that ever touched the heap.
+        // Descriptor: [0]=Str (key), [1]=Int (val), [2]=Map(→0,→1), root=2. Tags: 3=Str, 0=Int, 13=Map.
+        let smap_desc: &[u8] = &[0x03, 0x03, 0x00, 0x0d, 0x00, 0x01, 0x02];
+        const SMAP_N: i64 = 32;
+        let mut smap = op_map_empty();
+        for k in 0..SMAP_N {
+            // Keys "k00".."k31" — distinct, and inserted in-order so the CHAMP holds them in HASH order,
+            // forcing the canonical `sort_by` to actually reorder (its comparator is the measured work).
+            smap = op_map_insert(smap, op_str_new(alloc::format!("k{k:02}")), op_box_int(k));
+        }
+        const SMAP_REPS: usize = 100;
+        let smap_enc = measure(&mut || {
+            for _ in 0..SMAP_REPS {
+                let doc = op_value_encode_form(smap, smap_desc).expect("encode string-keyed map");
+                core::hint::black_box(&doc);
+            }
+        });
+        println!("ALLOC value_encode_stringkeymap x{SMAP_REPS}: {smap_enc}");
+        // The per-encode allocation is the document's grow-once pools + the entries Vec + the output/Bytes
+        // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
+        // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
+        assert!(
+            smap_enc <= 30000,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 30000 (grow-once pools + entries Vec + output, linear in entries; the Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs)"
+        );
+        op_drop(smap);
+
         // (M) FREE CASCADE — `op_drop` of a DEEP unique structure. This is the single hottest RC path (the
         // compiler emits `drop` at every dead heap binding and the resource destructor), yet every OTHER
         // row above bundles the drop with O(N) CONSTRUCTION, so a regression in the cascade's own
