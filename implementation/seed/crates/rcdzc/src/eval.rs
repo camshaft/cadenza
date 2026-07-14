@@ -2350,6 +2350,28 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             if prim == Prim::SumCtor {
                 return reduce_sum_ctor(db, head, &args);
             }
+            // The COLLECTION type constructors build their `Ty` DIRECTLY from the reduced argument types —
+            // no `reduce_ctor`→`encode_typeval` arena round-trip. That round-trip re-SERIALIZES the whole
+            // built `Ty` into fresh AST nodes at EVERY nesting level, so a depth-N annotation `(List (List
+            // … Int64))` encoded O(N) nodes per level → O(N²) appended nodes (and this reduction is re-run
+            // per referencing occurrence, so the whole `check`/resolve was super-linear). Building the `Ty`
+            // in place — exactly what `reduce_ctor`'s arms below compute before encoding — and returning it
+            // is the same fix `reduce_sum_ctor` already applies for generic sums. Arity/element faults fall
+            // through to `reduce_ctor` (which reports them) by returning `None` here.
+            match prim {
+                Prim::ListCtor if args.len() == 1 => {
+                    return Some(crate::ty::Ty::List(Box::new(typeval_of(db, args[0])?)));
+                }
+                Prim::SetCtor if args.len() == 1 => {
+                    return Some(crate::ty::Ty::Set(Box::new(typeval_of(db, args[0])?)));
+                }
+                Prim::MapCtor if args.len() == 2 => {
+                    let key = typeval_of(db, args[0])?;
+                    let value = typeval_of(db, args[1])?;
+                    return Some(crate::ty::Ty::Map(Box::new(key), Box::new(value)));
+                }
+                _ => {}
+            }
             let built = reduce_ctor(db, prim, id, &args).ok()?;
             typeval_of(db, built)
         }

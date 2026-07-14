@@ -38351,6 +38351,62 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deeply_nested_collection_type_annotation_reduces_without_a_node_blowup() {
+        // REGRESSION (perf): `eval::typeval_of`'s type-constructor arm reduced a COLLECTION type ctor
+        // (`List`/`Set`/`Map`) via `reduce_ctor`, which builds the `Ty` and then `encode_typeval`s it BACK
+        // into fresh AST nodes — an arena round-trip. For a deeply-nested annotation `(List (List … Int64))`
+        // that re-serialized the WHOLE built `Ty` at EVERY nesting level → O(depth²) appended nodes, and the
+        // reduction re-ran per referencing occurrence, so `cdz check` on a depth-N annotation was ~O(N³)
+        // (depth 100/200/400/800 = 35/169/1091/8203ms, ~cubic). The generic-SUM ctor path already avoided
+        // this (`reduce_sum_ctor` returns the `Ty` directly); the collection ctors did not. FIX: build the
+        // `Ty::List`/`Set`/`Map` DIRECTLY from the reduced argument types in `typeval_of`, no
+        // `encode_typeval` round-trip — so the arena stays O(depth), not O(depth²).
+        //
+        // The NOISE-FREE signal is the loaded arena's NODE COUNT (`db.ast.structure.len()`): a pure function
+        // of the program, so no timing. A depth-D annotation should leave the arena O(D) (the prelude is a
+        // constant baseline); the round-trip made it O(D²). Measure the GROWTH from D to 2D and assert it is
+        // sub-quadratic — linear node growth is ~2×, the O(D²) blowup was ~4×+.
+        fn nested_list_src(depth: usize) -> String {
+            let mut ty = String::from("Int64");
+            for _ in 0..depth {
+                ty = format!("(List {ty})");
+            }
+            format!("(module m (def (f (: x {ty})) x) (def (main) 0) (export main))")
+        }
+        // A small instance compiles clean (a valid nested collection annotation, no error diagnostics).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&nested_list_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a nested collection-type annotation compiles with no error diagnostics: {diags:?}"
+        );
+        // Node count AFTER a full `diagnostics` run (which forces the annotation's `typeval_of` reduction).
+        fn nodes_after_check(src: &str) -> usize {
+            crate::host::run_with_compiler_stack(|| {
+                let mut db = crate::db::Db::load(parse(src));
+                let _ = crate::diagnostics(&mut db);
+                db.ast.structure.len()
+            })
+        }
+        // Subtract the constant baseline (prelude + fixed scaffolding) measured at a shallow depth, so the
+        // ratio reflects the DEPTH-DEPENDENT growth, not the fixed prelude that dominates a small program.
+        let base = nodes_after_check(&nested_list_src(50)) as f64;
+        let n200 = nodes_after_check(&nested_list_src(200)) as f64 - base;
+        let n400 = nodes_after_check(&nested_list_src(400)) as f64 - base;
+        // Depth 200→400 is a 2× depth; linear node growth ⇒ ~2×, the O(depth²) round-trip was ~4×. Guard
+        // the denominator, and require < 3× (between the two regimes, with margin for constant terms).
+        let ratio = n400 / n200.max(1.0);
+        assert!(
+            ratio < 3.0,
+            "a deeply-nested collection-type annotation must leave the arena O(depth), not O(depth²) (was a \
+             `reduce_ctor`→`encode_typeval` round-trip per nesting level; the direct `Ty` build in \
+             `typeval_of` fixes it): depth 200→400 grew the node count {ratio:.1}× (n200={n200}, \
+             n400={n400}); linear is ~2×, the O(depth²) blowup was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
