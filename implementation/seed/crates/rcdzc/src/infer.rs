@@ -5814,6 +5814,11 @@ fn check_application(
                     | crate::resolved::Prim::Div
             )
         );
+        // Symbol and Unit join text/compound: adding two Symbols / two Units is as non-numeric as adding
+        // two Strings, and reporting the phantom "type mismatch: Int64 and Symbol" (the operator scheme's
+        // grounded-to-Int64 first param) is the same leak the text/compound message fixes. Bool is STILL
+        // excluded — the corpus pins a body-inferred `(+ true true)` at CDZ0203 (`09-functions.sexp`), so a
+        // Bool leaf stays on that path; Symbol/Unit carry no such corpus constraint.
         let text_or_compound_ty = |t: &Ty| {
             matches!(
                 t,
@@ -5824,6 +5829,8 @@ fn check_application(
                     | Ty::Tuple(_)
                     | Ty::Map(..)
                     | Ty::Set(_)
+                    | Ty::Symbol
+                    | Ty::Unit
             )
         };
         if is_arith && text_or_compound_ty(&a) && text_or_compound_ty(&b) {

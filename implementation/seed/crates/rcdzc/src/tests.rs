@@ -17865,6 +17865,28 @@ mod match_engine {
             "a Bool in body-inferred integer addition stays the CDZ0203 arg-vs-inferred-param check"
         );
 
+        // SYMBOL and UNIT join text/compound (unlike Bool, they carry no corpus CDZ0203 constraint):
+        // `(+ s s)` / `(+ unit unit)` names the real type instead of the phantom "Int64 and Symbol". No
+        // forced fix (no total `+`-like op).
+        for (ty_annot, expr, name) in [
+            ("(: s Symbol)", "(+ s s)", "Symbol"),
+            ("(: u Unit)", "(+ u u)", "Unit"),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f {ty_annot}) {expr}) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("(+ {name} {name}) must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{name}: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("arithmetic is not defined on {name}"))
+                    && !d.message.contains("Int64 and"),
+                "{name} names the real type, no phantom Int64: {}",
+                d.message
+            );
+            assert!(d.fix.is_none(), "{name} arithmetic offers no forced fix");
+        }
+
         // NO false fire: comparison on two Strings is VALID (lexical order / equality).
         assert!(run_returns::<bool>(
             &component("(module m (def (main) (< \"a\" \"b\")) (export main))"),
