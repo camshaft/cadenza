@@ -1394,6 +1394,24 @@ impl Ty {
             Ty::Any => "Any".to_string(),
         }
     }
+
+    /// [`render_name`](Self::render_name) prefixed with the correct indefinite article — `an Int64`, `a
+    /// String`, `a UInt8` — for a message that reads "found <this>" / "<this> and <that> are different
+    /// types". The article is keyed off the type's SOUND, not merely its first letter: among the names
+    /// `render_name` produces, only the signed integers (`Int8`/`Int16`/`Int32`/`Int64`, rendered stem
+    /// `Int…`, "eye-nt") begin with a vowel sound and take `an`. `UInt…` and `Unit` begin with a "yoo"
+    /// consonant sound and take `a`; every other type name (`Float…`, `Bool`, `Char`, `String`, `Bytes`,
+    /// `Symbol`, `BigInt`, `Rational`, a compound `(Record …)`/`(List …)`, a user sum) is a plain
+    /// consonant. A naive first-letter a/an would misfire on `UInt8` (would wrongly say "an UInt8"), which
+    /// is why this keys on the rendered stem rather than the letter. Vowel-initial USER sum names are rare
+    /// enough that defaulting them to `a` is acceptable — this helper serves the scalar/text mismatch
+    /// messages where only the built-in scalar names reach it.
+    pub fn render_with_article(&self) -> String {
+        let name = self.render_name();
+        // The only vowel-SOUND type names are the signed ints (`Int…`); `UInt…`/`Unit` are "yoo" = `a`.
+        let article = if name.starts_with("Int") { "an" } else { "a" };
+        format!("{article} {name}")
+    }
 }
 
 /// A type SCHEME — a polymorphic type quantified over some type and width variables (`∀ vars. ty`).

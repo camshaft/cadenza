@@ -3549,8 +3549,8 @@ fn pattern_constraints(
             return Err(Reject::coded(
                 Code::Malformed,
                 format!(
-                    "a {} literal pattern does not match the {} sub-value it is matched against",
-                    lit_ty.render_name(),
+                    "{} literal pattern does not match the {} sub-value it is matched against",
+                    lit_ty.render_with_article(),
                     ty.render_name()
                 ),
             ));

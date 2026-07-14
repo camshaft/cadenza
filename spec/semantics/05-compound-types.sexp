@@ -3242,6 +3242,24 @@
               ((None) 0)))
   (error    CDZ0210))
 
+(case "a variant-payload binder shadowing a param in a called def binds the payload"
+  (doc    "A match-arm payload binder that SHADOWS the enclosing def's parameter, in a def reached via a
+           CALL. `(def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))` binds the payload as
+           `n` in the `(W.V n)` arm, shadowing the param `n`; `main` CALLS `f`. The arm binder must bind the
+           PAYLOAD, not the param: `f(5)` builds `(W.V (5+1))`, matches `(W.V n)` → n = 6. This was a
+           compile-time REJECT — the call path's eager subtree resolution (pinning the call argument before
+           β-reduction) resolved the PATTERN occurrence `n` to the shadowed param, corrupting the pattern
+           head. Pins that a variant-payload binder shadowing a param resolves as a fresh binder (scoped to
+           the arm), lexical-scope §Shadowing Is Well-Defined, even on the call-driven path.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Int64) (Z))
+            (def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a RUNTIME guarded sum-match arm dispatches through its guard"
   (doc    "A guarded arm over a RUNTIME sum scrutinee (chosen by `if`, so the match cannot fold): `((guard
            (V.A n) (> n 5)) 1)` fires only when the `A` payload exceeds 5, else FALLS THROUGH to the
