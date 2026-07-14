@@ -1064,6 +1064,63 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // Validate every top-level DEFINITION's BODY COUNT. A def is `(def <sig> <body>)` — exactly ONE body.
+    // `scan_top_level` reads `body = tail.get(1)` and IGNORES the rest, so two shapes slipped through:
+    //   • NO body — `(def (main))` — leaving `body: None`. This surfaced ONLY at emit (`layout` declined
+    //     "definition has no body", uncoded, so `cdz check` reported nothing — a check≡compile gap).
+    //   • TOO MANY bodies — `(def (main) 1 2)` — silently ACCEPTED, the trailing `2` dropped (a silent
+    //     miscompile, the `def` analogue of the M108 let/fn surplus check + a likely `do`-sequencing slip).
+    // Reject both here CDZ0201 so BOTH surfaces report it: the no-body case anchored at the def form; the
+    // too-many case with a delete-the-surplus fix. Walked over the raw `(def …)` AST tail (the def FORM is
+    // the sig occurrence's parent), for USER definitions — gated on `is_user_node(sig_occ)` so a
+    // SYNTHESIZED def (a module-member alias, a β-reduced copy — well-formed by construction) is skipped
+    // and a QUOTED `(def …)` (inert data, not a declaration) is never flagged. This covers BOTH a
+    // top-level def AND a do-local FUNCTION def (registered INTERNAL by `register_do_local_callables` but
+    // still a user node), so `(do (def (helper x) x 99) …)` is caught too. A `sig_occ` shared by two
+    // registered defs (a do-local recursive fn registered under both its original and a β-copy) is
+    // de-duplicated so its form is checked once. A VALUE def `(def NAME VALUE)` and a FUNCTION def
+    // `(def (NAME p…) BODY)` share the shape — both `<head> <sig> <body>` — so the tail after `def` is
+    // `[sig, body…]`.
+    let mut seen_def_forms: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    let user_def_forms: Vec<StructId> = db
+        .defs
+        .iter()
+        .filter(|d| db.is_user_node(d.sig_occ))
+        .filter_map(|d| db.parent_of(d.sig_occ))
+        .filter(|&form| seen_def_forms.insert(form))
+        .collect();
+    for form in user_def_forms {
+        let Some(tail) = db.ast.as_form(form, "def").map(|t| t.to_vec()) else {
+            continue;
+        };
+        // tail[0] is the signature; tail[1] the body; tail[2..] surplus. A `(doc …)`-wrapped def is
+        // normalized away before scan (db.rs), so the tail here is the bare `(def sig body…)`.
+        match tail.len() {
+            0 | 1 => {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "this definition has no body — a definition is `(def <name> <value>)` or \
+                         `(def (<name> <param>…) <body>)`",
+                    )
+                    .at(form),
+                );
+            }
+            2 => {} // well-formed: exactly one body
+            _ => {
+                // TOO MANY bodies — delete the first surplus (tail[2]); `fixed_arity_reject`'s
+                // surplus-delete, the same as let/fn/resume/host. The message names `(do …)` as the way to
+                // sequence multiple statements, matching the let/fn wording.
+                faults.push(crate::resolve::fixed_arity_reject(
+                    form,
+                    &tail,
+                    2,
+                    "this definition has more than one body — a definition takes a single body \
+                     (wrap multiple statements in a `(do …)`)",
+                ));
+            }
+        }
+    }
     // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
     // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
     // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a

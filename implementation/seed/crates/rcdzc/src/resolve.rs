@@ -2613,8 +2613,14 @@ pub(crate) fn do_value_def_value(db: &Db, def_form: StructId) -> Option<StructId
 /// fix when there are TOO MANY operands: delete the FIRST extra (`tail[want]`), the same surplus-arg
 /// delete fix an over-applied operator / a too-many-operand quote gets — `cdz fix --all` removes extras
 /// until exactly `want` remain. TOO FEW carries NO fix (nothing to delete; supplying an operand is not a
-/// mechanical edit). Shared by `if` (want 3), `and`/`or` (want 2), `not` (want 1).
-fn fixed_arity_reject(id: StructId, tail: &[StructId], want: usize, message: &str) -> Reject {
+/// mechanical edit). Shared by `if` (want 3), `and`/`or` (want 2), `not` (want 1), `resume`/`host`/`let`/
+/// `fn` (want 2), and `compile::collect_faults`' def-body-count check (want 2).
+pub(crate) fn fixed_arity_reject(
+    id: StructId,
+    tail: &[StructId],
+    want: usize,
+    message: &str,
+) -> Reject {
     let reject = Reject::coded(Code::Malformed, message.to_string()).at(id);
     match tail.get(want) {
         Some(&surplus) => reject.with_fix(crate::diag::Fix::delete_heuristic(

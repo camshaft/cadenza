@@ -14791,6 +14791,68 @@ mod match_engine {
         }
     }
 
+    /// A DEFINITION is `(def <name> <value>)` / `(def (<name> <param>…) <body>)` — exactly ONE body.
+    /// `scan_top_level` read `body = tail.get(1)` and ignored the rest, so two shapes slipped through:
+    /// NO body (`(def (main))`) surfaced ONLY at emit (`layout` "definition has no body", uncoded — a
+    /// check≡compile gap), and TOO MANY (`(def (main) 1 2)`) was SILENTLY ACCEPTED (the trailing form
+    /// dropped — a silent miscompile, the def analogue of the M108 let/fn surplus check). Now
+    /// `collect_faults` rejects both CDZ0201 (the no-body at the def form; the too-many with a
+    /// delete-the-surplus fix), so BOTH `cdz check` and `compile` report it. Covers a top-level def, a
+    /// value def, AND a do-local function def (registered internal but a user node); a quoted `(def …)`
+    /// (inert data) is NOT flagged.
+    #[test]
+    fn a_definition_with_the_wrong_body_count_is_cdz0201() {
+        use crate::testkit::parse;
+        // (a) NO body — top-level function def and top-level value def (both are in `db.defs` with
+        // `body: None`, so the walk catches them; this closes the check≡compile gap where the no-body case
+        // formerly surfaced only at emit).
+        for src in [
+            "(module m (def (main)) (export main))",
+            "(module m (def x) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no body"))
+                .unwrap_or_else(|| panic!("a body-less definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // (b) TOO MANY bodies — top-level and do-local, each with a delete-the-surplus fix.
+        for src in [
+            "(module m (def (main) 1 2) (export main))",
+            "(module m (def (main) (do (def (helper x) x 99) (helper 5))) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"))
+                .unwrap_or_else(|| panic!("a too-many-body definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-surplus fix: {:?}",
+                d.fix
+            );
+        }
+        // (c) NO FALSE POSITIVE: a well-formed function def, value def, module-with-members, and a QUOTED
+        // `(def …)` (inert data, not a declaration) are all clean.
+        for ok in [
+            "(module m (def (main) 1) (export main))",
+            "(module m (def answer 42) (def (main) answer) (export main))",
+            "(module m (def (helper x) (+ x 1)) (def (main) (helper 5)) (export main))",
+            "(module m (def (main) (quote (def foo))) (export main))",
+        ] {
+            let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| {
+                    d.message.contains("has no body") || d.message.contains("more than one body")
+                });
+            assert!(
+                bad.is_none(),
+                "a well-formed program must not be flagged: {ok} -> {bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
         // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful
