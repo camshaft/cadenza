@@ -2215,7 +2215,7 @@ pub mod treediff {
 /// s-expr, the corpus surface). Replacement text for new/changed nodes is rendered in the same
 /// surface as the source, so the splice reads consistently with its neighbours.
 pub mod textedit {
-    use super::{Tree, tree_eq};
+    use super::Tree;
     use crate::convert::Format;
 
     /// One primitive text edit: replace the original byte range `[start, end)` with `text`. A pure
@@ -2300,13 +2300,22 @@ pub mod textedit {
         surface: Format,
         out: &mut Vec<Edit>,
     ) {
-        if tree_eq(old, new) {
-            return;
-        }
         match (old, new) {
+            // Two ALIGNED lists (same head): recurse into the children. Do NOT pre-`tree_eq` the whole
+            // subtree here — that full O(subtree) walk was run at EVERY nesting level (each level's
+            // `diff_children` re-`diff_edits`'d every child, whose first act was another deep `tree_eq`),
+            // so a deep tree cost O(depth²) per diff, and a fix computed per-diagnostic made a file with N
+            // fixable warnings O(N·depth²) → O(N³) on a deeply-nested program (a 200-deep-tuple match with
+            // 200 unused binders: 897ms; 400: 7.3s). The recursion ALREADY emits no edits for an unchanged
+            // child (aligned lists recurse to nothing; equal atoms are caught by the `Atom==Atom` arm
+            // below), so the deep pre-check was pure redundant re-walking. Each node is now visited once →
+            // O(tree) per diff.
             (Tree::List(a, _), Tree::List(b, _)) if same_head(a, b) => {
                 diff_children(src, old, a, b, span_of, surface, out);
             }
+            // Two atoms: equal → no edit (the leaf case the old top-level `tree_eq` guard covered);
+            // differing → fall through to the whole-node reprint below.
+            (Tree::Atom(la, _), Tree::Atom(lb, _)) if la == lb => {}
             _ => {
                 // The new node does not align with the old by head. If `new` EMBEDS `old` as a descendant
                 // (a WRAP — `old` becomes `(ctor old)`), preserve `old`'s original bytes: reprint only the
