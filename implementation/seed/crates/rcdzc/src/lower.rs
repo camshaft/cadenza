@@ -1074,6 +1074,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
                     lower_float_arith(db, id, fprim, &args)
                 }
+                // A quantity over a RATIONAL magnitude combined with `+`/`-`/`*`/`/` runs EXACT RATIONAL
+                // arithmetic on the erased inner magnitudes (the `Qty.of` operands lower to their inner
+                // value's core — a `Core::ConstRational`), the rational analogue of the Float-inner arm.
+                // The dimensional/unit result is recovered from the SOLVED `Ty::Qty` by the value renderer
+                // (`const_value_ast`'s Qty arm), so this only computes the magnitude. `*`/`/` compose the
+                // unit; `+`/`-` require the same unit (dimensional check in `infer`).
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if quantity_inner_is_rational(db, id, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity rational arithmetic (inner Rational)");
+                    lower_rational_arith(db, prim, args[0], args[1])
+                }
                 // A `+`/`-`/`*`/`/` over BIGINT operands — the unbounded arithmetic. A constant pair folds
                 // exactly via `num-bigint` (the value never overflows — the point of the type); a runtime
                 // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
@@ -1084,6 +1096,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: BigInt arithmetic");
                     lower_bigint_arith(db, prim, args[0], args[1])
+                }
+                // A `+`/`-`/`*`/`/` over RATIONAL operands — exact rational arithmetic. A constant pair
+                // folds to a NORMALIZED `Core::ConstRational` (cross-multiply + gcd-reduce over `IntValue`
+                // bignum); a runtime operand declines until the runtime rational compound. Checked before
+                // the generic int-arith path (which would treat the operands as fixed-width ints). `%` is
+                // NOT a rational op (exact division is total — no remainder), so it is excluded here and
+                // falls through to the scheme, which rejects it.
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if args.len() == 2 && rational_operand(db, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Rational arithmetic");
+                    lower_rational_arith(db, prim, args[0], args[1])
                 }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
@@ -1444,6 +1468,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => Core::BigIntOfI64 { value: args[0] },
                 },
+                // `Rational.of n d` — CONSTRUCT an exact rational. A CONSTANT numerator/denominator pair
+                // folds to a NORMALIZED `Core::ConstRational` (gcd-reduce, sign on the numerator, denom
+                // strictly positive); a ZERO denominator TRAPS ("rational with zero denominator"). A
+                // runtime operand declines until the runtime rational compound (a later B4 slice).
+                Some(Prim::RationalOf) if args.len() == 2 => {
+                    lower_rational_of(db, args[0], args[1])
+                }
+                // `Rational.of-int n` — the whole rational `n/1`. A constant folds; runtime declines.
+                Some(Prim::RationalOfInt) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstInt(n) => normalized_rational(n, crate::ast::IntValue::from_i64(1)),
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Rational.of-int on a runtime integer is not yet built (constants only)",
+                    )),
+                },
+                // `Rational.value r` — the identity that just names `r`'s type. Folds to its operand.
+                Some(Prim::RationalValue) if args.len() == 1 => core_of(db, args[0]),
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged.
@@ -3873,7 +3914,10 @@ fn pattern_constraints(
         // (tuple h t))`: the payloads are boxed as ONE tuple handle (`lower_sum_new` / the `SumNew`
         // backend), so `payload_ty_at_instantiation` reports the payload as a `Ty::Tuple`, and each arg
         // destructures a tuple ELEMENT at `path + [Payload, Elem(i)]` — exactly the descent the explicit
-        // `(tuple …)` payload pattern takes.
+        // `(tuple …)` payload pattern takes. So destructuring a tagged value carrying a tuple of sub-values
+        // (the shape a tree-walking pass over a recursive sum takes) is ONE nested arm, not a bind-then-rematch.
+        //= spec/capabilities/core-semantics.md#patterns-compose
+        //# A destructuring of a tagged value carrying a tuple of sub-values in a single arm — the shape every tree-walking pass over a recursive sum takes — MUST therefore be expressible directly as one nested pattern rather than requiring a bind-then-rematch.
         _ => {
             let payload_ty = crate::infer::payload_ty_at_instantiation(db, head, ty)
                 .unwrap_or(crate::ty::Ty::Any);
@@ -5139,17 +5183,145 @@ fn lower_recursive_call_or_decline(
     // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
     // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use
     // in the body constrains a parameter (it grounds to `Any`), in which case the call still declines.
-    if crate::infer::def_scheme(db, callee).is_none() {
-        trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
-        return Core::Poison(Reject::decline(
-            "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
-        ));
+    let scheme = match crate::infer::def_scheme(db, callee) {
+        Some(s) => s,
+        None => {
+            trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+            return Core::Poison(Reject::decline(
+                "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
+            ));
+        }
+    };
+    // RECURSIVE-GENERIC MONOMORPHIZATION. A GENERIC scheme (`ty_vars` non-empty — a parameter the body
+    // only threads, generalized in `compute_def_scheme`) has no machine representation for its generic
+    // params. Monomorphize THIS call: synthesize (or reuse) a copy of the callee whose generic params are
+    // re-annotated with the concrete argument types at this site, and call THAT
+    // (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). The same def called at another type gets its
+    // own copy; both emit as ordinary monomorphic functions. A MONOMORPHIC scheme (`ty_vars` empty) takes
+    // the byte-identical `Core::Call { callee }` path below.
+    if !scheme.ty_vars.is_empty() {
+        return match type_specialize(db, callee, args) {
+            Some(spec) => {
+                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "recursive-generic call → monomorphized Core::Call");
+                Core::Call {
+                    callee: spec,
+                    args: args.to_vec(),
+                }
+            }
+            None => Core::Poison(Reject::decline(
+                "a recursive generic function could not be monomorphized at this call (an argument type is undetermined)",
+            )),
+        };
     }
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
     Core::Call {
         callee,
         args: args.to_vec(),
     }
+}
+
+/// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
+/// this site: synthesize (once, memoized) a COPY of the def whose parameters are re-annotated with those
+/// concrete types, and return the copy's `db.defs` index. The copy is an ordinary MONOMORPHIC def — its
+/// `def_scheme`/`def_params` give it concrete machine valtypes, and `layout` emits it as its own function
+/// (reached via the `Core::Call` this returns). A self-call inside the copied body re-resolves to the
+/// original def by name and, threaded with the same-typed args, re-enters here and hits the memo — so the
+/// recursion points at the specialization itself, exactly as `effects::specialize_recursive` closes its
+/// own recursion. Keyed by `(callee-body, concrete-signature-string)` so the same def at the same types
+/// reuses ONE function (byte-identical copies dedup by construction — same key). Returns `None` if an
+/// argument type is undetermined (`Any`/a free `Var`) — the call declines rather than baking a loose
+/// annotation. Modeled on `effects::specialize_recursive` (minus the trailing state params).
+fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usize> {
+    let orig_body = db.defs[callee].body?;
+    // The concrete argument type at each position — the instantiation. Every one must be DETERMINED (a
+    // loose `Any`/`Var` annotation would mistype the copied body). `type_of` on the arg occurrence reads
+    // the caller-side type the argument was solved to.
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::with_capacity(args.len());
+    for &a in args {
+        let t = crate::infer::type_of(db, a);
+        if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
+            return None;
+        }
+        arg_tys.push(t);
+    }
+    // MEMO KEY: the def's body occurrence + the rendered concrete signature. Two calls at the same types
+    // share ONE specialization; two byte-identical instantiations (e.g. the same type twice) collapse.
+    let key: String = arg_tys
+        .iter()
+        .map(|t| t.render_name())
+        .collect::<Vec<_>>()
+        .join(",");
+    let memo_key = (orig_body, key);
+    if let Some(&idx) = db.type_specializations.get(&memo_key) {
+        return Some(idx);
+    }
+
+    // The original parameter binders — each a bare name `p` or an annotated `(: p T)`. Extract each NAME,
+    // and re-annotate it with the concrete arg type at that position. An annotated param keeps its
+    // (concrete) annotation via the arg type, which must AGREE (the call already type-checked against the
+    // scheme). A non-name binder is unsupported (declines).
+    let orig_params = db.defs[callee].params.clone();
+    if orig_params.len() != arg_tys.len() {
+        return None; // a partial/over-application never reaches a recursive-generic Core::Call
+    }
+    let mut param_names: Vec<String> = Vec::with_capacity(orig_params.len());
+    for &p in &orig_params {
+        let name = match db.ast.as_name(p) {
+            Some(n) => n.to_string(),
+            None => match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => db.ast.as_name(name_occ)?.to_string(),
+                None => return None,
+            },
+        };
+        param_names.push(name);
+    }
+
+    // The specialized NAME — unique per (def, instantiation). `#` makes it unspellable in source (no user
+    // collision); the def-count suffix keeps distinct specializations distinct.
+    let base = db.defs[callee].name.clone();
+    let spec_name = format!("{base}#mono{}", db.defs.len());
+
+    // Build the specialized signature `(spec (: p0 T0) (: p1 T1) …)` — EVERY param annotated with its
+    // concrete instantiation type, so the copied body types + emits with real machine valtypes.
+    let spec_name_atom = db.push_name(&spec_name);
+    let mut sig_children = vec![spec_name_atom];
+    for (name, ty) in param_names.iter().zip(arg_tys.iter()) {
+        let name_atom = db.push_name(name);
+        let ty_expr = crate::eval::encode_typeval(db, ty);
+        let colon = db.push_name(":");
+        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+    }
+    let sig = db.push_list(sig_children.clone());
+    let spec_params: Vec<StructId> = sig_children[1..].to_vec();
+
+    // RESERVE the def NOW (body filled after the copy) + MEMOIZE — so the recursive self-call inside the
+    // copied body, re-entering `type_specialize` with the same instantiation, hits the memo and names THIS
+    // spec (closing the recursion at the specialization, not the generic original).
+    let spec_index = db.defs.len();
+    db.push_specialized_def(crate::db::Def {
+        name: spec_name.clone(),
+        sig_occ: sig,
+        params: spec_params.clone(),
+        body: None,
+        internal: false,
+    });
+    db.type_specializations.insert(memo_key, spec_index);
+
+    // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
+    // reference to a param re-resolves by name to the new annotated binder; a self-call `(callee …)`
+    // re-resolves by name to the ORIGINAL def and, lowered with the same-typed args, re-enters here → memo.
+    let spec_body = crate::eval::copy_structural_pub(db, orig_body);
+
+    // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def
+    // (`is_param_occurrence` walks that chain; `binder_in` resolves a body reference against the sig).
+    let def_head = db.push_name("def");
+    let _def_form = db.push_list(vec![def_head, sig, spec_body]);
+
+    db.fill_specialized_def(spec_index, spec_params, spec_body);
+    // Register any do-local recursive functions the copy introduced (the copy-time twin of load-time
+    // registration), so a nested recursive call in the copied body lowers to a `Core::Call`.
+    db.register_reduced_callables(spec_body);
+    Some(spec_index)
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — following a `Ref` to a
@@ -6468,6 +6640,15 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             value: v,
             radix: Radix::Dec,
         })),
+        // A constant RATIONAL renders as its canonical written form `num/den` (numeric-model.md §An Exact
+        // Rational Has A Canonical Normalized Form — `2/4` and `1/2` share ONE form; a whole rational is
+        // `5/1`). The pair is already normalized (lowest terms, sign on the numerator, denom > 0). Baked
+        // as a NAME leaf `"num/den"` (there is no rational reader literal; `1/2` reads back as this same
+        // name atom), matching the corpus `(: 1/2 Rational)` value surface.
+        Core::ConstRational(n, d) => {
+            let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
+            Some(b.atom_leaf(Leaf::Name(text)))
+        }
         // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
         // host reader renders it back. A quantity over a Float64 magnitude reaches here through
         // `const_value_ast_at` (the inner-value render of `Qty.of`).
@@ -6659,6 +6840,13 @@ fn const_value_ast_at(
         })),
         Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
+        // A RATIONAL magnitude renders as its canonical `num/den` name leaf (the same form as the
+        // top-level `const_value_ast` Rational arm), so a `(Qty Rational u)` value renders
+        // `(Qty.of num/den <unit>)` — the exact-rational quantity surface the units corpus records.
+        Core::ConstRational(n, d) => {
+            let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
+            Some(b.atom_leaf(Leaf::Name(text)))
+        }
         // A non-scalar inner value is not a Layer-1 quantity magnitude — decline the escape.
         _ => None,
     }
@@ -7038,6 +7226,19 @@ fn quantity_inner_is_float(db: &mut Db, id: StructId, args: &[StructId]) -> bool
         .unwrap_or(false)
 }
 
+/// Whether the operation is over a quantity with a RATIONAL inner magnitude — `(Qty Rational u)`. Checked
+/// (like `quantity_inner_is_float`) on the result then the first operand, so a comparison (Bool result)
+/// still routes by its operand. Such an op runs EXACT RATIONAL arithmetic on the erased inner magnitudes.
+fn quantity_inner_is_rational(db: &mut Db, id: StructId, args: &[StructId]) -> bool {
+    let is_qty_rat = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Qty { inner, .. } if matches!(**inner, crate::ty::Ty::Rational));
+    if is_qty_rat(&crate::infer::type_of(db, id)) {
+        return true;
+    }
+    args.first()
+        .map(|&a| is_qty_rat(&crate::infer::type_of(db, a)))
+        .unwrap_or(false)
+}
+
 /// Whether the two operands are quantities of the SAME dimension at DIFFERENT scales — a mixed-unit
 /// combine that must convert to the reference (`1 km + 500 m`). `false` when either is not a quantity,
 /// they differ in dimension (that is CDZ0501, reported in `infer`), or the scales are equal (the common
@@ -7102,6 +7303,44 @@ fn lower_quantity_combine(
         }
         // RUNTIME operand(s) — synthesize the scale conversion as real float arithmetic and lower it.
         return lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), true);
+    }
+    // RATIONAL inner: convert each operand to the reference EXACTLY — `v * (num/den)` =
+    // `(vn*num)/(vd*den)`, renormalized — then combine (`+`/`-`/`*`/`/` or a comparison) exactly. This is
+    // THE mixing case done without rounding: `1 inch + 1 mm` = 127/5000 + 1/1000 = 33/1250 m, exact.
+    let inner_is_rational = matches!(
+        crate::infer::type_of(db, lhs),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Rational)
+    );
+    if inner_is_rational {
+        if let (Core::ConstRational(lvn, lvd), Core::ConstRational(rvn, rvd)) = (&lc, &rc) {
+            let l = normalized_rational(
+                lvn.mul(&IntValue::from_i128(ln)),
+                lvd.mul(&IntValue::from_i128(ld)),
+            );
+            let r = normalized_rational(
+                rvn.mul(&IntValue::from_i128(rn)),
+                rvd.mul(&IntValue::from_i128(rd)),
+            );
+            // Fold the op over the two converted rationals directly (they are constant `ConstRational`s).
+            let (Core::ConstRational(ln2, ld2), Core::ConstRational(rn2, rd2)) = (&l, &r) else {
+                return Core::Poison(Reject::decline("mixed-unit rational conversion trapped"));
+            };
+            return match op {
+                Prim::Add => normalized_rational(ln2.mul(rd2).add(&rn2.mul(ld2)), ld2.mul(rd2)),
+                Prim::Sub => normalized_rational(ln2.mul(rd2).sub(&rn2.mul(ld2)), ld2.mul(rd2)),
+                Prim::Mul => normalized_rational(ln2.mul(rn2), ld2.mul(rd2)),
+                Prim::Div => normalized_rational(ln2.mul(rd2), ld2.mul(rn2)),
+                // A comparison of the two converted rationals: `a/b <=> c/d ⇔ a·d <=> c·b`.
+                Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq => {
+                    let ord = ln2.mul(rd2).cmp(&rn2.mul(ld2));
+                    Core::ConstBool(compare_ord(op, ord))
+                }
+                _ => Core::Poison(Reject::decline("mixed-unit rational: unsupported operator")),
+            };
+        }
+        return Core::Poison(Reject::decline(
+            "runtime mixed-unit Rational combine (not yet emitted)",
+        ));
     }
     // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
     // non-whole ratio, per opting into integer math).
@@ -7306,6 +7545,22 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
         }
     };
     let qc = core_of(db, q);
+    // A RATIONAL magnitude converts EXACTLY: `value * (num/den)` = `(vn*num)/(vd*den)`, renormalized. This
+    // is the whole point of a rational-magnitude unit (`1 inch in meter` = exactly 127/5000 m, no rounding).
+    let inner_is_rational = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Rational)
+    );
+    if inner_is_rational {
+        if let Core::ConstRational(vn, vd) = &qc {
+            let scaled_num = vn.mul(&IntValue::from_i128(num));
+            let scaled_den = vd.mul(&IntValue::from_i128(den));
+            return normalized_rational(scaled_num, scaled_den);
+        }
+        return Core::Poison(Reject::decline(
+            "Unit.in over a runtime Rational magnitude (not yet emitted)",
+        ));
+    }
     if inner_is_float {
         if let Some(v) = float_of_core(&qc) {
             // CONSTANT float magnitude — fold the conversion.
@@ -7462,6 +7717,126 @@ fn binop_arity_reject(op: Prim, args: &[StructId]) -> Reject {
         ));
     }
     reject
+}
+
+/// Build a NORMALIZED `Core::ConstRational` from a raw numerator/denominator pair, or `Core::Poison`
+/// (a runtime TRAP) on a zero denominator. Normalization (numeric-model.md §An Exact Rational Has A
+/// Canonical Normalized Form): divide both by `gcd(|num|, |den|)`, force the denominator strictly
+/// positive (flip both signs if it is negative), so the sign lives on the numerator and equal values
+/// share one byte form. `0/d` normalizes to `0/1`.
+fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> Core {
+    use crate::ast::IntValue;
+    if den.is_zero() {
+        // A zero denominator has no value — a provable constant trap (CDZ0304, the rational analogue of a
+        // constant ÷0), carrying the message a corpus `(trap "rational with zero denominator")` matches.
+        return Core::Poison(Reject::coded(
+            Code::ConstTrap,
+            "rational with zero denominator",
+        ));
+    }
+    if num.is_zero() {
+        return Core::ConstRational(IntValue::zero(), IntValue::from_i64(1));
+    }
+    // Reduce to lowest terms.
+    let g = num.gcd(&den); // non-negative
+    let (mut n, mut d) = match (num.divmod(&g), den.divmod(&g)) {
+        (Some((qn, _)), Some((qd, _))) => (qn, qd),
+        _ => (num, den), // g is nonzero here (num,den both nonzero), so this never fires
+    };
+    // Force the denominator strictly positive: if it is negative, flip BOTH signs.
+    if d.negative {
+        n = n.neg();
+        d = d.neg();
+    }
+    Core::ConstRational(n, d)
+}
+
+/// Lower `Rational.of n d` — fold a constant numerator/denominator pair to a normalized
+/// `Core::ConstRational` (or a zero-denominator trap). A runtime operand declines (the runtime rational
+/// compound is a later B4 slice). A poison operand propagates.
+fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Core {
+    match (core_of(db, num), core_of(db, den)) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::ConstInt(n), Core::ConstInt(d)) => normalized_rational(n, d),
+        _ => Core::Poison(Reject::decline(
+            "Rational.of on a runtime integer is not yet built (constants only)",
+        )),
+    }
+}
+
+/// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
+/// fold to a constant rational (a runtime rational — declines this increment).
+fn const_rational_of(
+    db: &mut Db,
+    id: StructId,
+) -> Option<(crate::ast::IntValue, crate::ast::IntValue)> {
+    match core_of(db, id) {
+        Core::ConstRational(n, d) => Some((n, d)),
+        _ => None,
+    }
+}
+
+/// Lower a rational `+`/`-`/`*`/`/` — fold a constant pair to a normalized `Core::ConstRational` via
+/// exact `IntValue` bignum arithmetic, else decline (a runtime rational op is a later B4 slice). A poison
+/// propagates. The formulas keep the result normalized (`normalized_rational` re-reduces): `a/b + c/d =
+/// (ad+cb)/(bd)`, `a/b - c/d = (ad-cb)/(bd)`, `a/b * c/d = (ac)/(bd)`, `a/b ÷ c/d = (ad)/(bc)` (division
+/// by `0/1` → a zero denominator → trap, exactly `Rational.of`'s zero-denom trap).
+///
+/// `Rational` is a declared-EXACT numeric type, and this arithmetic loses NO precision: it works over
+/// `IntValue` bignum numerators/denominators (no fixed width to overflow, no rounding), so an exact
+/// rational operation's result is the exact number.
+//= spec/capabilities/numeric-model.md#exact-arithmetic-is-exact
+//# An operation on values of a numeric type declared exact MUST NOT lose precision.
+fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let (Some((a, b)), Some((c, d))) = (const_rational_of(db, lhs), const_rational_of(db, rhs))
+    else {
+        return Core::Poison(Reject::decline(
+            "runtime Rational arithmetic is not yet built (constant rationals only)",
+        ));
+    };
+    let (num, den) = match op {
+        Prim::Add => (a.mul(&d).add(&c.mul(&b)), b.mul(&d)),
+        Prim::Sub => (a.mul(&d).sub(&c.mul(&b)), b.mul(&d)),
+        Prim::Mul => (a.mul(&c), b.mul(&d)),
+        Prim::Div => (a.mul(&d), b.mul(&c)),
+        _ => return Core::Poison(Reject::decline("not a Rational arithmetic op")),
+    };
+    normalized_rational(num, den)
+}
+
+/// Lower a rational comparison `<`/`>`/`<=`/`>=`/`=` — fold a constant pair to a `Core::ConstBool` by
+/// comparing the two normalized rationals EXACTLY: `a/b <=> c/d` ⇔ `a*d <=> c*b` (both denominators are
+/// strictly positive after normalization, so cross-multiplication preserves the order direction). A
+/// runtime rational compare is a later B4 slice (declines). A poison propagates.
+fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let (Some((a, b)), Some((c, d))) = (const_rational_of(db, lhs), const_rational_of(db, rhs))
+    else {
+        return Core::Poison(Reject::decline(
+            "runtime Rational comparison is not yet built (constant rationals only)",
+        ));
+    };
+    let ord = a.mul(&d).cmp(&c.mul(&b));
+    Core::ConstBool(compare_ord(op, ord))
+}
+
+/// True iff either operand of a binary op has solved type `Ty::Rational` — the signal to route `+`/`-`/
+/// `*`/`/`/comparison to the exact rational fold. (A `Rational`/other mix never reaches lowering —
+/// `check_application` rejected it CDZ0301 — so if ONE operand is a Rational the other is too.)
+fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
+    args.iter()
+        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Rational))
 }
 
 /// True iff either operand of a binary op has solved type `Ty::BigInt` — the signal to route `+`/`-`/
@@ -9349,6 +9724,11 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BigIntTy
         | Prim::BigIntOf
         | Prim::RationalTy
+        // `RationalOf`/`RationalOfInt`/`RationalValue` are rational construction/conversion ops (they fold
+        // in their own arms), not integer binary operations.
+        | Prim::RationalOf
+        | Prim::RationalOfInt
+        | Prim::RationalValue
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -9544,6 +9924,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     // constant folds below (a BigInt `ConstInt`'s value can exceed i64, so the `to_i64` fold would decline).
     if bigint_operand(db, args) {
         return lower_bigint_cmp(db, op, args[0], args[1]);
+    }
+    // A comparison over RATIONAL operands — a constant pair folds by comparing the two normalized
+    // rationals exactly (cross-multiply: `a/b <=> c/d` ⇔ `a*d <=> c*b`, denominators strictly positive so
+    // the direction is preserved), via `IntValue` bignum. A runtime rational compare is a later B4 slice
+    // (declines). Checked before the scalar folds (a Rational is not `is_scalar`).
+    if rational_operand(db, args) {
+        return lower_rational_cmp(db, op, args[0], args[1]);
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -13406,6 +13793,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BigIntTy => "BigInt",
         Prim::BigIntOf => "bigint-of",
         Prim::RationalTy => "Rational",
+        Prim::RationalOf => "rational-of",
+        Prim::RationalOfInt => "rational-of-int",
+        Prim::RationalValue => "rational-value",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

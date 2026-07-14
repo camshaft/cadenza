@@ -382,6 +382,16 @@ fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
     }
 }
 
+/// Structurally COPY `body` (fresh occurrences that re-resolve names against the copied scope), with NO
+/// substitution — a β-reduction against an empty argument map. Used by recursive-generic monomorphization
+/// (`crate::lower::type_specialize`) to clone a generic def's body into a type-specialized copy: a body
+/// reference to a param re-resolves to the copy's re-annotated binder, and a self-call re-resolves by name
+/// to the original def (re-entering specialization at lower). The public entry to the private
+/// `copy_structural`, mirroring `effects::copy_pure`.
+pub fn copy_structural_pub(db: &mut Db, body: StructId) -> StructId {
+    beta_reduce(db, body, &HashMap::default())
+}
+
 // Applying a function evaluates its body with each parameter bound to its argument — realized here by
 // β-reduction: `arg_of` maps each parameter occurrence to its argument, and the reduced body sees those
 // bindings (a free variable of the lambda is pinned to its captured binder, so the body observes the

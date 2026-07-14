@@ -21,8 +21,17 @@ plan."* This is the design + increment plan.
 >
 > REMAINING for BigInt: only OPTIONAL widenings (a runtime-COMPUTED BigInt escape — blocked on the general
 > runtime-heap-return path, NOT BigInt-specific; an arbitrary-magnitude constant BigInt leaf builder for a
-> beyond-i64 literal operand). The NEXT vertical is **B4 (`Ty::Rational` on top of `Big`)**, which unblocks
-> the 9 remaining units `todo` cases.
+> beyond-i64 literal operand).
+>
+> **UPDATE (2026-07-14): `Ty::Rational` (B4) is ALSO COMPLETE — the units feature is 100% DONE (0 rational
+> todos).** Landed over 4 slices: B4-1a (hand-written arbitrary-precision arithmetic on `IntValue` —
+> add/sub/mul/divmod/gcd/cmp — since the COPY-DON'T-DEPEND rule forbids num-bigint as a dep); B4-0
+> (`Ty::Rational` through the closed universe); B4-1 (`Rational.of`/`of-int`/`value` + exact constant
+> `+`/`-`/`*`/`/`/comparison over a NORMALIZED `Core::ConstRational(num,den)` pair, zero-denom → CDZ0304 +
+> `(Qty Rational u)` integration + `num/den` value render); B4-2 (exact unit-SCALE conversion over a
+> Rational — `Unit.in` + mixed-unit combine, `1 inch + 1 mm = 33/1250 m` exact). Only a RUNTIME rational
+> (a Rational parameter / a rational crossing the boundary as a `{num,den}` record) remains a decline — the
+> CONSTANT fold, which is what every current case needs, is fully wired. See §7 + the units impl memory.
 >
 > ✅ **B2 (`Ty::Rational`) OWNERSHIP: handed to the BigInt track (operator decision, 2026-07-13).**
 > Rational is fundamentally a bignum feature — a normalized pair of big-integers, whose constant fold

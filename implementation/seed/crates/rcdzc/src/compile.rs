@@ -606,6 +606,11 @@ fn unbacktick(msg: &str) -> Option<&str> {
 
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // Fresh reached-poison walk state for this call: the visited-set (which lets the walk skip a shared
+    // core DAG node instead of re-descending it as a tree) accumulates across the per-body walks BELOW
+    // that all feed this one `faults` vec, and is stale from any prior `collect_faults` call — clear it.
+    db.reached_visited.clear();
+    db.reached_clipped = false;
     // NON-FINAL `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts a tail-binding `,@` before
     // a fixed element (`metaprogramming.md`: a `,@<name>` MUST appear only as the final element). Detected
     // at load by `quote::reify_quotes` (which leaves the offending quasiquote un-reified); reported here as
@@ -970,6 +975,46 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for p in &all_params {
         crate::infer::param_annotation_faults(db, *p, &mut faults);
     }
+    // Validate every VARIANT POSITION's SHAPE. A `(type …)` declaration's tail is its variants: a bare
+    // NAME is a nullary variant (`Red`), a `(Name payload…)` LIST is a variant with payloads. `scan_type_decl`
+    // SILENTLY DROPS any tail element that is neither — a literal `(type T 5)`, a list headed by a non-name
+    // `(type T (5 Int64))`, an empty `()` — so `(type T Red 5 Blue)` becomes the two-variant `{Red, Blue}`
+    // with the `5` invisibly gone, and a match on `Red`/`Blue` then wrongly type-checks as EXHAUSTIVE (a
+    // silent correctness hazard). Reject a malformed variant position at the declaration (CDZ0201): a
+    // variant is a name or a `(Name …)` form. Walked over the raw `(type …)` AST tail (the scanned
+    // `variants` already dropped the bad ones), for USER type declarations only.
+    let type_decl_occs: Vec<StructId> = db
+        .type_decls
+        .iter()
+        .filter(|d| db.is_user_node(d.occ))
+        .map(|d| d.occ)
+        .collect();
+    for occ in type_decl_occs {
+        let Some(tail) = db.ast.as_form(occ, "type").map(|t| t.to_vec()) else {
+            continue;
+        };
+        // tail[0] is the type NAME; tail[1..] are the variant positions.
+        for &v in tail.iter().skip(1) {
+            let well_formed = match db.ast.get(v) {
+                // A bare NAME is a nullary variant; a bare literal (`5`, `"x"`) is not.
+                crate::ast::Struct::Atom(_) => db.ast.as_name(v).is_some(),
+                // A `(Name payload…)` variant — the head must be a NAME; `()` / `(5 …)` is malformed.
+                crate::ast::Struct::List(children) => children
+                    .first()
+                    .is_some_and(|&h| db.ast.as_name(h).is_some()),
+            };
+            if !well_formed {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a variant must be a name (a nullary variant `Red`) or a `(Name payload…)` form \
+                         — this is neither, so it is not a variant of the type",
+                    )
+                    .at(v),
+                );
+            }
+        }
+    }
     // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
     // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
     // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a
@@ -1008,6 +1053,14 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // lowercase-name leniency (a bare lowercase name is a type-variable artifact, not a global type) covers
     // a `(-> a a)`-style variable.
     let mut op_type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
+    // Op types that are well-formed TYPES but NOT arrows — `(op get Int64)` / `(op get (Option Int64))`.
+    // An operation is PERFORMED (a function call), so its type MUST be an arrow `(-> Arg… Result)`; a
+    // canonical nullary op is `(-> Result)`. A bare type was silently accepted, wrapped as `(fn () Int64)`,
+    // then LEAKED the internal op-value record on perform ("type mismatch: Int64 and (Record (apply Any)
+    // …)") — a non-canonical spelling that garbles downstream, so reject it AT THE DECLARATION with the
+    // wrap fix (`garbage render = not canonical → fix the source`). Collected separately so the arrow-arm
+    // type-position walk above stays the sole caller of `validate_type_position` for op types.
+    let mut non_arrow_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
         for op in &e.ops {
             let Some(ty) = op.ty else { continue };
@@ -1020,13 +1073,44 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         push_payload_type_positions(db, pos, &[], &mut op_type_positions);
                     }
                 }
-                // A non-arrow op type (a bare type / malformed) — validate whole.
-                _ => op_type_positions.push((ty, Vec::new())),
+                // A non-arrow op type (a bare type / malformed). Validate it as a type position FIRST: a
+                // genuinely-unknown name (`(op get Nonesuch)`) keeps its CDZ0101 (more actionable — wrapping
+                // an unknown name in `(-> …)` would not resolve it). A WELL-FORMED non-arrow type
+                // (`Int64`, `(Option Int64)`) is the malformed-op-type case handled below.
+                _ => {
+                    op_type_positions.push((ty, Vec::new()));
+                    non_arrow_op_types.push(ty);
+                }
             }
         }
     }
     for (pos, params) in &op_type_positions {
         validate_type_position(db, *pos, params, "an operation type", &mut faults);
+    }
+    // An op type that is a WELL-FORMED type but not an arrow: reject it (unless `validate_type_position`
+    // already faulted it — an unknown name / non-type — in which case that reject stands and this adds no
+    // second "no" for the same op type). The fix wraps it into the canonical nullary arrow `(-> T)`.
+    for &ty in &non_arrow_op_types {
+        let already_faulted = faults.iter().any(|f| f.at == Some(ty));
+        if already_faulted {
+            continue;
+        }
+        if crate::eval::typeval_of(db, ty).is_some() {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "an operation's type must be an arrow `(-> Arg… Result)` — an operation is performed \
+                     like a function; a nullary operation is `(-> Result)`",
+                )
+                .at(ty)
+                .with_fix(crate::diag::Fix::wrap_heuristic(
+                    ty,
+                    "(-> ",
+                    ")",
+                    "make it a nullary operation arrow",
+                )),
+            );
+        }
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
@@ -1440,6 +1524,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             && r.message
                 .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
     });
+    // Likewise: a NON-ARROW op type (`(op get Int64)`) is rejected CDZ0201 at the declaration. Its op-value
+    // `(meta t)` is wrapped `(fn () Int64)`, so PERFORMING the op leaks the internal op-record in a
+    // consequent CDZ0203 ("type mismatch: Int64 and (Record (apply Any) (effect-op Any) …)"). That leak is
+    // a CONSEQUENCE of the malformed declaration — drop it (a fault naming the internal op-record) whenever
+    // the malformed-op-type reject is present, keeping the declaration-site reject (with its wrap fix) as
+    // the ONE primary, actionable error.
+    let has_non_arrow_op_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::NON_ARROW_OP_TYPE_PREFIX)
+    });
     // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
     // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"
     // at the export clause. The emit path ALSO returns an uncoded "a closure's <part> has no machine
@@ -1655,6 +1749,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if has_noncanonical_handle_reject && r.code == Some(Code::EffectNoHome) {
                 return false;
             }
+            // A perform-site type mismatch that LEAKS the internal op-value record (`(effect-op Any)` — a
+            // synthesized meta-channel field no user type spells) is the CONSEQUENCE of a malformed
+            // non-arrow op type; drop it in favor of the declaration-site CDZ0201 (with its wrap fix).
+            if has_non_arrow_op_type_reject && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            {
+                return false;
+            }
             // Likewise: a CDZ0401 (no home) that is the CONSEQUENCE of a MALFORMED HANDLER — a misspelled
             // arm op (CDZ0403) or a missing arm (CDZ0405) — leaves the effect's operation set only
             // partly discharged, so the handled body's perform spuriously looks home-less. `(handle E …
@@ -1763,10 +1864,32 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         );
         r.set_origin_if_absent(id);
         out.push(r);
+        // This subtree was clipped at the depth backstop — mark it so the ancestor does NOT record itself
+        // (or `id`) as fully walked; a shallower path must still be free to walk it unclipped.
+        db.reached_clipped = true;
+        return;
+    }
+    // VISITED-SET: the walk follows `core_of`, which resolves a `Ref` to its target's body, so a value
+    // used in two operand positions is reached from both — a repeated-squaring `BigInt` chain (`(* a a)`
+    // over NON-folding operands) is a shared DAG the naive recursion walks as a TREE, O(2^depth). A node's
+    // reached-poison contribution is a pure function of the node (its poison's origin is its own id), and
+    // `dedup_faults` collapses duplicates, so skipping an already-walked node changes no reported fault.
+    if db.reached_visited.contains(&id) {
         return;
     }
     db.descent_depth += 1;
+    // Track whether THIS subtree clips: save the ancestor's flag, clear it for our own recursion, then
+    // OR it back so a clip still propagates upward. Only an UNCLIPPED (complete) subtree is memoized —
+    // a partial one must be re-walkable from a shallower entry (the `collect_limited`/`collect_cache`
+    // discipline).
+    let outer_clipped = db.reached_clipped;
+    db.reached_clipped = false;
     collect_reached_poisons_at(db, id, out);
+    let this_clipped = db.reached_clipped;
+    if !this_clipped {
+        db.reached_visited.insert(id);
+    }
+    db.reached_clipped = outer_clipped || this_clipped;
     db.descent_depth -= 1;
 }
 
@@ -2027,6 +2150,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         | Core::LocalRef { .. }
         | Core::Param { .. }
         | Core::ConstInt(_)
+        | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstChar(_)

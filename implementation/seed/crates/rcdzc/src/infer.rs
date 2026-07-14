@@ -1090,12 +1090,33 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
         }
     }
 
+    // RECURSIVE-GENERIC MONOMORPHIZATION: a parameter the body only THREADS (its body-solved type is
+    // still a free var) AND that callers invoke at TWO OR MORE distinct concrete types is GENERIC — it
+    // must NOT be pinned to the first caller's type (which would make a second-type call a spurious
+    // CDZ0203). Detect those positions from the body-solved types + the call-site type spread; leave each
+    // a canonical `Ty::Var` so a call-site arg of any type unifies with it, and `lower` monomorphizes the
+    // call to a per-instantiation copy (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). A param
+    // called at ≤1 type stays MONOMORPHIC (seeded below exactly as before — byte-identical).
+    let body_solved: Vec<Ty> = param_binders.iter().map(|(_, v)| subst.apply(v)).collect();
+    let generic_positions = db.defs[def]
+        .body
+        .map(|b| generic_param_positions(db, def, b, &body_solved))
+        .unwrap_or_default();
+
     // Ground each parameter: apply the substitution, FILL any remaining hole (`Any`/free `Var`) from the
     // call-site argument type — a plain unify cannot repair an `Any` (`Any` absorbs), so `fill_holes`
     // merges the determined call-site type into the open positions while keeping the body-pinned parts —
     // then default a still-unsolved NUMERIC variable to the signed-64 integer (a bare literal's default)
     // and leave anything else `Any` (genuinely unconstrained — no call site fixed it).
     for (i, (binder, var)) in param_binders.into_iter().enumerate() {
+        // A GENERIC position stays a fresh canonical `Ty::Var` (quantified in the scheme): do not seed it
+        // from a call site (which would pin it to ONE type) and do not ground it to `Any`.
+        if generic_positions.contains(&i) {
+            let gv = Ty::Var(fresh.var());
+            trace!(target: "rcdzc::infer", def, binder = binder.0, "A2: recursive param is GENERIC (monomorphized per call site)");
+            db.param_types.insert(binder, gv);
+            continue;
+        }
         let mut solved = subst.apply(&var);
         if (solved.has_free_var() || solved.has_any())
             && let Some(Some(at)) = call_seed_arg_tys.get(i)
@@ -1169,6 +1190,68 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
         }
     }
     out
+}
+
+/// The per-position set of DISTINCT concrete argument types a NON-recursive caller supplies to `def` —
+/// the raw material for deciding a parameter is GENERIC (recursive-generic monomorphization). Unlike
+/// `call_site_arg_types` (which takes the FIRST determined type per position to seed a monomorphic
+/// signature), this collects EVERY distinct determined type at each position, so a position invoked at
+/// two different types (`(loopn 3 a)` : Int64 and `(loopn 2 "hi")` : String) is detected as generic.
+/// `own_body` is `def`'s body, skipped (a self-call's args reference the very params being solved). A
+/// read-only scan over the call-site index; only DETERMINED (non-`Any`/non-`Var`) types are recorded.
+fn call_site_distinct_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Vec<Ty>> {
+    ensure_call_site_index(db);
+    let call_args: Vec<Vec<StructId>> = db
+        .call_sites_by_callee
+        .as_ref()
+        .and_then(|m| m.get(&def))
+        .map(|sites| {
+            sites
+                .iter()
+                .filter(|(caller_body, _)| *caller_body != own_body)
+                .map(|(_, args)| args.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
+    let mut out: Vec<Vec<Ty>> = vec![Vec::new(); arity];
+    for args in &call_args {
+        for (i, &arg) in args.iter().enumerate() {
+            let t = type_of(db, arg);
+            if !matches!(t, Ty::Any | Ty::Var(_)) && !out[i].contains(&t) {
+                out[i].push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The parameter POSITIONS of recursive def `def` that are GENUINELY GENERIC — a parameter the body
+/// only threads (its body-solved type `solved[i]` is still a free `Var`, so NO operator/self-call pinned
+/// it to a concrete type) AND that the callers invoke at TWO OR MORE distinct concrete types. Such a
+/// parameter must NOT be pinned to the first call site's type (the monomorphic-seeding default): doing so
+/// makes a second call at a different type a spurious CDZ0203. Instead it stays a quantified var in the
+/// scheme, and `lower` monomorphizes the call by synthesizing a per-instantiation copy. A parameter
+/// called at ONE type (or zero — an unexported generic library def) is NOT generic here: it seeds
+/// monomorphically exactly as before (byte-identical). `solved` is the body-solved param type vector
+/// (post-`subst.apply`), indexed by parameter position.
+fn generic_param_positions(db: &mut Db, def: usize, body: StructId, solved: &[Ty]) -> Vec<usize> {
+    // A position is a candidate only if the body left it a free var (threaded, never constrained). A
+    // position the body already pinned to a concrete type is monomorphic — leave it alone.
+    let candidates: Vec<usize> = solved
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.has_free_var())
+        .map(|(i, _)| i)
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let distinct = call_site_distinct_arg_types(db, def, body);
+    candidates
+        .into_iter()
+        .filter(|&i| distinct.get(i).is_some_and(|tys| tys.len() >= 2))
+        .collect()
 }
 
 fn arg_is_other_def_param(db: &mut Db, arg: StructId) -> Option<(usize, usize)> {
@@ -1962,11 +2045,25 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     for pt in param_tys.into_iter().rev() {
         ty = Ty::Fn(Box::new(pt), Box::new(ty));
     }
-    // A1 schemes are MONOMORPHIC (every param has a concrete annotated type; nothing is quantified).
-    // Real let-generalization — quantifying a free variable a parameter's type still carries — arrives
-    // with the connected solve (A2), which is where a polymorphic def signature becomes meaningful.
-    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
-    Some(Scheme::mono(ty))
+    // GENERALIZE: quantify over every free type variable the signature still carries — a recursive-generic
+    // parameter the body only threads is left a `Ty::Var` by the A2 solve (see `generic_param_positions`),
+    // so the scheme is `∀a. … a … a` and each call site `instantiate`s it fresh (recursive-generic
+    // monomorphization; `unify::instantiate` freshens the bound vars). A signature with NO free var
+    // generalizes to `Scheme::mono` exactly as before (`ty_vars` empty) — the monomorphic recursive case
+    // is byte-identical. Only whole-type vars are quantified; a numeric width/sign grounds to a default.
+    let mut ty_vars = Vec::new();
+    ty.collect_free_vars(&mut ty_vars);
+    if ty_vars.is_empty() {
+        trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
+        return Some(Scheme::mono(ty));
+    }
+    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), quantified = ty_vars.len(), "def_scheme: generalized polymorphic signature (recursive-generic)");
+    Some(Scheme {
+        ty_vars,
+        width_vars: Vec::new(),
+        sign_vars: Vec::new(),
+        ty,
+    })
 }
 
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's
@@ -2418,6 +2515,23 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
             {
                 return Ty::BigInt;
+            }
+            // A `+`/`-`/`*`/`/` over RATIONAL operands is `Rational` — the exact arithmetic, NOT the
+            // fixed-width int scheme (whose `∀a. (Int a) → …` rejects a `Rational` operand). `lower` folds
+            // a constant pair (normalized over `IntValue` bignum) or (later) emits the runtime op. A
+            // `Rational`/integer mix is rejected in `check_application` (CDZ0301), so if one operand is
+            // `Rational` the well-typed case has both — return `Rational`. (`%` is NOT a rational op —
+            // exact division is total, there is no remainder; a `%` over rationals falls through and its
+            // scheme-unify rejects it. Comparison over Rational is `Bool`, via the generic path.)
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
+            {
+                return Ty::Rational;
             }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
@@ -3803,30 +3917,35 @@ fn check_application(
             }
             return;
         }
-        // A `+`/`-`/`*`/`/`/`%` ARITHMETIC op over two `Rational` operands: Rational arithmetic is not yet
-        // wired (B4-0 threads `Ty::Rational` through the type universe; the runtime op arrives in a later
-        // increment). The operator's `∀a. (Int a) → …` scheme does not accept a `Rational`, so the generic
-        // scheme-unify below defaults the first operand to the scheme's `Int64` var and then reports the
-        // SECOND (`Rational`) as a numeric MIX — fabricating a phantom `Int64` operand the author never
-        // wrote (`no implicit conversion between Int64 and Rational`). Give the HONEST message: name
-        // `Rational` once, as a not-yet-supported op — the operands are the SAME type, not a promotion mix.
-        // COMPARISON (`=`/`<`/… — also in `is_additive`) is EXCLUDED: it is `∀a. a→a→Bool`, accepts two
-        // Rationals today, and must keep compiling; only genuine arithmetic is unwired. A Rational/fixed MIX
-        // (`(+ r 1)`) is left to the generic path — there the `Int64` IS present, so CDZ0301 is honest.
-        let is_arith = matches!(
-            prim,
-            Some(
-                crate::resolved::Prim::Add
-                    | crate::resolved::Prim::Sub
-                    | crate::resolved::Prim::Mul
-                    | crate::resolved::Prim::Div
-                    | crate::resolved::Prim::Rem
-            )
-        );
-        if is_arith && matches!(a0, Ty::Rational) && matches!(b0, Ty::Rational) {
-            // An uncoded DECLINE — a not-yet-built construct (Rational arithmetic), the honest outcome
-            // distinct from a type/well-formedness rejection. Anchored at the op node.
-            out.push(Reject::decline("Rational arithmetic is not yet supported").at(app));
+        // A `+`/`-`/`*`/`/` over RATIONAL operands is exact rational arithmetic — well-typed, but the
+        // operator's `∀a. (Int a) → …` scheme does NOT accept a `Rational`, so the generic scheme-unify
+        // would spuriously reject it. Skip it (both operands are Rational in the well-typed case; `lower`
+        // folds a constant pair), descend for operand faults, return. A genuine `Rational`/other MIX still
+        // faults CDZ0301. NOT `%`: exact rational division is total (no remainder), so a `%` over rationals
+        // falls through to the scheme, which rejects it (there is no rational `%`). (This SUPERSEDES the
+        // earlier "Rational arithmetic is not yet supported" decline — B4-1 now folds it exactly.)
+        if (is_additive || is_multiplicative)
+            && (matches!(a0, Ty::Rational) || matches!(b0, Ty::Rational))
+        {
+            // For a COMPARISON (`is_additive` covers `<`/`>`/`=`/… too) the generic path already accepts
+            // two Rationals (the `∀a. a→a→Bool` scheme), so only the ARITHMETIC forms need this skip; but
+            // a comparison of a Rational against a NON-Rational must still fault. Report a mix (one
+            // Rational, one non-Rational-non-Any) as CDZ0301 for BOTH arithmetic and comparison.
+            let a_rat = matches!(a0, Ty::Rational);
+            let b_rat = matches!(b0, Ty::Rational);
+            let a_ok = a_rat || matches!(a0, Ty::Any);
+            let b_ok = b_rat || matches!(b0, Ty::Any);
+            if !(a_ok && b_ok) {
+                out.push(Reject::coded(
+                    Code::NumericMismatch,
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    ),
+                ));
+            }
             for &arg in args {
                 collect(db, arg, out);
             }
@@ -4600,27 +4719,54 @@ fn check_application(
                         }
                         _ => None,
                     };
-                    let message = match (&type_name, mono_type_params) {
+                    // A monomorphic type applied to arguments carries the concrete fix the message names:
+                    // REPLACE the whole `(T …)` application with the bare type `T` (strip the spurious
+                    // arguments). `app` is the application node; the head's source name is the replacement.
+                    // Only for the `Some(0)` case — a type given args where it takes none, whose repair is
+                    // unambiguous ("write `T`"). The generic call-position case (`(T 5)`) has no single edit
+                    // (delete args? annotate? — the author's intent is unclear), so it stays message-only.
+                    let (message, mono_fix) = match (&type_name, mono_type_params) {
                         // A monomorphic type (0 declared params) applied to arguments — most often the
                         // sum-annotation slip `(: t (T Int64))` where `T` takes no parameters. Name the
                         // exact fix (`T`, not `(T …)`) without asserting a context, since the same
                         // over-application can appear in value call position (`(T 5)`) too.
-                        (Some(name), Some(0)) => format!(
-                            "`{name}` is a type that takes no type parameters — write `{name}`, not \
-                             `({name} …)` (a type belongs in an annotation `(: value {name})`, not \
-                             applied to arguments)"
+                        (Some(name), Some(0)) => (
+                            format!(
+                                "`{name}` is a type that takes no type parameters — write `{name}`, not \
+                                 `({name} …)` (a type belongs in an annotation `(: value {name})`, not \
+                                 applied to arguments)"
+                            ),
+                            // HEURISTIC (not verified): replacing `(T …)` with the bare type `T` clears the
+                            // fault in the COMMON case — an ANNOTATION slip `(: t (T Int64))`, where `T` is
+                            // exactly what belongs. But the SAME over-application can appear in VALUE call
+                            // position (`(Color 5)`), where a bare type name is still not a value → the
+                            // replace trades this error for a clearer "a type is not a value" one (no
+                            // miscompile). Since `check_application` runs on the reduced value graph and
+                            // cannot cheaply tell annotation from value position here, the fix stays
+                            // heuristic — right in the common case, harmless (error→clearer-error) otherwise.
+                            Some(crate::diag::Fix::replace_heuristic(app, name.clone())),
                         ),
-                        (Some(name), _) => format!(
-                            "`{name}` is a type, not a function — a type appears in an annotation \
-                             `(: value {name})`, not in call position"
+                        (Some(name), _) => (
+                            format!(
+                                "`{name}` is a type, not a function — a type appears in an annotation \
+                                 `(: value {name})`, not in call position"
+                            ),
+                            None,
                         ),
-                        (None, _) => format!(
-                            "{} {}",
-                            crate::diag::NOT_A_FUNCTION_PREFIX,
-                            other.render_name()
+                        (None, _) => (
+                            format!(
+                                "{} {}",
+                                crate::diag::NOT_A_FUNCTION_PREFIX,
+                                other.render_name()
+                            ),
+                            None,
                         ),
                     };
-                    out.push(Reject::coded(Code::TypeMismatch, message));
+                    let mut reject = Reject::coded(Code::TypeMismatch, message);
+                    if let Some(fix) = mono_fix {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 return;
             }

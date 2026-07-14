@@ -678,6 +678,30 @@ impl IntValue {
     pub fn gcd(&self, other: &IntValue) -> IntValue {
         IntValue::normalize(false, IntValue::gcd_mag(&self.magnitude, &other.magnitude))
     }
+
+    /// The DECIMAL string of this value (with a leading `-` for a negative), independent of magnitude
+    /// size — extracts digits by repeated division by 10 over the magnitude (this crate has no bignum
+    /// crate, so `to_i128` + `format!` would cap the value; a folded Rational numerator can exceed i128).
+    /// `0` renders `"0"`.
+    pub fn to_decimal_string(&self) -> String {
+        if self.is_zero() {
+            return "0".to_string();
+        }
+        let ten = [10u8];
+        let mut mag = IntValue::sub_mag(&self.magnitude, &[]); // canonical copy
+        let mut digits = Vec::new();
+        while !mag.is_empty() {
+            let (q, r) = IntValue::divmod_mag(&mag, &ten);
+            let d = r.last().copied().unwrap_or(0);
+            digits.push(b'0' + d);
+            mag = q;
+        }
+        if self.negative {
+            digits.push(b'-');
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii digits")
+    }
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.

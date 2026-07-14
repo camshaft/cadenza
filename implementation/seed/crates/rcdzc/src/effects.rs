@@ -1442,8 +1442,13 @@ pub fn reduce_handle(
         // A tail-resumptive arm (bare OR do-wrapped interpose/forward) is served by the `thread` path — do
         // NOT steal it here (it would decline a forwarding arm whose resume value is a foreign perform).
         && !is_tail_resumptive_arm(db, arm.body)
-        // ONE-SHOT only: the continuation `C` (which itself performs) is spliced exactly once.
-        && count_resumes(db, arm.body) == 1
+        // MULTI-SHOT is sound only when the continuation `C` (re-reduced per resume) reaches NO FOREIGN
+        // perform — i.e. only THIS handler's discharged ops, which the refold folds away into pure code.
+        // A ONE-SHOT arm splices `C` once, so any foreign perform in it runs once (sound). But a MULTI-shot
+        // arm would re-run a foreign/HOST perform in `C` once per resume — the host-composition invariant
+        // (DESIGN §4.4: a reified continuation must not span a host call) forbids that, so require the body
+        // to be free of any undischarged (foreign/host) perform when the arm resumes more than once.
+        && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, &ctx))
     {
         let mut subst: HashMap<StructId, StructId> = HashMap::default();
         if arm.params.len() == args.len() {
@@ -3395,12 +3400,12 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
 /// the continuation AFTER the hole MAY itself perform (a second hole): this is the two-hole (general
 /// one-shot) case, folded frame-free by RE-REDUCING the spliced continuation `C[v]` under the same handler
 /// (each refold removes one perform, so it terminates). Returns the leading perform occurrence, or `None`
-/// if the leading effect on the spine is not a clean strict-position discharged perform (a conditional /
-/// `let` / non-uniform position — left to the frame vertical). Scoped to STRICT forms only (operator/call
-/// operands, tuple/list elements, `not`/proj/member/annotation) — the same uniform positions `pure_hole`
-/// admits, but permitting a performing tail. SOUND ONLY for a ONE-SHOT arm (the caller checks
-/// `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than once, duplicating the
-/// inner effect.
+/// if the leading effect on the spine is not at a clean strict-first, UNIFORM position (a conditional
+/// BRANCH / connective RHS — the frame vertical's job). Descends the same STRICT-FIRST positions
+/// `pure_hole` does: operator/call operands, tuple/list elements, `not`/proj/member/annotation, a `let`
+/// (its inits then body, in order), and a `match` SCRUTINEE (evaluated first). SOUND ONLY for a ONE-SHOT
+/// arm (the caller checks `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than
+/// once, duplicating the inner effect.
 fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
     // A discharged perform IS the leading hole — provided its own ARGS are strongly pure (an effectful arg
     // would be an even-earlier hole this simple spine walk does not thread).
@@ -3428,9 +3433,34 @@ fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<
             }
             None
         }
-        // Any non-strict shape (`if`/`match`/`and`/`or`/`let`/`handle`/`resume`) or an already-pure leaf:
-        // not a clean strict leading hole here — decline (the frame vertical handles a non-uniform leading
-        // position; a fully-pure node has no hole).
+        // A `let`: inits then body all run UNCONDITIONALLY in sequence — a strict spine. The leading hole
+        // is the first performing position across (inits ++ body); the WHOLE `let` is the continuation `C`
+        // (the refold copies it, so each binder re-binds independently). Mirrors `pure_hole`'s `let` arm.
+        Resolved::Let { bindings, body } => {
+            let mut positions: Vec<StructId> = bindings.iter().map(|&(_n, i)| i).collect();
+            positions.push(body);
+            leading_strict_hole_seq(db, positions.into_iter(), ctx)
+        }
+        // A `match`: the SCRUTINEE is a strict, always-evaluated-first position (the arms run only after);
+        // the leading hole may be in the scrutinee. The continuation `C = (match □ arms…)` is re-reduced by
+        // the refold, so the arms need not be pure here (unlike `pure_hole`, which needs a pure `C`). A
+        // perform in an ARM BODY is a non-uniform (conditionally-run) position — NOT a leading strict hole
+        // (handler distribution handles a pure-scrutinee arm perform; a scrutinee hole is this path).
+        Resolved::Match { scrutinee, .. } => leading_strict_hole(db, scrutinee, ctx),
+        // An `if`: the CONDITION is strict, evaluated FIRST, so a leading hole may sit there. The
+        // continuation `C = (if <cond[□]> then else)` is re-reduced by the refold — where the condition is
+        // now a concrete VALUE, so the taken branch is selected (a performing branch is then served by the
+        // recursive fold / distribution). Unlike `pure_hole`'s if-cond arm, the branches need NOT be pure
+        // (the refold re-reduces `C`). A leading hole in a BRANCH (a conditionally-run position) is NOT
+        // returned — only the condition is a strict-first uniform position.
+        Resolved::If { cond, .. } => leading_strict_hole(db, cond, ctx),
+        // A short-circuit `and`/`or`: the LHS is strict, evaluated FIRST — a leading hole may sit there. `C
+        // = (and <lhs[□]> rhs)` is re-reduced by the refold (lhs now a value → short-circuit resolves; a
+        // performing rhs on the taken path is served by the fold). The RHS (conditionally-run) is not a
+        // strict-first position, so only the LHS is descended.
+        Resolved::And { lhs, .. } => leading_strict_hole(db, lhs, ctx),
+        // Any other shape (`handle`/`resume`) or an already-pure leaf: not a clean strict leading hole
+        // here — decline.
         _ => None,
     }
 }
@@ -3640,6 +3670,47 @@ fn count_resumes(db: &mut Db, node: StructId) -> u32 {
         Struct::Atom(_) => 0,
     };
     here + below
+}
+
+/// Whether the subtree at `node` transitively reaches a FOREIGN perform — an effect operation NOT
+/// discharged by THIS handler `ctx` (an outer handler's effect, or a host-delegated op), following
+/// NON-RECURSIVE calls into their bodies (bounded depth). CONSERVATIVE (over-reports, never under-reports):
+/// a recursive/unresolvable call, or a chain deeper than the bound, reports `true`. Used to gate the
+/// MULTI-shot two-hole refold: re-running the continuation per resume must not re-issue a foreign/HOST
+/// effect (the host-composition invariant), so a body reaching a foreign perform stays one-shot-only.
+fn body_reaches_foreign_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+        if depth > 16 {
+            return true; // too deep — assume it may reach a foreign perform (safe over-report)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            // An effect op NOT in this handler's arms is FOREIGN (a perform of it re-issues outside).
+            if let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+                && !ctx.arms.contains_key(&(decl.0, idx))
+            {
+                return true;
+            }
+            // A user call: follow a non-recursive callee; a recursive/unresolvable head over-reports.
+            if crate::eval::effect_op_of(db, head).is_none() && !is_pure_operator_head(db, head) {
+                match crate::eval::lambda_body(db, head)
+                    .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                {
+                    Some(callee) if !crate::eval::is_recursive(db, callee) => {
+                        if walk(db, callee, ctx, depth + 1) {
+                            return true;
+                        }
+                    }
+                    _ => return true, // recursive / unresolvable — over-report
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, ctx, depth + 1));
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, ctx, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, ctx, 0)
 }
 
 /// Whether `param` is the unit placeholder `()` (a nullary operation's single "parameter", which binds

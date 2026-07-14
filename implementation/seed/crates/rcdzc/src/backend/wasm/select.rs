@@ -526,6 +526,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding). `trap`
         // diverges with no operand, so it holds no binding to escape.
         Core::ConstInt(_)
+        | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstChar(_)
@@ -1374,6 +1375,7 @@ pub fn collect_used_ops(
         // Leaves and references emit no runtime op. `trap` emits `unreachable` (a core instruction, not a
         // runtime import), so it adds nothing.
         Core::ConstInt(_)
+        | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
@@ -2739,6 +2741,13 @@ fn emit(
         // So a char value used inside a body declines cleanly (the scalar runtime rep is a later increment).
         Core::ConstChar(_) => Err(Reject::decline(
             "a runtime char value is not yet built (only a constant char folds; boundary crossing is later)",
+        )),
+        // A constant `Rational` reaching `emit` as an in-body VALUE has no machine slot form yet — its
+        // arithmetic/comparison FOLD in `lower` (never reaching here), and it does not yet cross the
+        // boundary (the `{numerator, denominator}` record value-form + a runtime rational compound are a
+        // later B4 slice). Declines cleanly, like a constant char used as a runtime value.
+        Core::ConstRational(_, _) => Err(Reject::decline(
+            "a runtime Rational value is not yet built (only a constant Rational folds; boundary crossing is later)",
         )),
         // The canonical NaN emits an `f64.const`/`f32.const` of the canonical NaN bit pattern at the
         // node's solved width — the same machine-slot value a returned NaN leaves on the stack (a NaN is a
