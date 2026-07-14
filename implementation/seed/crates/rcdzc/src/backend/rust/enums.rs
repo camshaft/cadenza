@@ -63,11 +63,13 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
         let ident = types::sum_ident(&decl.name);
         let mut groups = Vec::with_capacity(decl.variants.len());
         for variant in &decl.variants {
-            match variant_payload_render(db, variant) {
-                // A payload variant: `(Name <payload-render>)`.
-                Some(payload) => groups.push(format!("({} {})", variant.name, payload)),
-                // A nullary variant: `(Name)`.
-                None => groups.push(format!("({})", variant.name)),
+            let payloads = variant_payload_renders(db, variant);
+            // One token per payload: `(Name)` nullary, `(Name T)` single, `(Name T0 T1 …)` multi-payload
+            // (the token COUNT is the arity, so the harness spreads a multi-payload variant flat).
+            if payloads.is_empty() {
+                groups.push(format!("({})", variant.name));
+            } else {
+                groups.push(format!("({} {})", variant.name, payloads.join(" ")));
             }
         }
         out.push_str(&format!("// cdz-sum[{ident}]: {}\n", groups.join(" ")));
@@ -105,21 +107,20 @@ pub fn emit_newtype_descriptors(db: &mut Db) -> String {
     out
 }
 
-/// The `render_name` of a variant's payload TYPE, or `None` for a nullary variant. A one-payload variant
-/// is its payload type's render; a MULTI-payload variant's payload is one tuple, so it is the `(Tuple …)`
-/// render of the payload types (matching the single-`Ty::Tuple` payload the core models and the enum
-/// field `V((T0, T1))`). Used only for monomorphic sums, so `typeval_of` yields a concrete type.
-fn variant_payload_render(db: &mut Db, variant: &crate::db::Variant) -> Option<String> {
-    let tys: Vec<crate::ty::Ty> = variant
+/// The `render_name` of EACH of a variant's payload types, in order — an EMPTY vec for a nullary variant,
+/// ONE entry for a single-payload variant, N entries for a MULTI-payload variant. The descriptor emits one
+/// token per entry, so the token COUNT carries the variant's ARITY: a multi-payload variant `(P Int64
+/// (Option Int64))` (two tokens) renders its payloads SPREAD FLAT under the variant name — `(P 5 (Some 5))`
+/// — matching the wasm value form, whereas a single-payload variant carrying a TUPLE `(Q (Tuple Int64
+/// Int64))` (one token) keeps the nested `(Q (tuple …))`. Collapsing a multi-payload variant to one `(Tuple
+/// …)` token (as before) made the two INDISTINGUISHABLE, so the rust gate rendered `(P (tuple …))` where
+/// wasm flattens. Used only for monomorphic sums, so `typeval_of` yields a concrete type per payload.
+fn variant_payload_renders(db: &mut Db, variant: &crate::db::Variant) -> Vec<String> {
+    variant
         .payloads
         .iter()
-        .filter_map(|&occ| crate::eval::typeval_of(db, occ))
-        .collect();
-    match tys.len() {
-        0 => None,
-        1 => Some(tys[0].render_name()),
-        _ => Some(crate::ty::Ty::Tuple(tys.into()).render_name()),
-    }
+        .filter_map(|&occ| crate::eval::typeval_of(db, occ).map(|ty| ty.render_name()))
+        .collect()
 }
 
 /// Emit one sum declaration `db.type_decls[i]` as a Rust `enum`, or decline (a variant payload with no

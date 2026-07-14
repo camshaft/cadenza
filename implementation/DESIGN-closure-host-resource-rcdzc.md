@@ -856,6 +856,19 @@ the component type. The new work:
   `emit_distinct_sig_resource` routes to borrow. PROVEN e2e by `a_distinct_sig_call_g_is_repeatable` (one
   `make-inc` handle → `call-g(5)`=6 then `call-g(40)`=41). +1 corpus witness. **A host-held closure of ANY
   shape is now a repeatable callback — the design's own-vs-borrow fork is fully resolved on the borrow side.**
+- **✅ INTRA-PROGRAM closure-param capture via an INLINE lambda arg — the β-reduction over-pinning gap is
+  CLOSED `@e16bde5d`.** A returned lambda that captures a def's CLOSURE-typed parameter declined ("parameter
+  reference has no local slot") when the def was applied to an INLINE lambda argument (`(def (mk (: g (-> A
+  B))) (fn (x) (g x)))` given `(fn (y) (+ y 1))`). `eval::apply_lambda` pinned the whole arg subtree via
+  `resolve_subtree`, freezing the arg lambda's OWN params too; when that lambda was later β-reduced inside the
+  lifted returned body, its own-param refs (`y`) were shared as slot-less `Core::Param`. Fix: pin a lambda
+  argument by its FREE variables only (new `syntactic_lambda` + `pin_free_vars` excluding the arg lambda's own
+  params) — leaving own params unpinned to substitute on the later application. A def-ref or a let-bound
+  lambda already worked; this brings the INLINE form to parity, so a closure-arg factory is now uniform across
+  all three argument spellings (inline / top-level-def / let-bound), each → 6. +corpus (09-functions: the
+  former "…is declined" anchor is now a working witness; stale narrative rewritten). This was the last
+  intra-program reduction-engine blocker under the closures work — the boundary ABI gaps below remain, but the
+  guest-side closure mechanics are complete.
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —

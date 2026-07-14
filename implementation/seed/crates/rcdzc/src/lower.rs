@@ -7863,12 +7863,23 @@ fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
 //= spec/capabilities/numeric-model.md#an-arbitrary-precision-integer-has-unbounded-range
 //# An arithmetic operation on arbitrary-precision integers MUST NOT trap for the magnitude of its result, growing its representation as the result requires rather than wrapping or trapping.
 fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
-    if let Core::Poison(r) = core_of(db, lhs) {
+    let lc = core_of(db, lhs);
+    let rc = core_of(db, rhs);
+    if let Core::Poison(r) = lc {
         return Core::Poison(r);
     }
-    if let Core::Poison(r) = core_of(db, rhs) {
+    if let Core::Poison(r) = rc {
         return Core::Poison(r);
     }
+    // A CONSTANT BigInt pair could fold exactly here (the `IntValue` bignum is available), BUT it
+    // DELIBERATELY does NOT: the repeated-squaring idiom `a_i = (* a_{i-1} a_{i-1})` DOUBLES the bit-width
+    // each level, so folding a depth-k chain computes a 2^k-bit number at COMPILE TIME — a
+    // compile-time-blowup / hang on a small program (the `a_repeated_squaring_bigint_chain_diagnoses_in_
+    // bounded_time` regression). Exact unbounded arithmetic is a RUNTIME op (the runtime grows the
+    // magnitude lazily, and only if the value is actually demanded); the compiler stays bounded. The ONE
+    // exception is a program that EXPORTS a single constant BigInt result — but that path is served by the
+    // boundary value-form on a `Core::ConstInt` (a plain widened literal), not by folding an arithmetic
+    // chain. So a runtime `bigint-*` op is emitted for EVERY BigInt arithmetic, constant operands or not.
     let big_op = match op {
         Prim::Add => crate::core::BigIntOp::Add,
         Prim::Sub => crate::core::BigIntOp::Sub,

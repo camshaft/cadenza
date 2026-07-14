@@ -198,7 +198,22 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         Ok(l) => l,
         Err(r) => {
             trace!(target: "rcdzc::compile", reason = %r.message, "layout declined");
-            return fail_with(query_artifacts, vec![r]);
+            // Layout's decline can be the WEAKER twin of a coded well-formedness fault `collect_faults`
+            // reports better — e.g. a missing export: layout returns an UNCODED "export `x` names no
+            // definition", but `collect_faults` gives the coded CDZ0101 WITH a "did you mean?" + replace
+            // fix. `compile` short-circuited on layout's decline before `collect_faults` ran, so `cdz
+            // compile` showed the fix-less message while `cdz check` showed the actionable one — a
+            // check≡compile discrepancy. Run `collect_faults` now; if it found any coded fault, report
+            // THAT set (the richer, actionable diagnostics), keeping layout's decline only as the fallback
+            // for a decline `collect_faults` does not model (a boundary-shape it cannot lay out).
+            let mut faults = collect_faults(&mut db);
+            if faults.is_empty() {
+                return fail_with(query_artifacts, vec![r]);
+            }
+            for f in &mut faults {
+                sanitize_origin(&db, f);
+            }
+            return fail_with(query_artifacts, faults);
         }
     };
 
@@ -397,10 +412,10 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 /// non-integer, never on absence of proof.
 fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the SAME CDZ0101 an annotation gives (`(: x Nope)`). Resolution — not the
-    // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type this compiler does
-    // not yet model as a `Ty` (`BigInt`): a bound-unmodeled type resolves to SOMETHING (a `Ref`/`Record`)
-    // whose `typeval_of` is `None` (the conservative accept below), while an unbound name resolves to a
-    // `Poison(CDZ0101)`. Surfacing that poison here closes the silent-drop hole (a meaning-changing
+    // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type whose `typeval_of`
+    // this compiler cannot yet reduce to a concrete `Ty`: such a bound type resolves to SOMETHING (a
+    // `Ref`/`Record`) whose `typeval_of` is `None` (the conservative accept below), while an unbound name
+    // resolves to a `Poison(CDZ0101)`. Surfacing that poison here closes the silent-drop hole (a meaning-changing
     // directive naming a nonexistent type must not be accepted) WITHOUT falsely rejecting a legitimate
     // unmodeled integer default — the exact distinction `numeric-model.md`'s conservatism turns on. Keyed
     // on the resolver's own `Code::Unbound`, not on the name string, so no name knowledge lives here.
@@ -801,26 +816,45 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // entries named `a`, which the component binary format forbids, so the emitted bytes fail to parse:
     // reject BEFORE emitting rather than miscompile an invalid component (decline-don't-miscompile).
     // Each export clause after the first with a given name is reported, anchored at its clause.
+    // How many exported names each `(export …)` CLAUSE contributes (keyed by the clause occurrence): a
+    // single-name `(export a)` has one, a multi-name `(export a b)` has several. Used to pick what the
+    // duplicate-export delete fix removes — the whole clause vs. just the redundant name.
+    let mut names_per_clause: crate::fxhash::FxHashMap<StructId, usize> =
+        crate::fxhash::FxHashMap::default();
+    for e in &db.exports {
+        *names_per_clause.entry(e.occ).or_insert(0) += 1;
+    }
     let mut seen_exports: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let dup_exports: Vec<(String, StructId)> = db
+    let dup_exports: Vec<(String, StructId, StructId)> = db
         .exports
         .iter()
         .filter(|e| !seen_exports.insert(e.name.as_str()))
-        .map(|e| (e.name.clone(), e.occ))
+        .map(|e| (e.name.clone(), e.name_occ, e.occ))
         .collect();
-    for (name, occ) in dup_exports {
-        // `occ` is a REDUNDANT `(export NAME)` clause (a later one — the first occurrence is not in
-        // `dup_exports`). Exporting a name is idempotent in intent: the earlier clause already makes it
-        // public, so the direct repair is to DELETE this duplicate clause. Verified-clean by `--verify-fixes`
-        // (removing a duplicate export cannot change the public surface — the name stays exported once).
+    for (name, name_occ, clause_occ) in dup_exports {
+        // `name_occ` is a REDUNDANT exported NAME (a later occurrence — the first is not in `dup_exports`).
+        // Exporting a name is idempotent in intent: the earlier occurrence already makes it public, so the
+        // direct repair is to DELETE the redundant export. WHAT to delete depends on the clause's arity:
+        //   - a MULTI-name clause `(export a b a)` → delete just the redundant NAME atom, leaving `b` and
+        //     the first `a` (`(export a b)`).
+        //   - a SINGLE-name clause `(export a)` → delete the WHOLE clause. Deleting only the name would
+        //     leave an empty `(export)`, itself now a CDZ0201 malformed-export reject (a self-defeating
+        //     fix that fails `--verify-fixes` and never applies). Removing the clause leaves exactly the
+        //     earlier `(export a)`.
+        // Either way the public surface is unchanged (the name stays exported once), so the fix verifies.
+        let delete_at = if names_per_clause.get(&clause_occ).copied().unwrap_or(1) > 1 {
+            name_occ
+        } else {
+            clause_occ
+        };
         faults.push(
             Reject::coded(
                 Code::Malformed,
                 format!("`{name}` is exported more than once (a module has a fixed set of names)"),
             )
-            .at(occ)
+            .at(name_occ)
             .with_fix(crate::diag::Fix::delete_heuristic(
-                occ,
+                delete_at,
                 format!("remove the duplicate export of `{name}`"),
             )),
         );
@@ -1119,6 +1153,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // unreachable (its value, and any trap it would raise, dropped). Reject the SECOND+ occurrence of a
     // name (CDZ0102, the non-linear-binder code the spec assigns), anchored at the repeated binder. Per
     // def (a name may of course repeat ACROSS defs); the binder NAME sees through a `(: name T)` binder.
+    // MALFORMED PARAMETER POSITION. A parameter is a binder: a bare NAME (`x`), a wildcard `_`, an
+    // annotated `(: name T)`, or a destructuring PATTERN (a compound list — tuple/record/ctor, validated
+    // by the binding-pattern path). A bare LITERAL (`(def (f 5) …)`, `(def (f true) …)`) is NONE of these
+    // — it binds nothing, so the parameter is dead and any argument passed to it is silently ignored. It
+    // was accepted with no diagnostic (the scan reads `children[1..]` without validating each is a binder,
+    // and `param_name_occ` just returns the literal node). Reject a bare-atom parameter that is not a name
+    // (CDZ0201): a parameter must name something. A COMPOUND (list) parameter is a destructuring pattern —
+    // left to the binding-pattern path, which rejects a refutable/ill-formed one with its own coded fault.
+    let malformed_params: Vec<StructId> = db
+        .defs
+        .iter()
+        .flat_map(|d| d.params.clone())
+        .filter(|&p| {
+            matches!(db.ast.get(p), crate::ast::Struct::Atom(_)) && db.ast.as_name(p).is_none()
+        })
+        .collect();
+    for p in malformed_params {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "a parameter must be a name, a `(: name Type)` binder, or a destructuring pattern — a \
+                 literal binds nothing",
+            )
+            .at(p),
+        );
+    }
     let param_lists: Vec<Vec<StructId>> = db.defs.iter().map(|d| d.params.clone()).collect();
     for params in &param_lists {
         // All param names of this list — the set the rename fix must avoid so a fresh name collides with
@@ -1256,13 +1316,9 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .exports
         .iter()
         .filter(|e| e.def.is_none())
-        .map(|e| {
-            let name_occ = db
-                .ast
-                .as_form(e.occ, "export")
-                .and_then(|tail| tail.first().copied());
-            (e.name.clone(), e.occ, name_occ)
-        })
+        // `name_occ` is the specific exported-name atom — correct even for the 2nd+ name of a multi-name
+        // `(export a b)` clause, where reading the clause's `tail.first()` would mis-anchor to `a`.
+        .map(|e| (e.name.clone(), e.occ, Some(e.name_occ)))
         .collect();
     for (name, occ, name_occ) in missing_exports {
         match crate::diag::suggest::nearest(&name, &defined_names) {
@@ -1306,6 +1362,34 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 faults.push(Reject::coded(Code::Unbound, message).at(occ));
             }
         }
+    }
+    // A MALFORMED EXPORT CLAUSE — `(export (g x))`, `(export 5)`, `(export)` — whose argument is not a bare
+    // name. The module scan only registers an `Export` when the argument `as_name`s, so a malformed clause
+    // is otherwise SILENTLY DROPPED (no export recorded, `unknown_top_forms` skips it since its head is the
+    // known `export`), and the program compiles as if the author never wrote the export — the emit path
+    // then reports a misleading "nothing is public". Reject it here (CDZ0201) so BOTH `check` and `compile`
+    // name the real fault + how to fix it: an export names a single definition, `(export g)`. A scan-and-
+    // drop correctness hazard closed at the chokepoint. (A WELL-FORMED `(export g)` naming a missing/typo'd
+    // or non-value def is handled above as CDZ0101 — this is only the STRUCTURALLY malformed argument.)
+    for (occ, bad_arg) in db.malformed_exports() {
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            "an export names a single definition — write `(export <name>)`, e.g. `(export main)`"
+                .to_string(),
+        )
+        .at(occ);
+        // When the bad argument is a compound whose HEAD is a name — `(export (g x))` — the author most
+        // likely meant to export `g`; offer replacing the whole clause with `(export <head>)`. A non-name
+        // argument (`(export 5)`) or an empty `(export)` has no name to recover → message only.
+        if let Some(arg) = bad_arg
+            && let Some(head) = db.ast.head_name(arg)
+        {
+            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                occ,
+                format!("(export {head})"),
+            ));
+        }
+        faults.push(reject);
     }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
     // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed

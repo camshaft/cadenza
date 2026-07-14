@@ -2464,6 +2464,16 @@ fn thread_bounded(
             // abort (non-tail branch, condition) was declined by `body_has_unsound_abortive_perform` in
             // `reduce_handle` before threading, so it never reaches here. State does not thread (abandoned).
             if ctx.abortive.contains(&(decl, idx)) {
+                // FIRST abort wins. Threading proceeds in EVALUATION ORDER (left-to-right), so the first
+                // abortive perform to fire is the leftmost — and it ABANDONS the rest of the computation,
+                // including any later abortive perform on the same strict spine. If the cell is ALREADY set
+                // (an earlier operand aborted), that earlier value stands: do NOT overwrite it, and return
+                // it so this dead position carries the surviving value. `(+ (Bail.bail 7) (Bail.bail 9))`
+                // must yield 7 (the first), never 9 — without this guard the second perform overwrote the
+                // cell as threading continued past the first abort (a miscompile).
+                if let Some(existing) = ctx.abort_value.get() {
+                    return Some((existing, cur));
+                }
                 let copied = copy_pure(db, arm_body);
                 ctx.abort_value.set(Some(copied));
                 return Some((copied, cur));

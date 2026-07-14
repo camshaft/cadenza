@@ -245,6 +245,8 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a module with two definitions of the same name is rejected
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
+pass	a multi-payload variant whose spread element is itself a compound escapes correctly
+pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
@@ -349,6 +351,7 @@ pass	a recursive predicate with the self-call in the else branch is a Bool condi
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive sum type works with pattern matching
 pass	a recursive-sum payload projected more than once folds to a scalar
+pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a reference to an unbound name is rejected before running
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows

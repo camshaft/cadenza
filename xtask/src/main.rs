@@ -1123,7 +1123,7 @@ fn cdz_return_type(module: &str, name: &str) -> Option<String> {
 ///  - any scalar (`Int64`, `Bool`, …) → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
 fn cdz_render_expr(
     ty: &str,
-    sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
 ) -> String {
     let mut helpers = Vec::new();
@@ -1152,7 +1152,7 @@ fn cdz_render_expr(
 fn cdz_render_at(
     ty: &str,
     path: &str,
-    sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
@@ -1297,18 +1297,53 @@ fn cdz_render_at(
             {
                 on_path.push(ty.to_string());
                 let mut arms = Vec::with_capacity(variants.len());
-                for (vname, payload) in variants {
+                for (vname, payloads) in variants {
                     let vident = rust_ident(vname);
-                    match payload {
-                        Some(pty) => {
-                            let inner = cdz_render_at(pty, "__p", sums, newtypes, helpers, on_path);
+                    match payloads.len() {
+                        // A nullary variant → `(Name unit)`.
+                        0 => arms.push(format!(
+                            "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
+                        )),
+                        // A single-payload variant → `(Name <payload>)`, the payload rendered from `__p`
+                        // (its own type — a scalar, tuple, record, or nested sum; kept nested if a tuple).
+                        1 => {
+                            let inner = cdz_render_at(
+                                &payloads[0],
+                                "__p",
+                                sums,
+                                newtypes,
+                                helpers,
+                                on_path,
+                            );
                             arms.push(format!(
                                 "prog::{ty}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
                             ));
                         }
-                        None => arms.push(format!(
-                            "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
-                        )),
+                        // A MULTI-payload variant → `(Name e0 e1 …)` SPREAD FLAT. Its N payloads box as ONE
+                        // Rust tuple field (`P((i64, Option<i64>))`), so bind that tuple `__p` and render
+                        // each element `(__p).i` by its own payload type — the flat form the wasm value-
+                        // encode produces (`(P 5 (Some 5))`), NOT the nested `(P (tuple 5 (Some 5)))`.
+                        n => {
+                            let placeholders = vec!["{}"; n].join(" ");
+                            let parts: Vec<String> = payloads
+                                .iter()
+                                .enumerate()
+                                .map(|(i, pty)| {
+                                    cdz_render_at(
+                                        pty,
+                                        &format!("(__p).{i}"),
+                                        sums,
+                                        newtypes,
+                                        helpers,
+                                        on_path,
+                                    )
+                                })
+                                .collect();
+                            arms.push(format!(
+                                "prog::{ty}::{vident}(__p) => format!(\"({vname} {placeholders})\", {})",
+                                parts.join(", ")
+                            ));
+                        }
                     }
                 }
                 on_path.pop();
@@ -1347,7 +1382,7 @@ fn cdz_render_at(
 /// return-type name erases). Only monomorphic user sums have a descriptor (see `emit_sum_descriptors`).
 fn cdz_sum_descriptors(
     module: &str,
-) -> std::collections::HashMap<String, Vec<(String, Option<String>)>> {
+) -> std::collections::HashMap<String, Vec<(String, Vec<String>)>> {
     let mut map = std::collections::HashMap::new();
     for line in module.lines() {
         let t = line.trim_start();
@@ -1357,19 +1392,19 @@ fn cdz_sum_descriptors(
         let Some((ident, groups)) = rest.split_once("]:") else {
             continue;
         };
-        // Each top-level `(…)` group is one variant: its first token is the Cadenza variant name, the
-        // remainder (if any) is the payload type's render_name. `split_top_level` respects nesting, so a
-        // record/tuple payload `(Pt (record (x Int64) (y Int64)))` stays one group.
-        let variants: Vec<(String, Option<String>)> = split_top_level(groups.trim())
+        // Each top-level `(…)` group is one variant: its first token is the Cadenza variant name, and the
+        // remaining top-level tokens are its payload type render_names — ZERO (nullary), ONE (single), or N
+        // (a MULTI-payload variant, whose N payloads the harness renders SPREAD FLAT). `split_top_level`
+        // respects nesting, so a payload that is itself a `(Tuple …)`/`(record …)`/`(Option …)` stays one
+        // token; the token COUNT is the variant's arity (a single `(Tuple …)` token = one tuple payload,
+        // kept nested; N tokens = a multi-payload variant, spread).
+        let variants: Vec<(String, Vec<String>)> = split_top_level(groups.trim())
             .iter()
             .filter_map(|g| {
                 let inner = g.strip_prefix('(')?.strip_suffix(')')?.trim();
-                match inner.split_once(char::is_whitespace) {
-                    Some((name, payload)) => {
-                        Some((name.trim().to_string(), Some(payload.trim().to_string())))
-                    }
-                    None => Some((inner.to_string(), None)),
-                }
+                let toks = split_top_level(inner);
+                let (name, payloads) = toks.split_first()?;
+                Some((name.trim().to_string(), payloads.to_vec()))
             })
             .collect();
         map.insert(ident.trim().to_string(), variants);
@@ -2897,9 +2932,9 @@ mod trap_grading_tests {
             vec![
                 (
                     "Cons".to_string(),
-                    Some("(Tuple Int64 IntList)".to_string()),
+                    vec!["(Tuple Int64 IntList)".to_string()],
                 ),
-                ("Nil".to_string(), None),
+                ("Nil".to_string(), Vec::new()),
             ],
         );
         let expr = cdz_render_expr("IntList", &sums, &std::collections::HashMap::new());
@@ -2924,9 +2959,9 @@ mod trap_grading_tests {
         mono.insert(
             "Sign".to_string(),
             vec![
-                ("Neg".to_string(), None),
-                ("Zero".to_string(), None),
-                ("Pos".to_string(), None),
+                ("Neg".to_string(), Vec::new()),
+                ("Zero".to_string(), Vec::new()),
+                ("Pos".to_string(), Vec::new()),
             ],
         );
         let s = cdz_render_expr("Sign", &mono, &std::collections::HashMap::new());
@@ -3019,5 +3054,50 @@ mod trap_grading_tests {
         );
         // The whole-token guard still rejects a longer head — `(TupleX …)` must NOT match `Tuple`.
         assert_eq!(parse_head_type("(TupleX A)", "Tuple"), None);
+    }
+
+    #[test]
+    fn a_multi_payload_variant_renders_its_payloads_spread_flat() {
+        // A MULTI-payload variant `(P Int64 (Option Int64))` renders SPREAD FLAT — `(P 5 (Some 5))`, each
+        // payload a token under the variant name — matching the wasm value form, NOT the nested `(P (tuple 5
+        // (Some 5)))`. A SINGLE-payload variant carrying a tuple `(Q (Tuple Int64 Int64))` keeps the nested
+        // `(Q (tuple 5 5))`. The descriptor's token COUNT per variant is the arity that distinguishes them
+        // (before, a multi-payload variant collapsed to one `(Tuple …)` token, indistinguishable from a
+        // single tuple payload → the rust gate rendered `(P (tuple …))` where wasm flattens).
+        let nt = std::collections::HashMap::new();
+        // The parser reads N payload tokens per variant: `P` has TWO, `Q` has ONE, `E` has ZERO.
+        let ds = cdz_sum_descriptors(
+            "// cdz-sum[W]: (P Int64 (Option Int64)) (E)\n// cdz-sum[V]: (Q (Tuple Int64 Int64)) (E)",
+        );
+        let w = &ds["W"];
+        assert_eq!(
+            w[0],
+            (
+                "P".to_string(),
+                vec!["Int64".to_string(), "(Option Int64)".to_string()]
+            )
+        );
+        assert_eq!(w[1], ("E".to_string(), Vec::<String>::new()));
+        assert_eq!(
+            ds["V"][0],
+            ("Q".to_string(), vec!["(Tuple Int64 Int64)".to_string()])
+        );
+
+        // The multi-payload variant renders its two payloads FLAT — `(P {} {})` reading `(__p).0`/`(__p).1`.
+        let expr = cdz_render_expr("W", &ds, &nt);
+        assert!(
+            expr.contains("(P {} {})") && expr.contains("(__p).0") && expr.contains("(__p).1"),
+            "a multi-payload variant spreads its payloads flat under the name: {expr}"
+        );
+        assert!(
+            !expr.contains("(P {})"),
+            "a multi-payload variant must NOT render as one nested tuple payload: {expr}"
+        );
+        // A single-tuple-payload variant keeps the nested tuple — `(Q {})` where `{}` is `(tuple …)`.
+        let vexpr = cdz_render_expr("V", &ds, &nt);
+        assert!(
+            vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
+            "a single tuple payload stays nested: {vexpr}"
+        );
     }
 }

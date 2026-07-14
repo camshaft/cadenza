@@ -1376,7 +1376,14 @@ struct DocBuilder {
 }
 enum DocLeaf {
     Name(String),
-    Int(bool, Vec<u8>), // (negative, big-endian magnitude)
+    /// A SCALAR (i64-bounded) integer leaf — stores the raw `i64`, NOT a heap magnitude `Vec`. The
+    /// canonical `[sign][big-endian magnitude, leading-zeros-stripped]` wire form is derived directly
+    /// into the pre-sized output at `finish` time (the magnitude is ≤8 stack bytes), so a scalar int
+    /// leaf allocates NOTHING — this is the dominant leaf in every escaped value (each list/tuple/record
+    /// int emitted one `Vec<u8>` before, ~50 of ~92 allocs for a 50-int list). Byte-identical to the old
+    /// `Int(neg, be_mag)` form. An arbitrary-width BigInt (>i64) still uses `Int` (a real heap magnitude).
+    IntScalar(i64),
+    Int(bool, Vec<u8>), // (negative, big-endian magnitude) — BigInt / arbitrary width only
     Bool(bool),
     Str(Vec<u8>),   // UTF-8 body verbatim (the runtime String's raw bytes)
     Bytes(Vec<u8>), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
@@ -1387,6 +1394,21 @@ enum DocStruct {
     /// A list struct: its children are `child_pool[start .. start + len]` (a RANGE into the builder's
     /// shared arena, not an owned Vec).
     List { start: u32, len: u32 },
+}
+
+/// The canonical big-endian magnitude of a scalar `i64`, leading zeros stripped (empty for zero), into a
+/// STACK buffer — the codec's `KIND_INT` magnitude for an i64-bounded value. Returns `(negative, &mag)`
+/// borrowing `buf`. `unsigned_abs` handles `i64::MIN` without overflow (magnitude `80 00…00`). The
+/// `DocLeaf::IntScalar` write path uses this to emit the same bytes the old heap-`Vec` form did, with NO
+/// allocation — the write is `out.extend_from_slice(mag)` straight from the stack.
+#[inline]
+fn i64_be_magnitude(v: i64, buf: &mut [u8; 8]) -> (bool, &[u8]) {
+    *buf = v.unsigned_abs().to_be_bytes();
+    let start = buf.iter().position(|&b| b != 0).unwrap_or(buf.len());
+    // Zero carries an EMPTY magnitude and is never negative on the wire (matches the old `int_leaf` +
+    // `DocLeaf::Int`'s finish rule, and `bigint_leaf`'s canonical zero).
+    let mag = &buf[start..];
+    (v < 0 && !mag.is_empty(), mag)
 }
 
 impl DocBuilder {
@@ -1434,12 +1456,10 @@ impl DocBuilder {
         i
     }
     fn int_leaf(&mut self, v: i64) -> u32 {
-        // Big-endian magnitude with leading zeros stripped (empty for zero) — the codec's canonical Int.
-        let neg = v < 0;
-        let mag = (v.unsigned_abs()).to_be_bytes();
-        let start = mag.iter().position(|&b| b != 0).unwrap_or(mag.len());
-        let magnitude = mag[start..].to_vec();
-        self.leaves.push(DocLeaf::Int(neg, magnitude));
+        // Store the raw `i64` — the canonical `[sign][big-endian magnitude, leading-zeros-stripped]` wire
+        // form is derived directly into the output at `finish` (a ≤8-byte stack magnitude), so a scalar int
+        // leaf allocates NO heap Vec. Byte-IDENTICAL to the old `Int(v<0, be_mag_stripped)` form.
+        self.leaves.push(DocLeaf::IntScalar(v));
         (self.leaves.len() - 1) as u32
     }
     /// A BigInt leaf — the SAME `KIND_INT` codec leaf as `int_leaf`, but for an arbitrary-precision value.
@@ -1592,6 +1612,7 @@ impl DocBuilder {
             .leaves
             .iter()
             .map(|l| match l {
+                DocLeaf::IntScalar(_) => 11 + 8, // kind + ≤10-byte len LEB + ≤8 magnitude bytes
                 DocLeaf::Int(_, mag) => 11 + mag.len(),
                 DocLeaf::Bool(_) => 1,
                 DocLeaf::Name(n) => 11 + n.len(),
@@ -1609,6 +1630,20 @@ impl DocBuilder {
         doc_leb(&mut out, self.leaves.len() as u64);
         for leaf in &self.leaves {
             match leaf {
+                DocLeaf::IntScalar(v) => {
+                    // Derive the canonical `[sign][BE magnitude]` on the STACK (no heap Vec) and write the
+                    // SAME bytes the `Int` arm below writes for the equivalent value. Kinds (sign<<0 offset):
+                    // pos-dec = 0, neg-dec = 3 (codec KIND_INT_*); zero → empty magnitude, positive kind.
+                    let mut buf = [0u8; 8];
+                    let (is_neg, mag) = i64_be_magnitude(*v, &mut buf);
+                    out.push(if is_neg {
+                        doc::KIND_INT_POS_DEC + 3
+                    } else {
+                        doc::KIND_INT_POS_DEC
+                    });
+                    doc_leb(&mut out, mag.len() as u64);
+                    out.extend_from_slice(mag);
+                }
                 DocLeaf::Int(neg, mag) => {
                     // Zero carries an empty magnitude and the POSITIVE kind (never negative-zero).
                     let is_neg = *neg && !mag.is_empty();
@@ -6913,10 +6948,13 @@ mod tests {
 
     /// value-encode of a BOXED i64 at the extremes, byte-exact against the codec's KIND_INT sign+magnitude
     /// form. `int_round_trip` only checks `op_get_int` (round-trip) and a test-side `render` reimpl — NOT
-    /// `int_leaf`'s real codec bytes through `op_value_encode_form`. The riskiest value is `i64::MIN`,
-    /// whose `-v` overflows: `int_leaf` uses `v.unsigned_abs()` (= 2^63, magnitude `80 00…00`) so the
-    /// magnitude is right and the sign flag negative. A big-endian / leading-zero-strip / sign bug in
-    /// `int_leaf` slips past the small-value `intlist` differential; this pins the boundary. Descriptor:
+    /// the real codec bytes through `op_value_encode_form`. The riskiest value is `i64::MIN`, whose `-v`
+    /// overflows: the scalar path stores the raw `i64` (`DocLeaf::IntScalar`) and `i64_be_magnitude`
+    /// derives the wire bytes at finish via `v.unsigned_abs()` (= 2^63, magnitude `80 00…00`) so the
+    /// magnitude is right and the sign flag negative. A big-endian / leading-zero-strip / sign bug in the
+    /// finish-time derivation slips past the small-value `intlist` differential; this pins the boundary
+    /// (and guards that the raw-i64 `IntScalar` form is byte-identical to the old heap-magnitude form).
+    /// Descriptor:
     /// table [0]=Int (tag 0), root=0. Doc = header(8)·leaf_count(1)·[KIND·LEB(mlen)·mag]·struct(1)·
     /// [TAG_ATOM·0]·root(0). KIND 0 = pos, 3 = neg.
     #[test]
@@ -8932,8 +8970,8 @@ mod tests {
         // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
         // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
         assert!(
-            smap_enc <= 30000,
-            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 30000 (grow-once pools + entries Vec + output, linear in entries; the Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs)"
+            smap_enc <= 10000,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 10000 (was ~10200 → ~7100: the int VALUES stopped malloc'ing magnitude Vecs (`DocLeaf::IntScalar`); string keys remain a leaf each. Grow-once pools + entries Vec + output, linear in entries; the Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
         );
         op_drop(smap);
 
@@ -8960,8 +8998,8 @@ mod tests {
         // The int-key `sort_by` allocates nothing. A per-entry transient Vec or an O(N²) CHAMP re-walk
         // would be orders of magnitude over this ceiling (O(N²) at N=1000 ≈ 10⁶).
         assert!(
-            lmap_enc <= 6000,
-            "value_encode_largemap N={LMAP_N} allocs {lmap_enc} exceeds ceiling 6000 (~2/entry linear: grow-once entries+leaf+struct+child pools + output; int-key sort is heap-free; an O(N²)/per-entry-Vec regression would blow past)"
+            lmap_enc <= 400,
+            "value_encode_largemap N={LMAP_N} allocs {lmap_enc} exceeds ceiling 400 (was 2065: an int key+value each malloc'd a magnitude Vec; now `DocLeaf::IntScalar` stores the raw i64 and derives the wire magnitude on the stack at finish → only the grow-once entries+leaf+struct+child pools + output remain, ~0/entry. A per-int-Vec regression would climb back to ~2/entry)"
         );
         op_drop(lmap);
 
@@ -8998,15 +9036,16 @@ mod tests {
             drop_allocs <= 40,
             "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
         );
-        // MEASURED 92 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.61 allocs/node — after
-        // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`) AND the output-Vec
-        // pre-size that killed the serialization realloc churn (~100→92, `@84ebc883`). The remaining allocs
-        // are the grow-once `leaves`/`structs`/`child_pool` Vecs (amortized) + the now-pre-sized output +
-        // the returned Bytes leaf — all LINEAR in node count. Ceiling TIGHTENED 13000→11000 to track the
-        // reduced floor (the stale 13000 tolerated a 41% regression); catches an O(N²) re-walk or a return
-        // of per-node Vec / output-realloc churn. `xtask bench`'s baseline (9200) is the tight guard; this
+        // MEASURED 43 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.29 allocs/node — after
+        // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`), the output-Vec pre-size
+        // that killed the serialization realloc churn (~100→92, `@84ebc883`), AND the `DocLeaf::IntScalar`
+        // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, the biggest single cut — a
+        // 50-int list has ~50 int leaves). The remaining allocs are the grow-once `leaves`/`structs`/
+        // `child_pool` Vecs (amortized) + the pre-sized output + the returned Bytes leaf — all LINEAR in
+        // node count. Ceiling TIGHTENED 11000→5000 to track the reduced floor; catches an O(N²) re-walk or a
+        // return of per-node Vec / output-realloc churn. `xtask bench`'s baseline (4300) is the tight guard; this
         // is the coarse in-suite backstop.
-        assert!(venc <= 11000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 11000 (~92/encode of a 50-node list after the child_pool arena + output pre-size; a per-node-Vec or output-realloc regression would climb)");
+        assert!(venc <= 5000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 5000 (~43/encode of a 50-node list: was ~92 — each int leaf malloc'd a magnitude Vec; now `DocLeaf::IntScalar` stores the raw i64 and derives the wire magnitude on the stack at finish (zero-alloc), leaving only the grow-once pools + output. A per-int-Vec or output-realloc regression would climb)");
         op_drop(ve_list);
     }
 
