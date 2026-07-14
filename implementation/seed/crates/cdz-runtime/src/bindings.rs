@@ -686,6 +686,80 @@ pub mod exports {
                     let result0 = T::bigint_rem(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_of_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_of(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_num_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_num(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_den_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_den(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_add_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_add(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_sub_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_sub(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_mul_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_mul(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_div_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_div(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_rational_cmp_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i64 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::rational_cmp(arg0 as u32, arg1 as u32);
+                    _rt::as_i64(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1050,6 +1124,28 @@ pub mod exports {
                     ///    by the SAME `divmod` as `bigint-div` (it returns both quotient and remainder). APPENDED at the end
                     ///    (frozen-contract APPEND-only rule — a new op goes last so no existing op's index shifts).
                     fn bigint_rem(a: u32, b: u32) -> u32;
+                    /// 73 — a % b (remainder, dividend's sign; traps on /0)
+                    /// ── Exact rational (indices 74+) — a `Rational` is a NORMALIZED 2-handle node `[num, den]`, each child
+                    ///    a BigInt leaf (lowest terms, sign on numerator, denom > 0). `rational-of` builds one from two
+                    ///    BigInt handles (CONSUMES them), trapping on a zero denominator; `rational-num`/`rational-den`
+                    ///    recover a component as a fresh BigInt handle (for narrowing/rendering); add/sub/mul/div are exact
+                    ///    (never overflow — BigInt components), `div` traps on a zero result-denominator; `rational-cmp` is
+                    ///    the three-way compare the `<`/`=`/`>` operators lower to. APPENDED last (frozen-contract rule).
+                    fn rational_of(num: u32, den: u32) -> u32;
+                    /// 74 — normalize (num, den) → rational (traps on den=0)
+                    fn rational_num(r: u32) -> u32;
+                    /// 75 — numerator as a fresh BigInt handle
+                    fn rational_den(r: u32) -> u32;
+                    /// 76 — denominator as a fresh BigInt handle
+                    fn rational_add(a: u32, b: u32) -> u32;
+                    /// 77 — a + b (exact, normalized)
+                    fn rational_sub(a: u32, b: u32) -> u32;
+                    /// 78 — a - b
+                    fn rational_mul(a: u32, b: u32) -> u32;
+                    /// 79 — a * b
+                    fn rational_div(a: u32, b: u32) -> u32;
+                    /// 80 — a / b (traps on a zero divisor)
+                    fn rational_cmp(a: u32, b: u32) -> i64;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1315,7 +1411,38 @@ pub mod exports {
                         } #[unsafe (export_name = "cadenza:runtime/heap#bigint-rem")]
                         unsafe extern "C" fn export_bigint_rem(arg0 : i32, arg1 : i32,)
                         -> i32 { unsafe { $($path_to_types)*::
-                        _export_bigint_rem_cabi::<$ty > (arg0, arg1) } } };
+                        _export_bigint_rem_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#rational-of")] unsafe extern
+                        "C" fn export_rational_of(arg0 : i32, arg1 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_rational_of_cabi::<$ty >
+                        (arg0, arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-num")] unsafe extern "C" fn
+                        export_rational_num(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_rational_num_cabi::<$ty > (arg0) } }
+                        #[unsafe (export_name = "cadenza:runtime/heap#rational-den")]
+                        unsafe extern "C" fn export_rational_den(arg0 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_rational_den_cabi::<$ty >
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-add")] unsafe extern "C" fn
+                        export_rational_add(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_rational_add_cabi::<$ty > (arg0,
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-sub")] unsafe extern "C" fn
+                        export_rational_sub(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_rational_sub_cabi::<$ty > (arg0,
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-mul")] unsafe extern "C" fn
+                        export_rational_mul(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_rational_mul_cabi::<$ty > (arg0,
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-div")] unsafe extern "C" fn
+                        export_rational_div(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_rational_div_cabi::<$ty > (arg0,
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#rational-cmp")] unsafe extern "C" fn
+                        export_rational_cmp(arg0 : i32, arg1 : i32,) -> i64 { unsafe {
+                        $($path_to_types)*:: _export_rational_cmp_cabi::<$ty > (arg0,
+                        arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1524,15 +1651,15 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1863] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xc9\x0d\x01A\x02\x01\
-A\x02\x01Bv\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
-\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
-andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
-\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
-arr-alloc\x01\x06\x01@\x03\x03arry\x05indexy\x04elemy\0y\x04\0\x07arr-set\x01\x07\
-\x01@\x02\x03arry\x05indexy\0y\x04\0\x07arr-get\x01\x08\x01@\x01\x03arry\0y\x04\0\
-\x07arr-len\x01\x09\x01@\x02\x04discy\x07payloady\0y\x04\0\x07sum-new\x01\x0a\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2022] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe8\x0e\x01A\x02\x01\
+A\x02\x01B\x80\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
+\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
+\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
+\0\x09arr-alloc\x01\x06\x01@\x03\x03arry\x05indexy\x04elemy\0y\x04\0\x07arr-set\x01\
+\x07\x01@\x02\x03arry\x05indexy\0y\x04\0\x07arr-get\x01\x08\x01@\x01\x03arry\0y\x04\
+\0\x07arr-len\x01\x09\x01@\x02\x04discy\x07payloady\0y\x04\0\x07sum-new\x01\x0a\x01\
 @\x01\x06handley\0y\x04\0\x08sum-disc\x01\x0b\x04\0\x0bsum-payload\x01\x0b\x04\0\
 \x0bbytes-alloc\x01\x06\x01@\x03\x03bufy\x05indexy\x05valuey\0y\x04\0\x09bytes-s\
 et\x01\x0c\x01@\x02\x03bufy\x05indexy\0y\x04\0\x09bytes-get\x01\x0d\x01@\x01\x03\
@@ -1564,10 +1691,13 @@ encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01@\x01\x06handley\0v\x
 \0\x0bget-float32\x01*\x04\0\x0dbigint-of-i64\x01\0\x04\0\x15bigint-to-i64-check\
 ed\x01\x01\x04\0\x0abigint-add\x01\x1d\x04\0\x0abigint-sub\x01\x1d\x04\0\x0abigi\
 nt-mul\x01\x1d\x04\0\x0abigint-div\x01\x1d\x01@\x02\x01ay\x01by\0x\x04\0\x0abigi\
-nt-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x0abigint-rem\x01\x1d\x04\0\x14caden\
-za:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07ru\
-ntime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.\
-1\x10wit-bindgen-rust\x060.41.0";
+nt-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x0abigint-rem\x01\x1d\x01@\x02\x03nu\
+my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\x01\
+-\x04\0\x0crational-den\x01-\x04\0\x0crational-add\x01\x1d\x04\0\x0crational-sub\
+\x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
+tional-cmp\x01+\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/run\
+time\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\
+\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
