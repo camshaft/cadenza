@@ -30579,6 +30579,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_line_comment_wrapping_a_top_level_form_is_seen_through() {
+        // 11-modules "a line comment wrapping a top-level form does not hide it": a leading `//` on a form
+        // reifies to `(comment "<text>" <form>)` wrapping the WHOLE form (the comment companion of a leading
+        // `(doc …)`). The comment is semantically inert (self-hosting-surface.md — the compiler sees through
+        // comments as it sees through docs), so `strip_comments` peels it at load. Before, the top-level
+        // scan read `comment` as an unknown declaration head → the wrapped `def` invisible ("unbound name
+        // comment" + `f` unbound). A comment on a def → the def registers; `(f 7)` = 7.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"note\" (def (f (: x Int64)) x)) (def (main) (f 7)) (export main))",
+        )))
+        .expect("a comment-wrapped def registers");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+        // A comment on a TYPE declaration — the wrapped `(type …)` still declares its variants.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"a tag\" (type Color (Red) (Blue))) \
+               (def (main) (match (Color.Red) ((Color.Red) 1) ((Color.Blue) 2))) (export main))",
+        )))
+        .expect("a comment-wrapped type declares");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+        // STACKED comments NEST — `(comment "a" (comment "b" (def …)))` — so the peel must follow the whole
+        // chain to the innermost form, not just one layer.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"a\" (comment \"b\" (def (f (: x Int64)) x))) \
+               (def (main) (f 7)) (export main))",
+        )))
+        .expect("stacked comments peel to the innermost form");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.

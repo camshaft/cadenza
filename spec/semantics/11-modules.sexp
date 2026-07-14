@@ -273,6 +273,33 @@
             (def (main) answer) (export main)))
   (output (: 42 Int64)))
 
+(case "a line comment wrapping a top-level form does not hide it"
+  (doc    "A leading `//` line comment on a top-level form reifies (by the reader) to `(comment \"<text>\"
+           <form>)` wrapping the WHOLE form — the comment companion of the leading `(doc …)` above. The
+           comment is SEMANTICALLY INERT (self-hosting-surface.md §the tree carries comments and
+           documentation — the compiler sees through comments as it sees through docs), so the compiler must
+           peel it to the wrapped form. `(comment \"note\" (def (f (: x Int64)) x))` defines `f`, and
+           `(f 7)` = 7. A compiler that peels a leading `(doc …)` but NOT a `(comment …)` reads `comment` as
+           an unknown top-level declaration head → the wrapped `def` is invisible ('unbound name comment' +
+           `f` unbound). Load-bearing for a Cadenza-authored compiler whose own sources carry ordinary
+           top-level `//` comments.")
+  (input  (do
+            (comment "note" (def (f (: x Int64)) x))
+            (def (main) (f 7))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "stacked line comments on a top-level form are all seen through"
+  (doc    "Stacked `//` lines on one form NEST — `// a` then `// b` above `def f` is `(comment \"a\"
+           (comment \"b\" (def …)))` — so the compiler must peel to the INNERMOST form, not just one layer.
+           `f` still defines and `(f 7)` = 7. Pins that the comment peel follows the whole nested chain, the
+           multi-line-comment shape a real source file's header block takes.")
+  (input  (do
+            (comment "a" (comment "b" (def (f (: x Int64)) x)))
+            (def (main) (f 7))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a module function calls a sibling export by name"
   (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope (2nd sentence:
            module bindings resolve under the same lexical scope rules as any other binding) together
