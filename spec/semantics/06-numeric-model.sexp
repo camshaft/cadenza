@@ -413,6 +413,25 @@
   (input  (/ (BigInt.of 100) (BigInt.of 7)))
   (output (: 14 BigInt)))
 
+(case "a runtime BigInt in an Option payload crosses the host boundary"
+  (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
+           not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option
+           BigInt)`. Pins that a runtime BigInt rides the value-encode walker THROUGH a sum payload (the
+           `Shape::BigInt` leaf nested under the Option's variant), the sum-payload companion of the bare
+           runtime-BigInt escape — a BigInt in a sum crosses with its exact value, not dropped or folded.")
+  (input  (Some (* (BigInt.of 1000000) (BigInt.of 1000000))))
+  (output (: (Some 1000000000000) (Option BigInt))))
+
+(case "a parameterized export drives an Option-of-runtime-BigInt on both arms"
+  (doc    "The parameterized companion: `main(v)` returns `None` for v=0 else `(Some (v * 10^6))`, a
+           runtime BigInt payload computed from the argument. v=5 → `(Some 5000000)`, v=0 → `None`. Pins
+           that both the Some (runtime BigInt payload crossing) and None arms of an `(Option BigInt)`
+           result render correctly from a boundary parameter.")
+  (input  (do (def (main (: v Int64))
+                (if (= v 0) (None) (Some (* (BigInt.of v) (BigInt.of 1000000))))) (export main)))
+  (call   main (: 5 Int64)) (output (: (Some 5000000) (Option BigInt)))
+  (call   main (: 0 Int64)) (output (: (None unit) (Option BigInt))))
+
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
            exact value with no width worry. Pins that BigInt carries a magnitude the fixed-width family
@@ -1236,6 +1255,39 @@
   (trap   "divide by zero")
   (call   main (: 2 Int64))
   (output (: 1 Int64)))
+
+; ── SELF-OPERAND arithmetic identities on a RUNTIME value: which fold, and which MUST NOT ────────────
+; The two-of-a-kind operand cases `x ⊕ x` — where BOTH operands are the same runtime binding — have fixed
+; results the compiler may fold: `x - x = 0` (always, even at Int64.min — subtraction of equals never
+; overflows), `x ^ x = 0` (every bit cancels), `x & x = x` and `x | x = x` (idempotent). Each is a
+; backend-independent value the emit computes correctly on both backends. But `x / x` is the CRITICAL
+; NON-identity: it is NOT 1 in general, because at `x = 0` it is `0 / 0`, a DIVIDE-BY-ZERO TRAP — folding
+; `x / x → 1` would ELIDE that defined trap (a miscompile). So the compiler must keep the division; these
+; pin that `x - x`/`x ^ x`/`x & x`/`x | x` compute their identity value AND that `x / x` still traps at 0.
+
+(case "self-operand subtraction and xor are zero, and-or are the operand, on a runtime value"
+  (doc    "The self-operand identities that hold unconditionally over a runtime `x`: `(- x x)` = 0 (even at
+           Int64.min — equals never overflow), `(^ x x)` = 0 (bits cancel), `(& x x)` = `(| x x)` = x
+           (idempotent). Packed into `(tuple (- x x) (^ x x) (& x x) (| x x))`: x = 7 → (0, 0, 7, 7),
+           x = Int64.min → (0, 0, min, min) (the boundary survives the keeping identities). Pins the
+           value of each self-operand fold on both backends.")
+  (input  (do (def (main (: x Int64)) (tuple (- x x) (^ x x) (& x x) (| x x))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: (tuple 0 0 7 7) (Tuple Int64 Int64 Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: (tuple 0 0 -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64 Int64 Int64))))
+
+(case "self-operand division is NOT folded to one — it still traps at zero"
+  (doc    "The critical NON-identity: `(/ x x)` is NOT `1` in general, because at x = 0 it is `0 / 0`, a
+           divide-by-zero trap. A compiler that folded `x / x → 1` would ELIDE that defined trap — a
+           miscompile. So the division is kept: x = 7 → 1 (7/7), but x = 0 → TRAPS. Pins that the
+           self-operand fold family stops at division, preserving the trap on both backends (a runtime x
+           keeps the divisor out of the constant fold).")
+  (input  (do (def (main (: x Int64)) (/ x x)) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
 
 ; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
 ; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic

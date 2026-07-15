@@ -335,6 +335,7 @@ pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
+pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
@@ -1120,6 +1121,7 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
+pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
@@ -1347,6 +1349,7 @@ pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
+pass	a runtime BigInt in an Option payload crosses the host boundary
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
@@ -2540,6 +2543,8 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+pass	self-operand division is NOT folded to one — it still traps at zero
+pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)

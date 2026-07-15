@@ -330,8 +330,19 @@ pub fn split_template_body(token: &str) -> Option<TemplateBody> {
                 let mut hole = String::new();
                 let mut depth: u32 = 1;
                 let mut in_str = false;
-                for h in it.by_ref() {
+                while let Some(h) = it.next() {
                     match h {
+                        // A backslash ESCAPES the next char anywhere — matching the lexer's
+                        // `read_template_body` scan. Crucially, an escaped quote (`\"`) must NOT toggle
+                        // string mode, and an escaped brace must not adjust depth: consume both chars
+                        // verbatim. Without this, a hole like `g("\"}")` mis-tracked `in_str` and its `}`
+                        // could prematurely close the hole/template (PR #409).
+                        '\\' => {
+                            hole.push(h);
+                            if let Some(esc) = it.next() {
+                                hole.push(esc);
+                            }
+                        }
                         '"' => {
                             in_str = !in_str;
                             hole.push(h);

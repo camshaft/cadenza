@@ -315,7 +315,7 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     //  - `decode : ∀t p. (Schema t) → p → (Result t DecodeError)` — decode the payload against the schema.
     //    The schema fixes `t` (the target); the payload is a free `p` (whatever `payload-of` handed). The
     //    FOLD compares the payload's constant type to `t`: agree → `(Ok payload)`, mismatch →
-    //    `(Err (DecodeError unit))`, NEVER a trap. The result type `(Result t DecodeError)` recovers `t`
+    //    `(Err (TypeMismatch unit))`, NEVER a trap. The result type `(Result t DecodeError)` recovers `t`
     //    from the schema, so `(decode Int64-schema …)` types as `(Result Int64 DecodeError)`.
     //= spec/capabilities/type-system.md#an-open-sum-s-payload-may-be-schema-typed
     //# A program MUST be able to decode an open sum variant's payload against a schema resolved at run time, yielding a typed result rather than raw bytes, so that an extensible-vocabulary value carries a payload the program can use after a checked decode.

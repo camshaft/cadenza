@@ -1994,14 +1994,16 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
             out.insert(OP_BYTES_SLICE);
-            // The Some-branch COMPACTS the fresh slice to an independent flat leaf (see the emit) so a
-            // `String.at` result's content-equality / key-hashing compares by content, not rope offset.
+            // The Some-branch DUPs the string (`dup`), the slice CONSUMES that dup'd copy, then COMPACTS
+            // the fresh slice to an independent flat leaf (see the emit) so a `String.at` result's
+            // content-equality / key-hashing compares by content, not rope offset. The original string is
+            // NOT dropped here — its owner (an enclosing let/param) reclaims it (see the emit comment), so
+            // no `drop` is imported (unlike Map.lookup/Set.contains, whose boxed KEY is an owned temporary
+            // they must drop). None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no
+            // `arr-alloc` either.
             out.insert(OP_BYTES_COMPACT);
-            out.insert(OP_DROP);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
-            // None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no `arr-alloc` (the
-            // comment above was wrong; the emit builds None from IMM_UNIT; PR #404 class).
             collect_used_ops_into(db, string, out);
             collect_used_ops_into(db, index, out);
         }
@@ -14170,6 +14172,32 @@ mod tests {
                  allocation; got: {ops:?}"
             );
         }
+    }
+
+    #[test]
+    fn str_at_does_not_over_declare_drop() {
+        // `String.at` DUPs the string (the slice takes an independent ref and consumes that dup), so the
+        // ORIGINAL string is not consumed here — its owner (an enclosing let/param) reclaims it, and the
+        // emit calls no `drop` (unlike `Map.lookup`/`Set.contains`, whose boxed KEY is an owned temporary
+        // they must drop). The used-ops collector must not import `drop` for a `String.at` body — an
+        // over-declaration found auditing the fallible-read family (the same import-minimization class as
+        // the arr-alloc over-declares).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: s String) (: i Int64)) (String.at s i)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let (_params, body) = function_of(&mut db, "f");
+        let mut ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        collect_used_ops(&mut db, body, &mut ops);
+        assert!(
+            ops.contains(OP_DUP) && ops.contains(OP_BYTES_SLICE),
+            "String.at must import dup + bytes-slice (the dup-then-consume slice), got: {ops:?}"
+        );
+        assert!(
+            !ops.contains(OP_DROP),
+            "drop must NOT be imported — the original string is reclaimed by its owner, not dropped \
+             here; got: {ops:?}"
+        );
     }
 
     #[test]
