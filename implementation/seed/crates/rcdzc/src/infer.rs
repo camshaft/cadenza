@@ -6111,6 +6111,36 @@ fn check_application(
         )
     {
         let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
+        // A FUNCTION-VALUED operand — an UNAPPLIED / partially-applied function where a value is wanted:
+        // `(+ (String.slice s) 1)` (`String.slice s` is `(-> Int64 (-> Int64 (Option String)))`, applied to
+        // one of its three arguments), `(< (add 1) 2)`. The operator's `∀a.(Int a)→…` / `∀a.a→a→Bool` scheme
+        // defaults the type variable to the OTHER operand's type, then this operand fails to unify — the
+        // generic scheme-unify reports the opaque "type mismatch: Int64 and (-> Int64 (-> Int64 (Option
+        // String))) must be the same type here" (reads as an internal clash, and BURIES the real cause: an
+        // operand that is a function, not a value). No arithmetic/order/equality is defined on a function
+        // (`type-system.md` — a function is not data), so this is a genuine kind boundary the numeric/
+        // cross-kind arms below miss (none of them match a `Ty::Fn`). Name it, and when the function fully
+        // APPLIED would yield the other operand's type — a call the author forgot to finish, `(+ (add 1) 2)`
+        // — append the SAME `fn_not_applied_hint` the call-argument / annotation sites use ("apply it to N
+        // more argument(s) to get T"); when it would not (`String.slice` fully applied is `(Option String)`,
+        // never a number), the base message stands alone (honest — "just call it" is not the fix).
+        if matches!(a, Ty::Fn(_, _)) || matches!(b, Ty::Fn(_, _)) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: an operand is a function value — not operable/comparable (CDZ0203)");
+            let hint = fn_not_applied_hint(&b, &a)
+                .or_else(|| fn_not_applied_hint(&a, &b))
+                .unwrap_or_default();
+            out.push(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "this operation is not defined on a function value — one operand is a function, \
+                     not a value{hint}"
+                ),
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         let is_text = |t: &Ty| matches!(t, Ty::String | Ty::Bytes);
         let is_scalar = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char);
         // A COMPOUND value — a record, a tuple, a list, a map/set — held against a SCALAR or TEXT operand

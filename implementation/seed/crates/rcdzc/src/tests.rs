@@ -16014,13 +16014,15 @@ mod match_engine {
             "the arg-unify site also names it: {}",
             op.message
         );
-        // The operator-arg LEAD is the polished arg-site phrasing, NOT the raw internal-clash unify wording
-        // ("type mismatch: Int64 and (-> …) must be the same type here, but differ") — it reads as an
-        // argument-type mismatch, like the annotation / member-op / effect-op sibling messages.
+        // The operator-arg LEAD is the polished "function value" phrasing, NOT the raw internal-clash unify
+        // wording ("type mismatch: Int64 and (-> …) must be the same type here, but differ"). A bare
+        // arithmetic/comparison operator with a function-valued operand is caught up front by the
+        // function-operand kind-boundary check (a function has no arithmetic/order), which names it a
+        // function and appends the same "apply N more" hint — it reads as a real cause, not an internal clash.
         assert!(
-            op.message.contains(
-                "this argument is a function value, but a value of type Int64 is expected here"
-            ) && !op.message.contains("must be the same type here"),
+            op.message
+                .contains("this operation is not defined on a function value")
+                && !op.message.contains("must be the same type here"),
             "the operator-arg lead is polished, not the raw unify clash: {}",
             op.message
         );
@@ -16057,6 +16059,69 @@ mod match_engine {
             !hof.message.contains("hasn't been fully applied"),
             "no fn hint when the expected type is itself a function: {}",
             hof.message
+        );
+    }
+
+    #[test]
+    fn a_function_valued_operator_operand_names_the_function_not_the_raw_unify() {
+        // A bare arithmetic/comparison operator with a FUNCTION-VALUED operand — a partially-applied prelude
+        // op whose fully-applied result is NOT the other operand's type — used to leak the raw scheme-unify
+        // "type mismatch: Int64 and (-> Int64 (-> Int64 (Option String))) must be the same type here, but
+        // differ" (an internal-clash read that buries the real cause). `String.slice` is `(-> String (->
+        // Int64 (-> Int64 (Option String))))`, so `(String.slice s)` is a two-argument-short function; `(+
+        // (String.slice s) 1)` puts it where a number is wanted. A function has no arithmetic/order, so this
+        // is a genuine kind boundary — now named CDZ0203 "this operation is not defined on a function value".
+        // The full application would yield `(Option String)`, not `Int64`, so NO "apply it" hint (honest —
+        // calling it would not produce a number); the base message stands alone.
+        for src in [
+            "(module m (def (f (: s String)) (+ (String.slice s) 1)) (export f))",
+            "(module m (def (f (: s String)) (+ 1 (String.slice s))) (export f))",
+            "(module m (def (f (: s String)) (if (< (String.slice s) 1) 1 2)) (export f))",
+        ] {
+            let d = reject_full(src).expect("a function-valued operator operand rejects");
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains("this operation is not defined on a function value")
+                    && !d.message.contains("must be the same type here"),
+                "names the function operand, not the raw unify clash: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("hasn't been fully applied"),
+                "no 'apply it' hint when the applied result would not match the other operand: {}",
+                d.message
+            );
+        }
+        // When the function fully applied WOULD yield the other operand's type — `(+ (h 1) 2)` for a 2-ary
+        // `h : Int64 -> Int64 -> Int64` — the same message appends the actionable "apply it to N more"
+        // hint (the forgotten-call story), so both the anonymous kind-boundary cause AND the fix are named.
+        let call = reject_full(
+            "(module m (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (+ (h 1) 2)) (export g))",
+        )
+        .expect("a partial user-fn operand rejects");
+        assert!(
+            call.message
+                .contains("this operation is not defined on a function value")
+                && call
+                    .message
+                    .contains("apply it to 1 more argument to get an Int64"),
+            "names the function AND the forgotten-call fix: {}",
+            call.message
+        );
+        // NO regression: well-typed arithmetic and a genuine numeric mix are untouched by the fn-operand arm.
+        assert!(
+            reject_full("(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (export f))")
+                .is_none(),
+            "well-typed arithmetic on two Int64s still compiles"
+        );
+        let mix = reject_full("(module m (def (f (: a Int64)) (+ a 2.0)) (export f))")
+            .expect("an int/float mix still rejects");
+        assert_eq!(
+            mix.code.as_deref(),
+            Some("CDZ0301"),
+            "a numeric mix keeps its CDZ0301, not the fn-operand message: {}",
+            mix.message
         );
     }
 
