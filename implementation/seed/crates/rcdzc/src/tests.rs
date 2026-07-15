@@ -63313,6 +63313,38 @@ mod cross_component_oracle {
             None,
             "Unit has no cross-boundary representation"
         );
+
+        // THE OPAQUE-HANDLE COROLLARY (documents a deliberate limitation of the compose-time peer
+        // signature check): because EVERY runtime-owned compound crosses as the SAME `U32` handle, two
+        // STRUCTURALLY-DIFFERENT compounds have the SAME boundary signature. So `check_peer_iface_signatures`
+        // (which compares component Types) CANNOT distinguish a `(Tuple Int64 Int64)` from a `(Tuple Int64
+        // Int64 Int64)` or a `(Record …)` at a peer op's param/result — they are all `U32`. A compound
+        // SHAPE mismatch between a consumer's binding and a peer's export is therefore NOT caught at compose
+        // time; it surfaces as a runtime trap if the peer reads a field the crossed value doesn't have. This
+        // is intrinsic to the zero-cost opaque-handle ABI (the handle is meaningful only to the shared
+        // runtime; the component boundary sees a bare `u32`) — the signature check guards SCALAR shapes
+        // (which cross faithfully) and ARITY; compound shape agreement is the Cadenza-source contract's job,
+        // not the boundary's. Pinning it so a future "make the check catch compound shapes" attempt knows it
+        // must first make compound shapes VISIBLE at the boundary (which would forfeit zero-cost).
+        let tup2 = Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::int64()]));
+        let tup3 = Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::int64(), Ty::int64()]));
+        let rec = {
+            let mut f = std::collections::BTreeMap::new();
+            f.insert(crate::resolved::Symbol::plain("a"), Ty::int64());
+            Ty::Record(std::rc::Rc::new(f))
+        };
+        assert_eq!(
+            extern_abi_val_type(&tup2),
+            extern_abi_val_type(&tup3),
+            "two DIFFERENT tuple shapes share the SAME u32 boundary signature — the boundary is opaque \
+             to compound shape (a shape mismatch is a runtime concern, not a compose-time one)"
+        );
+        assert_eq!(
+            extern_abi_val_type(&tup2),
+            extern_abi_val_type(&rec),
+            "a Tuple and a Record also share the u32 handle signature — the compound boundary form is \
+             opaque by design (zero-cost)"
+        );
     }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
