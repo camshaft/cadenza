@@ -20097,6 +20097,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_homogeneity_reject_anchors_at_the_offending_entry_or_argument() {
+        // The map homogeneity CDZ0201 rejects must anchor at the CULPRIT — the outlier entry's key/value in
+        // a `(map …)` literal, or the inserted key/value in `Map.insert` — not the whole `(map …)` /
+        // `(Map.insert …)` node, so the squiggle points at the minimal locus (the Map twin of the list-op
+        // anchoring, PR #399). Without the anchor, `collect`'s `set_origin_if_absent` stamped the enclosing
+        // node.
+        let anchor_of = |src: &str| -> Option<String> {
+            let d = reject_full(src)?;
+            let db = crate::db::Db::load(parse(src));
+            d.node
+                .and_then(|n| db.ast.as_str(crate::ast::StructId(n)).map(str::to_string))
+        };
+        // Map LITERAL — the outlier value `"bad"` (a String among Int64 values) is the locus.
+        assert_eq!(
+            anchor_of("(module m (def (main) ((. Map len) (map (\"a\" 1) (\"b\" \"bad\")))) (export main))")
+                .as_deref(),
+            Some("bad"),
+            "a map-literal value-heterogeneity reject anchors at the outlier value `\"bad\"`, not the map"
+        );
+        // Map.insert VALUE — the inserted `"bad"` (a String into a `Map String Int64`) is the locus.
+        assert_eq!(
+            anchor_of(
+                "(module m (def (f (: mm (Map String Int64))) ((. Map insert) mm \"k\" \"bad\")) (export f))"
+            )
+            .as_deref(),
+            Some("bad"),
+            "a Map.insert value-clash reject anchors at the inserted value `\"bad\"`, not the call"
+        );
+        // Map.insert KEY — the inserted key `"nope"` (a String key where the map's keys are Int64) is the
+        // locus. (Map keys Int64, value Int64; insert a String key.)
+        assert_eq!(
+            anchor_of(
+                "(module m (def (f (: mm (Map Int64 Int64))) ((. Map insert) mm \"nope\" 1)) (export f))"
+            )
+            .as_deref(),
+            Some("nope"),
+            "a Map.insert key-clash reject anchors at the inserted key `\"nope\"`, not the call"
+        );
+    }
+
+    #[test]
     fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
         // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
         // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a

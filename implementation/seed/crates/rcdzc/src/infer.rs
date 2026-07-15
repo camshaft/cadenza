@@ -7134,6 +7134,9 @@ fn check_application(
             // EXPECTED side, the inserted key the ACTUAL, so this is the directional `structural_delta_hint`
             // (M184 audit: the Map.insert op arm missed the delta its peer-join twin carries).
             let delta = structural_delta_hint(&kt, &key_ty).unwrap_or_default();
+            // Anchor at the inserted KEY (`args[1]`), the actionable locus, not the whole `(Map.insert …)`
+            // application node — the squiggle points at the mismatching key (matches the file's "anchor the
+            // specific offending element" pattern; the Map twin of the list-op anchoring, PR #399).
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
@@ -7142,7 +7145,8 @@ fn check_application(
                     kt.render_name(),
                     key_ty.render_name()
                 ),
-            );
+            )
+            .at(args[1]);
             if let Some(fix) = float_literal_retype_fix(db, args[1], &key_ty, &kt) {
                 reject = reject.with_fix(fix);
             }
@@ -7154,6 +7158,8 @@ fn check_application(
             // is EXPECTED, the inserted value ACTUAL — so a same-kind compound value mismatch names the
             // field/element/payload conflict rather than leaving the reader to diff two rendered types.
             let delta = structural_delta_hint(&vt, &val_ty).unwrap_or_default();
+            // Anchor at the inserted VALUE (`args[2]`), not the whole application — same locus fix as the
+            // key arm above.
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
@@ -7162,7 +7168,8 @@ fn check_application(
                     vt.render_name(),
                     val_ty.render_name()
                 ),
-            );
+            )
+            .at(args[2]);
             if let Some(fix) = float_literal_retype_fix(db, args[2], &val_ty, &vt) {
                 reject = reject.with_fix(fix);
             }
@@ -7415,6 +7422,9 @@ fn check_application(
                     // same-kind compounds (a record field / tuple position / sum payload) — the peer-join
                     // hint the list/if/match/set sites carry.
                     let delta = peer_type_delta_hint(&fkt, &kt).unwrap_or_default();
+                    // Anchor at the OUTLIER key `k` (the one that broke homogeneity against the first
+                    // entry's key type), not the whole `(map …)` literal — the squiggle lands on the off
+                    // entry's key, not the entire map (the map-literal twin of the list-outlier anchoring).
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
@@ -7422,7 +7432,8 @@ fn check_application(
                             fkt.render_name(),
                             kt.render_name()
                         ),
-                    );
+                    )
+                    .at(k);
                     if let Some(fix) = float_literal_retype_fix(db, fk, &fkt, &kt)
                         .or_else(|| float_literal_retype_fix(db, k, &kt, &fkt))
                     {
@@ -7433,6 +7444,8 @@ fn check_application(
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
                     let delta = peer_type_delta_hint(&fvt, &vt).unwrap_or_default();
+                    // Anchor at the OUTLIER value `v`, not the whole `(map …)` literal — same locus fix as
+                    // the key arm above.
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
@@ -7440,7 +7453,8 @@ fn check_application(
                             fvt.render_name(),
                             vt.render_name()
                         ),
-                    );
+                    )
+                    .at(v);
                     if let Some(fix) = float_literal_retype_fix(db, fv, &fvt, &vt)
                         .or_else(|| float_literal_retype_fix(db, v, &vt, &fvt))
                     {
