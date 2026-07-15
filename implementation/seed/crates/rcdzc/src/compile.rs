@@ -2049,16 +2049,35 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             } else {
                 "not a declared type"
             };
-            faults.push(
-                Reject::coded(
-                    Code::Malformed,
-                    format!(
-                        "a constructor-export `(export (. {ty_name} …))` needs `{ty_name}` to be a sum \
-                         type, but it is {category} — only a sum type has constructors to export"
-                    ),
-                )
-                .at(elem_occ),
-            );
+            // When the head is an UNDECLARED name that is a plausible typo of a declared SUM TYPE — `(. Colr
+            // *)` for a `(type Color …)` — name it + carry a rename fix on the TYPE-name occurrence, the
+            // type-name twin of the ctor-name did-you-mean below. Only for the "not a declared type" case (a
+            // value def / effect with that exact name is a different mistake, kept as its own category); the
+            // candidate set is the declared type names (a closed set).
+            let type_names: Vec<String> = db.type_decls.iter().map(|t| t.name.clone()).collect();
+            let type_hint = if db.def_by_name(&ty_name).is_none()
+                && db.effect_decl_by_name(&ty_name).is_none()
+            {
+                crate::diag::suggest::nearest(&ty_name, type_names.iter().map(String::as_str))
+            } else {
+                None
+            };
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a constructor-export `(export (. {ty_name} …))` needs `{ty_name}` to be a sum \
+                     type, but it is {category} — only a sum type has constructors to export{}",
+                    type_hint
+                        .as_ref()
+                        .map(|n| format!(" — did you mean `{n}`?"))
+                        .unwrap_or_default()
+                ),
+            )
+            .at(elem_occ);
+            if let Some(near) = type_hint {
+                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(ty_occ, near));
+            }
+            faults.push(reject);
             continue;
         };
         // The wildcard `(. T *)` publishes every ctor — no per-ctor check. A NAMED ctor `(. T A)` must be
