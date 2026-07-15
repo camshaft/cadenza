@@ -2899,6 +2899,25 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "a trapping shared payload before the differing position must not preempt a trapping cond"
+  (doc    "`(if (< (+ i64::MAX e) 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2))` — element 0 is the SHARED
+           `(/ 10 d)`, element 1 is the sole DIFFERING position. The original `if` evaluates the cond
+           FIRST; a checked `+` overflow means the program must trap 'integer overflow' at every d. The
+           common-constructor hoist builds the shared element OUTSIDE the per-position `if`, so it would
+           evaluate `(/ 10 d)` BEFORE the cond — at d = 0 that div-by-zero would preempt the cond's
+           overflow (the WRONG trap). The hoist declines a possibly-trapping cond unless every shared
+           payload before the differing position is trap-free, keeping the cond's trap observed first.
+           This pins the ORDER obligation the diff-count guard alone did not cover (Copilot review on PR
+           #375, r3589185980).")
+  (input  (do
+            (def (main (: d Int64) (: e Int64))
+              (if (< (+ 9223372036854775807 e) 5)
+                  (tuple (/ 10 d) 1)
+                  (tuple (/ 10 d) 2)))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (trap   "integer overflow"))
+
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
 ; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces

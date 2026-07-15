@@ -1171,6 +1171,57 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
     assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
 }
 
+/// A trapping `cond` must NOT hoist through a common constructor when a SHARED (non-differing) payload
+/// BEFORE the differing position can itself trap: the original `if` evaluates `cond` FIRST, but the
+/// hoisted form builds the shared payload OUTSIDE the per-position `if`, so it would evaluate before
+/// `cond` and PREEMPT its trap. `(if (< (+ i64::MAX e) 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2))` —
+/// element 0 is the shared `(/ 10 d)` (a `/` by a runtime divisor, possibly-trapping), element 1 is
+/// the sole differing position. `cond` is a checked `+` overflow, so the original always traps
+/// 'integer overflow' first — at d=0 the hoisted form would instead trap 'integer divide by zero'
+/// (the WRONG trap). Asserting the trap REASON (not merely THAT it traps) pins the ordering.
+#[test]
+fn a_trapping_shared_payload_before_the_diff_does_not_preempt_a_trapping_cond() {
+    use crate::testkit::parse;
+    // A `tuple` payload lives on the value heap, so the run needs the runtime component linked.
+    let src = "(module m \
+                 (def (main (: d Int64) (: e Int64)) \
+                   (if (< (+ 9223372036854775807 e) 5) \
+                       (tuple (/ 10 d) 1) \
+                       (tuple (/ 10 d) 2))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    // At d=0 the shared `(/ 10 d)` divides by zero and `cond` overflows. Cond-first semantics demand the
+    // OVERFLOW is observed; a hoist that moved `(/ 10 d)` ahead of `cond` would surface div-by-zero.
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["0".to_string(), "1".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(v) => {
+            panic!("expected a trap (cond overflows), ran → {v}")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            assert!(
+                t.contains("integer overflow"),
+                "cond (a checked-+ overflow) is evaluated FIRST, so the observed trap must be \
+                 'integer overflow', not the preceding shared payload's div-by-zero; got: {t}"
+            );
+            assert!(
+                !t.contains("divide by zero"),
+                "the trapping shared payload `(/ 10 d)` before the differing position must not \
+                 preempt the trapping cond's overflow; got the WRONG trap: {t}"
+            );
+        }
+    }
+}
+
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
 /// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
 /// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
