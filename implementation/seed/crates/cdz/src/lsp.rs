@@ -965,14 +965,35 @@ fn semantic_tokens_for(text: &str, is_ml: bool) -> Vec<SemanticToken> {
         }
         abs.push((start.line, start.character, length, token_type));
     }
-    abs.sort_by_key(|&(line, ch, _, _)| (line, ch));
+    // Sort by (line, start, length): ascending position, and at a shared start the NARROWEST token
+    // first. The `Highlight` query classifies BOTH a container node and its inner leaf, which can share
+    // a start position (a grouping `(` vs the binder `x` inside it) or otherwise overlap — but LSP
+    // requires semantic tokens to be NON-OVERLAPPING and in ascending order, and a client seeing two
+    // tokens at one position renders inconsistently (or, strictly, rejects the set). So after sorting we
+    // drop any token that starts before the previously-KEPT token ends: the narrower/earlier token wins
+    // (the more specific classification — a `param` over the enclosing grouping `keyword`), and each
+    // painted region is claimed once. This is the token-overlap refinement the semanticTokens increment
+    // deferred.
+    abs.sort_by_key(|&(line, ch, len, _)| (line, ch, len));
 
-    // Delta-encode: each token's line is relative to the previous token's line; its start char is
-    // relative to the previous token's start when on the SAME line, else absolute.
+    // Delta-encode the NON-OVERLAPPING subset: each token's line is relative to the previous token's
+    // line; its start char is relative to the previous token's start when on the SAME line, else
+    // absolute. `prev_end` tracks the last KEPT token's end (per line) to reject an overlapping follower.
     let mut out = Vec::with_capacity(abs.len());
     let mut prev_line = 0u32;
     let mut prev_start = 0u32;
+    // The end character of the last kept token, and the line it was on — for overlap rejection.
+    let mut kept_line = u32::MAX;
+    let mut kept_end = 0u32;
     for (line, start, length, token_type) in abs {
+        // Reject a token that OVERLAPS the previously-kept one on the same line (its start is before the
+        // kept token's end). The sort put the narrowest-at-a-shared-start first, so the one we keep is
+        // the most specific; a wider or duplicate token covering the same region is dropped.
+        if line == kept_line && start < kept_end {
+            continue;
+        }
+        kept_line = line;
+        kept_end = start + length;
         let delta_line = line - prev_line;
         let delta_start = if delta_line == 0 {
             start - prev_start
@@ -1128,23 +1149,48 @@ mod tests {
                 t.token_type
             );
         }
-        // Reconstruct absolute (line, start) from the deltas and assert strictly-ascending position —
-        // the LSP wire-format invariant a client relies on.
+        // Reconstruct absolute (line, start, end) from the deltas and assert the tokens are ascending AND
+        // NON-OVERLAPPING — the LSP wire-format invariant a client relies on (two tokens at one position,
+        // or a token starting inside the previous one, render inconsistently / are rejected by strict
+        // clients). `def double(x…)` classifies both a grouping node and its inner binder at the same
+        // start; the overlap-elimination pass must leave a clean non-overlapping stream.
+        assert_no_overlap(&toks);
+    }
+
+    /// Decode the delta-encoded tokens to absolute `(line, start, end)` and assert each starts at or
+    /// after the previous token's end on the same line — no overlap, ascending order.
+    fn assert_no_overlap(toks: &[SemanticToken]) {
         let mut line = 0u32;
         let mut start = 0u32;
-        let mut prev: Option<(u32, u32)> = None;
-        for t in &toks {
+        let mut prev_line = u32::MAX;
+        let mut prev_end = 0u32;
+        for t in toks {
             line += t.delta_line;
             start = if t.delta_line == 0 {
                 start + t.delta_start
             } else {
                 t.delta_start
             };
-            if let Some(p) = prev {
-                assert!((line, start) >= p, "tokens must be in ascending position");
+            if line == prev_line {
+                assert!(
+                    start >= prev_end,
+                    "token at ({line},{start}) overlaps the previous token ending at {prev_end}"
+                );
             }
-            prev = Some((line, start));
+            prev_line = line;
+            prev_end = start + t.length;
         }
+    }
+
+    #[test]
+    fn semantic_tokens_are_non_overlapping_when_container_and_leaf_share_a_position() {
+        // The `Highlight` query classifies BOTH a grouping/container node and its inner leaf, which can
+        // share a start position (a `(param…)` binder group vs the `param` inside) — the case that
+        // produced overlapping/duplicate tokens before the overlap-elimination pass. Assert the emitted
+        // stream is clean.
+        let toks = semantic_tokens_for("def double(x: Int64) -> Int64 = x + x", true);
+        assert!(!toks.is_empty());
+        assert_no_overlap(&toks);
     }
 
     #[test]
