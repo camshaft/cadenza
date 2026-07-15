@@ -8757,3 +8757,17 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64)))
+
+; The Map.to-list cases above enumerate a NON-EMPTY map. The empty boundary — a pass dumping a
+; possibly-empty symbol table — is `Map.to-list` of an EMPTY (but key/value-TYPED) map: the empty entry
+; list, length 0. The map is emptied at RUN TIME (`Map.remove` of its only key) so the key/value types are
+; fixed (`Int64`/`Int64`, giving the canonical key-ordering descriptor) while the runtime CHAMP is empty.
+(case "Map.to-list of a runtime-empty but key/value-typed map is the empty list"
+  (doc    "`(Map.remove (Map.insert Map.empty 1 10) 1)` is a `Map Int64 Int64` emptied at run time;
+           `Map.to-list` of it is the empty list, so `List.len` is 0. Pins the empty boundary of map
+           enumeration — a back end walking an empty symbol table gets an empty entry list, not a trap —
+           with the key/value types fixed so the canonical-order descriptor is well-defined.")
+  (input  (do
+            (def (main) (List.len (Map.to-list (Map.remove (Map.insert Map.empty 1 10) 1))))
+            (export main)))
+  (output (: 0 Int64)))

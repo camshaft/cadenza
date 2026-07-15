@@ -597,3 +597,19 @@
             (def (main (: n Int64)) (sumlist (Set.to-list (ins n (Set.of (list)))) 0 0))
             (export main)))
   (call   main (: 10 Int64)) (output (: 10 Int64)))
+
+; The cases above all enumerate a NON-EMPTY set. The empty boundary matters for a real pass that walks a
+; possibly-empty symbol table / free-var set: `Set.to-list` of an EMPTY (but element-TYPED) set is the
+; empty list, length 0. The set is emptied at RUN TIME (`Set.remove` of the sole element) so the element
+; type is `Int64` (fixing the canonical-ordering descriptor) while the runtime CHAMP is empty — distinct
+; from an untyped empty `Set.of (list)` literal, whose element type is undetermined.
+(case "Set.to-list of a runtime-empty but element-typed set is the empty list"
+  (doc    "`(Set.remove (Set.of (list 1)) 1)` is a `Set Int64` emptied at run time; `Set.to-list` of it is
+           the empty list, so `List.len` is 0. Pins the empty boundary of set enumeration — a pass walking a
+           set that happens to be empty gets an empty list, not a trap — with the element type fixed to
+           Int64 (so the canonical-order descriptor is well-defined), the shape a symbol-table / free-var
+           enumeration takes when the collection is empty.")
+  (input  (do
+            (def (main) (List.len (Set.to-list (Set.remove (Set.of (list 1)) 1))))
+            (export main)))
+  (output (: 0 Int64)))
