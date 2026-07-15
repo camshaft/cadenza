@@ -514,6 +514,7 @@ pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
+pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error
@@ -724,6 +725,8 @@ pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
+pass	a list pattern over a map scrutinee is a type error
+pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
@@ -770,6 +773,7 @@ pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map pattern nested in a tuple binds its value binder
+pass	a map pattern over a non-map scrutinee is a type error
 pass	a map pattern value sub-pattern may be a literal that refines the match
 pass	a map pattern value sub-pattern may be an irrefutable compound that binds
 pass	a map threaded as a recursive accumulator is grown then measured
@@ -1340,6 +1344,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the mi
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
+pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
@@ -1421,6 +1426,8 @@ pass	a tuple of two sums is matched with nested constructor patterns
 pass	a tuple pattern against a Sign scrutinee is a type error
 pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple pattern of the wrong arity is a type error
+pass	a tuple pattern over a map scrutinee is a type error
+pass	a tuple pattern over a non-tuple scrutinee is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
