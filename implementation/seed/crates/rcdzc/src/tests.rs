@@ -14374,6 +14374,51 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mismatch_between_two_same_named_distinct_types_disambiguates_the_shared_name() {
+        // A user type that SHADOWS a prelude type name — `(type Int64 (A))` — makes `Int64` in a type
+        // position denote the user sum. Passing the prelude `Int64` literal `5` to a `(: x Int64)` parameter
+        // is then a genuine mismatch between two DIFFERENT types that both render "Int64" — the bare
+        // "this argument is an Int64, but a value of type Int64 is expected here" reads as a contradiction.
+        // The message now appends a tail explaining the names collide via a shadowing declaration.
+        // The CALL-ARGUMENT path.
+        let arg = reject_full(
+            "(module m (type Int64 (A)) (def (f (: x Int64)) x) (def (main) (f 5)) (export main))",
+        )
+        .expect("passing a prelude Int64 where the shadowing user Int64 is wanted rejects");
+        assert_eq!(arg.code.as_deref(), Some("CDZ0203"), "got: {}", arg.message);
+        assert!(
+            arg.message
+                .contains("two DIFFERENT types printed with the same name")
+                && arg.message.contains("shadows a built-in"),
+            "the argument mismatch disambiguates the shared name: {}",
+            arg.message
+        );
+        // The DIRECT value-annotation path (`(: 5 Int64)`) shares the same hint chain.
+        let annot =
+            reject_full("(module m (type Int64 (A)) (def (main) (: 5 Int64)) (export main))")
+                .expect("annotating a prelude literal with the shadowing user Int64 rejects");
+        assert!(
+            annot
+                .message
+                .contains("two DIFFERENT types printed with the same name"),
+            "the value-annotation mismatch disambiguates too: {}",
+            annot.message
+        );
+        // NO false positive: an ordinary mismatch between DIFFERENT names (Int64 vs String) gets NO such
+        // tail — the render already distinguishes them.
+        let ordinary =
+            reject_full("(module m (def (f (: x Int64)) x) (def (main) (f \"s\")) (export main))")
+                .expect("Int64 vs String rejects");
+        assert!(
+            !ordinary
+                .message
+                .contains("two DIFFERENT types printed with the same name"),
+            "a distinct-name mismatch adds no same-name tail: {}",
+            ordinary.message
+        );
+    }
+
+    #[test]
     fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
         // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
         // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for
