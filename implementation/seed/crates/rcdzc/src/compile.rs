@@ -2468,6 +2468,18 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             if db.ast.as_form(p, ":").is_some() {
                 continue;
             }
+            // Skip a SYNTHESIZED parameter (not a user-written node) — e.g. the `p$0` placeholder that
+            // `strip_const_params` leaves when a `const` parameter is MALFORMED (`(const n Int64)`, two
+            // operands, not the well-formed `(const (: n T))`). Its type never resolved BECAUSE the const
+            // is malformed; the real, actionable defect is the const-shape CDZ0201 ("a `const` parameter
+            // wraps exactly ONE annotated binder", M180) already reported at the user's source. Flagging the
+            // synthesized `p$0` "parameter type is ambiguous — annotate it" is a CONSEQUENT second error the
+            // author can't act on (there is no user node to annotate, so it renders spanless), and its
+            // `(: … Int64)` wrap fix targets a synthesized node. Defer to the const-shape reject. A GENUINE
+            // unannotated user param (`(def (mk x) …)`) is a user node → still flagged with its fix.
+            if !db.is_user_node(p) {
+                continue;
+            }
             let ty = crate::infer::type_of(db, p);
             if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
                 let mut reject = Reject::coded(

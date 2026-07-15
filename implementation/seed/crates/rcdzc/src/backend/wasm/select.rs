@@ -935,21 +935,50 @@ fn mark_binder_dups_inner(
     let consume = |db: &mut Db, c: StructId, la: bool, s: &mut HashSet<StructId>| {
         mark_binder_dups(db, c, binder, true, la, s)
     };
-    // A SEQUENTIAL group of (child, is_borrow) evaluated left-to-right, all simultaneously live before the
-    // enclosing op runs. Process RIGHT-TO-LEFT so an earlier child's `live_after` includes a later
-    // sibling's use. Returns whether `binder` occurred in any of them.
+    // A SEQUENTIAL group of (child, is_borrow) evaluated left-to-right, ALL SIMULTANEOUSLY LIVE before the
+    // enclosing op runs (a call pushes every arg onto the stack, then consumes them; a constructor likewise
+    // holds all elements). Because they are simultaneously live, a CONSUMING occurrence of `binder` in one
+    // child must retain (`dup`) if `binder` also occurs in ANY OTHER child — left OR right — not only a
+    // later (right) one: an EARLIER (left) child's `local.get binder` leaves a handle on the stack that a
+    // later child's consuming op (e.g. `List.push binder`) would FBIP-mutate in place at rc==1, corrupting
+    // the earlier child's already-stacked handle (the self-recursive-call `(f … base … (push base) …)`
+    // shape — base threaded unchanged in one arg AND consumed in a sibling). So a child's incoming
+    // `live_after` must include whether `binder` occurs in any OTHER child of THIS group. Two-pass: first
+    // detect occurrence in every child (a cheap pre-walk that marks no sites — `probe_only`), then process
+    // each child with `la || (binder occurs in some other child)`. Still fold right-to-left within the pass
+    // (preserves the later-sibling propagation), but seed each child's `la` from the group-wide occurrence
+    // EXCLUDING itself. Returns whether `binder` occurred in any of them.
     let seq = |db: &mut Db,
                children: &[(StructId, bool)],
-               mut la: bool,
+               la_in: bool,
                s: &mut HashSet<StructId>|
      -> bool {
-        let mut occurred = false;
-        for &(c, is_borrow) in children.iter().rev() {
-            let here = mark_binder_dups(db, c, binder, !is_borrow, la, s);
-            la = la || here;
-            occurred = occurred || here;
+        // Pre-pass: does `binder` occur in each child? (probe into a throwaway site set — we only want the
+        // boolean; the real marking happens in the main pass with correct `live_after`).
+        let mut occurs: Vec<bool> = Vec::with_capacity(children.len());
+        for &(c, _) in children.iter() {
+            let mut throwaway = HashSet::new();
+            occurs.push(mark_binder_dups(
+                db,
+                c,
+                binder,
+                false,
+                false,
+                &mut throwaway,
+            ));
         }
-        occurred
+        let any = occurs.iter().any(|&o| o);
+        // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
+        // additionally seed each child's `la` with "binder occurs in some OTHER child" (the left-sibling
+        // case the one-directional fold misses for simultaneously-live operands).
+        let mut la = la_in;
+        for i in (0..children.len()).rev() {
+            let (c, is_borrow) = children[i];
+            let other = any && occurs.iter().enumerate().any(|(k, &o)| k != i && o);
+            let here = mark_binder_dups(db, c, binder, !is_borrow, la || other, s);
+            la = la || here;
+        }
+        any
     };
     // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
     // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
@@ -1918,6 +1947,7 @@ fn collect_used_ops_into(
             out.insert(OP_SET_TO_LIST);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP); // the borrowed-only descriptor Bytes is dropped after the op
             collect_used_ops_into(db, set, out);
         }
         // `Map.to-list` = `map-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
@@ -1925,6 +1955,7 @@ fn collect_used_ops_into(
             out.insert(OP_MAP_TO_LIST);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP); // the borrowed-only descriptor Bytes is dropped after the op
             collect_used_ops_into(db, map, out);
         }
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
@@ -5956,7 +5987,16 @@ fn emit(
                     "Set.to-list element shape has no orderable descriptor",
                 ));
             };
-            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            // The baked descriptor `Bytes` is an OWNED TEMPORARY that `set-to-list` only BORROWS (the
+            // runtime reads it as an inspector; see `op_set_to_list` — "BORROWS `s` and `desc`"). So it must
+            // be dropped after the op, or every `Set.to-list` call LEAKS the descriptor heap cell. Stash its
+            // handle in a scratch slot across the (set, desc)-consuming op call, then drop it.
+            let desc_slot = base;
+            if desc_slot + 1 > *high {
+                *high = desc_slot + 1;
+            }
+            scratch_ty.insert(desc_slot, ValType::I32);
+            emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             out.push(Lir::ConstI32(desc.len() as i32)); // [set, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [set, desc-buf]
             for (j, &byte) in desc.iter().enumerate() {
@@ -5964,7 +6004,10 @@ fn emit(
                 out.push(Lir::ConstI32(byte as i32)); // [set, buf, index, byte]
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [set, buf] (bytes-set returns the buffer)
             }
-            out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list]
+            out.push(Lir::LocalTee(desc_slot)); // [set, desc], desc_slot = desc (for the later drop)
+            out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list] (borrows both)
+            out.push(Lir::LocalGet(desc_slot)); // [list, desc]
+            out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
             Ok(()) // leaves [list]
         }
         // `Map.to-list(m)` — the map companion: emit the map, bake a MAP-rooted key/value shape descriptor
@@ -5979,7 +6022,15 @@ fn emit(
                     "Map.to-list key/value shape has no orderable descriptor",
                 ));
             };
-            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            // As in `Set.to-list`: the baked descriptor `Bytes` is an owned temporary `map-to-list` only
+            // BORROWS (`op_map_to_list` — "BORROWS `m` and `desc`"), so it must be dropped after the op or
+            // every `Map.to-list` call leaks the descriptor heap cell. Stash + drop across the op call.
+            let desc_slot = base;
+            if desc_slot + 1 > *high {
+                *high = desc_slot + 1;
+            }
+            scratch_ty.insert(desc_slot, ValType::I32);
+            emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
             out.push(Lir::ConstI32(desc.len() as i32)); // [map, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [map, desc-buf]
             for (j, &byte) in desc.iter().enumerate() {
@@ -5987,7 +6038,10 @@ fn emit(
                 out.push(Lir::ConstI32(byte as i32)); // [map, buf, index, byte]
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [map, buf]
             }
-            out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list]
+            out.push(Lir::LocalTee(desc_slot)); // [map, desc], desc_slot = desc (for the later drop)
+            out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list] (borrows both)
+            out.push(Lir::LocalGet(desc_slot)); // [list, desc]
+            out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
             Ok(()) // leaves [list]
         }
         // A runtime `Set.contains(s, e)` — the TOTAL membership predicate. Box the element, `set-contains(s,
@@ -15220,6 +15274,59 @@ mod tests {
         assert!(
             f.code.contains(&Lir::CallImport("set-contains")),
             "the membership probe must still emit"
+        );
+    }
+
+    #[test]
+    fn set_to_list_drops_its_baked_descriptor_after_the_borrowing_op() {
+        // `Set.to-list` bakes a shape descriptor as an owned `Bytes` (`bytes-alloc`/`bytes-set`) and passes
+        // it to `set-to-list`, which only BORROWS it (the runtime reads it as an inspector; see
+        // `op_set_to_list` — "BORROWS `s` and `desc`"). So the emit MUST `drop` that owned descriptor
+        // temporary after the op, or every `Set.to-list` call leaks the descriptor cell. Pin that a `drop`
+        // FOLLOWS the op (past the desc `local.get`).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: s (Set Int64))) (List.len (Set.to-list s))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let to_list_at = f
+            .code
+            .iter()
+            .position(|op| *op == Lir::CallImport("set-to-list"))
+            .expect("the emit must call set-to-list");
+        assert!(
+            f.code[to_list_at + 1..].contains(&Lir::CallImport("drop")),
+            "the baked descriptor Bytes is BORROWED by set-to-list, so a `drop` must follow the op to \
+             reclaim the owned descriptor temporary; got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn map_to_list_drops_its_baked_descriptor_after_the_borrowing_op() {
+        // The map companion: `map-to-list` likewise BORROWS the baked descriptor, so the emit must drop it
+        // after the op.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: m (Map Int64 Int64))) (List.len (Map.to-list m))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let to_list_at = f
+            .code
+            .iter()
+            .position(|op| *op == Lir::CallImport("map-to-list"))
+            .expect("the emit must call map-to-list");
+        assert!(
+            f.code[to_list_at + 1..].contains(&Lir::CallImport("drop")),
+            "the baked descriptor Bytes is BORROWED by map-to-list, so a `drop` must follow the op; \
+             got: {:?}",
+            f.code
         );
     }
 }

@@ -146,6 +146,33 @@ jobs:
       - name: Run the corpus gate
         run: cargo xtask gate ${{ inputs.soft-baselines && '' || '--check' }}
 
+  cad-tests:
+    # The Cadenza-SOURCE @test suites — libraries written IN Cadenza, run via `cdz test` (compile a
+    # separate wasm test component from each `@test` def, run it under wasmtime, PASS if it returns /
+    # FAIL if it traps). These are NOT corpus cases, so the `gate` job above does NOT cover them; without
+    # this job a peer could break the CAD library or the compiler-ml port and CI would stay green.
+    #   • implementation/cad         — the Solid CSG model library (v-cad, GH #400)
+    #   • implementation/compiler-ml  — the self-hosted compiler port (previously ungated in CI)
+    # `cdz test` shells to a sibling `cdz-run` to execute each test and resolves the value-heap runtime
+    # by content address from the store, so this job (like `gate`) builds the store first and puts
+    # `cdz`+`cdz-run` in the same release dir. aarch64 for the same runtime-hash reason as `gate`.
+    name: cadenza @test suites
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: cad-tests
+      - name: Build the runtime store
+        run: cargo xtask build
+      - name: Build cdz + cdz-run
+        run: cargo build --release -p cdz -p cdz-run
+      - name: Run the CAD library @test suite
+        run: ./target/release/cdz test implementation/cad
+      - name: Run the compiler-ml @test suite
+        run: ./target/release/cdz test implementation/compiler-ml
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. No runtime needed.
@@ -208,6 +235,11 @@ jobs:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: |
           npm ci
+          # Fast, browser/wasm-free unit tests first (node --test, type-stripping; needs node >=22.6,
+          # which node-version:22 resolves to) — a pure-logic regression (wrap/strip, applyFix byte
+          # splice, offset conversion, share round-trip, calculator classify, chapter-registry sync)
+          # fails the merge here before the slower jco example run.
+          npm run test:unit
           npm run check:examples
           npm run check:calculator
           npm run build

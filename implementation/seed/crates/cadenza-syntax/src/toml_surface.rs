@@ -888,4 +888,126 @@ mod tests {
             assert!(spans.get(id).is_some(), "node {id:?} has a span");
         }
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random WELL-FORMED TOML document whose bytes `toml_edit` reproduces EXACTLY — the
+    /// decor-in-arena model must preserve every byte. Emits blank lines, `# comments`, `[table]`
+    /// headers, and `key = value` lines with scalars in their canonical printed spelling (so re-print
+    /// is byte-identical): decimal ints, `a.b` floats, `true`/`false`, basic strings, and flat arrays.
+    /// Deliberately CONSERVATIVE (no exotic number spellings whose Repr could re-normalize) — the goal
+    /// is to stress the DECOR + document-order + table-nesting reconstruction over many shapes, exactly.
+    fn gen_toml(rng: &mut Rng) -> String {
+        let scalar = |rng: &mut Rng| -> String {
+            match rng.below(6) {
+                0 => rng.below(100000).to_string(),
+                1 => format!("-{}", rng.below(1000)),
+                2 => format!("{}.{}", rng.below(1000), rng.below(1000)),
+                3 => "true".to_string(),
+                4 => "false".to_string(),
+                _ => format!("\"str{}\"", rng.below(1000)),
+            }
+        };
+        let mut out = String::new();
+        // TOML forbids duplicate keys (in a table) and duplicate table headers, so keys/table names are
+        // made UNIQUE with a monotonic counter — the generator emits only VALID TOML (a duplicate would
+        // be a generator bug, correctly rejected by `read`, not a surface bug).
+        let mut n = 0usize;
+        let mut uniq = || {
+            n += 1;
+            n
+        };
+        // arrays sometimes; simple `key = value` otherwise. `toml_edit` prints `[1, 2, 3]` with the
+        // single-space-after-comma decor a fresh parse carries, so generate that exact form.
+        let kv = |rng: &mut Rng, out: &mut String, id: usize| {
+            if rng.below(4) == 0 {
+                let m = rng.below(4);
+                let elems: Vec<String> = (0..m).map(|_| scalar(rng)).collect();
+                out.push_str(&format!("k{id} = [{}]\n", elems.join(", ")));
+            } else {
+                out.push_str(&format!("k{id} = {}\n", scalar(rng)));
+            }
+        };
+        let decor = |rng: &mut Rng, out: &mut String| match rng.below(4) {
+            0 => out.push('\n'),                                           // blank line
+            1 => out.push_str(&format!("# comment {}\n", rng.below(100))), // comment line
+            _ => {}                                                        // nothing
+        };
+        for _ in 0..(1 + rng.below(3)) {
+            decor(rng, &mut out);
+            let id = uniq();
+            kv(rng, &mut out, id);
+        }
+        // Then 0..=2 tables (unique headers), each with its own unique-keyed lines.
+        for _ in 0..rng.below(3) {
+            decor(rng, &mut out);
+            out.push_str(&format!("[t{}]\n", uniq()));
+            for _ in 0..(1 + rng.below(3)) {
+                decor(rng, &mut out);
+                let id = uniq();
+                kv(rng, &mut out, id);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn toml_surface_is_byte_exact_over_generated_documents() {
+        // The strong byte-exact contract (`print(read(src)) == src`) swept over random well-formed TOML,
+        // complementing the hand-picked cases. The generator explores decor (blanks/comments) + document
+        // order + table-nesting COMBINATIONS the fixed tests don't, so a decor-reconstruction asymmetry
+        // that no hand-written case hits is caught. Every generated doc is in `toml_edit`'s canonical
+        // printed spelling, so byte-exact is the right assertion; fixed seeds → reproducible.
+        let seeds: [u64; 3] = [
+            0x0bad_c0de_dead_beef,
+            0x5eed_1234_5678_9abc,
+            0xfeed_face_cafe_babe,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..800 {
+                let src = gen_toml(&mut rng);
+                // A generated doc must PARSE (a generator bug otherwise) and re-print byte-exactly.
+                assert_byte_exact(&src);
+                total += 1;
+            }
+        }
+        assert!(total >= 2000, "swept a meaningful space, got {total}");
+    }
+
+    #[test]
+    fn toml_read_never_panics_on_arbitrary_input() {
+        // `read` operates on UNTRUSTED config text; it must return a diagnostic, never panic. Sweep
+        // random TOML-ish strings (structural chars + key/value bytes) plus truncated fragments.
+        let alphabet: Vec<char> = "[]{}=.,\"'#\n \t01abtruefalse-_".chars().collect();
+        let mut rng = Rng(0x2468_ace0_1357_9bdf);
+        for len in 0..=32usize {
+            for _ in 0..80 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[rng.below(alphabet.len())])
+                    .collect();
+                let _ = read(&s); // must not panic (Ok or Err, never crash)
+            }
+        }
+        for s in [
+            "[", "[t", "a =", "a = \"", "a = [", "# c", "[[", "a = 0x", "a = ''",
+        ] {
+            let _ = read(s);
+        }
+    }
 }

@@ -2686,6 +2686,32 @@ fn check(paths: &Paths, profile: &str) {
     };
     log.step_show("gate", &gate_cmd, repo);
 
+    // The Cadenza-SOURCE @test suites — libraries written IN Cadenza (the CAD `Solid` model library and
+    // the self-hosted compiler-ml port), run via `cdz test` (compile a separate wasm test component from
+    // each `@test` def, run it under wasmtime, PASS if it returns / FAIL if it traps). These are NOT
+    // corpus cases, so the behavior `gate` above does not cover them; without this step a change could
+    // break a Cadenza library and `check` would stay green. `cdz test` shells to a sibling `cdz-run`
+    // (resolving the value-heap runtime by content address from the store the wasm-runtime step above
+    // populated) — the `build` step already produced both `cdz` and `cdz-run` under `target/debug`
+    // (workspace members), so this step only runs them. A directory arg runs that dir's `Project.cdz`
+    // suite. CI runs the SAME suites as its own `cad-tests` job (checks.yml); this closes the local /
+    // pr-sync-re-gate gap so the omnibus `check` covers them too.
+    let subdir = if profile == "dev" { "debug" } else { profile };
+    let cdz = paths
+        .repo
+        .join("target")
+        .join(subdir)
+        .join("cdz")
+        .display()
+        .to_string();
+    for suite in ["implementation/cad", "implementation/compiler-ml"] {
+        log.step(
+            &format!("cdz-test {suite}"),
+            &format!("{cdz} test {suite}"),
+            repo,
+        );
+    }
+
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
     // (live cited < the committed floor). Skips only when `duvet` isn't installed; a present-but-
     // erroring duvet (a stranded citation) FAILS loudly. Thread `--profile` through like the gate step
