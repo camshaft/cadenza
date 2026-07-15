@@ -66,6 +66,14 @@ pub fn synthesize(ast: &mut Arenas) {
         return;
     };
 
+    // If the program declares an effect named `Test` WITHOUT a `gen` op, this pass cannot proceed: the
+    // wrapper needs `Test.gen`, appending its own `(effect Test …)` would collide with the existing name,
+    // and the existing one has no `gen` to reuse. Bail out (the compound-param `@test` then declines at
+    // the boundary as before) rather than emit a wrapper calling a non-existent `Test.gen` (PR #406).
+    if test_declared_without_gen(ast, &items) {
+        return;
+    }
+
     // Find each `(@ test (def SIG BODY))` item whose SIG has exactly one `(: name (List ELEM))` param
     // with ELEM an integer type. Record (item index, def-name occ text, param count) to synthesize for.
     let mut plans: Vec<TestPlan> = Vec::new();
@@ -231,7 +239,35 @@ fn declares_test_gen(ast: &Arenas, items: &[StructId]) -> bool {
         if let Some(eff) = ast.as_form(item, "effect")
             && eff.first().and_then(|&n| ast.as_name(n)) == Some("Test")
         {
-            return true;
+            // The op children follow the effect name: `(effect Test (op gen …) (op fail …) …)`. Reuse the
+            // existing `Test` ONLY if it actually declares a `gen` op — a `Test` effect that declares only
+            // `fail` (or anything but `gen`) does NOT provide `Test.gen`, and treating it as if it did
+            // would make the wrapper call a non-existent op (Copilot PR #406). Check the op names, not
+            // just the effect name.
+            return eff[1..]
+                .iter()
+                .filter_map(|&op| ast.as_form(op, "op"))
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+        }
+    }
+    false
+}
+
+/// Whether the program declares an effect named `Test` that does NOT carry a `gen` op — the case where
+/// this pass CANNOT proceed: the wrapper needs `Test.gen`, but appending its own `(effect Test …)` would
+/// collide with the existing `Test` name, and the existing one has no `gen` to reuse. Synthesis bails
+/// out for such a program (the compound-param `@test` then declines at the boundary as before, rather
+/// than emitting a wrapper that calls a non-existent `Test.gen`).
+fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
+    for &item in items {
+        if let Some(eff) = ast.as_form(item, "effect")
+            && eff.first().and_then(|&n| ast.as_name(n)) == Some("Test")
+        {
+            let has_gen = eff[1..]
+                .iter()
+                .filter_map(|&op| ast.as_form(op, "op"))
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+            return !has_gen;
         }
     }
     false
@@ -487,6 +523,48 @@ mod tests {
         assert!(
             !test_names.iter().any(|n| n == "r-gen"),
             "a non-generatable (Float) element gets no wrapper: {test_names:?}"
+        );
+    }
+
+    /// PR #406: a program that declares `(effect Test (op fail …))` WITHOUT a `gen` op must NOT get a
+    /// synthesized wrapper — appending a `(op gen …)` effect would collide with the existing `Test`, and
+    /// reusing the gen-less one would call a non-existent `Test.gen`. The pass bails, leaving the
+    /// compound-param `@test` to decline at the boundary as before.
+    #[test]
+    fn a_test_effect_without_gen_suppresses_synthesis() {
+        let ast = crate::testkit::parse(
+            "(do (effect Test (op fail (-> String Unit))) \
+                 (@ test (def (p (: xs (List Int64))) (List.len xs))) (def (other) 1))",
+        );
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            !test_names.iter().any(|n| n == "p-gen"),
+            "a Test effect without `gen` suppresses the wrapper (no spurious Test.gen): {test_names:?}"
+        );
+    }
+
+    /// The complement: a program that declares `(effect Test (op gen …))` itself IS usable — the pass
+    /// reuses it (does not append a colliding second `Test`) and still synthesizes the wrapper.
+    #[test]
+    fn a_test_effect_with_gen_is_reused() {
+        let ast = crate::testkit::parse(
+            "(do (effect Test (op gen (-> Unit Int64))) \
+                 (@ test (def (p (: xs (List Int64))) (List.len xs))) (def (other) 1))",
+        );
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            test_names.iter().any(|n| n == "p-gen"),
+            "a user-declared Test(gen) effect is reused + the wrapper synthesized: {test_names:?}"
         );
     }
 }
