@@ -1111,6 +1111,66 @@ fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
     );
 }
 
+/// The common-constructor hoist also fires for a same-length LIST: `(if c (list a 1) (list b 1))` builds
+/// the list ONCE (`vec-empty` + per-element `vec-push`) and pushes the DIFFERING element into a
+/// branchless `(if c a b)` select, sharing the whole push chain — instead of duplicating it in each
+/// `if`/`else` arm. A list's LENGTH is part of its value, so the hoist requires the SAME LENGTH across
+/// the arms (two lists of different lengths are distinct values — the hoist declines and keeps the `if`);
+/// a list is homogeneous, so a per-element select is well-typed. Value parity in BOTH directions plus
+/// the element that DIFFERS (element 0 → a/b) and the SHARED element (element 1 = 1) prove the single
+/// build reproduces the per-arm builds. Kept opaque via a recursive helper so it is a genuine runtime
+/// heap list.
+#[test]
+fn a_common_constructor_hoist_covers_same_length_lists() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (mk (: c Bool) (: a Int64) (: b Int64) (: n Int64)) \
+                   (if (< n 0) (mk c a b (+ n 1)) \
+                     (if c (list a 1) (list b 1)))) \
+                 (def (main (: c Bool) (: a Int64) (: b Int64)) \
+                   (match (List.at (mk c a b 0) 0) ((Some v) v) (None -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The differing element becomes a branchless scalar `select` — the hoist's witness (the pre-hoist
+    // form was a two-arm `if` over duplicated list builds, with no element `select`).
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the list common-constructor hoist must lower the differing element to a branchless select \
+         (build-once); found no select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime list must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |c: bool, a: &str, b: &str| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![c.to_string(), a.to_string(), b.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => {
+                panic!("list common-ctor hoist trapped (miscompile?): {t}")
+            }
+        }
+    };
+    assert_eq!(run(true, "10", "20"), "10", "c=true → element 0 = a");
+    assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf

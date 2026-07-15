@@ -60,3 +60,5 @@ qualified names (those reportedly work — `spec@aff30766`), and against record 
 - The repro above checks clean and runs to `212`.
 - Add a corpus case (module-qualified call from `main`) as a regression guard.
 - Confirm intra-module refs and record field access still resolve (no `.`-node regression).
+
+;; RESOLVED 2026-07-15 (trunk@2ac25eab): fix landed, gate PASSes. Agent self-removed.

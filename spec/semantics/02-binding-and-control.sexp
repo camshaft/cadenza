@@ -2714,3 +2714,128 @@
             (def (f (: (tuple a b) (Tuple Int64 Bool))) a)
             (def (main) (f (tuple 3 4))) (export main)))
   (error  CDZ0203))
+
+; --- Jump-table index integrity for HIGH-BIT scrutinees (adversarial guards) ----------------------
+; A dense match lowers to a `br_table` whose index operand is i32. The i64 scrutinee must be
+; range-guarded on its FULL width BEFORE any wrap to i32: a scrutinee whose LOW 32 bits collide with a
+; table index (2^32 + k has low bits k) must take the default, never arm k. The negative case (-1) is
+; pinned above; these pin the wrap-collision faces a truncate-then-guard emit gets wrong.
+
+(case "a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table"
+  (doc    "`(match x (0 10) (1 20) (2 30) (_ 99))` called with x = 2^32 (4294967296): out of the covered
+           range 0..2, so the default arm → 99. The low 32 bits of 2^32 are ZERO — an emit that wrapped
+           the scrutinee to i32 (`i32.wrap_i64`) before the range guard would compute table index 0 and
+           wrongly return 10 (arm 0). Pins that the br_table range guard tests the full i64, not the
+           wrapped index. The wrap-collision companion of the negative-scrutinee default case above.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (_ 99))) (export main)))
+  (call   main (: 4294967296 Int64))
+  (output (: 99 Int64)))
+
+(case "a high-bit scrutinee misses an offset jump table whose bias cancels its low bits"
+  (doc    "The OFFSET-table companion: `(match x (100 10) (101 20) (102 30) (_ 99))` covers 100..102, so
+           the emitted table index is `x - 100`. Called with x = 2^32 + 100 (4294967396): the true index
+           2^32 is out of range → default 99. But the low 32 bits of `x - 100` are ZERO — a wrap before
+           the guard hits arm 100 → 10. Pins the full-width guard survives the bias subtraction.")
+  (input  (do (def (main (: x Int64)) (match x (100 10) (101 20) (102 30) (_ 99))) (export main)))
+  (call   main (: 4294967396 Int64))
+  (output (: 99 Int64)))
+
+(case "the minimum integer scrutinee misses a zero-based jump table"
+  (doc    "`(match x (0 10) (1 20) (2 30) (_ 99))` at x = Int64.min: the sign-extreme scrutinee (low 32
+           bits zero, like 2^32) must default → 99, whether the guard compares signed or unsigned. The
+           extreme companion of the 2^32 and -1 default cases — together they pin the guard at both
+           wrap-collision faces and both sign extremes.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (_ 99))) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: 99 Int64)))
+
+(case "a loop-invariant trapping expression is not evaluated when the loop runs zero iterations"
+  (doc    "`(go 0 0 d 5)` where go's body adds `(+ acc (/ 100 d))` per iteration: the bound n = 0 means
+           ZERO iterations, so the loop-invariant `(/ 100 d)` is NEVER evaluated and the accumulator 5
+           returns unchanged — even at d = 0, where evaluating it would trap. LICM may hoist the invariant
+           out of the loop only BELOW the iteration guard (or guarded by it): a hoist above the `(< i n)`
+           test evaluates `(/ 100 0)` speculatively and traps a program that must return 5. The
+           trap-freedom complement of the hoisted-overflow-bound case above (there the bound itself is
+           evaluated pre-loop and MUST trap; here the invariant belongs to the body and must NOT).")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: d Int64) (: acc Int64))
+              (if (< i n) (go (+ i 1) n d (+ acc (/ 100 d))) acc))
+            (def (main (: d Int64)) (go 0 0 d 5))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
+; --- The common-constructor if-arm hoist preserves arm guarding (adversarial pins) ----------------
+; `(if c (K …p) (K …q))` with the SAME constructor K both arms is rewritten to build K ONCE with
+; per-payload `(if c pᵢ qᵢ)` selections (one heap build instead of two). The rewrite is sound only if
+; each payload stays guarded by the condition (a trap in the untaken arm's payload must not fire) and
+; the taken arm's trap still does. These pin the guard at every constructor shape the hoist covers —
+; sum, tuple, record — with a RUNTIME condition (the constant-fold untaken-branch cases above never
+; reach the hoist).
+
+(case "a trapping payload in the untaken arm of a same-constructor if does not trap"
+  (doc    "`(if (> d 0) (Some (/ 100 d)) (Some 42))` at d = 0: both arms build `Some`, the hoist's
+           target shape. The else arm is taken → the match yields 42; the then-payload `(/ 100 0)` must
+           stay UNEVALUATED behind the condition — a hoist that lifts the payload `if` out but evaluates
+           both payload alternatives (a select over payloads) would trap a program that must return 42.
+           The sum-shape guard pin for the common-constructor hoist.")
+  (input  (do
+            (def (main (: d Int64))
+              (match (if (> d 0) (Option.Some (/ 100 d)) (Option.Some 42))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "a trapping element in the untaken arm of a same-arity tuple if does not trap"
+  (doc    "The tuple-shape companion: `(. (if (> d 0) (tuple (/ 100 d) 1) (tuple 7 2)) 0)` at d = 0
+           takes the else tuple → element 0 is 7; the then-element `(/ 100 0)` stays behind the guard.
+           Pins the per-element `(if c pᵢ qᵢ)` selections the hoist introduces are real conditionals
+           (or trap-gated selects), never both-sides evaluation.")
+  (input  (do
+            (def (main (: d Int64))
+              (. (if (> d 0) (tuple (/ 100 d) 1) (tuple 7 2)) 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "a trapping field in the untaken arm of a same-shape record if does not trap"
+  (doc    "The record-shape companion (the hoist's record extension): `(. (if (> d 0) (record (a (/ 100
+           d))) (record (a 5))) a)` at d = 0 takes the else record → field a = 5; the then-field's
+           divide-by-zero stays guarded. Completes the guard pin across all three hoisted shapes.")
+  (input  (do
+            (def (main (: d Int64))
+              (. (if (> d 0) (record (a (/ 100 d))) (record (a 5))) a))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "a trapping payload in the TAKEN arm of a same-constructor if still traps"
+  (doc    "The complement: `(if (= d 0) (Some (/ 100 d)) (Some 42))` at d = 0 takes the THEN arm, so its
+           payload `(/ 100 0)` IS evaluated and must trap — a hoist that over-guards (never evaluates a
+           trapping payload, or folds the taken arm away) silently returns where the program must fail.
+           Together with the untaken-arm cases this pins the guard is exactly the condition, not a
+           blanket trap suppression.")
+  (input  (do
+            (def (main (: d Int64))
+              (match (if (= d 0) (Option.Some (/ 100 d)) (Option.Some 42))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a trapping condition of a same-constructor if traps before either arm"
+  (doc    "`(if (> (/ 100 d) 0) (tuple 1 2) (tuple 3 4))` at d = 0: the CONDITION itself traps, so
+           neither arm is reached. The hoist moves the condition into per-payload selections — if that
+           duplication re-evaluated the condition per payload the trap would fire twice (observable
+           under an effectful condition; here it pins at minimum that the trap still fires), and if the
+           rewrite dropped the condition eval for equal payload slots it would not fire at all. The
+           condition-integrity pin for the hoist.")
+  (input  (do
+            (def (main (: d Int64))
+              (. (if (> (/ 100 d) 0) (tuple 1 2) (tuple 3 4)) 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))

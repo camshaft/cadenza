@@ -13367,9 +13367,10 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
 }
 
 /// Hoist a COMMON CONSTRUCTOR out of both `if` arms: when both branches build the SAME constructor —
-/// the same `SumNew` discriminant + payload arity, a same-arity `Tuple`, or a `Record` with the SAME
-/// KEY SET — the heap build is DUPLICATED across the two branches, differing only in the payload/element/
-/// field occurrences. Build the constructor ONCE and push each DIFFERING position down into its own
+/// the same `SumNew` discriminant + payload arity, a same-arity `Tuple`, a same-length `List`, or a
+/// `Record` with the SAME KEY SET — the heap build is DUPLICATED across the two branches, differing only
+/// in the payload/element/field occurrences. Build the constructor ONCE and push each DIFFERING position
+/// down into its own
 /// `(if c pᵢ qᵢ)`; a position that is `core_equiv` across the arms is shared directly.
 /// `(if c (Some a) (Some b))` → `(Some (if c a b))`, `(if c (tuple a k) (tuple b k))` →
 /// `(tuple (if c a b) k)`, and `(if c (record (x a) (y k)) (record (x b) (y k)))` →
@@ -13401,6 +13402,8 @@ fn hoist_common_ctor(
         // A record's fields in a fixed KEY ORDER (the `BTreeMap`'s sorted keys), paired with the aligned
         // then/else value occurrences below; rebuilt into a `BTreeMap` after the per-position hoist.
         Record(Vec<crate::resolved::Symbol>),
+        // A same-length list — positional like a tuple, rebuilt as a `ListNew` of the hoisted elements.
+        List,
     }
     // Align each arm's positions into `(then_value, else_value)` pairs and record the reconstruction
     // shape. For keyed records the two arms must carry the IDENTICAL key set (a differing key set is a
@@ -13422,6 +13425,15 @@ fn hoist_common_ctor(
             }
             (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => {
                 (Shape::Tuple, et.into_iter().zip(ee).collect())
+            }
+            // A LIST is positional like a tuple, but a list's LENGTH is part of its value (two lists of
+            // different lengths are distinct values, not a common constructor) — so the same-length guard
+            // both aligns the elements AND is a genuine value check. A list is HOMOGENEOUS (one element
+            // type), so a per-element `(if c eᵢ fᵢ)` is well-typed. The backend builds it `vec-empty` +
+            // per-element `vec-push`; hoisting shares that whole chain and selects only the differing
+            // element, exactly as the tuple arm shares the `arr-alloc` + stores.
+            (Core::ListNew { elems: et }, Core::ListNew { elems: ee }) if et.len() == ee.len() => {
+                (Shape::List, et.into_iter().zip(ee).collect())
             }
             (Core::Record { fields: ft }, Core::Record { fields: fe })
                 if ft.len() == fe.len() && ft.keys().zip(fe.keys()).all(|(a, b)| a == b) =>
@@ -13463,6 +13475,7 @@ fn hoist_common_ctor(
             payloads: vals,
         },
         Shape::Tuple => Core::Tuple { elems: vals },
+        Shape::List => Core::ListNew { elems: vals },
         Shape::Record(keys) => Core::Record {
             fields: std::rc::Rc::new(keys.into_iter().zip(vals).collect()),
         },

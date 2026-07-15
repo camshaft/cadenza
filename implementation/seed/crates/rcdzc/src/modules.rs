@@ -22,7 +22,7 @@
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::db::{Def, ModuleDecl};
-use crate::fxhash::FxHashMap;
+use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::prelude::{push_atom, push_list};
 
 /// Synthesize each module declaration's record, recording it on `decl.synth`. Runs during `Db::load`
@@ -65,18 +65,47 @@ fn module_record(
         .and_then(|tail| tail.get(1..))
         .map(<[StructId]>::to_vec)
         .unwrap_or_default();
+    // VISIBILITY IS EXPLICIT (`modules-and-namespaces.md` §Visibility Is Explicit): when a module carries
+    // an `(export a b …)` clause, its export record contains ONLY the listed names — a definition NOT
+    // named is PRIVATE (absent from the record, so `(. m private)` is the closed-record CDZ0201, and a
+    // cross-module import cannot reach it). The `(export …)` clause IS the explicit rule the spec demands;
+    // it is what the ML surface `export { a, b }` compiles to. A module with NO export clause is the
+    // export-EVERYTHING default (`export_set` is `None` → no filter) — every corpus module today relies on
+    // it, and it matches the spec-body line "each definition MUST register its name as a field". A PRIVATE
+    // member is still MUTUALLY VISIBLE to its siblings inside the module (`resolve::module_sibling_binds`
+    // scans the members, not this record), so a private helper stays internally callable — only its
+    // OUTWARD reachability through the record is withheld.
+    //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+    //# A definition that is not made visible MUST NOT be importable by another module.
+    let export_set = module_export_set(ast, &members);
+    let visible = |field_name: &str| {
+        export_set
+            .as_ref()
+            .is_none_or(|set| set.contains(field_name))
+    };
     for &member in &members {
         // A NESTED module member — a field `(inner <inner-record>)`. The inner record is built first (see
         // `synthesize`), so `synth_by_occ` carries it; an inner that FAILED to register (an unmodeled
         // member) has no entry, so it contributes no field and `(. outer inner)` is a closed-record
-        // CDZ0201 rather than a miscompile.
+        // CDZ0201 rather than a miscompile. A nested module named by no `(export …)` clause is private,
+        // exactly as a private def.
         if let Some(inner_name) = module_member_name(ast, member)
             && let Some(&inner_rec) = synth_by_occ.get(&member)
         {
+            if !visible(&inner_name) {
+                continue;
+            }
             let k = push_atom(ast, Leaf::Name(inner_name));
             children.push(push_list(ast, vec![k, inner_rec]));
-        } else if let Some(field) = def_field(ast, member) {
-            children.push(field);
+        } else if let Some(name) = def_member_name(ast, member) {
+            // A `(def …)` member — include its field ONLY if visible (exported, or no clause). `def_field`
+            // is called after the visibility check so a private member appends nothing.
+            if !visible(&name) {
+                continue;
+            }
+            if let Some(field) = def_field(ast, member) {
+                children.push(field);
+            }
         }
     }
     // The module's MANIFEST as a `(meta capabilities)` metadata field — the union of the effects its
@@ -160,6 +189,46 @@ fn collect_host_names(ast: &Arenas, node: StructId, depth: u32, out: &mut Vec<St
 fn module_member_name(ast: &Arenas, member: StructId) -> Option<String> {
     let tail = ast.as_form(member, "module")?;
     ast.as_name(*tail.first()?).map(str::to_string)
+}
+
+/// The FIELD NAME a `(def …)` member registers — the name `def_field` would key its field on, WITHOUT
+/// building the field (no arena mutation). A bare-name value `(def x V)` names `x`; a signature `(def
+/// (f p…) BODY)` (function or nullary) names `f`. `None` for a non-def / malformed member. Used to test a
+/// member's visibility against the module's `(export …)` set before deciding to build its field.
+fn def_member_name(ast: &Arenas, member: StructId) -> Option<String> {
+    let tail = ast.as_form(member, "def")?;
+    let sig = *tail.first()?;
+    if let Some(name) = ast.as_name(sig) {
+        return Some(name.to_string()); // bare-name value def `(def x V)`
+    }
+    let Struct::List(children) = ast.get(sig) else {
+        return None;
+    };
+    children
+        .first()
+        .and_then(|&c| ast.as_name(c))
+        .map(str::to_string)
+}
+
+/// The set of names a module's `(export a b …)` clauses make visible, or `None` if the module carries NO
+/// export clause. `None` means the export-EVERYTHING default (no filtering); `Some(set)` — even an empty
+/// one, `(export)` — means ONLY the listed names are visible (`modules-and-namespaces.md` §Visibility Is
+/// Explicit). Unions every `(export …)` clause the module carries (a module may split its exports across
+/// clauses, as the ML surface's per-name `export { a }` lines do); a duplicate export across clauses is a
+/// separate well-formedness concern (the record's fixed-field-set check), not this set's job.
+fn module_export_set(ast: &Arenas, members: &[StructId]) -> Option<FxHashSet<String>> {
+    let mut set: Option<FxHashSet<String>> = None;
+    for &member in members {
+        if let Some(tail) = ast.as_form(member, "export") {
+            let entry = set.get_or_insert_with(FxHashSet::default);
+            for &name_occ in tail {
+                if let Some(name) = ast.as_name(name_occ) {
+                    entry.insert(name.to_string());
+                }
+            }
+        }
+    }
+    set
 }
 
 /// A `(field-name <value>)` field for a `(def SIG BODY)` module member, or `None` for a non-def / malformed

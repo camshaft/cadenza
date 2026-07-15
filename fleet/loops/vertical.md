@@ -75,12 +75,27 @@ invariants** — that's what stops another agent from silently breaking your fea
 - A gate you add is itself a `merge-request` to pr-sync like any change; once it's on `trunk`, it
   guards your territory across the whole fleet.
 
+## Be a STRONG OWNER — never wait for work to be handed to you
+You OWN your vertical slice; you are not a queue worker. **If your inbox is empty on a tick, that is
+NOT an idle tick — go FIND something to improve in your slice, even if it's small.** Do not sit
+waiting for the PM or the concierge to hand you a job. On a no-message tick, pick the highest-value
+self-directed improvement you can finish + gate: the next unfinished increment; a missing gate case
+that pins an invariant; a robustness/edge-case hardening; a diagnostic your feature should emit; a
+simplification or perf win in your own code; a doc/design-note update; a probe for a latent bug in
+your territory (file it if real). Enumerate a running "improvement backlog" for your vertical (in your
+landing log) so you always have candidates. Only when your feature's increments are ALL genuinely
+landed and its gate is fully green + you truly cannot find a worthwhile improvement do you idle — and
+even then, prefer adding coverage or hunting an edge over doing nothing. A strong owner leaves their
+slice a little better every tick.
+
 ## Each tick
 1. `cargo xtask fleet heartbeat <you>`.
 2. **Drain your inbox**: a `note` may hand you an issue in your territory from the PM; a `reject`
    from pr-sync means your last slice needs a fix (top priority); an `answer` resolves an `ask`.
-3. **Land one slice**: implement it, add tests (a fold unit + a wasmtime run where a value executes;
-   an assert-fold where it folds; a reject test for a new diagnostic).
+   **If the inbox is EMPTY, do NOT stop — self-direct** per "Be a strong owner" above: choose an
+   improvement to your slice and do it this tick.
+3. **Land one slice** (handed OR self-chosen): implement it, add tests (a fold unit + a wasmtime run
+   where a value executes; an assert-fold where it folds; a reject test for a new diagnostic).
 4. **Gate green** (all three, per the contract — diff the FAIL SET, additive only). Verify runtime
    slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away + imports no
    runtime, so it doesn't exercise the runtime path).
@@ -88,17 +103,30 @@ invariants** — that's what stops another agent from silently breaking your fea
    <noreply@anthropic.com>` trailer), then `cargo xtask fleet send --to pr-sync --kind merge-request
    --subject "<branch>" --ref $(git rev-parse HEAD) --body "<slice + gate summary>"`. Idle for the
    reply; on `reject`, fix and resend; on `merged`, pick the next slice next tick.
-6. Record a one-line landing note (sha + gate count + slice) wherever your vertical's log lives.
+6. **Feed the guide.** When a slice lands something USER-VISIBLE (a new construct, surface syntax,
+   builtin, behavior, or capability — not a pure internal refactor), send `v-guide` a `note` with
+   DOCUMENTATION SUGGESTIONS: what the feature is, why it's useful, the exact current surface, and
+   2–3 small runnable examples (that actually compile+run) plus any edge/gotcha worth showing. You
+   know your feature best — hand the guide the raw material rather than making it reverse-engineer it.
+   `cargo xtask fleet send --to v-guide --kind note --subject "docs: <feature>" --body "<what/why +
+   runnable examples + where it fits>"`. Skip this only for changes with no user-facing surface.
+7. Record a one-line landing note (sha + gate count + slice) wherever your vertical's log lives.
 
 ## Coordination
+- **Feed `v-guide` documentation suggestions for every user-visible feature you land** (tick step 6):
+  you are the authority on your feature, so proactively hand the guide what/why + runnable examples
+  rather than leaving your work undocumented. The guide owner turns your note into a chapter/section.
 - Where your slice touches a seam a sibling vertical also edits (maps/match→select/sum-payload-CSE
   are the classic shared seams), `note` that agent to split territory rather than racing the file.
 - If your slice already landed on `trunk` by another driver → STOP, `fleet remove` yourself, don't
   duplicate.
 
 ## Stop conditions
-- All your feature's increments landed (its `NN-*.sexp` gate is fully green) → `note` the concierge
-  "vertical <X> complete", then `cargo xtask fleet remove <you>` (window stays for scrollback).
+- All your feature's increments landed (its `NN-*.sexp` gate is fully green) AND you genuinely cannot
+  find a worthwhile improvement (per "Be a strong owner") → `note` the concierge "vertical <X>
+  complete", then `cargo xtask fleet remove <you>` (window stays for scrollback). For a STANDING
+  quality vertical (diagnostics/perf/wasm-opt/runtime/syntax/…) there is rarely a true "done" —
+  keep hardening + extending coverage rather than removing yourself.
 - Gate won't go green → leave the worktree dirty, STOP the tick, retry next tick.
 - A design ambiguity your plan/design doc doesn't resolve → `ask` the concierge with concrete
   options, pick a different sub-slice this tick, never block.

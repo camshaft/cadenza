@@ -113,6 +113,62 @@
             (+ ((. m one) unit) ((. m two) unit))))
   (output (: 3 Int64)))
 
+; VISIBILITY IS EXPLICIT (modules-and-namespaces.md §Visibility Is Explicit: "Whether a definition is
+; visible outside its module MUST be determined by an explicit rule fixed by this specification… A
+; definition that is not made visible MUST NOT be importable by another module."). A module's `(export a
+; b …)` clause IS that explicit rule — it names exactly the definitions the module's record carries. A
+; member NOT named is PRIVATE: absent from the record, so `(. m private)` is the closed-record CDZ0201,
+; and no other module can reach it. This is what the ML surface `export { a, b }` compiles to. A module
+; with NO export clause is the export-EVERYTHING default (the cases above), unchanged. A private member is
+; still MUTUALLY VISIBLE to its siblings inside the module (a private helper stays internally callable);
+; only its OUTWARD reachability through the record is withheld.
+
+(case "a module member not named by the export clause is private"
+  (doc    "The module exports only `pub`, so `secret` is a private definition — absent from the module's
+           export record. Projecting `(. m secret)` names a field the record does not carry, the
+           closed-record CDZ0201 (modules-and-namespaces.md §Visibility Is Explicit: a definition not made
+           visible MUST NOT be reachable outside the module). Before this, a module's record carried EVERY
+           definition regardless of the export clause, so `(. m secret)` reached a private helper — an
+           over-exposure the explicit-visibility rule forbids. The export clause now filters the record.")
+  (input  (do
+            (module m
+              (def (pub x) (+ x 1))
+              (def (secret x) (+ x 100))
+              (export pub))
+            (def (main) ((. m secret) 5))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a module member named by the export clause is reachable"
+  (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
+           of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
+           to the export clause does not withhold a NAMED export (only the unnamed `secret` is hidden).")
+  (input  (do
+            (module m
+              (def (pub x) (+ x 1))
+              (def (secret x) (+ x 100))
+              (export pub))
+            (def (main) ((. m pub) 5))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a private module member is still visible to a sibling"
+  (doc    "Explicit visibility withholds a member's OUTWARD reachability, not its INTRA-module visibility:
+           `helper` is not exported (so `(. m helper)` from outside would be CDZ0201), but `pub` — which IS
+           exported — calls `helper` by name in its own body, exactly as any two module definitions are
+           mutually visible (§A Module Function Calls A Sibling Export By Name). So the export clause hides
+           `helper` from the record while `pub`'s body still reaches it: pub(3) = helper(3) + 1 = 7. Pins
+           that the visibility filter touches only the export record (`modules::module_record`), not the
+           sibling scope (`resolve::module_sibling_binds`), so a private helper stays internally callable.")
+  (input  (do
+            (module m
+              (def (helper x) (* x 2))
+              (def (pub x) (+ (helper x) 1))
+              (export pub))
+            (def (main) ((. m pub) 3))
+            (export main)))
+  (output (: 7 Int64)))
+
 ; A module definition need not be a function: the glossary defines a Definition as "a named binding
 ; introduced by a module: a value, function, type, …", and core-semantics.md #A Module Evaluates To A
 ; Record Of Its Exports says "Each definition MUST register its name and value as a field of the module's
