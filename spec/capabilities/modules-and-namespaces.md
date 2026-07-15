@@ -33,6 +33,8 @@ Whether a definition is visible outside its module MUST be determined by an expl
 
 A definition that is not made visible MUST NOT be importable by another module.
 
+The explicit visibility rule MUST govern only a definition's reachability from outside its module; a definition MUST remain visible to the other definitions in its own module regardless of whether it is made visible outside, so that a module's members are mutually visible and a private helper stays reachable by its siblings.
+
 ### A Type's Handle And Its Constructors Are Independently Visible
 
 A sum type's handle — the name that denotes the type itself — and its constructors MUST be independently exportable, so that a module can publish a type for other modules to name and hold values of without publishing the way to construct or take those values apart.

@@ -3721,7 +3721,7 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
 /// both present) JOINTLY covers every NON-EMPTY list — the first element is `true` or `false`, nothing else —
 /// so together with a `(list)` arm the match is total WITHOUT a `_`.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
-//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 ///
 /// The length-dispatch matcher cannot see this on its own: each bool-lead arm desugars (via the literal
 /// pass) to a GUARDED rest arm, and a guarded arm is excluded from length-coverage → a spurious CDZ0210.
@@ -4034,7 +4034,7 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 /// sum's variant set (EVERY variant present) JOINTLY covers every NON-EMPTY list — the first element is one
 /// of the sum's variants, nothing else — so together with a `(list)` arm the match is total WITHOUT a `_`.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
-//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 ///
 /// The bool case (Inc-23) replaces the last saturating arm's literal with `_` (a bool literal is a pure
 /// test, binds nothing). A CTOR element binds a PAYLOAD, so it cannot be dropped — instead the LAST

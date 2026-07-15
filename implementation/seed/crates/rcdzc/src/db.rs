@@ -476,7 +476,9 @@ pub struct TypeDecl {
     /// compile-time typing/exhaustiveness property. `resolve.rs` still rejects an undeclared bare ctor
     /// CDZ0101 — the row variable does NOT sanction undeclared local ctor names.
     //= spec/capabilities/type-system.md#a-sum-type-may-be-open-with-a-mandatory-open-tail-arm
-    //# A program MUST be able to declare an open sum — a variant set that MAY carry a row variable standing for variants not named — and a closed sum (one declared without a row variable) MUST remain the default.
+    //# A program MUST be able to declare an open sum — a variant set that MAY carry a row variable standing for variants not named — so that a value can range over an extensible vocabulary of variants the declaring module does not close, dual to an open record's extensible field set.
+    //= spec/capabilities/type-system.md#a-sum-type-may-be-open-with-a-mandatory-open-tail-arm
+    //# A closed sum MUST remain the default: a sum declared without a row variable is closed, and the abstract syntax tree type MUST be a closed sum, so that a compiler's match over the AST is checked against a fixed, known variant set.
     pub open_tail: Option<String>,
     /// The SYNTHESIZED record occurrence — the record (`crate::sums`) whose `(meta t)` is this sum's
     /// type-value and whose fields are its variant constructors. `None` until `sums::synthesize` runs
