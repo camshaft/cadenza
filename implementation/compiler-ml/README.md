@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 369 tests total across 38 modules):
+top. Current `src/` modules (each with same-file `@test`s — 383 tests total across 39 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -266,6 +266,16 @@ top. Current `src/` modules (each with same-file `@test`s — 369 tests total ac
   `"1 @ 2"`, `"(1 + 2"`) reports errors via `parse-checked.ok`. Real end-to-end text-in/value-out (a REPL
   / `--eval`). 12 `@test`s. Confirmed WORKING — the deep transitive import + the string→Tok→Expr→value
   flow both correct.
+- `src/tycheck.cdz` — a TYPE-CHECKER for a two-type expression language (`Int` + `Bool`, with arithmetic,
+  comparison, logic, `Not`, and a conditional). The middle-end pass: assign each node a `Ty` and REJECT an
+  ill-typed program (`1 + true`, `if 3 then …`, `if c then 1 else true`) with a positioned `TypeError`
+  rather than letting it reach codegen. `check e : Result(Ty, TypeError)` short-circuits to the first
+  error; `well-typed`/`checked-eval` gate a reference evaluator on the check. 14 `@test`s (each typing
+  rule + its rejection + nested error propagation + a well-typed/ill-typed eval gate). Confirmed WORKING.
+  ⚠ Two seed findings hit + worked around here: (1) the mutual-helper `if teq(ct,TBool) then match
+  check(t)` factoring declined "no local slot" → inlined into one self-recursive `check`; (2) nested
+  nullary matches (`match rt { TInt => … | TBool => … }`, `Result.Ok(TInt)` patterns) drew spurious
+  CDZ0306/CDZ0213 warnings → compare types via a scalar `tag` instead. Both in the findings log.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -502,6 +512,32 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   LP)` member access. WORKAROUND: write nullary variant patterns with the BARE name (no `T.` prefix) —
   `src/parse-checked.cdz` uses bare `TLP`/`TRP`/`End`. (`src/apply-ty.cdz` still uses the `tag`-helper for
   its own case.)
+
+- **OPEN (seed `rcdzc` — DIAGNOSTIC FALSE POSITIVE, iter 47): a BARE nullary-variant pattern NESTED in an
+  outer pattern draws spurious CDZ0306 "unused binding" + CDZ0213 "unreachable arm".**
+  `repros/false-warning-nested-nullary-match-unused-binding.cdz`. `match a { TInt => (match b { TInt => 1
+  | TBool => 2 }) | TBool => 3 }` warns on the inner `TInt`/`TBool` — the lint mis-reads a bare nullary
+  ctor pattern as an irrefutable BINDING (CDZ0306) which it then thinks shadows the sibling arm (CDZ0213),
+  even though lowering treats it correctly as a ctor (`classify(TInt,TBool)` = 2, not 1). Cosmetic — exit
+  0, code runs right — but a type-checker full of nested nullary matches (`match rt { TInt => … | TBool =>
+  … }`, `Result.Ok(TInt)` patterns) drowns in false warnings. SHARP: the SAME match at TOP LEVEL is CLEAN;
+  it fires ONLY when nested in another match arm / `Result.Ok(…)` pattern. Sibling of the dotted-nullary
+  resolver bug (dotted = hard error, bare = false warning + correct code). WORKAROUND: compare via a
+  scalar `tag` (`match t { TInt => 0 | TBool => 1 }` at top level) so no nullary match is nested —
+  `src/tycheck.cdz` does this throughout. Fix locus: the resolver's pattern-vs-binder lint in a nested arm.
+
+- **OPEN (seed `rcdzc` — BACKEND DECLINE, iter 47): "parameter reference has no local slot" for a
+  MUTUALLY-recursive helper whose `if` condition is a CALL on a match-bound sum payload gating a nested
+  recursive heap-sum match.** `repros/decline-mutual-helper-call-in-if-cond-no-local-slot.cdz`. `cdz check`
+  CLEAN; `cdz compile -t wasm` declines at emit. SHARP — all three jointly required (drop any → compiles):
+  (1) MUTUAL recursion (`check ↔ check-if`; INLINING to self-recursion compiles); (2) the `if` condition
+  is a FUNCTION CALL on the match-bound payload — `if is-bool(ct) then …` where `ct` from `match check(c)
+  { Ok(ct) => … }` (an INLINE `match ct` condition compiles); (3) the then-branch nests another recursive
+  `match check(t)` returning a heap `Result`/sum (an Int64-only analogue compiles). Hit organically
+  factoring a type-checker's `If` rule (`tycheck`'s `check-if`). A slot-allocation gap (`select.rs`) — the
+  call-in-if-condition + mutual-call arg layout hands a `Core::Param`/`LocalRef` a slot the emit never
+  reserved. WORKAROUND: inline the helper (self-recursive) OR make the `if` condition an inline `match` —
+  `src/tycheck.cdz` inlines its checks into one self-recursive `check`.
 
 - **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
   `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/

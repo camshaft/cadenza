@@ -1,0 +1,200 @@
+/// tycheck.cdz — a TYPE-CHECKER for a two-type expression language (`Int` + `Bool` with arithmetic,
+/// comparison, and a conditional). The middle-end pass after parsing: assign every node a type and REJECT
+/// an ill-typed program (`1 + true`, `if 3 then …`, `if c then 1 else true`) with a diagnostic, rather
+/// than letting it reach codegen. `check e : Result(Ty, TypeError)` — the type, or the first type error.
+/// A `well-typed` predicate + a reference `eval` (only defined on well-typed trees) close the loop: a tree
+/// the checker ACCEPTS evaluates without a type-confusion, and one it REJECTS is caught before eval.
+///
+/// It exercises: a two-variant `Ty` sum, `Result`-threaded type errors through a recursive checker (each
+/// sub-check short-circuits to the first `Err`), and the classic typing rules — `Add`/`Sub`/`Mul` are
+/// `Int → Int → Int`, `Lt`/`Eq` are `Int → Int → Bool`, `And`/`Or` are `Bool → Bool → Bool`, `Not` is
+/// `Bool → Bool`, and `If` requires a `Bool` condition and two branches of the SAME type (which becomes
+/// the `If`'s type). NULLARY `Ty` variants are matched by their BARE names (`TInt`/`TBool`) — a dotted
+/// `Ty.TInt` arm whose body nests a same-type match mis-resolves (see the dotted-nullary finding).
+
+type Ty =
+  | TInt
+  | TBool
+
+type Exp =
+  | Num(Int64)
+  | Boolean(Bool)
+  | Add(Exp, Exp)
+  | Sub(Exp, Exp)
+  | Mul(Exp, Exp)
+  | Lt(Exp, Exp)
+  | Eq(Exp, Exp)
+  | And(Exp, Exp)
+  | Or(Exp, Exp)
+  | Not(Exp)
+  | If(Exp, Exp, Exp)
+
+type TypeError =
+  | Mismatch(Int64)       // a code: 1 = arith operand not Int, 2 = compare operand not Int,
+                          //         3 = logic operand not Bool, 4 = if-cond not Bool, 5 = if-branches differ
+  | NotImpl
+
+/// A type's tag as a scalar (0 = Int, 1 = Bool) — used to compare two types WITHOUT a nested nullary
+/// match. A nested bare-nullary match (`match a { TInt => match b { TInt => … } }`) computes correctly
+/// but emits SPURIOUS CDZ0306 "unused binding"/CDZ0213 "unreachable arm" warnings — the inner bare
+/// nullary pattern is mis-classified as an irrefutable binding for the lint (see the finding). Comparing
+/// tags sidesteps the nested nullary match entirely.
+def tag(t: Ty) = match t with
+  | TInt => 0
+  | TBool => 1
+
+/// Structural type equality.
+def teq(a: Ty, b: Ty) = tag(a) == tag(b)
+
+/// Type-check `e`, threading `Result` and short-circuiting to the first error.
+///
+/// ⚠ STRUCTURE NOTE: the binary and `if` rules are INLINED into this ONE self-recursive `check` rather
+/// than factored into `check-bin`/`check-if` helpers. Factoring them into a MUTUALLY-recursive helper
+/// whose `if` condition is a CALL (`if teq(ct, TBool) then …`) gating a nested recursive `match check(…)`
+/// declines "parameter reference has no local slot" at emit (a backend slot-allocation bug — `cdz check`
+/// clean, `cdz compile` declines; see `repros/decline-mutual-helper-call-in-if-cond-no-local-slot.cdz`).
+/// Inlining (self-recursion) sidesteps it. The `if teq(...)` guards here compile because `check` is
+/// self-recursive, not mutually-recursive with the guard's caller.
+def check(e: Exp) = match e with
+  | Exp.Num(_) => Result.Ok(TInt)
+  | Exp.Boolean(_) => Result.Ok(TBool)
+  | Exp.Add(l, r) => check-bin2(l, r, 1, TInt)
+  | Exp.Sub(l, r) => check-bin2(l, r, 1, TInt)
+  | Exp.Mul(l, r) => check-bin2(l, r, 1, TInt)
+  | Exp.Lt(l, r) => check-bin2(l, r, 2, TBool)
+  | Exp.Eq(l, r) => check-bin2(l, r, 2, TBool)
+  | Exp.And(l, r) => check-bool2(l, r)
+  | Exp.Or(l, r) => check-bool2(l, r)
+  | Exp.Not(x) => (match check(x) with
+    | Result.Ok(tx) => (if teq(tx, TBool) then Result.Ok(TBool) else Result.Err(TypeError.Mismatch(3)))
+    | Result.Err(er) => Result.Err(er))
+  | Exp.If(c, t, f) => (match check(c) with
+    | Result.Ok(ct) => (if teq(ct, TBool) then
+        (match check(t) with
+          | Result.Ok(tt) => (match check(f) with
+            | Result.Ok(tf) => (if teq(tt, tf) then Result.Ok(tt) else Result.Err(TypeError.Mismatch(5)))
+            | Result.Err(ef) => Result.Err(ef))
+          | Result.Err(et) => Result.Err(et))
+      else Result.Err(TypeError.Mismatch(4)))
+    | Result.Err(ec) => Result.Err(ec))
+
+/// Both operands must have `want`; result `res`, error `code`. Compares types via `tag` (a top-level
+/// nullary match) rather than a NESTED nullary match — the latter runs correctly but draws spurious
+/// CDZ0306/CDZ0213 warnings (see `repros/false-warning-nested-nullary-match-unused-binding.cdz`).
+def check-both(l: Exp, r: Exp, want: Ty, res: Ty, code: Int64) = match check(l) with
+  | Result.Ok(lt) => (match check(r) with
+    | Result.Ok(rt) => (if teq(lt, want) and teq(rt, want) then Result.Ok(res) else Result.Err(TypeError.Mismatch(code)))
+    | Result.Err(er) => Result.Err(er))
+  | Result.Err(el) => Result.Err(el)
+
+/// Both operands Int, result `res` (Int for arith, Bool for compare); error `code`.
+def check-bin2(l: Exp, r: Exp, code: Int64, res: Ty) = check-both(l, r, TInt, res, code)
+
+/// Both operands Bool, result Bool, error code 3 (logic).
+def check-bool2(l: Exp, r: Exp) = check-both(l, r, TBool, TBool, 3)
+
+/// The checked type as a code: 1 = Int, 2 = Bool, or `-code` for a type error (so tests read the reason).
+/// The Ok type is mapped via `tag` (`tag+1` → 1/2) rather than a nested `Result.Ok(TInt)` nullary pattern
+/// (which runs fine but draws the spurious CDZ0213 warning — see the false-warning repro).
+def type-code(e: Exp) = match check(e) with
+  | Result.Ok(ty) => tag(ty) + 1
+  | Result.Err(TypeError.Mismatch(code)) => 0 - code
+  | Result.Err(NotImpl) => 0 - 99
+
+/// Is `e` well-typed?
+def well-typed(e: Exp) = match check(e) with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+/// A reference evaluator, meaningful only on WELL-TYPED trees — it returns an Int for an Int-typed
+/// expression and 0/1 for a Bool-typed one (so a single Int64 carries both, disambiguated by the type).
+def evl(e: Exp) = match e with
+  | Exp.Num(n) => n
+  | Exp.Boolean(b) => (if b then 1 else 0)
+  | Exp.Add(l, r) => evl(l) + evl(r)
+  | Exp.Sub(l, r) => evl(l) - evl(r)
+  | Exp.Mul(l, r) => evl(l) * evl(r)
+  | Exp.Lt(l, r) => (if evl(l) < evl(r) then 1 else 0)
+  | Exp.Eq(l, r) => (if evl(l) == evl(r) then 1 else 0)
+  | Exp.And(l, r) => (if evl(l) == 1 and evl(r) == 1 then 1 else 0)
+  | Exp.Or(l, r) => (if evl(l) == 1 or evl(r) == 1 then 1 else 0)
+  | Exp.Not(x) => (if evl(x) == 1 then 0 else 1)
+  | Exp.If(c, t, f) => (if evl(c) == 1 then evl(t) else evl(f))
+
+/// Type-check THEN evaluate: `Some value` if well-typed, `None` if ill-typed (the safe "gate eval on the
+/// type-check" a real pipeline does).
+def checked-eval(e: Exp) = if well-typed(e) then Some(evl(e)) else None(unit)
+
+@test
+def ty-num() = if type-code(Exp.Num(5)) == 1 then unit else trap("Num : Int")
+
+@test
+def ty-bool() = if type-code(Exp.Boolean(true)) == 2 then unit else trap("Bool : Bool")
+
+@test
+def ty-add() = if type-code(Exp.Add(Exp.Num(1), Exp.Num(2))) == 1 then unit else trap("1+2 : Int")
+
+@test
+def ty-add-bad() =
+  // 1 + true → arith operand not Int → Mismatch(1) → -1
+  if type-code(Exp.Add(Exp.Num(1), Exp.Boolean(true))) == 0 - 1 then unit else trap("1+true rejected")
+
+@test
+def ty-lt() = if type-code(Exp.Lt(Exp.Num(1), Exp.Num(2))) == 2 then unit else trap("1<2 : Bool")
+
+@test
+def ty-lt-bad() =
+  // true < 2 → compare operand not Int → Mismatch(2) → -2
+  if type-code(Exp.Lt(Exp.Boolean(true), Exp.Num(2))) == 0 - 2 then unit else trap("true<2 rejected")
+
+@test
+def ty-and() =
+  // (1<2) and (3<4) : Bool
+  let e = Exp.And(Exp.Lt(Exp.Num(1), Exp.Num(2)), Exp.Lt(Exp.Num(3), Exp.Num(4))) in
+  if type-code(e) == 2 then unit else trap("and of Bools : Bool")
+
+@test
+def ty-and-bad() =
+  // 1 and true → logic operand not Bool → Mismatch(3) → -3
+  if type-code(Exp.And(Exp.Num(1), Exp.Boolean(true))) == 0 - 3 then unit else trap("1 and true rejected")
+
+@test
+def ty-if-ok() =
+  // if (1<2) then 10 else 20 : Int
+  let e = Exp.If(Exp.Lt(Exp.Num(1), Exp.Num(2)), Exp.Num(10), Exp.Num(20)) in
+  if type-code(e) == 1 then unit else trap("well-typed if : Int")
+
+@test
+def ty-if-cond-not-bool() =
+  // if 3 then 1 else 2 → cond not Bool → Mismatch(4) → -4
+  if type-code(Exp.If(Exp.Num(3), Exp.Num(1), Exp.Num(2))) == 0 - 4 then unit else trap("if 3 rejected")
+
+@test
+def ty-if-branches-differ() =
+  // if (1<2) then 1 else true → branches differ → Mismatch(5) → -5
+  let e = Exp.If(Exp.Lt(Exp.Num(1), Exp.Num(2)), Exp.Num(1), Exp.Boolean(true)) in
+  if type-code(e) == 0 - 5 then unit else trap("mismatched branches rejected")
+
+@test
+def ty-nested-error-propagates() =
+  // (1 + (2 + true)) — the inner error surfaces
+  let e = Exp.Add(Exp.Num(1), Exp.Add(Exp.Num(2), Exp.Boolean(true))) in
+  if type-code(e) == 0 - 1 then unit else trap("nested arith error propagates")
+
+@test
+def ty-checked-eval-gates() =
+  // a well-typed if evaluates; an ill-typed one is None
+  let good = Exp.If(Exp.Lt(Exp.Num(3), Exp.Num(5)), Exp.Num(100), Exp.Num(200)) in
+  let bad = Exp.Add(Exp.Num(1), Exp.Boolean(true)) in
+  (match checked-eval(good) with
+    | Some(v) => (if v == 100 then (match checked-eval(bad) with | Some(_) => trap("bad should gate") | None(_) => unit) else trap("good evals 100"))
+    | None(_) => trap("good is well-typed"))
+
+@test
+def ty-deep-well-typed() =
+  // if ((1<2) and not (3<0)) then (10*2) else 0  : Int, evaluates to 20
+  let cond = Exp.And(Exp.Lt(Exp.Num(1), Exp.Num(2)), Exp.Not(Exp.Lt(Exp.Num(3), Exp.Num(0)))) in
+  let e = Exp.If(cond, Exp.Mul(Exp.Num(10), Exp.Num(2)), Exp.Num(0)) in
+  if well-typed(e) then (match checked-eval(e) with | Some(v) => (if v == 20 then unit else trap("=20")) | None(_) => trap("well-typed")) else trap("well-typed")
+
+export { check, well-typed, type-code, checked-eval }
