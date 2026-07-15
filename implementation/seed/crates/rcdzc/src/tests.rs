@@ -20118,6 +20118,58 @@ mod match_engine {
     }
 
     #[test]
+    fn a_set_of_and_member_op_arg_reject_anchor_at_the_culprit() {
+        // The `Set.of` homogeneity reject (CDZ0201) and the prelude MEMBER-OP wrong-arg-type reject
+        // (CDZ0203, `Module.op expects an argument of type …`) must anchor at the CULPRIT — the outlier
+        // set element, or the wrong-typed argument — not the whole `(Set.of …)` / `(Module.op …)` node, so
+        // the squiggle points at the minimal locus (the PR #399 anchoring family; behavior unchanged).
+        let anchor_of = |src: &str| -> Option<String> {
+            let d = reject_full(src)?;
+            let db = crate::db::Db::load(parse(src));
+            d.node
+                .and_then(|n| db.ast.as_str(crate::ast::StructId(n)).map(str::to_string))
+        };
+        // Set.of — the outlier element `"z"` (a String among Int64s) is the locus, not the `(Set.of …)`.
+        assert_eq!(
+            anchor_of("(module m (def x (Set.of (list 1 2 \"z\"))) (export x))").as_deref(),
+            Some("z"),
+            "the Set.of homogeneity reject anchors at the outlier element `\"z\"`, not the call"
+        );
+        // member-op — the wrong-typed argument `"a"` (a String where List.at wants an Int64 index) is the
+        // locus, not the `(List.at …)` application node.
+        assert_eq!(
+            anchor_of("(module m (def (f (: xs (List Int64))) ((. List at) xs \"a\")) (export f))")
+                .as_deref(),
+            Some("a"),
+            "the member-op wrong-arg-type reject anchors at the argument `\"a\"`, not the call"
+        );
+        // NO REGRESSION on the deferring decline: `Symbol.of 5` (a non-string to a runtime-string op) still
+        // reports exactly ONE error — the CDZ0203 (now anchored at the arg), not also the "operand is not a
+        // string" lowering decline (which the flag-based dedup drops, since the two no longer share a node).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. Symbol of) 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Symbol.of on a non-string = ONE error even with the arg-anchored CDZ0203: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn a_map_insert_type_clash_names_the_map_and_operand_types() {
         // The Map.insert twin of the map-literal heterogeneity message (M75): inserting a key/value whose
         // type differs from the map's names BOTH the map's type and the operand's type (was a generic "the

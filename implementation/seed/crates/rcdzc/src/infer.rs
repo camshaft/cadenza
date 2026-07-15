@@ -7232,6 +7232,10 @@ fn check_application(
         if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
             let delta = peer_type_delta_hint(first_ty, et).unwrap_or_default();
+            // Anchor at the OUTLIER element `e` (the one that broke homogeneity against the first
+            // element's type), not the whole `(Set.of …)` application — the squiggle lands on the off
+            // element, not the entire set construction (the Set twin of the list/map-literal outlier
+            // anchoring, PR #399).
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
@@ -7239,7 +7243,8 @@ fn check_application(
                     first_ty.render_name(),
                     et.render_name()
                 ),
-            );
+            )
+            .at(*e);
             if let Some(fix) = float_literal_retype_fix(db, *first, first_ty, et)
                 .or_else(|| float_literal_retype_fix(db, *e, et, first_ty))
             {
@@ -8064,6 +8069,10 @@ fn check_application(
                         // (`field `x` is missing (found `y`)`) instead of leaving the reader to diff two
                         // rendered compound types. The M180/M181 audit applied to the prelude-member-op arm.
                         let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
+                        // Anchor at the offending ARGUMENT `arg`, not the whole `(Module.member …)`
+                        // application node — the squiggle points at the wrong-typed argument, the actionable
+                        // locus (`(List.at xs true)` lands on `true`, not the `List.at` head), matching the
+                        // file's "anchor the specific offending element" pattern (PR #399 anchoring family).
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
@@ -8072,7 +8081,8 @@ fn check_application(
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
-                        );
+                        )
+                        .at(arg);
                         if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
                             reject = reject.with_fix(fix);
                         }
