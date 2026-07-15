@@ -10,7 +10,7 @@
 /// the runner produces, so an exercise author writes `expected` as the value they expect to see.
 
 import { useState } from "react";
-import { CodeEditor } from "../editor/CodeEditor.tsx";
+import { LazyCodeEditor as CodeEditor } from "../editor/LazyCodeEditor.tsx";
 import { useCadenzaEditor } from "./useCadenzaEditor.ts";
 import { renderSnippet } from "./useCadenzaEditor.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
