@@ -1313,6 +1313,8 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
+pass	a runtime signed little-endian segment lays the low byte first
+pass	a runtime signed little-endian segment round-trips a negative value
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
