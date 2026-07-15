@@ -1,4 +1,12 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc). The ROOT + MINIMAL form of the
+;; ✅ FIXED (2026-07-15, seed rcdzc) — this minimal `List.push` form now returns 3, and the WHOLE
+;; still-live-binding family (List/Map/Set, `let`-body + self-call + shadowing interpreter) is resolved. A
+;; general Perceus RETAIN pass (`collect_dup_sites`/`mark_binder_dups`, backend/wasm/select.rs) emits a
+;; `dup` at each `LocalRef`/`Param` occurrence CONSUMED while its binding has a LATER LIVE USE, so the
+;; consuming op path-copies (its FBIP `rc==1` fast path sees rc≥2); a single-use consume takes no dup
+;; (in-place FBIP preserved). Migrated to the graded corpus (spec/semantics/05-compound-types.sexp). Kept
+;; as the regression witness.
+;;
+;; ORIGINAL — MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc). The ROOT + MINIMAL form of the
 ;; persistent-collection mutation family (supersedes the self-call / interpreter repros as the core case).
 ;; `cdz check` CLEAN; `cdz compile` SUCCEEDS; runs WRONG.
 ;;

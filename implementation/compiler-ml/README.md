@@ -385,7 +385,11 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   ONE survivor is the MUTUAL-RECURSION face (`repros/miscompile-node-payload-consumed-by-mutual-recursion-
   corrupts-sibling-read.cdz` → still 1 not 101) — see the "MUTUAL-RECURSION FACE" note at the end of this
   entry; the sibling pinned its root (`spec@049ae3da`) but the fix is not yet landed. The historical
-  analysis (now mostly resolved) follows.
+  analysis (now mostly resolved) follows. FIX: a general Perceus RETAIN pass in `backend/wasm/select.rs`
+  (`collect_dup_sites`/`mark_binder_dups`) `dup`s each `LocalRef`/`Param` occurrence CONSUMED while its
+  binding has a LATER LIVE USE, so the op path-copies (a single-use consume stays in-place FBIP). The List
+  faces + the Map self-call face are migrated to the GRADED corpus (`spec/semantics/05-compound-types.sexp`:
+  push length, update/concat element, Map self-call) so the gate guards them.
   🔬 ROOT + MINIMAL form (iter 33)
   `repros/fixed-consuming-op-mutates-still-live-binding.sexp` — no recursion, no self-call, one
   `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returned **4**, not 3 —
@@ -432,11 +436,14 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   a single index-walk fn). Fix locus: dup the aggregate/collection operand of a (mutual-)recursive call
   whose callee consumes a payload/scope a sibling still reads.
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
-  LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
-  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp`.
-  `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i = List.at xs i or -1`)
-  returns **3**, not 8 — after `concat` consumes `xs`, the later `List.at xs 0` reads as if `xs` is EMPTY.
+- **✅ FIXED (seed `rcdzc`, 2026-07-15, was iter 37): `List.concat`'s still-live-LHS/RHS element-view face
+  — fixed with the whole still-live-binding family by the general Perceus retain pass above.**
+  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp` now returns 8 (was 3). The
+  retain (`dup` at the consumed occurrence) makes `vec-concat` path-copy a shared operand in either
+  position. Migrated to the graded corpus (`spec/semantics/05-compound-types.sexp`).
+  🔬 ORIGINAL (iter 37): `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i =
+  List.at xs i or -1`) returned **3**, not 8 — after `concat` consumed `xs`, the later `List.at xs 0` read
+  as if `xs` is EMPTY.
   🔑 DISCRIMINATOR: the IDENTICAL shape with `List.push` instead of `List.concat` computes CORRECTLY (8) —
   so `push` (`vec-push`) dup-guards its still-live list operand but `concat` (`vec-concat`) does not. SHARP
   (each necessary): the op is `List.concat`; `xs` is a still-live `let` binding (a param is safe); the

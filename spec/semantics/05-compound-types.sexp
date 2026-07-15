@@ -1358,6 +1358,56 @@
             (def (main) (build 0 3 (list))) (export main)))
   (output (: (list 0 1 2) (List Int64))))
 
+; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
+; `List.push`/`update`/`concat` are PERSISTENT — each produces a new list and MUST leave its operand
+; unchanged (memory-and-resource-model.md: a value must not be observably mutated through one reference
+; while read through another). A list bound by `let` and read TWICE — once consumed by a push/update/
+; concat, once read as the original — is SHARED, so the consuming op must copy, not mutate in place. It
+; did the reverse: a kept multi-use binding had refcount 1, so the FBIP in-place fast path mutated the
+; shared list and the later read saw the mutated value (a silent wrong value — no recursion needed). The
+; compiler now emits a Perceus RETAIN (`dup`) at a consumed occurrence of a binding with a later live use
+; (`collect_dup_sites`), so the op path-copies; a SINGLE-use accumulator (the push-loop above) is still
+; updated in place (the FBIP happy path — no dup). These graded cases pin the persistence guarantee.
+(case "a list consumed by List.push in one operand is unchanged for a later read of the same binding"
+  (doc    "`(let ((xs (List.push (list) 7))) (+ (List.len (List.push xs 9)) (List.len xs)))` — `xs = [7]`
+           read twice: the left operand appends 9 and reads the length (→2), the right reads the ORIGINAL
+           `xs` length (→1), so 2 + 1 = 3. It returned 4 (= 2 + 2): `List.push` mutated the shared `xs` in
+           place (an FBIP update whose retain was missing on a multi-use `let`-binding), so the second read
+           saw [7,9]. Order-sensitive (reading `xs` first → 3), the tell of an in-place mutation. Pins that
+           a persistent push leaves a shared operand unchanged.")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (list) 7)))
+                (+ (List.len (List.push xs 9)) (List.len xs))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a list consumed by List.update in one operand keeps its element view for a later read"
+  (doc    "The ELEMENT-view companion: `xs = [7,8]`; `(List.update xs 0 99)` reads element 0 → 99, the
+           sibling `(List.at xs 0)` reads the ORIGINAL element 0 → 7, so 99 + 7 = 106. It returned 198
+           (= 99 + 99): `List.update` set `xs[0] = 99` in place, so the sibling read of the original saw
+           the mutated element. Pins that a persistent update leaves a shared operand's ELEMENTS unchanged
+           (the complement of push, which corrupts the length view).")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (Option.expect (List.at (List.update xs 0 99) 0) "v")
+                   (Option.expect (List.at xs 0) "v"))))
+            (export main)))
+  (output (: 106 Int64)))
+
+(case "a list consumed by List.concat in one operand keeps its element view for a later read"
+  (doc    "`xs = [5,7]`; `(List.concat xs (list 9))` → length 3, the sibling `(List.at xs 0)` reads the
+           ORIGINAL element 0 → 5, so 3 + 5 = 8. It returned 3: `List.concat` spliced the shared `xs` in
+           place, corrupting the later element read. `concat` consumes and thus must copy a shared operand
+           in EITHER position. Pins persistence of a concatenated shared operand.")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (List.push (list) 5) 7)))
+                (+ (List.len (List.concat xs (list 9))) (Option.expect (List.at xs 0) "v"))))
+            (export main)))
+  (output (: 8 Int64)))
+
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
            Like a runtime list/set, it escapes via the runtime value-encode walker guided by a
@@ -1369,6 +1419,23 @@
             (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
+
+(case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
+  (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
+           counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
+           `(h env 0)` (read the ORIGINAL env's x → 1), so `h (insert (map) \"x\" 1) 1` = 2 + 1 = 3. It
+           returned 4: the left sub-call's `Map.insert` mutated the shared `env` PARAM in place, so the
+           sibling `(h env 0)` read x=2. Evaluation-order-sensitive (reading the original first → 3), the
+           tell of an in-place mutation across a self-recursive-call seam. The Map/self-call companion of
+           the shared-`let` List cases above — the same Perceus retain (`dup` at a consumed occurrence with
+           a later live use) leaves the operand map intact. The env-interpreter shadowing shape.")
+  (input  (do
+            (def (h (: env (Map String Int64)) (: d Int64))
+              (if (= d 0) (Option.expect (Map.lookup env "x") "v")
+                  (+ (h (Map.insert env "x" 2) 0) (h env 0))))
+            (def (main) (h (Map.insert (map) "x" 1) 1))
+            (export main)))
+  (output (: 3 Int64)))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
