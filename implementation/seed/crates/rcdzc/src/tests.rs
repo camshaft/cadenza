@@ -1654,6 +1654,142 @@ fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
     }
 }
 
+/// `String.from-bytes` on a RUNTIME `Bytes` (one the compiler cannot fold to a constant) lowers to the
+/// runtime `str-from-bytes` op: strict UTF-8 validation of the buffer, returning it AS a String on success
+/// (a String IS a UTF-8 Bytes leaf — a zero-copy re-tag) or NULL on failure, which the backend wraps into
+/// the `(Option String)` sum. The bytes are built through a tail-recursive appender so they stay opaque to
+/// the fold (`(rep b"h" 3)` = "hiii"), genuinely emitting the op + composing the runtime. `Option.expect`
+/// on the `Some` unwraps to the decoded string. Companion to the constant-fold `from-bytes` corpus cases.
+#[test]
+fn a_runtime_string_from_bytes_decodes_a_recursively_built_buffer() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (main) (Option.expect (String.from-bytes (rep b\"\\x68\" 3)) \"utf8\")) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.from-bytes must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: \"hiii\" String)",
+            "'h' then three 'i's decode to \"hiii\""
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime String.from-bytes trapped (a total decode must never trap): {t}")
+        }
+    }
+}
+
+/// The ill-formed companion: `String.from-bytes` of a RUNTIME `Bytes` that is not well-formed UTF-8 (a
+/// recursive appender of the invalid lead byte `0xFF`) yields `(None …)` — the runtime `str-from-bytes`
+/// op returns NULL and the backend builds the None variant, so the `None` arm returns -1. A TOTAL decode,
+/// never a trap, on the runtime path exactly as on the constant path. Pins the strict runtime validator.
+#[test]
+fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\xff\") (- n 1)))) \
+                 (def (main) (match (String.from-bytes (rep b\"\" 2)) \
+                    ((Some s) (String.byte-len s)) ((None _) (- 0 1)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "-1", "two 0xFF bytes are invalid UTF-8 → None → -1")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            panic!(
+                "runtime String.from-bytes on ill-formed bytes trapped (must be None, not a trap): {t}"
+            )
+        }
+    }
+}
+
+/// `String.from-bytes` adds NO leak beyond the established runtime Option-builder pattern. `str-from-bytes`
+/// emits the SAME shape as `Bytes.at`/`Map.lookup`: call the runtime op → a handle-or-NULL, then build
+/// `Some(handle)` / `None`. Differential probe against `Bytes.at` (the twin Option-builder over the SAME
+/// runtime rope): both build a fresh runtime rope, run an Option-returning runtime op on it, and sum the
+/// `Some` payload in a `k`-iteration loop. Any per-iteration residue is a PRE-EXISTING loop-reclaim gap
+/// shared by every such op (measured: `Bytes.at` and `String.from-bytes` both leave the identical
+/// per-iteration residue); the invariant this pins is that the decode's own consume/re-tag/wrap introduces
+/// NOTHING on top of that baseline — the two ops' live-cell residues match at every iteration count.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[from-bytes] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `loop k`: k times, build a fresh runtime rope "hiii", run the Option op, sum the `Some` payload.
+    // DECODE program — `String.from-bytes` → Some(String), sum its byte-len (4). The two programs are
+    // byte-for-byte identical except the Option-returning op, isolating the decode's own reclamation.
+    let decode_src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (loop (: k Int64) (: sum Int64)) \
+                    (if (= k 0) sum \
+                       (loop (- k 1) (+ sum (match (String.from-bytes (rep b\"\\x68\" 3)) \
+                                              ((Some s) (String.byte-len s)) ((None _) 0)))))) \
+                 (def (main (: n Int64)) (loop n 0)) (export main))";
+    // TWIN program — `Bytes.at` → Some(Int64), the established runtime Option-builder over the same rope.
+    let twin_src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (loop (: k Int64) (: sum Int64)) \
+                    (if (= k 0) sum \
+                       (loop (- k 1) (+ sum (match (Bytes.at (rep b\"\\x68\" 3) 0) \
+                                              ((Some v) v) ((None _) 0)))))) \
+                 (def (main (: n Int64)) (loop n 0)) (export main))";
+    let decode = compile_component(&crate::codec::encode(&parse(decode_src))).expect("compile");
+    let twin = compile_component(&crate::codec::encode(&parse(twin_src))).expect("compile");
+    for k in [5i64, 50] {
+        let mut rd = ComposedRuntime::new(&decode, &runtime_bytes);
+        rd.call("main", &[Val::S64(k)]);
+        let decode_live = rd.live_objects();
+        let mut rt = ComposedRuntime::new(&twin, &runtime_bytes);
+        rt.call("main", &[Val::S64(k)]);
+        let twin_live = rt.live_objects();
+        assert_eq!(
+            decode_live, twin_live,
+            "from-bytes leak: at k={k} the decode leaves {decode_live} live cells vs the twin Bytes.at \
+             Option-builder's {twin_live} — String.from-bytes must reclaim exactly as the established \
+             runtime Option-builder does (consume the buffer, transfer it out as the String, drop it in \
+             the arm), adding no residue of its own"
+        );
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted

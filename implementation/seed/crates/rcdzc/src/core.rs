@@ -420,6 +420,20 @@ pub enum Core {
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
     BytesConcat { lhs: StructId, rhs: StructId },
+    /// `String.from-bytes b` on a RUNTIME `Bytes` — the TOTAL UTF-8 decode `Bytes → (Option String)`.
+    /// Present when the operand is not a compile-time-visible constant `Bytes.of` (a constant folds in
+    /// `lower` via `std::str::from_utf8`). Emits the runtime `str-from-bytes` op, which CONSUMES `buf`,
+    /// strictly validates it as well-formed UTF-8 (rejecting invalid bytes, overlong encodings, AND
+    /// surrogate code points — the three spec failure modes), and returns the buffer AS a String handle on
+    /// success or `NULL` on failure (a String IS a UTF-8 Bytes leaf, so a valid buffer is re-tagged with no
+    /// copy). The backend wraps the handle-or-NULL into the `(Option String)` sum: `Some buf` / `None`.
+    /// `disc_some`/`disc_none` are the built-in Option variants' discs. Never traps — ill-formed bytes are
+    /// `None`. The runtime companion of the constant fold in `lower_str_from_bytes`.
+    StrFromBytes {
+        bytes: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

@@ -382,6 +382,20 @@ interface heap {
   //    (frozen-contract rule — a new op goes at the end so no existing op's index shifts).
   set-to-list: func(s: u32, desc: u32) -> u32;         // 83 — set elements as a List a, canonical order
   map-to-list: func(m: u32, desc: u32) -> u32;         // 84 — map entries as a List (Tuple k v), canonical key order
+
+  // ── String-from-bytes (index 85) — `str-from-bytes(buf)` is the TOTAL UTF-8 decode
+  //    `Bytes -> (Option String)` on a RUNTIME byte buffer: STRICTLY validate `buf` as well-formed UTF-8
+  //    (rejecting invalid bytes, overlong encodings, AND surrogate code points — the three spec failure
+  //    modes, matching `str::from_utf8`) and return the buffer AS a String on success or `NULL` on failure.
+  //    A String IS a UTF-8 Bytes leaf (byte-identical representation — see the string-bytes learning), so a
+  //    VALID buffer needs no conversion or copy: the op is a VALIDATION + zero-cost re-tag, and
+  //    `str-to-bytes` is its exact inverse on well-formed input. CONSUMES `buf`: on success `buf`'s
+  //    ownership transfers out as the String; on failure the runtime drops it and returns `NULL`. FLATTENS
+  //    `buf` first (it may be a `bytes-concat`/`bytes-slice` rope whose node `raw` holds header bytes, not
+  //    content — strict validation must see the actual bytes), unobservably (content-preserving). NEVER
+  //    traps — ill-formed bytes are DATA (`None`), the point of a total decode; the compiler builds the
+  //    `(Option String)` sum from the handle-or-NULL. APPENDED last (frozen-contract rule).
+  str-from-bytes: func(buf: u32) -> u32;               // 85 — Option String from a runtime Bytes (NULL = invalid UTF-8)
 }
 
 world runtime {

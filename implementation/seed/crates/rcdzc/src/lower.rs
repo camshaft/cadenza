@@ -17324,11 +17324,14 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             "String.from-bytes result is not the built-in Option sum",
         ));
     };
-    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes declines.
+    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes emits the runtime
+    // `str-from-bytes` op (strict UTF-8 validate + consume/re-tag) wrapped into the Option sum.
     let Core::BytesOf { elems } = core_of(db, bytes) else {
-        return Core::Poison(Reject::decline(
-            "String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
-        ));
+        return Core::StrFromBytes {
+            bytes,
+            disc_some,
+            disc_none,
+        };
     };
     let mut raw = Vec::with_capacity(elems.len());
     for e in elems {
@@ -17343,10 +17346,14 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
                     ));
                 }
             },
+            // A `Bytes.of` with a RUNTIME byte element is itself a runtime Bytes value — route to the
+            // runtime `str-from-bytes` op (which validates the materialized buffer) rather than fold.
             _ => {
-                return Core::Poison(Reject::decline(
-                    "String.from-bytes of a non-constant byte element is not yet computed",
-                ));
+                return Core::StrFromBytes {
+                    bytes,
+                    disc_some,
+                    disc_none,
+                };
             }
         }
     }

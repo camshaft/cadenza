@@ -845,6 +845,56 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender"
+  (doc    "The runtime-Bytes decode path: `String.from-bytes` of a byte buffer the compiler CANNOT fold to
+           a constant — here `(rep b\"\\x68\" 3)` recursively appends the byte `0x69` ('i') three times to a
+           leading `0x68` ('h'), building the rope `\"hiii\"` at run time. A constant `(Bytes.of …)` folds via
+           `std::str::from_utf8` in the compiler; a genuinely runtime buffer instead lowers to the runtime
+           `str-from-bytes` op (strict UTF-8 validation + a zero-copy re-tag of the validated buffer as a
+           String — a String IS a UTF-8 Bytes leaf). Pins that a runtime-computed Bytes decodes to the same
+           `Some s` the constant fold would (collections-and-text.md #Decoding Bytes To A String Is Total,
+           Not Trapping), the shape a self-hosted reader materializes an interned name with.")
+  (input  (do
+            (def (rep (: acc Bytes) (: n Int64))
+              (if (= n 0) acc (rep (Bytes.concat acc b"\x69") (- n 1))))
+            (def (main) (Option.expect (String.from-bytes (rep b"\x68" 3)) "well-formed"))
+            (export main)))
+  (output (: "hiii" String)))
+
+(case "String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)"
+  (doc    "The ill-formed runtime companion: a byte buffer built at run time (a recursive appender of the
+           invalid lead byte `0xFF`, which the compiler cannot fold) is NOT well-formed UTF-8, so the runtime
+           `str-from-bytes` op returns the NULL sentinel and the compiler builds `(None unit)` — the helper's
+           `None` arm returns -1. A TOTAL decode, never a trap, on the RUNTIME path exactly as on the constant
+           path (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping). Pins that the
+           runtime UTF-8 validator (matching `std::str::from_utf8`) drives the fallible decode's `None` for a
+           value the compiler could not classify at compile time.")
+  (input  (do
+            (def (rep (: acc Bytes) (: n Int64))
+              (if (= n 0) acc (rep (Bytes.concat acc b"\xff") (- n 1))))
+            (def (main) (match (String.from-bytes (rep b"" 2))
+                          ((Some s) (String.byte-len s))
+                          ((None _) -1)))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation"
+  (doc    "Exercises `str-from-bytes` on a runtime Bytes ROPE (a `Bytes.concat` tree) whose logical bytes
+           span multiple leaves — the op FLATTENS the rope before strict UTF-8 validation, because a rope
+           node's raw storage holds header bytes, not content. `(Bytes.concat b\"caf\" b\"\\xc3\\xa9\")` built
+           through a recursive appender is the 5-byte UTF-8 of \"café\" (é is the 2-byte `C3 A9`) split across
+           rope leaves; decoding it yields `Some s` whose `String.byte-len` is 5. Pins that the runtime
+           decode sees the actual content of a shared/spliced buffer, not header bytes (the shape the reader
+           hits decoding a name sliced out of a larger input buffer).")
+  (input  (do
+            (def (build (: acc Bytes) (: n Int64))
+              (if (= n 0) acc (build (Bytes.concat acc b"\xc3\xa9") (- n 1))))
+            (def (main) (match (String.from-bytes (build b"caf" 1))
+                          ((Some s) (String.byte-len s))
+                          ((None _) -1)))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a helper decodes bytes to a string and consumes the fallible result"
   (doc    "The reader's symbol-table idiom: a helper takes raw `Bytes` (a slice of the input), decodes
            them with `String.from-bytes`, and `match`es the fallible result — binding the string in the
