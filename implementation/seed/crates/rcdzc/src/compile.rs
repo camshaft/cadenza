@@ -4379,11 +4379,30 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
     // function's usage is subtle (Lambda) and better covered once needed.
     let exported: std::collections::HashSet<&str> =
         db.exports.iter().map(|e| e.name.as_str()).collect();
+    // A FAILED export (a `(export …)` naming no definition) whose name is a NEAR-MISS of a real definition
+    // — `(export mian)` for `(def (main) …)` — means the author INTENDED to export that definition; the
+    // real defect is the export typo (its own CDZ0101 "export `mian` … did you mean `main`?"), not that
+    // `main` is "unused". Flagging the intended-export target CDZ0306 "unused definition" is CONSEQUENT,
+    // misleading noise (the def IS meant to be reached — through the export the author misspelled). So
+    // treat a def that a missing export names as its nearest match as "exported" for the unused check.
+    // The nearest-match pool + cutoff are the SAME `suggest::nearest` over the defined names the export
+    // error itself uses (`collect_faults`' missing-export loop), so the suppression fires exactly when the
+    // export error offers that def as its "did you mean?" fix — the two can never disagree. A FAR-miss
+    // export (`(export zzzzz)`) has no near def, so no def is suppressed and a genuinely-unused def still
+    // warns.
+    let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
+    let intended_export_targets: std::collections::HashSet<String> = db
+        .exports
+        .iter()
+        .filter(|e| e.def.is_none())
+        .filter_map(|e| crate::diag::suggest::nearest(&e.name, &defined_names))
+        .collect();
     let def_binders: Vec<Binder> = db
         .defs
         .iter()
         .filter(|d| d.params.is_empty()) // nullary value defs only (see note above)
         .filter(|d| !exported.contains(d.name.as_str()))
+        .filter(|d| !intended_export_targets.contains(&d.name))
         // A `@test` definition is an ENTRY POINT (of the `cdz test` build), so it is "used" exactly as an
         // exported def is — it is invoked by the test runner, not by another def in this program. Flagging
         // it "never used" is a false positive introduced by the test marker, so skip a def whose body is in

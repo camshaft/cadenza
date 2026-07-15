@@ -14544,6 +14544,53 @@ mod match_engine {
     }
 
     #[test]
+    fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
+        // A near-miss export typo (`(export mian)` for `(def (main) …)`) has ONE real defect — the export
+        // names no definition (CDZ0101, "did you mean `main`?"). The intended target `main` must NOT ALSO
+        // draw a CDZ0306 "unused definition" — the author clearly meant to export it (they misspelled the
+        // export), so "unused" is consequent, misleading noise. Suppressed: a def a MISSING export names as
+        // its nearest match counts as intended-for-export.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export mian))",
+        )));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("did you mean `main`?")),
+            "the export typo is still reported: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`main`")),
+            "no spurious 'unused definition `main`' — it is the intended export target: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVER-SUPPRESSION: a FAR-miss export (no near def) still lets a genuinely-unused def warn — the
+        // suppression fires only when the export offers that exact def as its "did you mean?".
+        let far = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export zzzzz))",
+        )));
+        assert!(
+            far.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`main`")),
+            "a far-miss export does not suppress the genuinely-unused def: {:?}",
+            far.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // And a def unrelated to any export error still warns unused (baseline unaffected).
+        let plain = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (helper) 1) (def (main) 2) (export main))",
+        )));
+        assert!(
+            plain
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`helper`")),
+            "an ordinary unused def still warns: {:?}",
+            plain.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
         // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
         // declared. The old "export `Color` names no definition" misled (reads as "unknown name"); it now
@@ -25708,6 +25755,47 @@ mod match_engine {
             v, "42",
             "Map.lookup of a map literal whose key is a runtime value (add 2 3 = 5) must find 42 by value \
              — never a const-fold that reports the runtime key absent"
+        );
+    }
+
+    #[test]
+    fn a_map_match_over_a_map_literal_with_a_runtime_key_selects_by_value() {
+        // The map-MATCH twin of `a_map_literal_with_a_runtime_key_is_not_const_folded_against_a_query`: a
+        // `(map …)` LITERAL scrutinee folds to a `Core::MapNew`, but it can carry a RUNTIME key (a
+        // non-foldable call). `(match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ -1))` — the literal's
+        // KEY `(add 2 3)` is 5 at run time, so the `5` arm matches and binds v=42. The const-fold arm-select
+        // tested key presence with `const_compound_eq`, which reports the runtime key ABSENT (compile-time
+        // equality unknown) → wrongly took the catch-all → -1 (a silent miscompile). The fix: a `MapNew`
+        // scrutinee that is NOT `is_const_value` (a runtime key/value) reads its value binder via the RUNTIME
+        // path (`lower_map_field_runtime` — `Map.lookup` compares keys by VALUE), exactly as any runtime map.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
+               (def (main) (match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) \
+               (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-key map-match run");
+            return;
+        };
+        assert_eq!(
+            v, "42",
+            "a map match over a map literal whose key is a runtime value (add 2 3 = 5) must select the \
+             `5` arm by value and bind v=42 — never a const-fold that reports the runtime key absent"
+        );
+        // The DUAL: a query key that is genuinely ABSENT at run time falls through to the catch-all. Here
+        // the literal's runtime key is 6 (add 2 4), so the `5` arm misses → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
+                   (def (main) (match (map ((add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a runtime key that does not equal the pattern key falls through to the catch-all"
         );
     }
 

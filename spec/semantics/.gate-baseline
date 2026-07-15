@@ -837,6 +837,7 @@ pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
 pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
+pass	a map match over a map literal with a runtime key selects by value, not a const fold
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
@@ -2724,10 +2725,8 @@ todo	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
-todo	a map match over a map literal with a runtime key selects by value, not a const fold
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
-pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 todo	an open sum's payload decodes against a schema to a typed result
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

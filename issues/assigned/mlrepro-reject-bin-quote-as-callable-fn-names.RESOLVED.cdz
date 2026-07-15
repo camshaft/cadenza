@@ -41,3 +41,5 @@ def compound-head-words-work-as-fn-names() =
   if list(0) + tuple(0) + record(0) + map(0) + set(0) == 15 then unit else trap("1+2+3+4+5 = 15")
 
 export { list, tuple, record, map, set }
+
+/// RESOLVED 2026-07-15: RECLASSIFIED. The reader half (calling bin/quote via f(x)) is already fixed; the real remaining bug is rcdzc RESOLVE (resolve.rs:380 quote-head hijacks a user (def (quote …))), now tracked as rcdzc-quote-headed-def-body-hijacked-by-resolve-quote.cdz + assigned to fix-quote-head-hijacks-user-def. This reader-framed item superseded.
