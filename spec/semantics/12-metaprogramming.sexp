@@ -436,6 +436,59 @@
   (input  (= (read (print (Ast.Str "a\"b\nc"))) (Ast.Str "a\"b\nc")))
   (output (: true Bool)))
 
+; --- Ast.Str / cross-variant round-trip EDGES (pinning invariants so a change can't quietly flip them) ---
+; The `Ast.Str` leaf round-trips through BOTH interchange paths (`print`/`read`, `Ast.encode`/`Ast.decode`)
+; over the full payload range — empty, multibyte UTF-8, every escape, a keyword-colliding spelling — and a
+; compound nesting ALL SIX leaf kinds round-trips too. These already hold; pinned here so a future change
+; to the escape set, byte layout, or reader can't silently break a leaf (ast-encoding.md #The Encoding Is
+; A Bijection; compiler-pipeline.md — printer/reader inverse).
+
+(case "an empty-string Ast.Str round-trips through print and read"
+  (doc    "The empty string is a valid `Ast.Str` payload — `print` renders `\"\"`, `read` parses it back.
+           Pins the zero-length edge of the escape/quote rendering.")
+  (input  (= (read (print (Ast.Str ""))) (Ast.Str "")))
+  (output (: true Bool)))
+
+(case "an empty-string Ast.Str round-trips through encode and decode"
+  (doc    "The byte-path companion: an empty `Ast.Str` (length-prefix 0) encodes and decodes back equal
+           (ast-encoding.md #The Encoding Is A Bijection).")
+  (input  (match (Ast.decode (Ast.encode (Ast.Str "")))
+            ((Ok a)  (= a (Ast.Str "")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "a multibyte-UTF-8 Ast.Str round-trips through print and read"
+  (doc    "A string with non-ASCII scalars (`héllo☃` — 2- and 3-byte UTF-8) round-trips: the escape set
+           touches only ASCII, so a multibyte scalar passes through and reads back intact. Pins the
+           reader/printer are byte-faithful over UTF-8.")
+  (input  (= (read (print (Ast.Str "héllo☃"))) (Ast.Str "héllo☃")))
+  (output (: true Bool)))
+
+(case "an all-escapes Ast.Str round-trips through print and read"
+  (doc    "A payload with EVERY member of the closed escape set (`\\t \\r \\n \\\\ \\\"`) round-trips —
+           each escaped on print, un-escaped on read. Pins the whole escape set at once, guarding against
+           dropping or mis-pairing any one escape.")
+  (input  (= (read (print (Ast.Str "\t\r\n\\\""))) (Ast.Str "\t\r\n\\\"")))
+  (output (: true Bool)))
+
+(case "a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name"
+  (doc    "🔑 The disambiguation pin: the STRING `\"true\"` is an `Ast.Str`, not the boolean word or a
+           name. `print` renders it QUOTED (`\"true\"`), so `read` parses it back as a string literal —
+           never the `Ast.Bool` a bare `true` word reads as, nor an `Ast.Name`. Guards the print/read
+           boundary between a quoted string and a bare keyword.")
+  (input  (= (read (print (Ast.Str "true"))) (Ast.Str "true")))
+  (output (: true Bool)))
+
+(case "a deep compound nesting all six leaf kinds round-trips through encode and decode"
+  (doc    "A compound nesting every realized leaf — `(Ast.List (Ast.Name \"f\") (Ast.Str \"x\") (Ast.Bool
+           true) (Ast.Float 1.5) (Ast.List (Ast.Int 1)))` — round-trips through encode/decode to an equal
+           value. Pins that Str/Bool/Float/Int/Name/List interleave correctly in one tree (each tag is
+           self-delimiting), not just as standalone leaves.")
+  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List (list (Ast.Int 1)))))))
+            ((Ok a)  (= a (Ast.List (list (Ast.Name "f") (Ast.Str "x") (Ast.Bool true) (Ast.Float 1.5) (Ast.List (list (Ast.Int 1)))))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 ; --- The Ast.Float leaf variant (completes the spec's Ast variant set) ----------------------------
 ; A FLOAT is the last of the six syntactic forms the `Ast` sum carries (type-system.md #The Abstract
 ; Syntax Tree Type Is An Ordinary Sum Type: "an integer, a FLOAT, a string, a boolean, a name, and a
