@@ -529,22 +529,83 @@ impl<'a> Lexer<'a> {
         // tag, the string its body. One token spanning `tag` through the closing `"`, exactly like `b"`
         // is one token (not the name `b` then a string). A SPACE between (`tag "s"`) stays a bare ident
         // then a separate string. (`b"`/`#"` are handled earlier by their own arms; any OTHER ident glued
-        // to `"` reaches here.) The parser splits the span into tag + body. An unterminated body → Error.
+        // to `"` reaches here.) The parser splits the span into tag + chunks + holes. Unterminated → Error.
         if self.peek() == Some('"') {
             let quote = self.bump().unwrap(); // the opening `"`
-            let body = self.read_string(quote);
+            let body = self.read_template_body(quote);
             return Token {
-                kind: if body.kind == Kind::Str {
-                    Kind::TaggedTemplate
-                } else {
-                    Kind::Error // unterminated string body
-                },
+                kind: body.kind, // TaggedTemplate on success, Error if unterminated
                 span: a.span.merge(body.span),
             };
         }
         Token {
             kind: Kind::Ident,
             span: a.span.merge(end),
+        }
+    }
+
+    /// Scan a tagged-template body from the opening `"` to the matching closing `"`, TRACKING `{…}`
+    /// HOLE nesting so a `"` INSIDE a hole (a string literal in the interpolated expression, e.g.
+    /// `jsx"a{f("x")}b"`) does NOT close the template. This is why a template body cannot reuse
+    /// `read_string` (which stops at the first unescaped `"`). Rules:
+    ///   * at brace-depth 0, `{{`/`}}` are ESCAPES (literal braces, not a hole) — consume both chars;
+    ///   * at brace-depth 0, a lone `{` OPENS a hole (depth→1); `}` at depth 0 outside an escape is a
+    ///     stray literal (kept — the parser decides), `"` CLOSES the template;
+    ///   * inside a hole (depth>0), `{`/`}` adjust depth and a `"` opens/closes a nested string literal
+    ///     (so braces/quotes inside the hole's own strings don't miscount); depth returns to 0 to end
+    ///     the hole. A `\`-escape consumes the next char verbatim anywhere (string escapes).
+    ///
+    /// Returns a `TaggedTemplate` token on a clean close, or `Error` if the body/hole is unterminated.
+    /// The parser re-scans this same body text (via `literal::split_template_body`) to build the node.
+    fn read_template_body(&mut self, open: Char) -> Token {
+        let mut end = open.span;
+        let mut depth: u32 = 0; // `{…}` hole nesting
+        let mut in_hole_string = false; // inside a `"…"` within a hole
+        loop {
+            let Some(c) = self.bump() else {
+                return Token {
+                    kind: Kind::Error,
+                    span: open.span.merge(end),
+                }; // unterminated
+            };
+            end = c.span;
+            match c.value {
+                '\\' => {
+                    // A backslash escapes the next char (string escapes, in body text or a hole string).
+                    if let Some(d) = self.bump() {
+                        end = d.span;
+                    } else {
+                        return Token {
+                            kind: Kind::Error,
+                            span: open.span.merge(end),
+                        };
+                    }
+                }
+                '"' if depth == 0 => {
+                    // The closing quote of the template (only at depth 0, outside any hole).
+                    return Token {
+                        kind: Kind::TaggedTemplate,
+                        span: open.span.merge(end),
+                    };
+                }
+                '"' if depth > 0 => {
+                    // A `"` inside a hole toggles a nested string literal so its braces don't miscount.
+                    in_hole_string = !in_hole_string;
+                }
+                '{' if depth == 0 && !in_hole_string => {
+                    if self.peek() == Some('{') {
+                        end = self.bump().unwrap().span; // `{{` escape — consume the second `{`
+                    } else {
+                        depth = 1; // open a hole
+                    }
+                }
+                '}' if depth == 0 && !in_hole_string && self.peek() == Some('}') => {
+                    end = self.bump().unwrap().span; // `}}` escape — consume the second `}`
+                }
+                '{' if depth > 0 && !in_hole_string => depth += 1,
+                '}' if depth > 0 && !in_hole_string => depth -= 1,
+                _ => {}
+            }
         }
     }
 }
@@ -934,6 +995,14 @@ mod tests {
         assert_eq!(kinds("#\"m\"")[0], Kind::SymLit);
         // An unterminated body is an Error, not a TaggedTemplate.
         assert_eq!(kinds("jsx\"oops")[0], Kind::Error);
+        // A hole `{…}` keeps the template as ONE token — including a `"` INSIDE the hole (a string
+        // literal in the interpolated expression) which must NOT close the template early.
+        assert_eq!(kinds("jsx\"a{x}b\""), vec![Kind::TaggedTemplate]);
+        assert_eq!(kinds("t\"x{g(\"}\")}y\""), vec![Kind::TaggedTemplate]);
+        // `{{`/`}}` brace escapes stay in the body (one token).
+        assert_eq!(kinds("t\"a {{b}} c\""), vec![Kind::TaggedTemplate]);
+        // An unterminated HOLE (open `{`, no close before the end) is an Error, not a TaggedTemplate.
+        assert_eq!(kinds("t\"a{x")[0], Kind::Error);
     }
 
     #[test]
