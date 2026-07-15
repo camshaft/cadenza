@@ -464,6 +464,7 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant tuple is returned as a program result
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
 pass	a constructor list element dispatches a runtime list by its discriminant
@@ -2004,6 +2005,8 @@ pass	equality over a partly-un-built sum with a free Err type compiles on every 
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quoted boolean executes it to the boolean value
+pass	eval of a quoted conditional reduces its comparison condition first
+pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
