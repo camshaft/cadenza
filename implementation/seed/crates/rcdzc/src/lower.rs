@@ -4734,38 +4734,48 @@ fn desugar_refutable_ctor_list_elements(
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The DISCRIMINANT-TEST guard, ANDed over every ctor binder: each is
-        // `(match __lc_k (<ctor-with-wildcard-payloads> true) (_ false))` — testing ONLY the discriminant
-        // (no payload binding in the guard). Fold them (plus any author guard) with `and`.
+        // The DISCRIMINANT-TEST guard over every ctor binder. Each ctor binder `__lc_k` is tested by a
+        // `(match __lc_k (<ctor-pat> <inner>) (_ false))`: the matched arm carries the ctor pattern so a
+        // discriminant mismatch → `_ → false` (the arm falls through). Two shapes:
+        //   - NO user guard: the matched arm is `(<ctor-with-wildcard-payloads> true)` — a pure disc test
+        //     (payloads wildcarded; nothing reads them here, the body re-match binds them).
+        //   - WITH a user guard reading a ctor PAYLOAD binder (`(guard (list (Op.Add n) .. r) (> n 3))`):
+        //     the payload MUST be in scope for the user cond. So the INNERMOST disc-test's matched arm uses
+        //     the REAL ctor pattern (binders live) and returns the USER COND (not `true`); enclosing
+        //     disc-tests also use the real pattern so EVERY ctor's payload is in scope for the user cond.
+        //     This binds `n` for the guard — the fix for the CDZ0101 false-reject on that idiom. (Before, the
+        //     user cond was ANDed at the OUTER level where no payload binder is in scope.)
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let mut guard_cond: Option<StructId> = existing_guard;
-        for (bname, ctor_pat) in &ctor_binders {
+        // Nest the disc-tests INSIDE-OUT: the innermost matched arm holds the user cond (or `true`), each
+        // enclosing disc-test binds its ctor's payload for the arm within. So every ctor payload binder is in
+        // scope for the user cond, and any disc mismatch short-circuits to `false`.
+        let mut inner_result = existing_guard.unwrap_or(true_node);
+        for (bname, ctor_pat) in ctor_binders.iter().rev() {
             let disc_scrut = db.push_name(bname);
-            let disc_pat = ctor_pattern_with_wildcard_payloads(db, *ctor_pat);
+            // Use the REAL ctor pattern when a user guard is present (bind payloads for the cond); a pure
+            // wildcard pattern otherwise (byte-identical to the pre-fix disc test — no payload binding).
+            let matched_pat = if existing_guard.is_some() {
+                clone_refutable_payload(db, *ctor_pat)
+            } else {
+                ctor_pattern_with_wildcard_payloads(db, *ctor_pat)
+            };
             // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
             // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
-            let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+            let disc_true_arm = db.push_list(vec![matched_pat, inner_result]);
             let wild = db.push_name("_");
             let disc_false_arm = db.push_list(vec![wild, false_node]);
             let disc_match_head = db.push_name("match");
-            let disc_test = db.push_list(vec![
+            inner_result = db.push_list(vec![
                 disc_match_head,
                 disc_scrut,
                 disc_true_arm,
                 disc_false_arm,
             ]);
-            guard_cond = Some(match guard_cond {
-                None => disc_test,
-                Some(g) => {
-                    let and_head = db.push_name("and");
-                    db.push_list(vec![and_head, g, disc_test])
-                }
-            });
         }
+        let guard_cond = inner_result;
         let guard_head = db.push_name("guard");
-        // `guard_cond` is `Some` here — `ctor_binders` is non-empty (ctor_positions non-empty).
-        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond.unwrap()]);
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
         // The BODY re-match, NESTED from the INNERMOST ctor binder out: the innermost match holds the
         // original `body` (all ctor payloads in scope); each enclosing match binds its own ctor's payloads
         // and its body is the next-inner match. Building inside-out means each step wraps the accumulator.

@@ -25760,6 +25760,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_on_a_ctor_list_element_reads_its_payload_binder() {
+        // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a REFUTABLE
+        // CTOR whose payload binder the guard cond reads — `(guard (list (Op.Add n) .. r) (> n 3))` — falsely
+        // reported CDZ0101 "unbound name `n`" (at BOTH check and compile). ROOT: the ctor-element desugar
+        // deferred the payload binding to a BODY re-match (after the guard) and ANDed the user cond at the
+        // OUTER level, where `n` is not in scope. FIX: fold the user cond into the INNERMOST disc-test's
+        // matched arm (using the real ctor pattern so payloads bind) — `(match __lc ((Op.Add n) <user-cond>)
+        // (_ false))` — so `n` is in scope for the guard, and a disc mismatch / false cond falls through.
+        let Some(v) = run_heap_value(
+            "(module m (type Op (Add Int64) (Neg Int64)) \
+               (def (f (: xs (List Op))) (match xs ((guard (list (Op.Add n) .. r) (> n 3)) n) (_ -1))) \
+               (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+            vec!["5".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guard-reads-ctor-payload run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the guard reads the ctor payload binder n=5, (> 5 3) holds → returns n"
+        );
+        // The guard FALSE → falls through to the catch-all.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) (match xs ((guard (list (Op.Add n) .. r) (> n 3)) n) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "(> 2 3) is false → the guarded arm falls through to the catch-all"
+        );
+        // A MULTI-PAYLOAD ctor: the guard reads BOTH payloads.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Bin Int64 Int64) (Nil Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((guard (list (Op.Bin a b) .. r) (> (+ a b) 10)) (+ a b)) (_ -1))) \
+                   (def (main) (f (list (Op.Bin 7 8)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "15",
+            "a multi-payload ctor guard reads both payloads: 7+8=15 > 10 → 15"
+        );
+    }
+
+    #[test]
     fn a_nullary_variant_list_element_dispatches_by_discriminant() {
         // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
         // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary

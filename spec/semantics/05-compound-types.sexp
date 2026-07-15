@@ -2927,6 +2927,23 @@
             (def (main) (f (list (Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a guard on a ctor list element reads the constructor's payload binder"
+  (doc    "A user `(guard …)` on a list arm whose leading element is a refutable CTOR, whose guard cond reads
+           the ctor's PAYLOAD binder — `(guard (list (Op.Add n) .. r) (> n 3))`. `n` must be in scope for the
+           guard. Regression: the ctor-element desugar deferred the payload binding to a body re-match (after
+           the guard) and ANDed the user cond at the OUTER level, where `n` is not bound → a false CDZ0101
+           unbound `n`. The fix folds the user cond into the INNERMOST discriminant-test's matched arm (real
+           ctor pattern, payloads live) `(match __lc ((Op.Add n) <user-cond>) (_ false))`, so `n` binds for
+           the guard and a disc mismatch / false cond falls through. `f [Op.Add 5]`: (> 5 3) holds → n = 5.")
+  (input  (do
+            (type Op (Add Int64) (Neg Int64))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n 3)) n)
+                (_                                      -1)))
+            (def (main) (f (list (Op.Add 5)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a nullary variant list element dispatches by its discriminant"
   (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
            whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor
