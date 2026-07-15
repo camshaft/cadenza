@@ -458,6 +458,7 @@ pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor selected at RUNTIME is a first-class value that is then applied
 pass	a constructor whose payload is a constructor keeps the outer variant tag
+pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
@@ -1570,6 +1571,7 @@ pass	an agreeing redeclaration compares the normalized ratio, not the literal nu
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
+pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
@@ -1649,6 +1651,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm

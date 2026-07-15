@@ -4979,6 +4979,34 @@
   (call   main)
   (output (: 7 Int64)))
 
+(case "an all-wildcard tuple arm is a catch-all that shadows a later refining arm"
+  (doc    "Beyond an EXACT-duplicate arm (above), a BROADER arm shadows a later NARROWER one by
+           product-subsumption: `(tuple x y)` binds every value of the tuple type (both elements
+           irrefutable), so it is a CATCH-ALL and the later `(tuple 3 4)` arm — a refinement of it — is
+           unreachable. `(f 3 4)` takes the wildcard arm → 3+4 = 7, NOT 100 (the dead refining arm), build
+           succeeds (CDZ0213 warning). Pins that an all-irrefutable tuple arm is recognized as a whole-type
+           cover, not just a bare `_`/binder — so a specific arm placed AFTER it is dead.")
+  (input  (do
+            (def (f (: a Int64) (: b Int64))
+              (match (tuple a b) ((tuple x y) (+ x y)) ((tuple 3 4) 100) (_ 0)))
+            (def (main) (f 3 4)) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a constructor with an all-irrefutable payload shadows a later refining arm of the same variant"
+  (doc    "The variant face of the same product-subsumption: `(Some (tuple a b))` covers the WHOLE `Some`
+           variant (its payload pattern is all-irrefutable), so the later `(Some (tuple 3 4))` arm — a
+           refinement — is unreachable. `(f (Some (tuple 3 4)))` takes the broad `Some` arm → 7, NOT 100,
+           build succeeds (CDZ0213 warning). Pins that a ctor whose payload is all-irrefutable is a
+           full-variant cover (not only a bare-name payload like `(Some p)`), so it shadows a later
+           refining arm of the same variant — the ctor companion of the wildcard-tuple case.")
+  (input  (do
+            (def (f (: o (Option (Tuple Int64 Int64))))
+              (match o ((Some (tuple a b)) (+ a b)) ((Some (tuple 3 4)) 100) (None 0)))
+            (def (main) (f (Some (tuple 3 4)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type
