@@ -109,6 +109,14 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // compiler written in the language walks a program's `Ast` value exactly as it walks any sum.
     //= spec/capabilities/type-system.md#the-abstract-syntax-tree-is-an-ordinary-sum-type
     //# The AST sum type MUST be constructed and deconstructed by the same variant-construction and match mechanisms as any other sum type, so that a compiler written in the language walks a program as data with no reflection primitive.
+    // The self-hosting-surface twin: `Ast` being an ordinary `(type …)` value is exactly what lets a
+    // compiler authored in Cadenza examine a program without a foreign representation, and determining a
+    // node's KIND (its variant discriminant) + obtaining its CHILDREN (the payload) is the ordinary
+    // variant-pattern match — so the tree is walked structurally with no dedicated reflection.
+    //= spec/capabilities/self-hosting-surface.md#a-program-s-syntax-tree-is-an-ordinary-value
+    //# A program's abstract syntax tree MUST be expressible as an ordinary value of the language, so that a compiler authored in the language can examine a program without a foreign representation.
+    //= spec/capabilities/self-hosting-surface.md#a-program-s-syntax-tree-is-an-ordinary-value
+    //# A compiler MUST be able to determine a node's kind and obtain its children from that value, so that it can walk the tree structurally.
     let ast_decl = {
         let int_pay = push_atom(ast, Leaf::Name("Int64".to_string()));
         let name_pay = push_atom(ast, Leaf::Name("String".to_string()));
