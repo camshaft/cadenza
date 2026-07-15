@@ -3537,6 +3537,16 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         Core::BytesAt { bytes, index, .. } => {
             is_cse_shareable(db, bytes) && is_cse_shareable(db, index)
         }
+        // `Map.lookup` (`map-lookup`) BORROWS the map and is DETERMINISTIC — the same (map, key) yields the
+        // same result, no rc change on the map, no effect. It returns an `Option` (a heap sum), so like
+        // `ListAt` it never qualifies as a CSE candidate itself (the caller's `is_heap_type` filter drops
+        // it); it is shareable only as the SCRUTINEE of a scalar-unwrapping `SumExpect` — so a repeated
+        // `(Option.expect (Map.lookup m k))` reading a scalar value shares ONE `map-lookup` (an O(log n)
+        // CHAMP walk) instead of two. Both operands must be shareable so the read is well-formed at the
+        // hoist point (the key is consumed into an owned temporary; a constant/param key qualifies).
+        // (`Set.contains` returns a bare Bool but boxes its element into a fixed scratch slot the CSE hoist
+        // can't relocate, so it does not share today — not admitted here to avoid a dead arm.)
+        Core::MapLookup { map, key, .. } => is_cse_shareable(db, map) && is_cse_shareable(db, key),
         // `Option.expect`/`Result.expect` on a runtime sum (`SumExpect`) BORROWS its scrutinee and is a
         // deterministic unwrap-or-trap: the same present sum yields the same payload, and an absent one
         // traps — sharing preserves both (the CSE driver only hoists a class with a DOMINATING-frontier
@@ -10877,6 +10887,27 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 disc_present: dy,
             },
         ) => dx == dy && core_eq(db, sx, sy),
+        // A `Map.lookup`: equal iff the SAME map, key, and Option discriminants. It BORROWS the map and is
+        // deterministic; two lookups of the same key yield the same `Option`. Shared only as the scrutinee
+        // of a scalar-unwrapping `SumExpect` (an `Option`-typed node is filtered from candidacy by the
+        // scalar gate). The `key_ty`/`val_ty` fields are derived from the operands (identical when `core_eq`)
+        // and `Ty` is not `PartialEq`, so they are not compared.
+        (
+            Core::MapLookup {
+                map: mx,
+                key: kx,
+                disc_some: sx,
+                disc_none: nx,
+                ..
+            },
+            Core::MapLookup {
+                map: my,
+                key: ky,
+                disc_some: sy,
+                disc_none: ny,
+                ..
+            },
+        ) => sx == sy && nx == ny && core_eq(db, mx, my) && core_eq(db, kx, ky),
         // A boolean negation: equal iff the negated operands are. `not` is `i32.eqz` — pure and total.
         (Core::Not { operand: ox }, Core::Not { operand: oy }) => core_eq(db, ox, oy),
         // A conditional `select`/`if`: equal iff the condition AND both branches are recursively equal —
@@ -13698,6 +13729,32 @@ mod tests {
                 .count(),
             1,
             "the repeated indexed read shares one vec-get (CSE), got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_repeated_map_lookup_shares_one_map_lookup_via_cse() {
+        // `(+ (Option.expect (Map.lookup m 2)) (Option.expect (Map.lookup m 2)))` — the SAME keyed lookup
+        // twice. `Map.lookup` BORROWS the map and is deterministic; the whole `SumExpect(MapLookup …)` is a
+        // SCALAR read (the value is an `Int64`), so straight-line CSE computes it ONCE — exactly ONE
+        // `map-lookup` (an O(log n) CHAMP walk), not two. The keyed-read analogue of the `List.at` CSE.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: m (Map Int64 Int64))) \
+               (+ (Option.expect (Map.lookup m 2) \"v\") (Option.expect (Map.lookup m 2) \"v\"))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_MAP_LOOKUP))
+                .count(),
+            1,
+            "the repeated keyed lookup shares one map-lookup (CSE), got: {:?}",
             f.code
         );
     }

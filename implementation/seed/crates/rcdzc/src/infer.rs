@@ -3501,6 +3501,23 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return *inner;
     }
+    // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML surface's prefix `-<expr>`, canonicalized
+    // to `(- e)`; `lower` rewrites it to `0 - e` at the operand's numeric type). Its result type is the
+    // OPERAND's type: negation is closed over every numeric type (`Int N`, `Float N`, `Rational`,
+    // `BigInt`, and a `Qty` — negating a quantity keeps its unit), unlike the fixed-width `∀a. (Int a)`
+    // scheme (which would ground a Float/Rational/BigInt/Qty operand to Int64 and phantom-fault). A
+    // NON-numeric operand falls through to `Any` — `check_application` reports the honest "negation is not
+    // defined on <type>" (the unary twin of the binary arithmetic-on-non-number reject). Checked before
+    // the arity-2 numeric block below; the two are disjoint by operand count.
+    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) {
+        let t = type_of(db, args[0]);
+        if matches!(
+            t,
+            Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. }
+        ) {
+            return t;
+        }
+    }
     // A binary OPERATOR applied to QUANTITIES — the dimensional result type (units-of-measure.md §How
     // Arithmetic Composes Dimensions). Only engages when an operand is a `Ty::Qty` (two bare numbers take
     // the ordinary scheme path). `+`/`-` keep the shared unit (result `(Qty T u)`); `*`/`/` COMPOSE units
@@ -5929,6 +5946,34 @@ fn check_application(
         }
         // The operand's own faults are collected by the caller's `collect(head/operand)`; return so the
         // generic scheme-unify below does not ALSO fault (the intrinsic has no HM scheme).
+        return;
+    }
+    // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is
+    // closed over EVERY numeric type (`Int N`/`Float N`/`Rational`/`BigInt`/`Qty`); `lower` rewrites it
+    // to `0 - e` at the operand's type. The operator's fixed-width `∀a. (Int a) → (Int a) → (Int a)`
+    // scheme is BINARY, so the generic scheme-unify below would report the wrong-arity "takes exactly 2
+    // operands" (via `binop_arity_fault`) and, for a Float/Rational/BigInt operand, a phantom numeric
+    // clash. Handle it here: a NUMERIC operand is well-typed (return, so `binop_arity_fault` in the
+    // `Apply` collector still sees a poison-free lowering — see `binop_arity_fault`'s arity guard, which
+    // now also excludes the arity-1 Sub); a NON-numeric operand is the honest "negation is not defined on
+    // <type>" reject (the unary twin of the binary arithmetic-on-a-non-number CDZ0201). Descend into the
+    // operand for its own faults either way.
+    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) {
+        let t = type_of(db, args[0]);
+        if !matches!(
+            t,
+            Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. } | Ty::Any
+        ) {
+            trace!(target: "rcdzc::infer", head = head.0, ty = %t.render_name(), "fault: negation of a non-numeric operand (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "negation is not defined on {} — Cadenza never coerces this to a number",
+                    t.render_name()
+                ),
+            ));
+        }
+        collect(db, args[0], out);
         return;
     }
     // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded

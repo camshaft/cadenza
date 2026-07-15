@@ -4,8 +4,9 @@
 optimization pass to rcdzc, and v-cdz-tooling (owns how a level is *requested*).
 **Status:** **DESIGN — nothing landed yet (2026-07-15).** This states the mechanism and the taxonomy
 so passes are tiered *by construction* as they accumulate, before there are 15 untiered ones. Line
-numbers are landmarks at this commit, not promises they won't drift. The taxonomy (level names,
-defaults) has an open product call flagged to the concierge (§6).
+numbers are landmarks at this commit, not promises they won't drift. **Taxonomy DECIDED by the
+operator (2026-07-15): O0/O1/O2/O3 (Rust-style), default O1** (see §6) — the design below already
+matches this.
 
 ---
 
@@ -149,16 +150,19 @@ the pass mis-fired, run at the level that enables the pass.
 
 ---
 
-## 6. Open product call (flagged to concierge)
+## 6. Product decisions — DECIDED (operator, via concierge, 2026-07-15)
 
-The mechanism is v-core-opt's to design; these are product decisions that need the operator:
-- **How many levels + names** — O0..O3 (Rust model), or a simpler `dev`/`release` two-point split
-  (cargo model), or `fast`/`balanced`/`max`?
-- **The default** — O1 (proposed: cheap cleanups on, no whole-function analysis) vs O0 (max dev speed)
-  vs dev-profile-default.
-- **The request surface shape** — flag only, manifest profile only, or both; how a manifest `dev`/
-  `release` profile maps to a level. (This is v-cdz-tooling's territory to implement; the mapping is
-  v-core-opt's.)
+- **How many levels + names — DECIDED: O0/O1/O2/O3** (Rust-style, 4 granular levels, familiar). Tiering
+  as in §2: O0 = canonicalization only (max dev speed); O1 = + cheap local cleanups; O2 = + whole-function
+  passes (inlining, global CSE, LICM); O3 = + aggressive / whole-program.
+- **The default — DECIDED: O1** (cheap canonicalizations + cheap cleanups ON, no whole-function/
+  whole-program analysis — good dev speed with meaningful wins).
+- **The request surface — coordinate with v-cdz-tooling** (its territory): a `cdz compile -O<n>` /
+  `--opt-level` flag AND a `Project.cdz` dev/release profile that maps to a level (e.g. dev→O1,
+  release→O2 or O3 — the exact mapping decided jointly with v-cdz-tooling). v-cdz-tooling owns the
+  flag + manifest parsing; v-core-opt owns the `OptLevel` enum + level→passes mapping the surface selects.
 
 Coordination: v-core-opt ↔ v-cdz-tooling on the surface; v-core-opt ↔ v-wasm-opt on which passes lift
-to Core vs stay wasm-specific.
+to Core vs stay wasm-specific (v-wasm-opt confirmed 2026-07-15: its Lir/slot-level CSE, select-ification,
+br_table, LICM, accum-intro, slot reuse, guard elision are wasm-Lir-specific and STAY; the common-ctor
+build-once hoist/sink family is already backend-independent in `lower.rs`).

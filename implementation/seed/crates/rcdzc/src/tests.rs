@@ -1337,6 +1337,52 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
     }
 }
 
+/// A repeated keyed lookup `(Option.expect (Map.lookup m k))` is shared by CSE (one `map-lookup` — an
+/// O(log n) CHAMP walk — pinned at the Lir level in `select.rs`); this is the RUNTIME companion proving
+/// the SHARED lookup is refcount-correct. `Map.lookup` BORROWS the map, so sharing must leave `m` fully
+/// live: the program reads key 2 TWICE (shared) AND `Map.size m` after. If the shared lookup mishandled
+/// the borrow (a premature drop of `m` or a double-consume of the boxed value), the later size read
+/// would see a freed/corrupted map. Built at run time via an insert loop so it imports the runtime.
+/// m = {0:0,1:10,2:20,3:30,4:40} → lookup 2 = 20; 20 + 20 + size(5) = 45.
+#[test]
+fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: acc (Map Int64 Int64))) \
+                   (if (< n 0) acc (build (- n 1) (Map.insert acc n (* n 10))))) \
+                 (def (f (: mp (Map Int64 Int64)) (: k Int64)) \
+                   (if (< k 0) (f mp (+ k 1)) \
+                     (+ (+ (Option.expect (Map.lookup mp 2) \"v\") (Option.expect (Map.lookup mp 2) \"v\")) \
+                        (Map.size mp)))) \
+                 (def (main (: n Int64)) (f (build n Map.empty) 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime map must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["4".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "45",
+            "shared key-2 lookup (20+20) plus a still-live size (5) = 45"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("CSE-shared map lookup trapped (refcount miscompile?): {t}")
+        }
+    }
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
@@ -34728,6 +34774,76 @@ mod stage1 {
         assert_eq!(run_main("(let ((x 10)) x)"), 10);
     }
 
+    /// UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>`). It is `0 - e` at the
+    /// operand's numeric type, so a constant folds and a runtime operand emits the checked subtract with
+    /// the `x == MIN` overflow trap. The fold unit + the wasmtime run + the MIN trap in one test, plus the
+    /// non-numeric reject, cover the whole negation path (06-numeric-model pins the same at corpus level).
+    #[test]
+    fn a_unary_minus_negates_its_operand() {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use wasmtime::component::Val;
+        // FOLD unit: a constant operand folds to its negation — `(- (+ 2 3))` → `Core::ConstInt(-5)`, no
+        // runtime subtract emitted.
+        let fold = |body: &str| -> Option<i64> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let mut db = Db::load(parse(&src));
+            let d = db.def_by_name("main")?;
+            let m_body = db.defs[d].body?;
+            match core_of(&mut db, m_body) {
+                Core::ConstInt(v) => v.to_i64(),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            fold("(- (+ 2 3))"),
+            Some(-5),
+            "constant negation folds to -5"
+        );
+        assert_eq!(fold("(- (- 4))"), Some(4), "double negation folds to +4");
+
+        // BEHAVIOR run: negate a runtime parameter — `(- n)` returns -n, and `n == Int64.min` TRAPS
+        // (its negation +2^63 has no Int64 representation), exactly as the binary `(- 0 n)` does.
+        let src = "(module m (def (f (: n Int64)) (- n)) (export f))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(7)]), -7);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(-42)]), 42);
+        // Int64.min negation traps (the run panics inside `run_returns_with`'s `.expect`) — assert the
+        // overflow trap via a caught call rather than the helper (which unwraps).
+        let engine = wasmtime::Engine::default();
+        let component = wasmtime::component::Component::from_binary(&engine, &bytes).expect("load");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::new(&engine);
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let func = instance
+            .get_func(&mut store, "f")
+            .expect("export f present");
+        let typed = func
+            .typed::<(i64,), (i64,)>(&store)
+            .expect("f : (s64) -> s64");
+        let err = typed
+            .call(&mut store, (i64::MIN,))
+            .expect_err("negating Int64.min must trap");
+        assert!(
+            format!("{err:?}").contains("integer overflow"),
+            "negating Int64.min traps with an integer-overflow, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_unary_minus_of_a_non_numeric_operand_is_rejected() {
+        // Negation is defined only over numeric types; `(- s)` on a String is a type error (CDZ0201),
+        // the unary twin of arithmetic-on-a-non-number — never a silent coercion to a number.
+        let msg = expect_decline("(let ((s \"hi\")) (- s))");
+        assert!(
+            msg.contains("negation is not defined on"),
+            "a non-numeric negation is rejected with the negation message, got: {msg}"
+        );
+    }
+
     #[test]
     fn name_resolves_to_nearest_enclosing_binding() {
         // (let ((x 1)) (let ((x 2)) x)) = 2 — inner shadows outer.
@@ -61009,6 +61125,104 @@ mod cross_component_oracle {
                 .any(|d| d.message.contains("valid component interface name")),
             "a well-formed versioned interface name must not be flagged: {:?}",
             d10.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL2 — ZERO-COST is an ABI INVARIANT: a rich value crosses a peer boundary as a bare u32 HANDLE,
+    // never marshaled. The operator's north star for peer linking is that calling a rich interface a
+    // peer module exposes is as cheap as an in-module call — no serialize/deserialize tax, because both
+    // peers share one value-heap runtime and a compound crosses as an opaque handle into it (ABI v5
+    // §Cadenza Components Composed Against A Shared Runtime Exchange Values As Handles). The e2e X5/U5
+    // tests prove a value crosses CORRECTLY; this pins the mechanism STRUCTURALLY at the `extern_abi_
+    // val_type` seam — so a future "marshal it into a component aggregate" refactor (which would keep
+    // the value correct but reintroduce the serialization tax) FAILS here rather than silently
+    // regressing zero-cost. A handle is ONE i32 slot with no payload — the definition of no-copy.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_rich_value_crosses_a_peer_boundary_as_a_bare_handle_not_marshaled() {
+        use crate::backend::wasm::host::extern_abi_val_type;
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        use crate::ty::Ty;
+
+        // Every RUNTIME-OWNED rich type — the value-heap compounds, the byte-rope String/Bytes, and the
+        // bignums — must cross as exactly `AbiValType::U32`: the opaque handle into the shared runtime.
+        // NOT `None` (which would force a marshal / a decline) and NOT any wider aggregate form.
+        let string_key = crate::resolved::Symbol::plain("x");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(string_key, Ty::int64());
+        let rich_types: Vec<(&str, Ty)> = vec![
+            (
+                "Tuple",
+                Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::Bool])),
+            ),
+            ("Record", Ty::Record(std::rc::Rc::new(fields))),
+            (
+                "Sum",
+                Ty::Sum {
+                    decl: crate::ast::StructId(0),
+                    name: "Option".to_string(),
+                    args: std::rc::Rc::from([Ty::int64()]),
+                },
+            ),
+            ("List", Ty::List(Box::new(Ty::int64()))),
+            ("Map", Ty::Map(Box::new(Ty::String), Box::new(Ty::int64()))),
+            ("Set", Ty::Set(Box::new(Ty::int64()))),
+            ("String", Ty::String),
+            ("Bytes", Ty::Bytes),
+            ("BigInt", Ty::BigInt),
+            ("Rational", Ty::Rational),
+            // An erased NOMINAL over a rich type reads through to the inner type's handle.
+            (
+                "Nominal<List>",
+                Ty::Nominal {
+                    decl: crate::ast::StructId(0),
+                    name: "MyList".to_string(),
+                    args: std::rc::Rc::from([]),
+                    inner: std::rc::Rc::new(Ty::List(Box::new(Ty::int64()))),
+                },
+            ),
+        ];
+        for (label, ty) in &rich_types {
+            let abi = extern_abi_val_type(ty);
+            assert_eq!(
+                abi,
+                Some(AbiValType::U32),
+                "a rich `{label}` must cross a peer boundary as a bare u32 handle (zero-cost), \
+                 not marshaled — got {abi:?}"
+            );
+            // The handle is ONE i32 word with no serialized payload — the structural meaning of no-copy.
+            let handle = abi.unwrap();
+            assert_eq!(
+                handle.core_byte(),
+                0x7F,
+                "the `{label}` handle occupies a single core i32 slot"
+            );
+            assert_eq!(
+                handle.comp_byte(),
+                0x79,
+                "the `{label}` handle crosses as the component-model `u32` primitive"
+            );
+        }
+
+        // REGRESSION GUARD (the other direction): a SCALAR still crosses BY VALUE, never handle-ified —
+        // handle-crossing a scalar would be a pointless indirection (and wrong: a host peer can't build a
+        // heap handle for a plain integer). Int64 → S64 by value; Bool → Bool; a narrow int by value.
+        assert_eq!(
+            extern_abi_val_type(&Ty::int64()),
+            Some(AbiValType::S64),
+            "an Int64 crosses BY VALUE (S64), not as a handle"
+        );
+        assert_eq!(
+            extern_abi_val_type(&Ty::Bool),
+            Some(AbiValType::Bool),
+            "a Bool crosses BY VALUE, not as a handle"
+        );
+        // `Unit` has no boundary slot at all (a nullary op takes/returns nothing).
+        assert_eq!(
+            extern_abi_val_type(&Ty::Unit),
+            None,
+            "Unit has no cross-boundary representation"
         );
     }
     // ------------------------------------------------------------------------------------------------

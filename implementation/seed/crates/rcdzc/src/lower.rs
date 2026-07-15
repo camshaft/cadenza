@@ -1197,6 +1197,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // head's own directly-resolved prim. (A bare prim used as a VALUE, not applied, still declines
             // at the non-Apply `Resolved::Prim` arm; here it is genuinely applied to `args`.)
             match crate::eval::meta_apply_of(db, head).or_else(|| crate::eval::prim_of(db, head)) {
+                // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>`). Negation is
+                // `0 - e` at the OPERAND's numeric type: synthesize a typed zero and delegate to the SAME
+                // binary-subtraction machinery, so every numeric type is covered with no new op — an
+                // `Int N` gets the checked `x == MIN` overflow trap (the exact behaviour the `x * -1 →
+                // (- 0 x)` strength reduction already relies on), a `Float`/`Rational`/`BigInt`/`Qty` its
+                // own arithmetic. `infer` already typed `(- e)` as e's type and rejected a non-numeric
+                // operand; here it can only be numeric (or an `Any` that faulted elsewhere → decline).
+                Some(Prim::Sub) if args.len() == 1 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: unary negation (- e) → 0 - e at the operand's type");
+                    lower_negate(db, id, args[0])
+                }
                 // MIXED-UNIT COMBINE: `+`/`-`/comparison on two quantities of the SAME dimension but
                 // DIFFERENT scale (`1 km + 500 m`, `1 KiB + 1 kB`). Each operand converts to the
                 // dimension's REFERENCE unit by its exact scale (`value * num / den` in the inner type T),
@@ -2831,8 +2842,9 @@ pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 /// (`compile` rejects both, `check` was silent/vaguer).
 ///
 /// Arity is a purely SYNTACTIC property of the application — `binop_arity_reject` fires on `args.len() != 2`
-/// before touching either operand, and the language has NO unary form of any binary operator (`(- n)` is a
-/// wrong-arity error, not negation) — so surfacing it over an unreached parameterized body is not a false
+/// before touching either operand, and the only unary form of a binary operator is `(- e)` (negation, the
+/// ML prefix `-<expr>`), which is EXEMPTED above (it lowers to `0 - e`, not a poison) — so surfacing this
+/// over an unreached parameterized body is not a false
 /// alarm, and reading `core_of` here is safe (β-reduction copies the callee body into fresh nodes, never
 /// this node's memoized core). On an OVER-application the CDZ0201's delete-fix node matches the sibling
 /// CDZ0203's, so `dedup_faults` keeps this operator-specific message and drops the generic one
@@ -2848,6 +2860,12 @@ pub fn binop_arity_fault(db: &mut Db, id: StructId) -> Option<Reject> {
     }
     let prim = crate::eval::meta_apply_of(db, head)?;
     if !(prim.is_arith() || prim.is_comparison() || prim.is_float_arith()) {
+        return None;
+    }
+    // The arity-1 `Sub` is UNARY NEGATION (the ML prefix `-<expr>`), NOT a wrong-arity subtraction — it
+    // lowers to a type-directed `0 - e`, not a poison. Exempt it so a well-formed `(- e)` is not reported
+    // as "takes exactly 2 operands". (A genuine wrong-arity `(- a b c)` / `(-)` still faults below.)
+    if args.len() == 1 && prim == Prim::Sub {
         return None;
     }
     match core_of(db, id) {
@@ -11991,6 +12009,86 @@ fn lower_bigint_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core
             _ => Core::BigIntCmp { op, lhs, rhs },
         },
         _ => Core::BigIntCmp { op, lhs, rhs },
+    }
+}
+
+/// Lower UNARY NEGATION `(- e)` (the ML prefix `-<expr>`, canonicalized to the arity-1 subtraction) as
+/// `0 - e` at the operand's numeric type. Rather than a new negate op, synthesize a typed ZERO operand
+/// and route to the SAME binary-subtraction machinery each numeric type already uses — so an `Int N`
+/// gets the checked `x == MIN` overflow trap (the identical path the `x * -1 → (- 0 x)` strength
+/// reduction takes), a `Float`/`Rational`/`BigInt` its own arithmetic, and a `Qty` negates its erased
+/// magnitude while `type_of(id)` (the negation node, typed `(Qty …)` by `infer`) preserves the unit.
+///
+/// A FLOAT is negated by `-1.0 * e` (via `lower_float_arith`'s multiply), NOT `0.0 - e`: IEEE
+/// `0.0 - (+0.0)` is `+0.0`, but negation must flip the sign of a zero (`-(+0.0) = -0.0`,
+/// core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form distinguishes them), and
+/// `-1.0 * x` flips the sign bit for zero/inf/finite alike. Integer/Rational/BigInt `0 - e` is exact,
+/// so those keep the subtraction form (and the int `MIN` trap).
+fn lower_negate(db: &mut Db, id: StructId, operand: StructId) -> Core {
+    use crate::ty::Ty;
+    // Propagate a poison operand (its own fault is the report).
+    if let Core::Poison(r) = core_of(db, operand) {
+        return Core::Poison(r);
+    }
+    let t = crate::infer::type_of(db, id);
+    // The inner numeric type — for a `Qty` it is the erased magnitude's type; otherwise the type itself.
+    let inner = match &t {
+        Ty::Qty { inner, .. } => (**inner).clone(),
+        other => other.clone(),
+    };
+    // For a `Qty` operand, negate the ERASED magnitude occurrence (`Qty.of`'s value); a bare numeric
+    // operand negates directly. A runtime non-`Qty.of` quantity magnitude has no erased occurrence to
+    // read — decline (the same gap `lower_qty_pow`/`lower_quantity_combine` decline on).
+    let value = if matches!(t, Ty::Qty { .. }) {
+        match crate::eval::qty_value_occ(db, operand) {
+            Some(v) => v,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "negation of a runtime non-Qty.of quantity magnitude (not yet emitted)",
+                ));
+            }
+        }
+    } else {
+        operand
+    };
+    match &inner {
+        // FLOAT — `-1.0 * e` (sign-correct for ±0.0/inf), folded/emitted by `lower_float_arith`.
+        Ty::Float(_) => {
+            let neg_one = synth_core(
+                db,
+                Core::ConstFloat(match crate::ast::Decimal::from_f64(-1.0) {
+                    Some(d) => d,
+                    None => return Core::Poison(Reject::decline("-1.0 has no decimal form")),
+                }),
+                inner.clone(),
+            );
+            lower_float_arith(db, id, Prim::FMul, &[neg_one, value])
+        }
+        // BIGINT — `0 - e` via the runtime `bigint-sub` (never folds; grows as needed).
+        Ty::BigInt => {
+            let zero = synth_core(db, Core::ConstInt(IntValue::zero()), Ty::BigInt);
+            lower_bigint_arith(db, Prim::Sub, zero, value)
+        }
+        // RATIONAL — `0 - e`, folded exactly (constant) or the runtime `rational-sub`.
+        Ty::Rational => {
+            let zero = synth_core(
+                db,
+                Core::ConstRational(IntValue::zero(), IntValue::from_i64(1)),
+                Ty::Rational,
+            );
+            lower_rational_arith(db, Prim::Sub, zero, value)
+        }
+        // FIXED-WIDTH INTEGER — `0 - e` via `lower_arith`, which folds a constant (a `0 - MIN` overflow →
+        // CDZ0304) and otherwise emits the checked runtime subtract (its `x == MIN` guard is negation's).
+        Ty::Int(_) => {
+            let zero = synth_core(db, Core::ConstInt(IntValue::zero()), inner.clone());
+            lower_arith(db, id, Prim::Sub, &[zero, value])
+        }
+        // Not a numeric type — `infer` already rejected this (CDZ0201 "negation is not defined on …"); a
+        // residual `Any` (an operand that faulted elsewhere) declines rather than fabricating a value.
+        _ => Core::Poison(Reject::decline(
+            "negation of a non-numeric operand (a fault is reported at inference)",
+        )),
     }
 }
 

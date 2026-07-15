@@ -52,3 +52,7 @@ def count(it) = match next(it) with
 @test
 def scan-counts() =
   if count(Iter.ScanI((fn(a, x) => a + x, (0, Iter.RangeI((0, 3)))))) == 3 then unit else trap("scan of 0..3 has 3 elements")
+
+/// RESOLVED 2026-07-15 (trunk@1f3b3c348): fix-sum-boxed-closure-dispatch merged (c861ae571). A provably-dead
+/// CallClosure (operand type matches no lift) now emits unreachable instead of declining the whole program.
+/// Migrated to spec/semantics/09-functions.sexp ("boxed closures of two fn types in one sum").

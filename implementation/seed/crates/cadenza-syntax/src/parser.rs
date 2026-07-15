@@ -828,6 +828,27 @@ impl<'a> Parser<'a> {
                     self.atom(literal::classify_word(self.text(t)), span)
                 }
             },
+            // PREFIX UNARY MINUS: `-<expr>` -> `(- <expr>)`, negation. A `Kind::Minus` in prefix
+            // position is always the unary operator: a `-` GLUED to a digit lexes as a SIGNED LITERAL
+            // (`-1`, `-1.5` — the lexer's `minus` calls `number`), so `Kind::Minus` reaches here only
+            // when the `-` is NOT part of a literal — a `-` before a name / `(` / call. The operand is
+            // a TIGHT unary (a `prefix` + `postfix` chain, no trailing infix), so negation binds TIGHTER
+            // than every binary operator: `-x + 1` groups as `(+ (- x) 1)`, `-f(x)` as `(- (f x))`, and
+            // `-x.field` as `(- (. x field))` (the member chain is the operand, not a projection of the
+            // negation). A parenthesized operand `-(x + 1)` is one `postfix` atom, so it negates the
+            // whole sum. Double negation `- -x` recurses here. Canonical arena is the arity-1
+            // subtraction `(- e)` — no new prim / grammar head: `lower` reads a one-operand `Sub` as
+            // type-directed negation (`0 - e` at the operand's numeric type). The printer renders it
+            // back to `-e`.
+            Kind::Minus => {
+                self.bump(); // `-`
+                let operand_start = self.cur_span();
+                let operand_prefix = self.prefix();
+                let operand = self.postfix(operand_prefix, operand_start);
+                let full = span.merge(self.prev_span());
+                let head = self.name("-", span);
+                self.list(vec![head, operand], full)
+            }
             // Bracketed sub-expressions parse their contents at a fresh level, where a `|` is bitwise-or
             // again — clear the arm-bar flag across them so `(a | b)` inside a match arm body works.
             Kind::LParen => self.bracketed_bars(Self::paren),
@@ -2527,6 +2548,32 @@ mod tests {
         };
         assert_eq!(arm0.len(), 2);
         assert_eq!(a.head_name(arm0[0]), Some("Some"));
+    }
+
+    #[test]
+    fn prefix_unary_minus_is_arity_one_subtraction() {
+        // `-x` (prefix minus on a NAME) -> the arity-1 subtraction `(- x)` (negation, read as such by
+        // `lower`), NOT a binary `-` and NOT a signed literal (only `-<digit>` lexes as a literal).
+        let a = parse_ok("-x");
+        let tail = a.as_form(a.root, "-").unwrap();
+        assert_eq!(tail.len(), 1, "prefix `-x` is one operand");
+        assert_eq!(a.as_name(tail[0]), Some("x"));
+        // Negation binds TIGHTER than `+`: `-x + 1` is `(+ (- x) 1)` — the `-x` is the left addend.
+        let b = parse_ok("-x + 1");
+        let plus = b.as_form(b.root, "+").unwrap();
+        assert_eq!(plus.len(), 2);
+        let neg = b.as_form(plus[0], "-").unwrap();
+        assert_eq!(neg.len(), 1, "the left addend is the negation `(- x)`");
+        assert_eq!(b.as_name(neg[0]), Some("x"));
+        // A parenthesized operand `-(x + 1)` negates the whole sum: `(- (+ x 1))`.
+        let c = parse_ok("-(x + 1)");
+        let neg = c.as_form(c.root, "-").unwrap();
+        assert_eq!(neg.len(), 1);
+        assert_eq!(c.head_name(neg[0]), Some("+"));
+        // Binary subtraction is unchanged: `a - b` -> the arity-2 `(- a b)`.
+        let d = parse_ok("a - b");
+        let sub = d.as_form(d.root, "-").unwrap();
+        assert_eq!(sub.len(), 2, "binary `a - b` stays arity-2 subtraction");
     }
 
     #[test]
