@@ -4933,11 +4933,13 @@ fn emit(
             Ok(()) // leaves [buf] — the bytes handle
         }
         // A runtime `(bin …)` construction of fixed-width INTEGER segments. Alloc a buffer of the total
-        // static width, then per segment: materialize its int value in an i64 scratch slot, RANGE-CHECK it
-        // against the segment (trap "binary value does not fit segment" if out of range — the runtime
-        // companion of the constant CDZ0304), and write its `w` bytes big-endian (`le` reversed) via
-        // `bytes-set` (which returns the buffer, so it threads on the stack). Uses TWO scratch slots: `buf`
-        // (the byte buffer handle) and `val` (the current segment's i64 value); both above `base`.
+        // static width, then per segment: materialize its int value in an i64 scratch slot and write its `w`
+        // bytes big-endian (`le` reversed) via `bytes-set` (which returns the buffer, so it threads on the
+        // stack). A per-segment range-check is emitted below, but it is a DEFENSIVE BACKSTOP that is normally
+        // DEAD: a `(uN v)`/`(iN v)` segment REQUIRES `v` to have the segment's exact width type (infer.rs
+        // `seg_value_ty`), so a value that does not fit is a COMPILE-TIME type error (CDZ0203), never a
+        // runtime trap — the value reaching here provably fits. Uses TWO scratch slots: `buf` (the byte
+        // buffer handle) and `val` (the current segment's i64 value); both above `base`.
         Core::BinBuild { segs } => {
             let total: u32 = segs.iter().map(|s| s.width as u32).sum();
             // The current segment's value lives in an i64 scratch slot (range-checked, then its bytes
@@ -4965,9 +4967,11 @@ fn emit(
                 emit(db, s.value, slots, seg_base, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
                 emit_box_i32_to_i64_extend(db, s.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
-                // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
-                // (an i64 holds every i64) needs no check. Signed: `-(2^(bits-1)) <= val < 2^(bits-1)`;
-                // unsigned: `0 <= val < 2^bits`. Emitted as `(low-fail | high-fail) → trap`.
+                // RANGE CHECK (defensive backstop — normally DEAD, since the segment's width type already
+                // bounds `val`; a value that does not fit is a compile-time CDZ0203): the value must fit the
+                // segment's (signed, bits) width, else trap. Width 8 (an i64 holds every i64) needs no check.
+                // Signed: `-(2^(bits-1)) <= val < 2^(bits-1)`; unsigned: `0 <= val < 2^bits`. Emitted as
+                // `(low-fail | high-fail) → trap`.
                 if bits < 64 {
                     if s.signed {
                         let hi = (1i64 << (bits - 1)) - 1;
@@ -5021,7 +5025,9 @@ fn emit(
         // STATIC (all `k` are compile-time constants) — only the field values are runtime. `acc` (an i64
         // slot) accumulates the open bits MSB-first, flushing whole bytes from its top as they close, exactly
         // like the constant packer in `lower_bin_build`. The byte buffer is THREADED ON THE STACK like
-        // `BinBuild`; each field range-checks (`0 <= v < 2^k`, else trap "binary value does not fit segment").
+        // `BinBuild`. Each field emits a range-check (`0 <= v < 2^k`) as a DEFENSIVE BACKSTOP that is
+        // normally DEAD: a `(bits v k)` field REQUIRES `v : (UInt k)` (infer.rs `seg_value_ty`), so a value
+        // that does not fit is a compile-time CDZ0203, not a runtime trap — the value reaching here fits.
         Core::BinBitsBuild { fields } => {
             let total_bits: u32 = fields.iter().map(|f| f.k).sum();
             let total_bytes = total_bits / 8; // byte-aligned (CDZ0220) — exact
@@ -5044,7 +5050,8 @@ fn emit(
                 emit(db, f.value, slots, base + 2, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
                 emit_box_i32_to_i64_extend(db, f.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
-                // RANGE CHECK: a k-bit UNSIGNED field, so `0 <= val < 2^k` (k ≤ 56 → 2^k is a positive i64).
+                // RANGE CHECK (defensive backstop — normally DEAD, the `(UInt k)` field type already bounds
+                // `val`): a k-bit UNSIGNED field, so `0 <= val < 2^k` (k ≤ 56 → 2^k is a positive i64).
                 out.push(Lir::LocalGet(val_slot));
                 out.push(Lir::ConstI64(0));
                 out.push(Lir::I64LtS); // val < 0
