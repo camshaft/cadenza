@@ -44,6 +44,8 @@
 ///                              step is assumed positive (a non-positive step yields nothing).
 ///   - `DownRangeI((hi, lo))` — the DESCENDING half-open range: yield `hi-1, hi-2, …, lo`. Empty when
 ///                              `hi <= lo`. The reverse of `RangeI((lo, hi))`.
+///   - `InclRangeI((lo, hi))` — the INCLUSIVE range `[lo, hi]`: yield `lo, lo+1, …, hi`. A dedicated
+///                              variant (not `RangeI((lo, hi+1))`) so `hi == Int64.max` cannot overflow.
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -58,6 +60,7 @@ type Iter =
   | IterateI(Tuple((Int64 -> Int64), Int64))
   | StepRangeI(Tuple(Int64, Tuple(Int64, Int64)))
   | DownRangeI(Tuple(Int64, Int64))
+  | InclRangeI(Tuple(Int64, Int64))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -107,13 +110,25 @@ def next(it) = match it with
     // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
     Option.Some((cur, Iter.IterateI((f, f(cur))))))
   | Iter.StepRangeI(sr) => (match sr with | (lo, hi-step) => (match hi-step with | (hi, step) =>
-    // yield `lo` while below `hi`, advancing by `step`; a non-positive step never advances, so it
-    // yields nothing (guards against a non-terminating pull)
+    // yield `lo` while below `hi`, advancing by `step`. Guards: a non-positive step never advances
+    // (no infinite pull); and `lo + step` is only computed when it cannot overflow — if `lo` is within
+    // `step` of `Int64.max` there is no representable next element below `hi`, so the rest is empty.
+    // `next` stays TOTAL (never traps) even for a range abutting `Int64.max`.
     if step <= 0 then Option.None(unit)
-    else if lo < hi then Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step))))) else Option.None(unit)))
+    else if lo < hi then
+      (if lo > Int64.max - step then Option.Some((lo, Iter.StepRangeI((hi, (hi, step)))))
+       else Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step))))))
+    else Option.None(unit)))
   | Iter.DownRangeI(dr) => (match dr with | (hi, lo) =>
     // descending half-open: yield `hi-1` while it is still `>= lo`, then continue from `hi-1`
     if hi > lo then Option.Some((hi - 1, Iter.DownRangeI((hi - 1, lo)))) else Option.None(unit))
+  | Iter.InclRangeI(ir) => (match ir with | (lo, hi) =>
+    // inclusive `[lo, hi]`: yield `lo` while `lo <= hi`. `lo + 1` is computed ONLY when `lo < hi`, so
+    // it is at most `hi <= Int64.max` — no overflow even when `hi == Int64.max` (the last element is
+    // yielded with an empty rest rather than an overflowing `lo + 1`). Total: `next` never traps.
+    if lo > hi then Option.None(unit)
+    else if lo < hi then Option.Some((lo, Iter.InclRangeI((lo + 1, hi))))
+    else Option.Some((lo, Iter.FromList([]))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -130,8 +145,9 @@ def range(lo, hi) = Iter.RangeI((lo, hi))
 def iterate(seed, f: Int64 -> Int64) = Iter.IterateI((f, seed))
 
 /// Yield `lo, lo+1, …, hi` — the INCLUSIVE interval `[lo, hi]` (Rust's `lo..=hi`). Empty when
-/// `lo > hi`. This is the semantic target of the future `lo..=hi` surface sugar.
-def range-inclusive(lo, hi) = Iter.RangeI((lo, hi + 1))
+/// `lo > hi`. This is the semantic target of the future `lo..=hi` surface sugar. Uses a dedicated
+/// `InclRangeI` variant rather than `RangeI((lo, hi+1))` so `hi == Int64.max` cannot overflow.
+def range-inclusive(lo, hi) = Iter.InclRangeI((lo, hi))
 
 /// Yield `lo, lo+step, lo+2·step, …` while `< hi` (half-open), for a positive `step`. A non-positive
 /// step yields nothing. This is the semantic target of a future stepped-range surface.
@@ -614,5 +630,46 @@ def for-each-visits-every-element() =
 @test
 def for-each-over-empty-is-a-noop() =
   let _ = for-each(empty(), fn(_x) => trap("empty should never call f")) in unit
+
+// ── Edge-of-range totality (PR #384 regression): `next` must never trap, even abutting Int64.max ──
+
+@test
+def range-inclusive-at-int64-max-does-not-overflow() =
+  // range-inclusive(max, max) is the single-element range [max]; the old RangeI((lo, hi+1)) form
+  // trapped computing max+1. next must yield max then None, never trap.
+  match next(range-inclusive(Int64.max, Int64.max)) with
+    | Option.None(_) => trap("should yield Int64.max once")
+    | Option.Some(p) => (match p with | (v, rest) =>
+        if v == Int64.max then (match next(rest) with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("inclusive range at max should have exactly one element"))
+        else trap("first element should be Int64.max"))
+
+@test
+def range-inclusive-near-max-yields-both-endpoints() =
+  // [max-1, max] : two elements, no overflow
+  if int-list-eq(collect-list(range-inclusive(Int64.max - 1, Int64.max)), [Int64.max - 1, Int64.max]) then
+    unit
+  else
+    trap("range-inclusive (max-1)..=max = [max-1, max]")
+
+@test
+def range-step-near-int64-max-does-not-overflow() =
+  // range-step(max-1, max, 2): yields max-1, then the rest (max-1)+2 would overflow — must terminate
+  // cleanly (yield max-1, then None) rather than trap while building the rest iterator.
+  if int-list-eq(collect-list(range-step(Int64.max - 1, Int64.max, 2)), [Int64.max - 1]) then
+    unit
+  else
+    trap("range-step near max yields exactly [max-1]")
+
+@test
+def range-inclusive-step-free-path-still-totals-near-max() =
+  // range-step is HALF-OPEN (hi excluded), so (max-2)..max by 2 yields max-2 then max-2+2==max which
+  // is not < max → excluded; result is [max-2]. The point: computing that excluded next value must
+  // not trap. (For an inclusive endpoint use range-inclusive.)
+  if int-list-eq(collect-list(range-step(Int64.max - 2, Int64.max, 2)), [Int64.max - 2]) then
+    unit
+  else
+    trap("range-step (max-2) step 2, hi=max (half-open) = [max-2]")
 
 export { Iter.* }
