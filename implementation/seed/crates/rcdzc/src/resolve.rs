@@ -4869,4 +4869,52 @@ mod tests {
             "the do-local module is still registered in db.modules"
         );
     }
+
+    /// The field labels of the record `m` resolves to — a helper for the export-visibility tests. Panics
+    /// if `m` does not resolve to a `Resolved::Record`.
+    fn module_record_fields(db: &mut Db, module_name: &str) -> Vec<String> {
+        let name = name_node(db, module_name);
+        match resolved_of(db, name) {
+            Resolved::Ref { value } => match resolved_of(db, value) {
+                Resolved::Record { fields } => fields.keys().map(|s| s.name.clone()).collect(),
+                other => panic!("module `{module_name}` record is not a Record: {other:?}"),
+            },
+            other => panic!("module `{module_name}` did not resolve to a Ref: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_export_clause_filters_the_module_record_to_the_named_members() {
+        // Visibility is explicit: a module's `(export pub)` clause makes `pub` a field of the record and
+        // leaves the unnamed `secret` OUT — so `(. m secret)` is a closed-record CDZ0201 downstream. Assert
+        // the synth record carries `pub` and NOT `secret`.
+        let ast = parse(
+            "(do (module m (def (pub x) (+ x 1)) (def (secret x) (+ x 100)) (export pub)) \
+             (def (main) ((. m pub) 5)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let fields = module_record_fields(&mut db, "m");
+        assert!(
+            fields.contains(&"pub".to_string()),
+            "pub is exported: {fields:?}"
+        );
+        assert!(
+            !fields.contains(&"secret".to_string()),
+            "secret is NOT exported and must be absent from the record: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn no_export_clause_exports_every_member() {
+        // The export-EVERYTHING default: with NO `(export …)` clause the record carries every definition,
+        // the pre-existing corpus behavior. Assert both `a` and `b` are present.
+        let ast = parse(
+            "(do (module m (def (a x) (+ x 1)) (def (b x) (+ x 2))) \
+             (def (main) ((. m a) 1)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let fields = module_record_fields(&mut db, "m");
+        assert!(fields.contains(&"a".to_string()), "a present: {fields:?}");
+        assert!(fields.contains(&"b".to_string()), "b present: {fields:?}");
+    }
 }

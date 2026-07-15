@@ -842,6 +842,8 @@ pass	a module function calls a sibling export by name
 pass	a module function is recursive
 pass	a module in a top-level do sequence type-checks its members
 pass	a module may nest three deep
+pass	a module member named by the export clause is reachable
+pass	a module member not named by the export clause is private
 pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
@@ -1038,6 +1040,7 @@ pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
+pass	a private module member is still visible to a sibling
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
