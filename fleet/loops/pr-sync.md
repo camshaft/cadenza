@@ -19,22 +19,33 @@ they make it — so integration is a local `git merge`, never a push/fetch/CAS r
    agent). For each, in order:
 
    **Integrate one `merge-request`** (`ref` = the sender's commit sha; subject/body name the branch
-   + carry the gate summary):
+   + carry the gate summary). **INVARIANT: every merge-request you take off the inbox MUST end in
+   exactly one `merged` OR `reject` reply to its sender — never move one to `processed/` silently.**
+   A dropped reply is invisible: the sender idles forever on work that never landed (this HAS
+   happened). To make that structurally impossible, resolve each request with **`cargo xtask fleet
+   ack <request-file> --outcome merged|reject [--ref …] [--body …]`** — it delivers the reply AND
+   archives the request in one atomic step (and nudges the sender awake), so you cannot archive
+   without replying. Do NOT hand-move a merge-request into `processed/`; let `ack` do it.
    a. `git merge --no-ff <ref>` into `trunk` in your worktree. On a **conflict**: abort
-      (`git merge --abort`) and reply `reject` to the sender with the conflicting paths and "rebase
-      on trunk@<current-sha> and resend". Do not try to resolve a peer's conflict for them.
+      (`git merge --abort`) and `fleet ack <request> --outcome reject --ref trunk@<current-sha>
+      --body "conflict in <paths>; rebase on trunk@<current-sha> and resend"`. Do not try to resolve
+      a peer's conflict for them.
    b. Re-gate the merged result yourself — you are the last line of defense: `cargo test -p rcdzc
       --lib` (0 failed) + `cargo xtask gate` (diff the FAIL SET vs baseline — a `Todo→Fail` is a
       miscompile the sender's local gate missed under a stale base) + `cargo xtask check`. If it's
-      red, `git reset --hard trunk@{1}` (undo the merge) and reply `reject` with the failing gate
-      output. The sender fixes and resends.
-   c. Green → the merge stays. `trunk` has advanced. Reply `merged` to the sender with the new
-      `trunk` sha. (The sender will `fleet remove` itself if it was a one-shot `fix` agent.) THEN
-      notify the standing `reviewer` so it can review the just-landed diff: `cargo xtask fleet send
-      --to reviewer --kind note --subject "integrated <branch> onto trunk" --ref <new-trunk-sha>
+      red, `git reset --hard trunk@{1}` (undo the merge) and `fleet ack <request> --outcome reject
+      --body "<failing gate output>"`. The sender fixes and resends.
+   c. Green → the merge stays. `trunk` has advanced. Resolve with `fleet ack <request> --outcome
+      merged --ref <new-trunk-sha> --body "<gate summary>"` (this replies `merged` to the sender AND
+      archives the request; the sender will `fleet remove` itself if it was a one-shot `fix` agent).
+      THEN notify the standing `reviewer` so it can review the just-landed diff: `cargo xtask fleet
+      send --to reviewer --kind note --subject "integrated <branch> onto trunk" --ref <new-trunk-sha>
       --body "merged <sender-branch> (was <sender-commit>); review the diff this merge added". This
       is fire-and-forget — the reviewer is NON-BLOCKING (it logs findings as issues; it never gates
       or holds up integration). If `reviewer` isn't in the registry, skip the notify silently.
+   d. If you ever decide a merge-request is a stray/duplicate you won't integrate, STILL `fleet ack
+      <request> --outcome reject --body "not integrated: <reason, e.g. superseded/duplicate>"` — a
+      deliberate reject is fine; a silent drop is the bug.
 3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
    `trunk` is ahead of `origin/main` and clean:
    - Re-parent onto `origin/main` so the squash-merge doesn't show a spurious revert: work in a

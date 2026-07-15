@@ -352,6 +352,28 @@ pub enum FleetCmd {
         #[arg(long)]
         no_commit: bool,
     },
+    /// Resolve a `merge-request` ATOMICALLY: reply to its sender AND archive the request in one step.
+    /// This closes a reliability hole in the single-integrator model — pr-sync used to reply and move
+    /// the request to `processed/` as two decoupled manual steps, so a missed reply left the sender
+    /// idling forever on a silently-dropped MR (`process(mr)` MUST emit exactly one `merged`/`reject`).
+    /// `fleet ack` reads the sender + ref from the request file, delivers the reply, then moves the
+    /// request into `processed/` — you cannot archive without replying. pr-sync calls this instead of a
+    /// bare `send` + hand-move. Run it from pr-sync's worktree (the inbox is hub-anchored either way).
+    Ack {
+        /// The merge-request file to resolve — a path, or just the basename in pr-sync's inbox.
+        request: String,
+        /// The outcome: `merged` (integrated) or `reject` (not integrated; body says why).
+        #[arg(long)]
+        outcome: String,
+        /// The new `trunk` sha for a `merged`, or the branch/base for a `reject` (goes in the reply's
+        /// `ref`). Optional.
+        #[arg(long, default_value = "")]
+        r#ref: String,
+        /// The reply body — for `merged`, the gate summary / trunk sha; for `reject`, WHY + what to do
+        /// (e.g. "conflict in X; rebase on trunk@<sha> and resend").
+        #[arg(long, default_value = "")]
+        body: String,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -443,6 +465,12 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             stale_cap,
             grace_secs,
         } => watchdog(&fleet, dry_run, stale_mult, stale_cap, grace_secs),
+        FleetCmd::Ack {
+            request,
+            outcome,
+            r#ref,
+            body,
+        } => ack(&fleet, &request, &outcome, &r#ref, &body),
     }
 }
 
@@ -773,6 +801,99 @@ fn send(
             WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
             WakeOutcome::Skipped(why) => println!("  (not woken: {why} — picks it up next /loop)"),
         }
+    }
+}
+
+/// Resolve a `merge-request` atomically: reply to its sender, THEN archive the request — so a request
+/// can never be archived without a reply (the silent-drop hole that left senders idling forever). See
+/// the `Ack` doc comment. Reads the sender + ref from the request file; the outcome must be `merged`
+/// or `reject`.
+fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
+    if outcome != "merged" && outcome != "reject" {
+        eprintln!("fleet ack: --outcome must be `merged` or `reject` (got `{outcome}`)");
+        std::process::exit(1);
+    }
+    // Resolve the request file: an explicit path, or a basename in pr-sync's inbox.
+    let path = {
+        let p = PathBuf::from(request);
+        if p.is_file() {
+            p
+        } else {
+            fleet.inbox("pr-sync").join(request)
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "fleet ack: cannot read merge-request {}: {e}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let mr: Message = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("fleet ack: {} is not a valid message ({e})", path.display());
+            std::process::exit(1);
+        }
+    };
+    if mr.kind != "merge-request" {
+        eprintln!(
+            "fleet ack: {} is a `{}`, not a `merge-request` — refusing to ack",
+            path.display(),
+            mr.kind
+        );
+        std::process::exit(1);
+    }
+
+    // 1) Reply to the sender FIRST (deliver, then archive) — if the archive somehow fails, the sender
+    // has still been told, which is the safe direction: a stray un-archived request re-processes
+    // (idempotent-ish: a second ack just sends a second reply), whereas a lost reply is invisible.
+    let subject = if outcome == "merged" {
+        format!("merged: {}", mr.subject)
+    } else {
+        format!("reject: {}", mr.subject)
+    };
+    deliver(
+        fleet,
+        &Message {
+            from: "pr-sync".to_string(),
+            to: mr.from.clone(),
+            kind: outcome.to_string(),
+            subject,
+            r#ref: r#ref.to_string(),
+            body: body.to_string(),
+            seq: next_seq(),
+        },
+    );
+    println!(
+        "fleet ack: pr-sync → {} [{outcome}] {}",
+        mr.from, mr.subject
+    );
+
+    // 2) Archive the request into pr-sync's processed/ (create it on demand). Only now that the reply
+    // is delivered.
+    let processed = fleet.inbox("pr-sync").join("processed");
+    std::fs::create_dir_all(&processed).ok();
+    let dest = processed.join(
+        path.file_name()
+            .unwrap_or(std::ffi::OsStr::new("request.json")),
+    );
+    match std::fs::rename(&path, &dest) {
+        Ok(()) => println!("  ✓ archived {} → processed/", path.display()),
+        Err(e) => eprintln!(
+            "  ! reply sent, but could not archive {} ({e}) — move it by hand",
+            path.display()
+        ),
+    }
+
+    // 3) Wake the sender so it acts on the reply immediately (a `reject` needs a fast fix; a `merged`
+    // lets a one-shot agent stand down). Same guards as any delivery.
+    match wake_window(fleet, &mr.from) {
+        WakeOutcome::Woke => println!("  ↑ nudged '{}' awake (immediate tick)", mr.from),
+        WakeOutcome::Skipped(why) => println!("  (sender not woken: {why})"),
     }
 }
 
