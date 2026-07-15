@@ -29,7 +29,12 @@ they make it — so integration is a local `git merge`, never a push/fetch/CAS r
       red, `git reset --hard trunk@{1}` (undo the merge) and reply `reject` with the failing gate
       output. The sender fixes and resends.
    c. Green → the merge stays. `trunk` has advanced. Reply `merged` to the sender with the new
-      `trunk` sha. (The sender will `fleet remove` itself if it was a one-shot `fix` agent.)
+      `trunk` sha. (The sender will `fleet remove` itself if it was a one-shot `fix` agent.) THEN
+      notify the standing `reviewer` so it can review the just-landed diff: `cargo xtask fleet send
+      --to reviewer --kind note --subject "integrated <branch> onto trunk" --ref <new-trunk-sha>
+      --body "merged <sender-branch> (was <sender-commit>); review the diff this merge added". This
+      is fire-and-forget — the reviewer is NON-BLOCKING (it logs findings as issues; it never gates
+      or holds up integration). If `reviewer` isn't in the registry, skip the notify silently.
 3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
    `trunk` is ahead of `origin/main` and clean:
    - Re-parent onto `origin/main` so the squash-merge doesn't show a spurious revert: work in a

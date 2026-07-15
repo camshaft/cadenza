@@ -13367,13 +13367,15 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
 }
 
 /// Hoist a COMMON CONSTRUCTOR out of both `if` arms: when both branches build the SAME constructor —
-/// the same `SumNew` discriminant + payload arity, or a same-arity `Tuple` — the heap build is
-/// DUPLICATED across the two branches, differing only in the payload/element occurrences. Build the
-/// constructor ONCE and push each DIFFERING position down into its own `(if c pᵢ qᵢ)`; a position that
-/// is `core_equiv` across the arms is shared directly. `(if c (Some a) (Some b))` → `(Some (if c a b))`
-/// and `(if c (tuple a k) (tuple b k))` → `(tuple (if c a b) k)` — ONE alloc + one set of field stores
-/// emitted instead of two duplicated build sequences (a module-size win; the runtime alloc count is
-/// already one either way since an `if` takes exactly one arm).
+/// the same `SumNew` discriminant + payload arity, a same-arity `Tuple`, or a `Record` with the SAME
+/// KEY SET — the heap build is DUPLICATED across the two branches, differing only in the payload/element/
+/// field occurrences. Build the constructor ONCE and push each DIFFERING position down into its own
+/// `(if c pᵢ qᵢ)`; a position that is `core_equiv` across the arms is shared directly.
+/// `(if c (Some a) (Some b))` → `(Some (if c a b))`, `(if c (tuple a k) (tuple b k))` →
+/// `(tuple (if c a b) k)`, and `(if c (record (x a) (y k)) (record (x b) (y k)))` →
+/// `(record (x (if c a b)) (y k))` — ONE alloc + one set of field stores emitted instead of two
+/// duplicated build sequences (a module-size win; the runtime alloc count is already one either way
+/// since an `if` takes exactly one arm).
 ///
 /// SOUND: exactly one branch's payloads ever MATERIALIZE either way — a differing position stays under
 /// an `if`, so the untaken arm's payload is never evaluated or consumed and the Perceus consume-once
@@ -13385,8 +13387,8 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
 /// matching the original `if`, so that case is unconditionally sound; zero or ≥2 differing positions
 /// change the count, so require a TRAP-FREE `cond` (it re-reads identically with no effect or trap to
 /// drop or duplicate). Returns `None` (keep the `if`) when the arms are not the same constructor,
-/// disagree in shape, or the cond-eval guard fails. A poison arm has a non-constructor core, so it
-/// never matches and the `if`'s existing poison handling stands.
+/// disagree in shape/key-set, or the cond-eval guard fails. A poison arm has a non-constructor core, so
+/// it never matches and the `if`'s existing poison handling stands.
 fn hoist_common_ctor(
     db: &mut Db,
     cond: StructId,
@@ -13396,8 +13398,15 @@ fn hoist_common_ctor(
     enum Shape {
         Sum(u32),
         Tuple,
+        // A record's fields in a fixed KEY ORDER (the `BTreeMap`'s sorted keys), paired with the aligned
+        // then/else value occurrences below; rebuilt into a `BTreeMap` after the per-position hoist.
+        Record(Vec<crate::resolved::Symbol>),
     }
-    let (shape, tp, ep): (Shape, Vec<StructId>, Vec<StructId>) =
+    // Align each arm's positions into `(then_value, else_value)` pairs and record the reconstruction
+    // shape. For keyed records the two arms must carry the IDENTICAL key set (a differing key set is a
+    // different value, not a hoistable common constructor); the paired values are read in sorted-key
+    // order so the rebuilt map re-pairs them by that same order.
+    let (shape, pairs): (Shape, Vec<(StructId, StructId)>) =
         match (core_of(db, then_), core_of(db, else_)) {
             (
                 Core::SumNew {
@@ -13408,18 +13417,27 @@ fn hoist_common_ctor(
                     disc: de,
                     payloads: pe,
                 },
-            ) if dt == de && pt.len() == pe.len() => (Shape::Sum(dt), pt, pe),
+            ) if dt == de && pt.len() == pe.len() => {
+                (Shape::Sum(dt), pt.into_iter().zip(pe).collect())
+            }
             (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => {
-                (Shape::Tuple, et, ee)
+                (Shape::Tuple, et.into_iter().zip(ee).collect())
+            }
+            (Core::Record { fields: ft }, Core::Record { fields: fe })
+                if ft.len() == fe.len() && ft.keys().zip(fe.keys()).all(|(a, b)| a == b) =>
+            {
+                let keys: Vec<crate::resolved::Symbol> = ft.keys().cloned().collect();
+                let pairs: Vec<(StructId, StructId)> =
+                    keys.iter().map(|k| (ft[k], fe[k])).collect();
+                (Shape::Record(keys), pairs)
             }
             _ => return None,
         };
-    // Nothing to build (a nullary sum variant / empty tuple — no payloads) offers no win and would drop
-    // `cond` entirely; leave it to the enum-disc / identical-branch folds.
-    if tp.is_empty() {
+    // Nothing to build (a nullary sum variant / empty tuple / empty record — no positions) offers no win
+    // and would drop `cond` entirely; leave it to the enum-disc / identical-branch folds.
+    if pairs.is_empty() {
         return None;
     }
-    let pairs: Vec<(StructId, StructId)> = tp.iter().copied().zip(ep.iter().copied()).collect();
     let mut diff = 0usize;
     for &(a, b) in &pairs {
         if !core_equiv(db, a, b) {
@@ -13431,17 +13449,23 @@ fn hoist_common_ctor(
     if diff != 1 && !is_trap_free(db, cond) {
         return None;
     }
-    let mut payloads: Vec<StructId> = Vec::with_capacity(pairs.len());
+    let mut vals: Vec<StructId> = Vec::with_capacity(pairs.len());
     for &(a, b) in &pairs {
-        payloads.push(if core_equiv(db, a, b) {
+        vals.push(if core_equiv(db, a, b) {
             a
         } else {
             synth_if(db, cond, a, b)
         });
     }
     Some(match shape {
-        Shape::Sum(disc) => Core::SumNew { disc, payloads },
-        Shape::Tuple => Core::Tuple { elems: payloads },
+        Shape::Sum(disc) => Core::SumNew {
+            disc,
+            payloads: vals,
+        },
+        Shape::Tuple => Core::Tuple { elems: vals },
+        Shape::Record(keys) => Core::Record {
+            fields: std::rc::Rc::new(keys.into_iter().zip(vals).collect()),
+        },
     })
 }
 

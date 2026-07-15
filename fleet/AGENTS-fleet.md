@@ -46,18 +46,25 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
 
 Every firing of your `/loop`, in order:
 
-1. **Refresh presence.** `cargo xtask fleet heartbeat <you>` (stamps `lastTick` in the registry).
+1. **Re-read your charter.** RE-READ this contract (`<your-worktree>/fleet/AGENTS-fleet.md`) AND your
+   role body (`<your-worktree>/fleet/loops/<role>.md`) at the START of EVERY tick — not just at
+   launch. These files are git-tracked and change as the fleet evolves (the concierge / operator edit
+   role bodies and land them on `trunk`); step 3's rebase pulls the updates into your worktree, and
+   re-reading is how you pick up a changed charter, a new tick-step, or a scope change without being
+   relaunched. If your role body materially changed since last tick, act on the NEW instructions.
+2. **Refresh presence.** `cargo xtask fleet heartbeat <you>` (stamps `lastTick` in the registry).
    If a stop-file exists for you (`cargo xtask fleet remove` sets it), STOP cleanly and do nothing.
-2. **Drain your inbox FIRST.** Read every JSON file in `.claude/fleet/inbox/<you>/` oldest-first;
+3. **Drain your inbox FIRST.** Read every JSON file in `.claude/fleet/inbox/<you>/` oldest-first;
    act on each; then move it to `.claude/fleet/inbox/<you>/processed/`. Answering peers takes
    priority over starting new work (a `reject` from pr-sync means your last merge needs a fix —
    handle it before anything else).
-3. **Sync your base.** `git -C <your-worktree> fetch -q` then `git rebase origin/trunk` (or the
+4. **Sync your base.** `git -C <your-worktree> fetch -q` then `git rebase origin/trunk` (or the
    local `trunk` ref — they track together). Rebuild what you measure against
-   (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail).
-4. **Do ONE well-scoped unit of work** per your role body. Gate it (below). Never leave `trunk`
+   (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail). This is
+   also what refreshes your role body on disk for next tick's step 1.
+5. **Do ONE well-scoped unit of work** per your role body. Gate it (below). Never leave `trunk`
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
-5. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
+6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
 
 ## The message protocol
 

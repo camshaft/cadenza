@@ -1043,6 +1043,74 @@ fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
     );
 }
 
+/// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
+/// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
+/// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole
+/// `arr-alloc` + two field stores in each `if`/`else` arm. A record's fields are keyed (a `BTreeMap`), so
+/// the hoist requires the SAME KEY SET across the arms (a differing key set is a different record TYPE,
+/// which `infer` already rejects). Value parity in BOTH directions proves the single build with a
+/// selected field reproduces the per-arm builds: c=true → field `a` = x, c=false → field `a` = y, and
+/// the shared field `b` = 1 regardless. The record is kept OPAQUE to the fold via a recursive helper so
+/// it is a genuine runtime heap value (a literal / an `if` alone would fold away).
+#[test]
+fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (mk (: c Bool) (: x Int64) (: y Int64) (: n Int64)) \
+                   (if (< n 0) (mk c x y (+ n 1)) \
+                     (if c (record (a x) (b 1)) (record (a y) (b 1))))) \
+                 (def (main (: c Bool) (: x Int64) (: y Int64)) \
+                   (. (mk c x y 0) a)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The differing field becomes a branchless scalar `select` — the hoist's witness (the pre-hoist form
+    // was a two-arm `if` over duplicated record builds, with no field `select`).
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the record common-constructor hoist must lower the differing field to a branchless select \
+         (build-once); found no select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime record must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |c: bool, x: &str, y: &str| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![c.to_string(), x.to_string(), y.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => {
+                panic!("record common-ctor hoist trapped (miscompile?): {t}")
+            }
+        }
+    };
+    assert_eq!(
+        run(true, "10", "20"),
+        "10",
+        "c=true → differing field a = x"
+    );
+    assert_eq!(
+        run(false, "10", "20"),
+        "20",
+        "c=false → differing field a = y"
+    );
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
