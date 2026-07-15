@@ -746,4 +746,52 @@ def max-by-empty-is-none() =
     | Option.None(_) => unit
     | Option.Some(_) => trap("empty has no max-by")
 
+// ── Algebraic laws (cross-combinator invariants a future change must not break) ──────────────────
+
+@test
+def law-collect-round-trips-from-list() =
+  // collect-list ∘ from-list = identity, for several shapes
+  let xs = [7, 0, 0 - 3, 42, 5] in
+  if int-list-eq(collect-list(from-list(xs)), xs) then unit else trap("collect ∘ from-list ≠ id")
+
+@test
+def law-count-equals-collected-length() =
+  // count(it) == length(collect-list(it)) — the two ways of measuring agree
+  let it = filter(range(0, 20), fn(x) => x % 3 == 0) in
+  if count(it) == count(from-list(collect-list(it))) then unit else trap("count ≠ collected length")
+
+@test
+def law-chain-is-associative() =
+  // (a ++ b) ++ c  ==  a ++ (b ++ c)
+  let a = from-list([1, 2]) in
+  let b = from-list([3]) in
+  let c = from-list([4, 5]) in
+  if int-list-eq(collect-list(chain(chain(a, b), c)), collect-list(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5]))))) then
+    unit
+  else
+    trap("chain not associative")
+
+@test
+def law-map-fusion() =
+  // map(map(it, g), f) == map(it, f∘g) — mapping twice fuses into one composed map. (Uses two fresh
+  // range sources since an iterator is re-steppable but each pipeline consumes its own.)
+  if int-list-eq(collect-list(map(map(range(0, 6), fn(x) => x + 1), fn(y) => y * 2)), collect-list(map(range(0, 6), fn(x) => (x + 1) * 2))) then
+    unit
+  else
+    trap("map fusion law broken")
+
+@test
+def law-take-drop-splits() =
+  // take(it, n) ++ drop(it, n) reconstructs it (for a finite, re-steppable source)
+  let full = collect-list(range(0, 10)) in
+  let split = collect-list(chain(take(range(0, 10), 4), drop(range(0, 10), 4))) in
+  if int-list-eq(split, full) then unit else trap("take n ++ drop n ≠ whole")
+
+@test
+def law-sum-equals-fold-plus() =
+  // sum is the + fold; reduce with + over a non-empty range matches sum
+  match reduce(range(1, 6), fn(a, b) => a + b) with
+    | Option.Some(v) => if v == sum(range(1, 6)) then unit else trap("reduce+ ≠ sum")
+    | Option.None(_) => trap("range 1..6 is non-empty")
+
 export { Iter.* }
