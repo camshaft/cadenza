@@ -406,9 +406,14 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
 /// package `entry` named and output written to `out` — the in-process source-compile core `cdz build`
 /// drives (a manifest-resolved package) and the shared spine `run_compile` uses for a source input.
 /// Each spec is parsed keeping spans (so a diagnostic locates as `path:line:col`), the `entry` becomes a
-/// `KIND_ENTRY` artifact, and the default `wasm` target + default opt-level apply. Returns the process
-/// exit code.
-fn compile_source_specs(specs: &[String], entry: Option<&str>, out: Option<PathBuf>) -> ExitCode {
+/// `KIND_ENTRY` artifact, the default `wasm` target applies, and `opt_level` selects the optimization
+/// tier. Returns the process exit code.
+fn compile_source_specs(
+    specs: &[String],
+    entry: Option<&str>,
+    out: Option<PathBuf>,
+    opt_level: rcdzc::OptLevel,
+) -> ExitCode {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
     for spec in specs {
         let (source, arenas, spantable) = match load_program_spanned(spec) {
@@ -434,9 +439,9 @@ fn compile_source_specs(specs: &[String], entry: Option<&str>, out: Option<PathB
     if let Some(entry) = entry {
         inputs.push(compiler_cli::entry_artifact(entry));
     }
-    // Default target (`wasm`) + default opt-level — `run_prepared` applies the `[Wasm]` default when the
-    // target list is empty, matching a bare `cdz compile`.
-    compiler_cli::run_prepared(inputs, &[], out, rcdzc::OptLevel::default(), PROG)
+    // Default target (`wasm`) — `run_prepared` applies the `[Wasm]` default when the target list is
+    // empty, matching a bare `cdz compile`. `opt_level` is the resolved build tier.
+    compiler_cli::run_prepared(inputs, &[], out, opt_level, PROG)
 }
 
 /// `cdz build [DIR]` — the manifest-driven compile (the `cargo build` analogue). Resolves the project's
@@ -536,7 +541,41 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     // Dedup (a module glob may also match the entry) while preserving order (entry stays first).
     let mut seen = std::collections::HashSet::new();
     specs.retain(|s| seen.insert(s.clone()));
-    compile_source_specs(&specs, Some(&entry_name), args.out.clone())
+    // Resolve the optimization tier by PRECEDENCE (v-core-opt design §7): an explicit `--opt-level` wins;
+    // else the manifest's `def opt-level`; else `--release` (`O2`); else the default (`O1`). A bad string
+    // (flag or manifest) is a clear error naming the valid set rather than a silent fallback.
+    let opt_level = match resolve_build_opt_level(args, m.opt_level.as_deref(), &mpath) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    compile_source_specs(&specs, Some(&entry_name), args.out.clone(), opt_level)
+}
+
+/// Resolve `cdz build`'s optimization tier by precedence (v-core-opt design §7 — the canonical mapping):
+/// `--opt-level <LEVEL>` (explicit) > the manifest's `def opt-level` > `--release` (`O2`) > the default
+/// (`O1`). A malformed level string — from the flag or the manifest — is an `Err` naming the valid set,
+/// so a typo is a clear failure rather than a silent default. `mpath` names the manifest in a manifest
+/// parse error.
+fn resolve_build_opt_level(
+    args: &BuildArgs,
+    manifest_opt_level: Option<&str>,
+    mpath: &std::path::Path,
+) -> Result<rcdzc::OptLevel, String> {
+    use std::str::FromStr;
+    if let Some(s) = &args.opt_level {
+        return rcdzc::OptLevel::from_str(s).map_err(|e| format!("--opt-level `{s}`: {e}"));
+    }
+    if let Some(s) = manifest_opt_level {
+        return rcdzc::OptLevel::from_str(s)
+            .map_err(|e| format!("{}: `opt-level` `{s}`: {e}", mpath.display()));
+    }
+    if args.release {
+        return Ok(rcdzc::OptLevel::O2);
+    }
+    Ok(rcdzc::OptLevel::default())
 }
 
 // ── cdz test ─────────────────────────────────────────────────────────────────────────────────────
@@ -1473,6 +1512,14 @@ struct BuildArgs {
     /// existing directory, the exact output file path. Defaults to the current directory.
     #[arg(long, short)]
     out: Option<PathBuf>,
+    /// Build the RELEASE tier (`O2` — whole-function passes: inlining, global CSE, LICM). Shorthand for
+    /// `--opt-level O2`; `--opt-level` wins if both are given. Without it, the dev tier (`O1`).
+    #[arg(long)]
+    release: bool,
+    /// The optimization LEVEL (`O0`..`O3`), overriding both `--release` and any `Project.cdz` `opt-level`.
+    /// Omitted → the manifest's `opt-level`, else `--release`'s `O2`, else the default `O1`.
+    #[arg(long, value_name = "LEVEL")]
+    opt_level: Option<String>,
 }
 
 // ── unit testing ───────────────────────────────────────────────────────────────────────────────────
@@ -2894,6 +2941,10 @@ struct Manifest {
     modules: Vec<String>,
     tests: Vec<String>,
     exclude: Vec<String>,
+    /// The project's default optimization level for `cdz build` (`def opt-level = "O2"`), as the raw
+    /// string — parsed via `rcdzc::OptLevel::FromStr` at use. A `--opt-level`/`--release` flag overrides
+    /// it. `None` = no manifest default (the build falls back to `--release`'s `O2` or the default `O1`).
+    opt_level: Option<String>,
 }
 
 /// The file name of a project manifest (looked up in a directory).
@@ -3088,6 +3139,7 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
             "modules" => m.modules = manifest_strings(arenas, value_id),
             "tests" => m.tests = manifest_strings(arenas, value_id),
             "exclude" => m.exclude = manifest_strings(arenas, value_id),
+            "opt-level" => m.opt_level = manifest_strings(arenas, value_id).into_iter().next(),
             _ => {} // an unrecognized def — ignore (forward-compatible)
         }
     }

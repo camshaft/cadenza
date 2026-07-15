@@ -176,3 +176,78 @@ fn build_a_multi_match_entry_glob_is_rejected() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A minimal single-file project (manifest naming `app.cdz` + the entry) with an optional extra
+/// manifest line (e.g. an `opt-level` field); returns the dir.
+fn temp_opt_project(tag: &str, extra_manifest_line: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cdz-build-opt-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        format!("def entry = \"app.cdz\"\n{extra_manifest_line}"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app.cdz"),
+        "def main(a: Int64) -> Int64 = a + 1\nexport { main }\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn build_release_and_opt_level_flags_build() {
+    // `--release` (O2) and `--opt-level O3` are accepted and build (the level threads to the compiler;
+    // today the pass pipeline is empty so bytes match, but the flag must be wired + valid).
+    let dir = temp_opt_project("flags", "");
+    for args in [
+        vec!["build", dir.to_str().unwrap(), "--release", "-o"],
+        vec!["build", dir.to_str().unwrap(), "--opt-level", "O3", "-o"],
+    ] {
+        let out = dir.join("o.wasm");
+        let mut a = args.clone();
+        a.push(out.to_str().unwrap());
+        let (ok, _o, err) = run(&a);
+        assert!(ok, "build with {args:?} failed: {err}");
+        assert!(out.is_file(), "component produced for {args:?}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_reads_the_manifest_opt_level_field() {
+    // A `def opt-level = "O2"` manifest field is accepted (parsed via OptLevel::FromStr) and builds.
+    let dir = temp_opt_project("manifest", "def opt-level = \"O2\"\n");
+    let out = dir.join("o.wasm");
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    assert!(ok, "build with a manifest opt-level failed: {err}");
+    assert!(out.is_file(), "component produced: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_rejects_a_bad_opt_level_flag_naming_the_set() {
+    // A bogus `--opt-level` is a clear error naming the valid set — not a silent fallback.
+    let dir = temp_opt_project("badflag", "");
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "--opt-level", "O9"]);
+    assert!(!ok, "a bad --opt-level should fail");
+    assert!(
+        err.contains("O9") && err.contains("O0, O1, O2, O3"),
+        "error names the valid set: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_rejects_a_bad_manifest_opt_level() {
+    // A bogus `def opt-level` in the manifest is a clear error (not silently ignored) naming the manifest.
+    let dir = temp_opt_project("badmanifest", "def opt-level = \"fast\"\n");
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap()]);
+    assert!(!ok, "a bad manifest opt-level should fail");
+    assert!(
+        err.contains("opt-level") && err.contains("fast"),
+        "error names the bad manifest opt-level: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
