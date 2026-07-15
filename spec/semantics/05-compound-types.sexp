@@ -1510,6 +1510,30 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg consumes it is retained"
+  (doc    "The SIMULTANEOUSLY-LIVE-ARGS face of the still-live-binding retain: a self-recursive call passes
+           `base` UNCHANGED in one arg position AND consumes it in a sibling arg (`(List.push base 99)`).
+           All args are live at once (pushed before the call runs / the loop threads them), so the
+           consuming `push` must `dup` — else it FBIP-mutates `base` in place at rc==1 and the threaded copy
+           (the NEXT iteration's `base`) sees the grown list. `loop` threads `base` = [0,1] (len 2) each of
+           `m` iterations, summing `(List.len (List.push base 99))` = 3 per iteration, so total = 3*m. It
+           returned a DRIFTING sum (m=2 → 7 not 6, m=3 → 12 not 9): each iteration's push grew the shared
+           `base`. The retain analysis folded liveness only right-to-left, missing that a LEFT sibling
+           (`base` threaded) is also live when a RIGHT sibling consumes it; the fix seeds each arg's
+           live-after with whether the binder occurs in ANY other arg. Applies to both the loop-compiled and
+           `return_call` forms. `build` makes `base` a genuine runtime list (no fold).")
+  (input  (do
+            (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64))
+              (if (< j m) (loop (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot))
+            (def (main (: m Int64)) (loop 0 m (mb 0 2 (list)) 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly

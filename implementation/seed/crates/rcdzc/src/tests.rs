@@ -24056,6 +24056,38 @@ mod match_engine {
     }
 
     #[test]
+    fn a_heap_arg_threaded_unchanged_to_a_self_call_while_a_sibling_consumes_it_is_retained() {
+        // The simultaneously-live-args face: a self-recursive call threads `base` UNCHANGED in one arg AND
+        // consumes it in a sibling (`List.push base 99`). All args are live at once, so the consuming push
+        // must dup — else it FBIP-mutates `base` in place and the threaded copy (next iteration's base)
+        // sees the grown list. `loop` threads base = [0,1] (len 2), summing len(push base 99)=3 each of m
+        // iterations → 3*m. Before the fix the retain folded liveness only right-to-left, missing the LEFT
+        // sibling (`base` threaded) that is also live when the RIGHT sibling consumes it → drift (m=3 → 12
+        // not 9). Fix: seed each arg's live-after with whether the binder occurs in ANY other arg.
+        let src = "(module m \
+               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop j lim base tot) \
+                 (if (< j lim) (loop (+ j 1) lim base (+ tot ((. List len) ((. List push) base 99)))) tot)) \
+               (def (main) (loop 0 3 (mb 0 2 (list)) 0)) (export main))";
+        let Some(out) = run_on_heap(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "9",
+            "a threaded-unchanged heap arg must be retained against a sibling arg that consumes it"
+        );
+        // The single-consume accumulator (`build 0 n (push out i)` — `out` consumed once, in ONE arg, no
+        // sibling use) must stay dup-free: the fix only fires when the binder occurs in ANOTHER arg.
+        let accum = "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) (build 0 5 (list)))) (export main))";
+        assert!(
+            !component_imports_op(&component(accum), "dup"),
+            "a single-consume threaded accumulator must not import `dup` (FBIP fast path — bench guard)"
+        );
+    }
+
+    #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
         // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
         // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`

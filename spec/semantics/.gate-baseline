@@ -694,6 +694,7 @@ pass	a guarded match over a runtime scrutinee with constant arms computes correc
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
+pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg consumes it is retained
 pass	a handle body reads an enclosing function parameter
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
