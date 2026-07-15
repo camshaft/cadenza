@@ -1948,12 +1948,14 @@
 (case "concatenating lists of different element types is a type error"
   (doc    "`(List.concat (list 1 2) (list true))` joins an `Int64` list with a `Bool` list — but a list
            has ONE element type (collections-and-text.md §A List Is An Ordered Homogeneous Sequence),
-           so a concatenation of two differently-typed lists has no well-typed result and is a type
-           error (CDZ0203, the same element-type conflict the `(list 1 true)` literal raises). A
-           generation that skipped this would render the result at one operand's element type,
-           mistyping the other's elements — a wrong value, not merely a missing rejection.")
+           so a concatenation of two differently-typed lists has no well-typed result and is a MALFORMED
+           COLLECTION (CDZ0201, the same element-type conflict the `(list 1 true)` literal raises, coded
+           uniformly across the literal and every functional-construction op — §A Collection's
+           Homogeneity Violation Is A Malformed Collection). A generation that skipped this would render
+           the result at one operand's element type, mistyping the other's elements — a wrong value, not
+           merely a missing rejection.")
   (input  (do (def (main) (List.len (List.concat (list 1 2) (list true)))) (export main)))
-  (error CDZ0203))
+  (error CDZ0201))
 
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
@@ -4224,12 +4226,16 @@
 ; discipline that prevents projecting a mixed element back out at a different type.
 
 (case "a list mixing integer and boolean elements is a type error"
-  (doc    "`(list 1 true)` has an Int64 element and a Bool element — they do not share one type, so
-           the list is not homogeneous and the compiler rejects it as a type mismatch (CDZ0203,
-           collections-and-text.md #A List Is An Ordered Homogeneous Sequence), or declines if it does
-           not yet cover the homogeneity rule.")
+  (doc    "`(list 1 true)` has an Int64 element and a Bool element — they do not share one type, so the
+           list is not homogeneous and the compiler rejects it as a MALFORMED COLLECTION (CDZ0201,
+           collections-and-text.md #A List Is An Ordered Homogeneous Sequence, #A Collection's
+           Homogeneity Violation Is A Malformed Collection). A heterogeneous COLLECTION is CDZ0201
+           UNIFORMLY across list/map/set (literal and functional-construction ops alike) — the collection
+           itself is ill-formed, regardless of HOW its element types differ; CDZ0203 is reserved for a
+           two-types-must-AGREE unification conflict (an `if`'s branches, an annotation, a cross-shape
+           comparison), NOT a collection's internal heterogeneity.")
   (input     (list 1 true))
-  (error     CDZ0203))
+  (error     CDZ0201))
 
 (case "a list mixing integer and float elements is a type error"
   (doc    "The numeric companion: Int64 and Float64 are distinct types that do not silently unify
@@ -4255,8 +4261,10 @@
 
 (case "pushing an element of a different type onto a list is a type error"
   (doc    "`(List.push (list 1 2) true)` appends a Bool to an Int64 list — the result is not homogeneous
-           (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), so it is a type error
-           (CDZ0203), exactly as the `(list 1 true)` literal above is. `List.push` produces a new LIST
+           (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), so it is a MALFORMED
+           COLLECTION (CDZ0201), exactly as the `(list 1 true)` literal above is — the collection-
+           homogeneity rule is uniform across the literal and the functional-construction ops (#A
+           Collection's Homogeneity Violation Is A Malformed Collection). `List.push` produces a new LIST
            value (#A List Is Grown By Functional Construction), which must satisfy the same
            element-share-one-type rule the literal does. A `List.push` that skips the element-type check
            miscompiles: it renders the result at the pushed element's type, so the stored integers come
@@ -4264,7 +4272,7 @@
            not merely a missing rejection. A generation that does not yet check the pushed element's type
            declines rather than building the mistyped list.")
   (input     (List.push (list 1 2) true))
-  (error     CDZ0203))
+  (error     CDZ0201))
 
 ; `List.update` is the other functional-construction operator (#A List Is Grown By Functional
 ; Construction pairs "append an element" with "replace the element at an index"), and it has the same
@@ -4277,15 +4285,16 @@
 
 (case "updating a list slot with an element of a different type is a type error"
   (doc    "`(List.update (list 1 2 3) 1 true)` replaces an Int64 slot with a Bool — the result is not
-           homogeneous (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), a type error
-           (CDZ0203, the same element-type conflict the `List.push` and literal cases raise). Like push,
+           homogeneous (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), a MALFORMED
+           COLLECTION (CDZ0201, the same element-type conflict the `List.push` and literal cases raise,
+           coded uniformly — #A Collection's Homogeneity Violation Is A Malformed Collection). Like push,
            an unchecked update miscompiles by rendering the result at the replacement element's type:
            `(List.update (list 10 20 30) 0 false)` → `(list false true true)`, projecting the untouched
            integers 20 and 30 as booleans — a wrong value. Pins that both functional-construction
            operators enforce the element-type rule the literal does. A generation that does not yet check
            the replacement element's type declines rather than building the mistyped list.")
   (input     (List.update (list 1 2 3) 1 true))
-  (error     CDZ0203))
+  (error     CDZ0201))
 
 ; Homogeneity is by element TYPE, and two compound values of the same KIND but different SHAPE are
 ; different types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match:
