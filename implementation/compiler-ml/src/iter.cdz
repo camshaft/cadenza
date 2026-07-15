@@ -177,6 +177,14 @@ def count(it) = fold(it, 0, fn(a, v) => a + 1)
 /// Sum of the elements.
 def sum(it) = fold(it, 0, fn(a, v) => a + v)
 
+/// Product of the elements (empty iterator → 1, the multiplicative identity).
+def product(it) = fold(it, 1, fn(a, v) => a * v)
+
+/// Does the iterator yield `target`? (short-circuits on the first match)
+def contains(it, target) = match next(it) with
+  | Option.None(_) => false
+  | Option.Some(p) => (match p with | (v, rest) => if v == target then true else contains(rest, target))
+
 /// Materialize the iterator back into a list (the bridge from computation back to data).
 def collect-list(it) = match next(it) with
   | Option.None(_) => []
@@ -506,5 +514,28 @@ def range-step-composes-with-map() =
     unit
   else
     trap("squares of 0,2,4")
+
+@test
+def product-of-range() =
+  // 1*2*3*4 = 24 (factorial-ish over 1..5)
+  if product(range(1, 5)) == 24 then unit else trap("product 1..5 = 24")
+
+@test
+def product-of-empty-is-one() =
+  // the multiplicative identity, mirroring sum's 0
+  if product(empty()) == 1 then unit else trap("product of empty is 1")
+
+@test
+def contains-hit() =
+  if contains(range(0, 10), 7) then unit else trap("7 is in 0..10")
+
+@test
+def contains-miss() =
+  if contains(range(0, 5), 9) then trap("9 is not in 0..5") else unit
+
+@test
+def contains-short-circuits-on-infinite() =
+  // an infinite source is searchable because contains stops at the first match
+  if contains(iterate(0, fn(x) => x + 1), 100) then unit else trap("100 is reachable")
 
 export { Iter.* }
