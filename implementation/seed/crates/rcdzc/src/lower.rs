@@ -5953,6 +5953,21 @@ fn classify_binding_ctor(
         },
     };
     let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
+        // A MALFORMED `const` PARAMETER — `(const n Int64)` — that survived `strip_const_params` (which
+        // only unwraps a well-formed single-operand `(const <binder>)`). A `const` param wraps ONE annotated
+        // binder, so a bare `(const n Int64)` (two operands, unannotated) reaches here as a "binding pattern"
+        // whose head is `const`; the generic "not a tuple/record/constructor" message is misleading (the
+        // author reached for a real form, just mis-wrote it). Name the correct shape.
+        if db.ast.as_name(head) == Some("const")
+            && db.ast.as_form(pat, "const").is_some_and(|t| t.len() != 1)
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a `const` parameter wraps exactly ONE annotated binder — write `(const (: <name> \
+                 <Type>))`, e.g. `(const (: n Int64))`",
+            )
+            .at(pat));
+        }
         // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
         // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
         // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here

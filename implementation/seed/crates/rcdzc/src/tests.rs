@@ -42103,6 +42103,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_const_parameter_names_the_annotated_binder_shape() {
+        // A `const` parameter wraps exactly ONE annotated binder — `(const (: n Int64))`. A malformed
+        // `(const n Int64)` (two operands, unannotated) survives `strip_const_params` (which only unwraps a
+        // single-operand `(const <binder>)`) and reached `check_binding_pattern` as a pattern whose head is
+        // `const` → the misleading generic "a binding pattern head is not a tuple, record, or constructor".
+        // It now names the correct `const` shape.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (rep (const n Int64) (: x Int64)) x) (export rep))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("`const`"))
+        .expect("a malformed const param reports a const-shaped message");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wraps exactly ONE annotated binder")
+                && d.message.contains("(const (: <name> <Type>))"),
+            "names the const parameter shape: {}",
+            d.message
+        );
+        // NO false change: the well-formed const param compiles clean.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (rep (const (: n Int64)) (: x Int64)) x) (def (main) (rep 3 5)) (export main))"
+            )))
+            .is_ok(),
+            "a well-formed const param is valid"
+        );
+    }
+
+    #[test]
     fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
         // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
         // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
