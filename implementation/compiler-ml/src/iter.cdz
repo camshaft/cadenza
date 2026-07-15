@@ -835,6 +835,43 @@ def law-sum-equals-fold-plus() =
     | Option.Some(v) => if v == sum(range(1, 6)) then unit else trap("reduce+ ≠ sum")
     | Option.None(_) => trap("range 1..6 is non-empty")
 
+// laws for the second half of the API (flat-map / scan / zip-with / step-by / intersperse)
+
+@test
+def law-flat-map-single-is-map() =
+  // flat-map(it, x -> [f(x)]) == map(it, f) — a single-element sub-iterator is exactly a map
+  if int-list-eq(collect-list(flat-map(range(0, 5), fn(x) => from-list([x * x]))), collect-list(map(range(0, 5), fn(x) => x * x))) then
+    unit
+  else
+    trap("flat-map of a singleton ≠ map")
+
+@test
+def law-flat-map-with-empty-is-empty() =
+  // flat-map(it, _ -> empty) yields nothing, whatever the source
+  if count(flat-map(range(0, 10), fn(_x) => empty())) == 0 then unit else trap("flat-map to empty ≠ empty")
+
+@test
+def law-scan-last-is-fold() =
+  // the LAST element of an inclusive scan equals the full fold with the same seed and combiner
+  match last(scan(range(1, 5), 0, fn(a, x) => a + x)) with
+    | Option.Some(v) => if v == fold(range(1, 5), 0, fn(a, x) => a + x) then unit else trap("scan-last ≠ fold")
+    | Option.None(_) => trap("a non-empty scan has a last")
+
+@test
+def law-zip-length-is-min() =
+  // count(zip-with(a, b, f)) == min(count a, count b) — the shorter side bounds the result
+  if count(zip-with(range(0, 3), range(0, 7), fn(x, y) => x + y)) == 3 then unit else trap("zip length ≠ min")
+
+@test
+def law-step-by-one-is-identity() =
+  // step-by(it, 1) keeps every element — identical to the source
+  if int-list-eq(collect-list(step-by(range(0, 6), 1)), collect-list(range(0, 6))) then unit else trap("step-by 1 ≠ id")
+
+@test
+def law-intersperse-length() =
+  // intersperse of n elements (n >= 1) yields 2n-1 (n elements + n-1 separators)
+  if count(intersperse(range(0, 4), 99)) == 7 then unit else trap("intersperse length ≠ 2n-1")
+
 // ── flat-map (unblocked: the Int64 -> Iter closure now lowers correctly) ─────────────────────────
 
 @test
