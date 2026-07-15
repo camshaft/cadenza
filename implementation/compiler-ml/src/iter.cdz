@@ -42,6 +42,8 @@
 ///                              `take`/`take-while` to make it finite.
 ///   - `StepRangeI((lo, hi, step))` — yield `lo, lo+step, lo+2·step, …` while `< hi` (half-open); the
 ///                              step is assumed positive (a non-positive step yields nothing).
+///   - `DownRangeI((hi, lo))` — the DESCENDING half-open range: yield `hi-1, hi-2, …, lo`. Empty when
+///                              `hi <= lo`. The reverse of `RangeI((lo, hi))`.
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -55,6 +57,7 @@ type Iter =
   | ScanI(Tuple((Int64 -> Int64 -> Int64), Tuple(Int64, Iter)))
   | IterateI(Tuple((Int64 -> Int64), Int64))
   | StepRangeI(Tuple(Int64, Tuple(Int64, Int64)))
+  | DownRangeI(Tuple(Int64, Int64))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -108,6 +111,9 @@ def next(it) = match it with
     // yields nothing (guards against a non-terminating pull)
     if step <= 0 then Option.None(unit)
     else if lo < hi then Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step))))) else Option.None(unit)))
+  | Iter.DownRangeI(dr) => (match dr with | (hi, lo) =>
+    // descending half-open: yield `hi-1` while it is still `>= lo`, then continue from `hi-1`
+    if hi > lo then Option.Some((hi - 1, Iter.DownRangeI((hi - 1, lo)))) else Option.None(unit))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -130,6 +136,10 @@ def range-inclusive(lo, hi) = Iter.RangeI((lo, hi + 1))
 /// Yield `lo, lo+step, lo+2·step, …` while `< hi` (half-open), for a positive `step`. A non-positive
 /// step yields nothing. This is the semantic target of a future stepped-range surface.
 def range-step(lo, hi, step) = Iter.StepRangeI((lo, (hi, step)))
+
+/// Yield `hi-1, hi-2, …, lo` — the DESCENDING half-open range, the reverse of `range(lo, hi)`. Empty
+/// when `hi <= lo`. Handy for counting down (`range-down(5, 0)` → 4, 3, 2, 1, 0).
+def range-down(hi, lo) = Iter.DownRangeI((hi, lo))
 
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
@@ -537,5 +547,30 @@ def contains-miss() =
 def contains-short-circuits-on-infinite() =
   // an infinite source is searchable because contains stops at the first match
   if contains(iterate(0, fn(x) => x + 1), 100) then unit else trap("100 is reachable")
+
+@test
+def range-down-counts-down() =
+  // range-down(5, 0) -> 4, 3, 2, 1, 0 (the reverse of range(0, 5))
+  if int-list-eq(collect-list(range-down(5, 0)), [4, 3, 2, 1, 0]) then
+    unit
+  else
+    trap("range-down 5..0 = [4,3,2,1,0]")
+
+@test
+def range-down-empty-when-hi-le-lo() =
+  if count(range-down(3, 3)) == 0 then unit else trap("range-down 3..3 is empty")
+
+@test
+def range-down-reverses-range() =
+  // range-down(hi, lo) yields exactly range(lo, hi) reversed — check via the shared bound
+  if int-list-eq(collect-list(range-down(8, 5)), [7, 6, 5]) then unit else trap("range-down 8..5 = [7,6,5]")
+
+@test
+def range-down-composes-with-map() =
+  // descending range drops into the existing ops
+  if int-list-eq(collect-list(map(range-down(4, 0), fn(x) => x * 2)), [6, 4, 2, 0]) then
+    unit
+  else
+    trap("doubled countdown")
 
 export { Iter.* }
