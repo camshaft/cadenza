@@ -1370,6 +1370,20 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        // OPEN SUM: an optional trailing `.. r` row-variable marker after the last variant — the sum is
+        // OPEN over the variants a caller may add, `r` naming the open tail (open-sums OS1). It lowers to
+        // the SAME flat two-sibling convention the collection-literal/pattern rest uses: a bare `..` Name
+        // atom then a bare lowercase Name atom, appended as the type list's two final children (NOT a
+        // wrapper node) — exactly what `db.rs::scan_type_decl` reads and what the s-expr corpus carries
+        // (`(type Vocab (Known Unit) .. r)`). The row var is lowercase (a Capitalized trailing name is a
+        // normal nullary variant, consumed by the loop above); at most one `.. r` (a sum has one tail).
+        if self.at(Kind::DotDot) {
+            let dd_span = self.cur_span();
+            self.bump(); // `..`
+            items.push(self.name("..", dd_span));
+            // The row var is a lowercase name. `binder` records a clean diagnostic if it's absent.
+            items.push(self.binder());
+        }
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
