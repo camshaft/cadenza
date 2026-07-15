@@ -724,6 +724,7 @@ pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a keyed lookup of an updated map is not shared with the original's
+pass	a known-constructor match selects the NON-first arm, eliding the other arms' bodies
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent
@@ -889,6 +890,7 @@ pass	a match on an open sum omitting the open-tail arm is rejected
 pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
+pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection

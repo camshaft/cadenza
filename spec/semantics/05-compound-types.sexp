@@ -3904,6 +3904,39 @@
   (call   main)
   (output (: 7 Int64)))
 
+; ── MATCH-OF-KNOWN-CONSTRUCTOR (the disc-fold): a match whose scrutinee's VARIANT is statically known
+; but whose PAYLOAD is a runtime value elides the discriminant dispatch, selecting the matching arm and
+; reading the payload directly (core.rs: "a disc-fold — a statically-known scrutinee discriminant — can
+; collapse the root switch to the selected arm's continuation"). This is a backend-independent Core
+; rewrite both backends inherit: no `sum-disc` probe is emitted, the arm's body runs with the payload
+; bound to the CONSTRUCTED value's operand. Distinct from the fully-constant fold above (payload also
+; constant) — here the payload is a genuine RUNTIME value, so the fold must thread it, not bake it. A
+; `(call …)` runtime argument feeds the payload so the case exercises emitted code, not a whole-program fold.
+
+(case "a match over a statically-known constructor with a runtime payload elides the dispatch"
+  (doc    "`(match (Option.Some (+ n 1)) ((Option.Some x) x) (Option.None 0))` — the scrutinee's VARIANT
+           is statically `Some` (the constructor is written at the match site) but its payload `(+ n 1)` is
+           a runtime value. The disc-fold collapses the match to the `Some` arm with no `sum-disc` probe,
+           binding `x` to the runtime payload → `n + 1`. main(41) = 42. Pins that a known-constructor match
+           folds the dispatch away while THREADING the runtime payload (not baking it), on both backends —
+           the runtime-payload companion of the constant multi-payload fold above.")
+  (input  (do (def (main (: n Int64)) (match (Option.Some (+ n 1)) ((Option.Some x) x) (Option.None 0))) (export main)))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))
+
+(case "a known-constructor match selects the NON-first arm, eliding the other arms' bodies"
+  (doc    "The scrutinee is statically the SECOND-listed variant: `(match (Sign.Neg (+ n 1)) ((Sign.Pos p)
+           p) ((Sign.Neg q) (- 0 q)))`. The disc-fold selects the `Neg` arm directly (no probe), binds `q`
+           to the runtime payload, and the `Pos` arm's body is never emitted. main(4) = -(4+1) = -5. Pins
+           that the fold picks the arm by the KNOWN discriminant (not always the first) and that an
+           unselected arm's body is dead — both backends agree.")
+  (input  (do
+            (type Sign (Pos Int64) (Neg Int64))
+            (def (main (: n Int64)) (match (Sign.Neg (+ n 1)) ((Sign.Pos p) p) ((Sign.Neg q) (- 0 q))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: -5 Int64)))
+
 (case "a multi-payload variant destructures its payloads positionally"
   (doc    "`(type IntList Nil (Cons Int64 IntList))` with `(def (len l) (match l ((IntList.Nil) 0)
            ((IntList.Cons h t) (+ 1 (len t)))))` — the canonical linked-list length. The `Cons` arm binds
