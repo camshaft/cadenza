@@ -2,8 +2,14 @@
 /// exactly as the TypeScript Playground does. No backend, no gist token — a static-hosted site can
 /// share a program by URL alone. The hash never hits the server and doesn't trigger a navigation.
 
-import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from "lz-string";
+// lz-string is a CommonJS module: a NAMED import (`import { compress… }`) fails under a strict ESM
+// loader ("Named export not found") — Vite's bundler papers over it, but it's fragile and blocks
+// node-based unit tests. The default import gets the whole module.exports object, which works under
+// both Vite and node.
+import LZString from "lz-string";
 import type { Surface } from "../compiler/client.ts";
+
+const { compressToEncodedURIComponent, decompressFromEncodedURIComponent } = LZString;
 
 export interface Shared {
   s: Surface;
