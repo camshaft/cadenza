@@ -3669,6 +3669,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // is still required to share q's DIMENSION (`check_application`, CDZ0501); here we fill the
     // value-column type with q's INNER numeric type. If the target unit doesn't reduce, or q isn't a
     // quantity, fall through (→ Any, faulted elsewhere).
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# An explicit conversion of a quantity into a chosen unit — the `as`/`in` operation — MUST yield the dimensionless number counting how many of the chosen unit the quantity is, with the quantity wrapper removed, so that a conversion is the deliberate exit from the dimensional layer rather than a re-expression that stays dimensioned.
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# The result of an explicit conversion MUST be an ordinary number of the quantity's underlying numeric type, subject to ordinary numeric rules and no longer dimension-checked, so that once a program has asked "how many of this unit is it?" it holds the answer as a plain number and may combine it freely.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
         && args.len() == 2
         && let (Some(_target), Ty::Qty { inner, .. }) =
@@ -6297,6 +6301,8 @@ fn check_application(
     // kilometers, not meters to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
     // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# The chosen unit MUST share the quantity's dimension, so that a conversion across dimensions — a length into a duration — remains an error rather than silently producing a number.
     if args.len() == 2
         && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
     {
