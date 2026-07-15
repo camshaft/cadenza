@@ -1211,13 +1211,24 @@ fn tmux_current_session() -> String {
 
 /// The window names live in `session`.
 fn tmux_windows(session: &str) -> Vec<String> {
-    Command::new("tmux")
+    tmux_windows_checked(session).unwrap_or_default()
+}
+
+/// List the window names in `session`, distinguishing a genuine EMPTY list from a tmux invocation
+/// FAILURE: `Some(vec)` on a successful `tmux list-windows` (possibly empty), `None` if tmux could not
+/// be run or exited non-zero (missing binary, no server, bad session). Callers that must not confuse
+/// "no such window" with "tmux errored" (e.g. `kill_window`) use this; the rest use the infallible
+/// [`tmux_windows`] wrapper.
+fn tmux_windows_checked(session: &str) -> Option<Vec<String>> {
+    let out = Command::new("tmux")
         .args(["list-windows", "-t", session, "-F", "#W"])
         .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.lines().map(str::to_string).collect())
-        .unwrap_or_default()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    Some(s.lines().map(str::to_string).collect())
 }
 
 /// Ensure a tmux window named after the agent exists in `session`, running `window.sh <name>`.
@@ -1264,7 +1275,12 @@ enum KillOutcome {
 /// `session:agent` by NAME, so it never hits the wrong window.
 fn kill_window(session: &str, agent: &str) -> KillOutcome {
     // Only kill a window that actually exists — `kill-window` on a missing target errors noisily.
-    if !tmux_windows(session).iter().any(|w| w == agent) {
+    // Use the CHECKED enumeration so a tmux failure (empty list from an errored tmux) isn't
+    // misreported as NotFound: no list at all → TmuxError, a real list without the name → NotFound.
+    let Some(windows) = tmux_windows_checked(session) else {
+        return KillOutcome::TmuxError;
+    };
+    if !windows.iter().any(|w| w == agent) {
         return KillOutcome::NotFound;
     }
     let target = format!("{session}:{agent}");
