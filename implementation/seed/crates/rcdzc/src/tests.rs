@@ -51530,6 +51530,55 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn emit_tests_declines_a_digit_led_kebab_segment_name() {
+        // REGRESSION (v-iterators, 2026-07-15): a `@test` (or any component-boundary export) name with a
+        // HYPHEN-DELIMITED SEGMENT STARTING WITH A DIGIT (`step-by-2`, `a-2-b`, `range-step-2x`) is a valid
+        // Cadenza identifier but NOT a valid component-model kebab word — `wasmparser`'s `KebabStr` requires
+        // each `-`-delimited label to start with a letter. `kebab_extern_name` keeps `-`/digits verbatim, so
+        // it normalizes such a name to ITSELF (an invalid extern name), and emitting it produced a component
+        // wasmtime rejects WHOLESALE at load — every test in the file reported "fail" / the artifact was
+        // unloadable, with NO compiler diagnostic (the [[rcdzc-kebab-extern-name-gotcha]] family). It is now
+        // a clear compile-time CDZ0201 naming the offending name, before emit.
+        for name in ["step-by-2", "a-2-b", "range-step-2x", "step-2"] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                out.has_error(),
+                "a @test named `{name}` (a digit-led kebab segment) must DECLINE, not silently emit an \
+                 invalid component: {:?}",
+                out.diagnostics
+            );
+            assert!(
+                out.diagnostics
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0201")
+                        && d.message.contains("valid component boundary name")),
+                "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
+                out.diagnostics
+                    .iter()
+                    .map(|d| &d.message)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn emit_tests_accepts_a_digit_inside_a_word_segment() {
+        // NO REGRESSION: a digit INSIDE a word (`step2`, `range-step-by2`) or a trailing digit on a word
+        // (`f2`, `call0`) IS a valid kebab word — the guard rejects only a digit that STARTS a `-`-delimited
+        // segment. These names must still emit a test component.
+        for name in ["step2", "range-step-by2", "f2"] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                !out.has_error() && out.artifacts.iter().any(|a| a.kind == "component"),
+                "a @test named `{name}` (digit inside/after a word) must EMIT: {:?}",
+                out.diagnostics
+            );
+        }
+    }
+
+    #[test]
     fn a_host_op_result_crosses_at_every_aliased_int_width() {
         // The host-op boundary ABI (`host::abi_val_type`) crosses EVERY aliased INT width — the narrow
         // ints `Int8`/`Int16`/`Int32` + unsigned `UInt8`, not only the earlier `Int64`/`UInt32`. Each

@@ -169,6 +169,39 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
     None
 }
 
+/// If an export's NORMALIZED extern name is not a valid component-model kebab word, return a reject
+/// naming it (else `None`). `kebab_extern_name` maps uppercase/underscore runs to well-formed kebab
+/// words, but it keeps `-` and digits VERBATIM — so a source name whose hyphen-delimited segment STARTS
+/// WITH A DIGIT (a valid Cadenza identifier: `step-by-2`, `a-2-b`, `range-step-2x`) normalizes to
+/// itself, and that self is NOT a valid kebab word (`wasmparser`'s `KebabStr` requires each `-`-delimited
+/// label to start with an ASCII LETTER). Emitting it produces a component `wasmtime` rejects WHOLESALE at
+/// load — surfacing (for `cdz test`) as every test in the file failing with no explanation, and (for
+/// `cdz compile`) as an unloadable artifact — an invalid-component miscompile with NO compiler diagnostic
+/// (the [[rcdzc-kebab-extern-name-gotcha]] family). Reject it here, before emit, naming the offending
+/// export + a concrete fix, so the silent total-component failure becomes a clear compile error. The
+/// FIRST offending export (in layout order) is reported. This is the export-NAME analogue of the
+/// interface-NAME guard (`is_valid_interface_name`): a boundary name that isn't valid kebab is a
+/// compile-time reject, not a silent load failure.
+fn invalid_kebab_export_name(layout: &Layout) -> Option<Reject> {
+    for e in &layout.exports {
+        let extern_name = kebab_extern_name(&e.name);
+        if !is_kebab_word(&extern_name) {
+            return Some(Reject::coded(
+                crate::diag::Code::Malformed,
+                format!(
+                    "the export/`@test` name `{}` is not a valid component boundary name: it normalizes \
+                     to `{extern_name}`, whose `-`-separated segments must each START WITH A LETTER (a \
+                     digit-led segment like `-2` is not a valid component extern name, so the emitted \
+                     component would fail to load) — rename it so every hyphen-delimited segment begins \
+                     with a letter (e.g. `step-by-2` → `step-by-two` or `step-by2`)",
+                    e.name
+                ),
+            ));
+        }
+    }
+    None
+}
+
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 ///
@@ -241,6 +274,14 @@ pub fn emit(
     // any emit path, naming the two colliding source names. (An identity-normalized common case never
     // collides with itself; only genuinely-distinct source names that share a normalized form do.)
     if let Some(reject) = kebab_export_collision(layout) {
+        return Err(reject);
+    }
+    // BOUNDARY-NAME VALIDITY GUARD. An export/`@test` name that normalizes to an invalid kebab word (a
+    // hyphen-delimited segment starting with a DIGIT — `step-by-2`, `a-2-b`) would emit a component
+    // `wasmtime` rejects wholesale at load, with no diagnostic (a silent total-component failure — every
+    // test in the file "fails", or the artifact is unloadable). Reject it here, before emit, naming the
+    // offending name + the fix — the export-name analogue of the `is_valid_interface_name` guard.
+    if let Some(reject) = invalid_kebab_export_name(layout) {
         return Err(reject);
     }
     // HOST-OP BOUNDARY-REPRESENTABILITY guard — hoisted BEFORE every emit path (escape / closure / main),
