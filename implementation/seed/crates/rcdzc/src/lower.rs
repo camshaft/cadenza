@@ -12231,6 +12231,45 @@ fn convert_operand_ast(
     Some(node)
 }
 
+/// The runtime BigInt analogue of [`convert_operand_ast`]: synthesize `value * (BigInt.of num) /
+/// (BigInt.of den)` for a `Unit.in` over a BigInt-magnitude quantity. The value occurrence is q's erased
+/// BigInt magnitude (a heap handle); the scale factors are `(BigInt.of …)` so the `*`/`/` see a BigInt
+/// operand and route to the runtime `bigint-*` ops (`bigint_operand` dispatch). Division TRUNCATES toward
+/// zero (integer/bigint division), matching the fixed-Int arm. `None` if q's value occurrence is not
+/// recoverable (a non-`Qty.of` runtime magnitude — a later increment).
+fn convert_operand_ast_bigint(
+    db: &mut Db,
+    operand: StructId,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    let value = crate::eval::qty_value_occ(db, operand)?;
+    // `(BigInt.of <n>)` — a bigint scale literal. `BigInt.of` is member access `(. BigInt of)`.
+    let bigint_of = |db: &mut Db, n: i128| -> StructId {
+        let dot = db.push_name(".");
+        let bigint = db.push_name("BigInt");
+        let of = db.push_name("of");
+        let head = db.push_list(vec![dot, bigint, of]);
+        let lit = db.push_atom(crate::ast::Leaf::Int {
+            value: IntValue::from_i128(n),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![head, lit])
+    };
+    let mut node = value;
+    if num != 1 {
+        let n_big = bigint_of(db, num);
+        let mul_head = db.push_name("*");
+        node = db.push_list(vec![mul_head, node, n_big]);
+    }
+    if den != 1 {
+        let d_big = bigint_of(db, den);
+        let div_head = db.push_name("/");
+        node = db.push_list(vec![div_head, node, d_big]);
+    }
+    Some(node)
+}
+
 /// A synthesized numeric literal node for a machine integer `v` — a float decimal `v.0` when `is_float`,
 /// else an integer literal. Used for the constant scale factors a runtime conversion multiplies by.
 fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
@@ -12352,6 +12391,45 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
         return Core::Poison(Reject::decline(
             "Unit.in over a runtime Rational magnitude (not yet emitted)",
         ));
+    }
+    // A BIGINT magnitude converts as `value * num / den` in UNBOUNDED bigint arithmetic — the value is a
+    // heap handle, so the scale factors are materialized as `BigInt.of` and the `*`/`/` route to the
+    // runtime bigint ops (`quantity_inner_is_bigint`/`bigint_operand` dispatch). `Unit.in` UNWRAPS, so the
+    // result is a bare BigInt. A CONSTANT bigint folds via `IntValue` bignum (exact mul + truncating
+    // divmod); a runtime one emits the bigint ops. A non-whole ratio TRUNCATES (integer division, the
+    // same rule the fixed-Int arm uses). Scale 1/1 (reference→reference) is the identity — the value
+    // unchanged.
+    let inner_is_bigint = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::BigInt)
+    );
+    if inner_is_bigint {
+        if num == 1 && den == 1 {
+            // Identity conversion — the erased BigInt value unchanged (still a bare BigInt).
+            return qc;
+        }
+        if let Core::ConstInt(v) = &qc {
+            // CONSTANT bigint — fold `v * num / den` exactly over IntValue bignum (mul is exact; div
+            // truncates toward zero). Stays a BigInt-typed ConstInt (the emit choke-point materializes it).
+            let scaled = v.mul(&IntValue::from_i128(num));
+            return match scaled.divmod(&IntValue::from_i128(den)) {
+                Some((quotient, _rem)) => Core::ConstInt(quotient),
+                None => Core::Poison(Reject::coded(
+                    Code::ConstTrap,
+                    "Unit.in conversion divides by zero",
+                )),
+            };
+        }
+        // RUNTIME bigint — synthesize `(/ (* value (BigInt.of num)) (BigInt.of den))` and re-lower; the
+        // `*`/`/` see a BigInt operand and route to the runtime bigint ops.
+        match convert_operand_ast_bigint(db, q, num, den) {
+            Some(node) => return core_of(db, node),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "Unit.in over a runtime non-Qty.of BigInt magnitude (not yet emitted)",
+                ));
+            }
+        }
     }
     if inner_is_float {
         if let Some(v) = float_of_core(&qc) {

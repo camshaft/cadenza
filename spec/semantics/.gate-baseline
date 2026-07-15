@@ -150,6 +150,8 @@ pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
+pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
+pass	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value

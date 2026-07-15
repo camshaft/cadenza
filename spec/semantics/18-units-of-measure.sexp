@@ -919,6 +919,31 @@
   (call   main (: 3 Int64))
   (output (: 3000 Int64)))
 
+(case "Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps"
+  (doc    "`(Unit.in meter (Qty.of (BigInt.of v) kilometer))` — an explicit conversion of a `(Qty BigInt
+           kilometer)` — converts `value * 1000` in UNBOUNDED bigint arithmetic (the scale factors are
+           materialized as `BigInt.of` so the `*`/`/` run the runtime bigint ops), and UNWRAPS to the bare
+           BigInt count. v=3 → 3000; v=10^12 → 10^15 (beyond Int64, the point of BigInt). Pins the BigInt
+           arm of `lower_unit_in` (it previously declined — 'ownership cannot prove' — having only
+           float/rational arms).")
+  (input  (do
+            (def (main (: v Int64))
+              (Unit.in (Unit.of #"meter") (Qty.of (BigInt.of v) (Unit.of #"kilometer"))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3000 BigInt))
+  (call   main (: 1000000000000 Int64)) (output (: 1000000000000000 BigInt)))
+
+(case "Unit.in over a BigInt quantity truncates a non-dividing ratio"
+  (doc    "`(Unit.in kilometer (Qty.of (BigInt.of v) meter))` — 2500 m in km, 2500/1000 does not divide,
+           so the bigint division TRUNCATES toward zero → 2 (BigInt). Pins that a BigInt-quantity
+           conversion uses integer/bigint division semantics (the same opt-into-integer-math rule the
+           fixed-Int Unit.in uses), not a promotion.")
+  (input  (do
+            (def (main (: v Int64))
+              (Unit.in (Unit.of #"kilometer") (Qty.of (BigInt.of v) (Unit.of #"meter"))))
+            (export main)))
+  (call   main (: 2500 Int64)) (output (: 2 BigInt)))
+
 ; ============================================================================================
 ; DERIVED-dimension families — a named unit can name a DERIVED dimension (a rate = information/time, a
 ; frequency = 1/time), not only an atomic one. `mbps` is a unit of `byte/second`; `hertz` of `1/second`.

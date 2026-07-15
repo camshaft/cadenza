@@ -32041,6 +32041,25 @@ mod match_engine {
     }
 
     #[test]
+    fn unit_in_over_a_bigint_quantity_converts_and_unwraps() {
+        // `lower_unit_in` gained a BigInt-inner arm: `(Unit.in meter (Qty.of (BigInt.of v) kilometer))`
+        // converts `value * 1000` in unbounded bigint arithmetic and UNWRAPS to a bare BigInt. Previously
+        // it declined ("ownership cannot prove") — only float/rational arms existed. Uses the FULL runtime
+        // (bigint ops); skips if absent. A CONSTANT bigint-quantity conversion (folds via IntValue bignum).
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) ((. BigInt of) 3) ((. Unit of) #\"kilometer\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate covers the runtime form e2e
+        };
+        assert!(
+            rendered.contains("3000"),
+            "3 km (BigInt) in meters unwraps to the bare BigInt 3000: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
