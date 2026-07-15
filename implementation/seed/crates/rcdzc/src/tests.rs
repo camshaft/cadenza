@@ -1452,6 +1452,78 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
     );
 }
 
+/// The build-once hoists COMPOSE through the differing positions they synthesize: when a hoist pushes a
+/// differing field into a fresh `(if c pᵢ qᵢ)` and THAT field is itself a common constructor across the
+/// arms, the synthesized `if` is re-run through the hoist (via `synth_if_hoisted`) so the nested
+/// constructor is hoisted too. `(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))`
+/// hoists the outer tuple ONCE, and its differing field-0 — a nested-if of `Some` — hoists to one `Some`:
+/// the emitted body has exactly ONE `sum-new` (not three) and ONE `arr-alloc`. Value parity confirms the
+/// deep composition preserves the arm dispatch (c1 → a, else-c2 → b, else → a) and its Perceus
+/// consumption (only the selected payload materializes).
+#[test]
+fn the_build_once_hoists_compose_through_synthesized_differing_positions() {
+    use crate::testkit::parse;
+    // `f` is recursive so it is not inlined — the tuple/Some stay runtime heap values observed via `main`.
+    let src = "(module m \
+                 (def (f (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64) (: n Int64)) \
+                   (if (< n 0) (f c1 c2 a b (+ n 1)) \
+                     (if c1 (tuple (Option.Some a) 1) \
+                       (if c2 (tuple (Option.Some b) 1) (tuple (Option.Some a) 1))))) \
+                 (def (main (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64)) \
+                   (match (. (f c1 c2 a b 0) 0) \
+                     ((Option.Some v) (+ v (. (f c1 c2 a b 0) 1))) \
+                     (_ -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly ONE sum-new (the nested Some hoisted) — a select present witnesses the composed hoist.
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the composed hoist must lower the deepest differing operand to a branchless select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "runtime tuple/Option must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |c1: bool, c2: bool, a: i64, b: i64| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![c1.to_string(), c2.to_string(), a.to_string(), b.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => panic!("composed hoist trapped (miscompile?): {t}"),
+        }
+    };
+    assert_eq!(
+        run(true, false, 10, 20),
+        "11",
+        "c1 → Some a=10, +field1=1 → 11"
+    );
+    assert_eq!(
+        run(false, true, 10, 20),
+        "21",
+        "else-c2 → Some b=20, +1 → 21"
+    );
+    assert_eq!(
+        run(false, false, 10, 20),
+        "11",
+        "else-else → Some a=10, +1 → 11"
+    );
+}
+
 /// A repeated bounds-checked indexed read `(Option.expect (List.at xs i))` is shared by CSE (one
 /// `vec-get` — pinned at the Lir level in `select.rs`); this is the RUNTIME companion, proving the
 /// SHARED read is refcount-correct on the value heap. `List.at` BORROWS the list, so sharing the read

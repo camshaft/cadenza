@@ -14209,7 +14209,7 @@ fn hoist_common_ctor(
         vals.push(if core_equiv(db, a, b) {
             a
         } else {
-            synth_if(db, cond, a, b)
+            synth_if_hoisted(db, cond, a, b)
         });
     }
     Some(match shape {
@@ -14345,7 +14345,7 @@ fn hoist_common_arith(
         operands.push(if core_equiv(db, a, b) {
             a
         } else {
-            synth_if(db, cond, a, b)
+            synth_if_hoisted(db, cond, a, b)
         });
     }
     Some(match head {
@@ -18690,6 +18690,29 @@ pub(crate) fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId
 /// type is the arm bodies' type (they agree — a well-typed match). Used to chain runtime bin-match arms.
 fn synth_if(db: &mut Db, cond: StructId, then_: StructId, else_: StructId) -> StructId {
     let ty = crate::infer::type_of(db, then_);
+    synth_core(db, Core::If { cond, then_, else_ }, ty)
+}
+
+/// A synthesized `(if cond then_ else_)` that RE-APPLIES the common-constructor / common-operator hoists
+/// to itself before materializing — so the hoists COMPOSE when one hoist's differing position is itself
+/// a common constructor across the arms. The plain `synth_if` fills a raw `Core::If` that never re-enters
+/// the `Resolved::If` fold pipeline, so a hoist that pushes a differing position into a fresh `if` would
+/// otherwise leave a nested common constructor un-hoisted:
+///   `(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))`
+/// hoists the outer tuple to `(tuple (if c1 (Some a) (if c2 (Some b) (Some a))) 1)`, but the synthesized
+/// field-0 `if` — a nested-if of `Some` — must ALSO hoist to `(Some (if c1 a (if c2 b a)))` (one sum-new,
+/// not three). Used at every differing-position site in `hoist_common_ctor`/`hoist_common_arith`.
+///
+/// Terminates: the re-applied hoists recurse on strictly SMALLER sub-arms (the payloads/operands of the
+/// current arms), so the mutual recursion (synth_if_hoisted → hoist_common_* → synth_if_hoisted) bottoms
+/// out. The result type is unchanged (a hoist rewrites the head, not the type).
+fn synth_if_hoisted(db: &mut Db, cond: StructId, then_: StructId, else_: StructId) -> StructId {
+    let ty = crate::infer::type_of(db, then_);
+    if let Some(core) = hoist_common_ctor(db, cond, then_, else_)
+        .or_else(|| hoist_common_arith(db, cond, then_, else_))
+    {
+        return synth_core(db, core, ty);
+    }
     synth_core(db, Core::If { cond, then_, else_ }, ty)
 }
 
