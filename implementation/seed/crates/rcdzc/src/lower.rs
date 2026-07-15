@@ -7723,6 +7723,8 @@ fn non_exhaustive_sum_reject(
     // cannot enumerate (`type-system.md §206`). When every named variant IS covered but the match lacks a
     // `_` arm, name the open-tail requirement + carry the "add a `_` arm" fix (the open-sum analogue of
     // the missing-variant fix below). The `_` body is a diverging `(trap "TODO")` placeholder.
+    //= spec/capabilities/type-system.md#a-sum-type-may-be-open-with-a-mandatory-open-tail-arm
+    //# A match on an open sum MUST carry an open-tail arm covering the variants not named, and a match that omits it MUST be a compile-time rejection, so that exhaustiveness holds for an open sum exactly as it does for a closed one and an unknown variant is handled rather than unmatched.
     let is_open = t.open_tail.is_some();
     let missing_named = t
         .variants
