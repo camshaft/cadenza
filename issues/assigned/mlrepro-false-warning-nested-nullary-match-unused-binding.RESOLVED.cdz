@@ -48,3 +48,5 @@ def nested-nullary-match-is-a-ctor-not-a-binding() =
     trap("nested TInt is a ctor → 2, not a catch-all binding")
 
 export { classify }
+
+/// RESOLVED 2026-07-15 (trunk@dd77ccc1b): nested nullary-variant resolution fixed — dotted/bare nullary ctor patterns in a nested match resolve correctly (no CDZ0201/false CDZ0306/CDZ0213). cdz check CLEAN.

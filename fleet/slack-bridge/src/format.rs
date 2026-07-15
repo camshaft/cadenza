@@ -50,12 +50,20 @@ pub fn parse_operator_message(text: &str, default_to: &str) -> Intent {
     let mut to = default_to.to_string();
     let mut kind = "note".to_string();
 
-    // `@agent …` — agent name is `[A-Za-z0-9._-]+`, then optional whitespace, then the rest.
+    // `@agent …` — agent name is a strict slug `[A-Za-z0-9][A-Za-z0-9-]*` (NO dots/underscores/
+    // separators), then optional whitespace, then the rest. SECURITY: a permissive charset let `@..` /
+    // `@../x` parse as a `..`-style agent name that `inbox_dir` would join into a path-traversal write
+    // (PR #391). The leading char must be alphanumeric; a non-matching `@…` is left as literal text. This
+    // is the parse-side guard; `inbox::inbox_dir` re-validates at the filesystem sink (defense in depth).
     if let Some(stripped) = rest.strip_prefix('@') {
-        let end = stripped
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'))
-            .unwrap_or(stripped.len());
-        if end > 0 {
+        let starts_slug = stripped
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric());
+        if starts_slug {
+            let end = stripped
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(stripped.len());
             to = stripped[..end].to_string();
             rest = stripped[end..].trim_start();
         }
@@ -240,5 +248,51 @@ mod tests {
         assert!(h.contains("concierge"));
         assert!(h.contains("@agent"));
         assert!(h.contains("!kind"));
+    }
+
+    // ── SECURITY: a `@..`-style retarget must not parse as a traversal agent name (PR #391) ─────────
+
+    #[test]
+    fn traversal_retarget_does_not_become_the_recipient() {
+        // `@.. hi` must NOT set to="..". The `@` is not a valid slug start, so it's left as literal text
+        // and the message falls through to the default recipient.
+        let i = parse_operator_message("@.. hi", "concierge");
+        assert_eq!(
+            i.to, "concierge",
+            "traversal name never becomes the recipient"
+        );
+        assert!(crate::inbox::is_valid_agent_name(&i.to));
+
+        let i2 = parse_operator_message("@../../etc pwn", "concierge");
+        assert_eq!(i2.to, "concierge");
+    }
+
+    #[test]
+    fn dotted_name_stops_at_the_dot() {
+        // `@a.b` — the slug is just `a` (dots are no longer part of an agent name), and `.b` stays text.
+        let i = parse_operator_message("@a.b rest", "concierge");
+        assert_eq!(i.to, "a");
+        assert!(crate::inbox::is_valid_agent_name(&i.to));
+        assert!(i.body.starts_with(".b"));
+    }
+
+    #[test]
+    fn every_parsed_recipient_is_a_valid_agent_name() {
+        // Fuzz-ish: whatever the parser yields as `to` must always be sink-safe.
+        for msg in [
+            "@pr-sync go",
+            "@.. x",
+            "@a/b y",
+            "plain",
+            "@-bad z",
+            "@design-jsx !assign do",
+        ] {
+            let i = parse_operator_message(msg, "concierge");
+            assert!(
+                crate::inbox::is_valid_agent_name(&i.to),
+                "parser produced an unsafe recipient {:?} from {msg:?}",
+                i.to
+            );
+        }
     }
 }

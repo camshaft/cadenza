@@ -103,6 +103,45 @@ export default function PropertyTesting() {
         by construction.
       </P>
 
+      <H2>Putting it together: a property run</H2>
+      <P>
+        A real property run threads the seed through a bounded recursion, checks the property at each draw,
+        and reports a verdict. Here <C>run</C> draws <C>n</C> values, short-circuiting to <C>false</C> the
+        moment one fails — and for the (always-true) property "the low byte is under 256", twenty draws all
+        pass, so the verdict is <C>true</C>:
+      </P>
+      <Runnable
+        source={`(def (next (: s Int64))
+  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+(def (p (: v Int64)) (< (& v 255) 256))
+(def (run (: s Int64) (: n Int64))
+  (if (= n 0) true
+    (let ((v (next s)))
+      (if (p v) (run v (- n 1)) false))))
+(def (main) (if (run 42 20) 1 0))`}
+      />
+      <P>
+        And here's the payoff of seeding: because generation is a pure function of the seed, a run is
+        <em>reproducible</em>. A version of <C>run</C> that reports the first failing draw (instead of a
+        bool) returns the very same counterexample every time from a given seed — so a failure found in CI,
+        with its seed recorded, replays exactly on your machine:
+      </P>
+      <Runnable
+        source={`(def (next (: s Int64))
+  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+(def (p (: v Int64)) (< (& v 15) 8))
+(def (run (: s Int64) (: n Int64))
+  (if (= n 0) -1
+    (let ((v (next s)))
+      (if (p v) (run v (- n 1)) (& v 255)))))
+(def (main) (if (= (run 42 100) (run 42 100)) 1 0))`}
+      />
+      <P>
+        Both runs from seed <C>42</C> find the identical first counterexample, so the check is <C>1</C>.
+        That reproducibility — record the seed, replay the exact failure — is what makes a generated
+        counterexample <em>actionable</em> rather than a one-off fluke.
+      </P>
+
       <Why tenet="A property is ordinary code, not a testing DSL">
         Property testing here is a <em>pattern</em>, not a feature. A generator is a function from a seed;
         a property is a predicate; shrinking is a bounded search — all written in the same language you

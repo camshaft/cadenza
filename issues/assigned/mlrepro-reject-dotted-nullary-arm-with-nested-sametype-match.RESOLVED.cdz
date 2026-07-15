@@ -59,3 +59,5 @@ def bare-nullary-plain-num() =
   if paren-num([Num(42)], 0) == 42 then unit else trap("42")
 
 export { paren-num }
+
+/// RESOLVED 2026-07-15 (trunk@dd77ccc1b): nested nullary-variant resolution fixed — dotted/bare nullary ctor patterns in a nested match resolve correctly (no CDZ0201/false CDZ0306/CDZ0213). cdz check CLEAN.

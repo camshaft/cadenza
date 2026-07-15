@@ -273,6 +273,7 @@ pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
+pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
@@ -320,6 +321,7 @@ pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
+pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
 pass	a branch perform under two nested handlers threads the inner state to the continuation
@@ -917,6 +919,7 @@ pass	a mutually-recursive decoder returns a heap value and cursor and its heap s
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
+pass	a mutually-recursive group performs in one branch and recurses in the OTHER
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
@@ -1106,6 +1109,7 @@ pass	a projected trapping element of a hoisted same-constructor if traps
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
+pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -1407,6 +1411,8 @@ pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table
 pass	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on
+pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
+pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
@@ -1428,6 +1434,7 @@ pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared and a differing element hoist across same-length list arms
+pass	a shared trapping operand before the differing one does not preempt a trapping condition
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -1594,6 +1601,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
+pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum's nullary variant escapes with its bare variant name
@@ -2508,6 +2516,7 @@ pass	the pipeline operator threads a value into a named function
 pass	the power form cubes an integer-magnitude quantity exactly
 pass	the power form derives the same dimension as repeated multiplication
 pass	the prelude binds Constructor values not pre-applied Sums
+pass	the prelude module keeps working beside a same-named colliding variant
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
 pass	the remainder takes the sign of the dividend for a negative dividend

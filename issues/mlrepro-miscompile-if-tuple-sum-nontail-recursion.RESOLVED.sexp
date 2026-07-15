@@ -21,3 +21,5 @@
     (if (= n 0) (wval (. (one b p) 0)) (+ 0 (loop b p (- n 1)))))
   (def (main (: p Int64)) (loop b"\x00\x05" p 0))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@dd77ccc1b): VERIFIED FIXED — compiles to valid wasm + runs to the correct value (graded via (case) wrapper). The invalid-wasm/mis-typed-projection face is closed.

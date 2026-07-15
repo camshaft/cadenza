@@ -1208,6 +1208,35 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
+; The SELF-COMPARISON fold (`x < x` → false, `x <= x`/`x >= x`/`x = x` → true — the ordering is fixed
+; when both operands are the SAME value) is the sibling the type-bound cases above reference. It DISCARDS
+; the operand, so — exactly like the tautology fold — it is sound to fold the RESULT to a constant only
+; when the operand cannot trap; a possibly-trapping operand must still be evaluated. These pin that
+; directly: a self-comparison of `(/ 10 z)` still div-by-zero traps at z = 0 (the fold must not drop the
+; operand), while the `<=` form yields its constant `true` for a nonzero divisor (the fold is not
+; over-suppressed). A RUNTIME divisor forces the trap to run time (a constant `(/ 10 0)` is a compile-time
+; CDZ0304); the fold is a Core rewrite, so both backends preserve the trap identically.
+
+(case "a self-comparison of a trapping operand still traps (less-than)"
+  (doc    "`(< (/ 10 z) (/ 10 z))` with z = 0: `x < x` is always false, but the operand `(/ 10 z)`
+           divides by zero and MUST trap — the self-comparison fold to `false` must not drop the
+           operand's evaluation. The direct self-comparison companion of the tautology-comparison
+           trap-preservation cases above (which only referenced this fold).")
+  (input  (do (def (main (: z Int64)) (if (< (/ 10 z) (/ 10 z)) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one"
+  (doc    "`(<= (/ 10 z) (/ 10 z))` — `x <= x` is always true, yet at z = 0 the operand MUST still trap
+           (the fold to `true` keeps the trapping operand's evaluation), and at z = 2 it yields the
+           constant true → the `if` gives 1 (the fold is not over-suppressed on a nonzero divisor). Pins
+           both faces of the self-comparison fold's trap-preservation for the `<=` operator.")
+  (input  (do (def (main (: z Int64)) (if (<= (/ 10 z) (/ 10 z)) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero")
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
 ; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic
 ; SIMPLIFICATION the compiler applies at the Core (backend-independent) tier: `x * 0` and `x & 0` fold to

@@ -8215,3 +8215,64 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 109 Int64)))
+
+; --- Colliding-variant resolution is consistent across SPELLINGS and neighbors ---------------------
+; The colliding-variant cases above pin bare construct and bare match separately, and the width-type
+; coexistence. These pin CONSISTENCY: the bare and qualified spellings name ONE variant (cross-spelled
+; construct/match pairs agree), the prelude MODULE keeps working beside a colliding variant, and a
+; user variant does not capture a same-named variant of a DIFFERENT sum (Ast.Name).
+
+(case "a bare construct and a qualified match name the same colliding variant"
+  (doc    "`(Int 42)` constructed BARE, matched QUALIFIED as `(T.Int n)` → 42 — and the mirror case
+           below constructs qualified and matches bare. Binding-is-lexical means both spellings
+           resolve to ONE variant; a resolution that shadowed per-syntactic-position could construct
+           one discriminant and match another, sending the value to the catch-all (-1).")
+  (input  (do
+            (type T (Int Int64) (Other Int64))
+            (def (main (: d Int64))
+              (match (Int 42) ((T.Int n) n) (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "a qualified construct and a bare match name the same colliding variant"
+  (doc    "The mirror: `(T.Int 42)` constructed QUALIFIED, matched BARE as `(Int n)` → 42. With the
+           case above, the four spelling combinations (bare/bare and qualified/qualified are pinned
+           by the earlier cases) all agree on one discriminant.")
+  (input  (do
+            (type T (Int Int64) (Other Int64))
+            (def (main (: d Int64))
+              (match (T.Int 42) ((Int n) n) (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "the prelude module keeps working beside a same-named colliding variant"
+  (doc    "`(type T (List Int64))` shadows the bare `List` in ctor positions — but the prelude MODULE
+           `List` (the `List.len` member op) must keep resolving in the same program: `(List.len (list
+           1 2))` = 2 plus the bare-constructed `(List 5)`'s payload 5 → 7. The MODULE-access
+           companion of the width-type coexistence case: the shadow covers ctor-head positions, not
+           the dotted member path.")
+  (input  (do
+            (type T (List Int64) (Other Int64))
+            (def (main (: d Int64))
+              (+ (List.len (list 1 2))
+                 (match (List 5) ((List n) n) (_ -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "a user Name variant does not capture the Ast sum's Name variant"
+  (doc    "`(type U (Name String))` declares a variant spelled like the built-in Ast's `Name` — two
+           DECLARED variants of DIFFERENT sums sharing a spelling. The bare `(Name \"x\")` constructs
+           U's (byte-len 1); the qualified `(Ast.Name \"yz\")` still constructs the AST's (byte-len 2)
+           → 3. User-sum identity is by declaration, not shape or spelling: the local shadow must not
+           swallow the qualified path into another sum's same-named variant.")
+  (input  (do
+            (type U (Name String) (Other Int64))
+            (def (main (: d Int64))
+              (+ (match (Name "x") ((Name s) (String.byte-len s)) (_ -1))
+                 (match (Ast.Name "yz") ((Ast.Name s) (String.byte-len s)) (_ -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))

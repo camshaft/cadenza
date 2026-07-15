@@ -14095,9 +14095,11 @@ fn hoist_common_arith(
             _ => return None,
         };
     let mut diff = 0usize;
-    for &(a, b) in &pairs {
+    let mut first_diff: Option<usize> = None;
+    for (i, &(a, b)) in pairs.iter().enumerate() {
         if !core_equiv(db, a, b) {
             diff += 1;
+            first_diff.get_or_insert(i);
         }
     }
     // All operands identical → the two arms are already `core_equiv`; the identical-branches fold handles
@@ -14105,10 +14107,29 @@ fn hoist_common_arith(
     if diff == 0 {
         return None;
     }
-    // `cond` evaluated once per differing operand; only ONE differing operand matches the original's single
-    // evaluation. Any other count must not duplicate/drop a cond trap or effect.
-    if diff != 1 && !is_trap_free(db, cond) {
-        return None;
+    // A trapping `cond` needs both a COUNT check AND an ORDER check before it may hoist — the same guard
+    // `hoist_common_ctor` uses (a shared operand is built OUTSIDE the per-position `if`, so it evaluates
+    // BEFORE `cond`).
+    if !is_trap_free(db, cond) {
+        // COUNT: `cond` is evaluated once per differing operand; only ONE differing operand matches the
+        // original's single evaluation. Any other count would duplicate/drop a cond trap or effect.
+        if diff != 1 {
+            return None;
+        }
+        // ORDER: the original `if` evaluates `cond` FIRST — before ANY operand. In the hoisted form a
+        // SHARED operand PRECEDING the differing one is built outside the per-position `if`, so it runs
+        // before `cond`. `core_equiv` admits trapping arith (a `/` by a runtime divisor is `core_equiv`
+        // to itself), so a preceding shared operand that traps would PREEMPT `cond`'s own trap — observing
+        // the WRONG trap kind. Only hoist a trapping cond when every shared operand preceding the differing
+        // one is itself trap-free (then the first observable trap is still `cond`'s). For binary `Arith`
+        // the only preceding position is lhs when the diff is at rhs; a unary `Convert` has a single
+        // operand so a diff==1 Convert has no preceding shared operand and is unaffected.
+        let diff_idx = first_diff.expect("diff == 1 guarantees a differing position");
+        for &(a, _) in &pairs[..diff_idx] {
+            if !is_trap_free(db, a) {
+                return None;
+            }
+        }
     }
     let mut operands: Vec<StructId> = Vec::with_capacity(pairs.len());
     for &(a, b) in &pairs {

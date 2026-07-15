@@ -43,3 +43,5 @@ def g(x: Ty) = match x with
     | Ty.TInt => 9)
 
 export { g }
+
+/// RESOLVED 2026-07-15 (trunk@dd77ccc1b): nested nullary-variant resolution fixed — dotted/bare nullary ctor patterns in a nested match resolve correctly (no CDZ0201/false CDZ0306/CDZ0213). cdz check CLEAN.

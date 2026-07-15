@@ -9,3 +9,5 @@ checked add must trap), and `expect` on the absent case of a runtime `Option` mu
 message. Make both cases pass; confirm against the spec text. The cases already exist as todos.
 
 Area: rcdzc `expect` lowering. Coordinate with whoever owns the `expect`/optional surface.
+
+<!-- DEFERRED 2026-07-15 (operator): needs spec §299 message-carrying traps (LARGE — wasm unreachable carries no text; gate classifies 4 trap KINDS only). The 2 cases are correctly TODO; do NOT force a pass by kind-matching. Revisit when a real program needs message-carrying traps. Not a bug. -->

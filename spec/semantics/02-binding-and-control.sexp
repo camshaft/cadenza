@@ -3362,6 +3362,25 @@
   (call   main (: 9223372036854775807 Int64) (: 0 Int64))
   (trap   "integer overflow"))
 
+(case "a shared trapping operand before the differing one does not preempt a trapping condition"
+  (doc    "`(if (< (+ e Int64.max) 0) (+ (/ 100 d) a) (+ (/ 100 d) b))` at e = 1, d = 0 — the single
+           DIFFERING operand is the rhs (a vs b), so the hoist becomes `(+ (/ 100 d) (if c a b))` and
+           the SHARED lhs `(/ 100 d)` is lifted OUTSIDE the per-operand select, ahead of the operand
+           `if`. Both the condition (`e + Int64.max` overflows) and that shared lhs (÷0) trap for
+           these inputs; source order evaluates the condition FIRST → 'integer overflow', never
+           'divide by zero'. The diff==1 twin of the fully-shared order pin above: a trapping cond
+           must not be hoisted past a shared preceding operand that also traps. Regression witness for
+           the hoist_common_arith order guard (it was written with only the count check, mirroring the
+           constructor-hoist order fix).")
+  (input  (do
+            (def (main (: e Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (< (+ e 9223372036854775807) 0)
+                  (+ (/ 100 d) a)
+                  (+ (/ 100 d) b)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (trap   "integer overflow"))
+
 (case "an effectful condition is performed exactly once under the operator hoist"
   (doc    "`(if (< (Ctr.tick) 1) (+ v 10) (+ v 20))` under a counter handler: the first perform
            returns 0 → the +10 arm → 15; the trailing `(Ctr.tick)` returns 1 (the state advanced

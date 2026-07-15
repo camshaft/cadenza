@@ -9,3 +9,5 @@
   (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Node) ids) 0)))
   (def (main (: pos Int64)) (wval (loop b"\x00\x05\x00\x07" pos 1 ((. W Atom) 0))))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@dd77ccc1b): VERIFIED FIXED — compiles to valid wasm + runs to the correct value (graded via (case) wrapper). The invalid-wasm/mis-typed-projection face is closed.

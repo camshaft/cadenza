@@ -20,3 +20,5 @@
     (let ((xs (collect b"\x00\x2a" 0 1 (list))))
       (node-count (Option.expect (List.at xs 0) "0"))))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@dd77ccc1b): VERIFIED FIXED — compiles to valid wasm + runs to the correct value (graded via (case) wrapper). The invalid-wasm/mis-typed-projection face is closed.
