@@ -4936,6 +4936,33 @@
   (call   main)
   (output (: 1 Int64)))
 
+(case "a duplicate TUPLE-shaped arm is dead code but the program still runs"
+  (doc    "The redundant-arm warning extends past a variant to a structural TUPLE shape: `(tuple true a)`
+           and `(tuple true c)` have the SAME shape (a `true` literal then a binder), so the second can
+           never be reached — first-match-wins takes the first arm. `(pick true 5)` returns 5 (the first
+           arm's `a`), NOT 105 (the dead second arm's `(+ c 100)`), and the build succeeds — a non-error
+           CDZ0213 warning, the tuple companion of the variant-duplicate case above. The value discriminates
+           that the first shape-equal arm wins and the second is dead.")
+  (input  (do
+            (def (pick (: b Bool) (: n Int64))
+              (match (tuple b n) ((tuple true a) a) ((tuple true c) (+ c 100)) (_ 0)))
+            (def (main) (pick true 5)) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
+(case "a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs"
+  (doc    "The nested-refining-constructor shape: `(Some (Some x))` and `(Some (Some y))` refine the Option
+           payload identically, so the second is unreachable. `(unwrap (Some (Some 7)))` takes the first arm
+           → 7, NOT 107 (the dead second arm), build succeeds (CDZ0213 warning). Pins that the structural-
+           duplicate detection reaches a nested constructor pattern, not only a flat tuple or a bare
+           variant — the deepest of the three shapes the redundant-arm check now recognizes.")
+  (input  (do
+            (def (unwrap (: o (Option (Option Int64))))
+              (match o ((Some (Some x)) x) ((Some (Some y)) (+ y 100)) (_ 0)))
+            (def (main) (unwrap (Some (Some 7)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type

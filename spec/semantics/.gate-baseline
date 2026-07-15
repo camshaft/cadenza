@@ -522,6 +522,8 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a doubly-nested strength-reduced multiply chains shift into shift
+pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
+pass	a duplicate TUPLE-shaped arm is dead code but the program still runs
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error
