@@ -252,6 +252,43 @@ fn rustc_roundtrip_list_builds_and_runs() {
 }
 
 #[test]
+fn an_ill_formed_integer_width_is_rejected_not_declined() {
+    // An out-of-range integer WIDTH (negative → clamped `Int0`, or over-ceiling `(UInt 65)`) is an
+    // ILL-FORMED TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME
+    // outcome the wasm target gives, not a codeless "no native Rust representation" decline (which the gate
+    // would read as an unimplemented-construct todo). The width `(Int -8)` reads as the sentinel `Int0`;
+    // the message names the WRITTEN width and cites the admitted 1..=64 range.
+    let neg = try_compile_rust("(module m (def (main) (: 5 (Int -8))) (export main))")
+        .expect_err("an ill-formed integer width must reject, not emit");
+    assert!(
+        neg.iter()
+            .any(|d| d.contains("not a valid integer type") && d.contains("1..=64")),
+        "reject should cite the ill-formed width + admitted range: {neg:?}"
+    );
+    // The same in PARAMETER position (over-ceiling this time).
+    let over = try_compile_rust("(module m (def (main (: x (UInt 65))) x) (export main))")
+        .expect_err("an over-ceiling parameter width must reject");
+    assert!(
+        over.iter().any(|d| d.contains("not a valid integer type")),
+        "parameter reject should cite the ill-formed width: {over:?}"
+    );
+    // A VALID but non-aliased width (`UInt7`, in 1..=64) is a genuine backend limitation → a codeless
+    // DECLINE (no native Rust primitive), NOT a CDZ0302 reject. Guards against over-rejecting.
+    let seven = try_compile_rust("(module m (def (main (: x (UInt 7))) x) (export main))")
+        .expect_err("UInt7 has no native Rust rep — declines");
+    assert!(
+        seven
+            .iter()
+            .any(|d| d.contains("no native Rust representation")),
+        "a valid non-aliased width should DECLINE, not reject: {seven:?}"
+    );
+    assert!(
+        !seven.iter().any(|d| d.contains("not a valid integer type")),
+        "UInt7 must NOT be reported as an ill-formed width: {seven:?}"
+    );
+}
+
+#[test]
 fn a_runtime_record_emits_a_sorted_field_tuple() {
     // A record that survives to runtime → a Rust tuple in SORTED field-name order (a record is
     // structural; at run time it IS a positional array in sorted key order). Field read → `.index`.
