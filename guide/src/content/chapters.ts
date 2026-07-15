@@ -123,6 +123,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Bytes.tsx")),
   },
   {
+    slug: "binary-matching",
+    title: "Binary matching",
+    blurb: "Describe a byte layout as typed segments; the (bin …) form builds and destructures Bytes.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/BinaryMatching.tsx")),
+  },
+  {
     slug: "symbols",
     title: "Symbols",
     blurb: "Interned names, compared by identity.",

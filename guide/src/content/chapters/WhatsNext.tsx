@@ -27,7 +27,8 @@ export default function WhatsNext() {
         <Ch to="/records-tuples">Working with records &amp; tuples</Ch>). You decide by shape with{" "}
         <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections —{" "}
         <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch> — and the text and binary
-        types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch>, and{" "}
+        types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch> (and{" "}
+        <Ch to="/binary-matching">binary matching</Ch> to build and destructure them), and{" "}
         <Ch to="/symbols">symbols</Ch>. You handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
         Cadenza's numbers behave — checked <Ch to="/numbers">integers</Ch>,{" "}
