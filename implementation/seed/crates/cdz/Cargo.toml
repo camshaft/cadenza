@@ -22,6 +22,9 @@ path = "src/main.rs"
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 rcdzc = { path = "../rcdzc" }
+# The wasm-component runner, mounted as `cdz run` — one binary on the PATH instead of a separate
+# `cdz-run`. Pulls in wasmtime + the runtime store; that weight is the price of the one-binary story.
+cdz-run = { path = "../cdz-run" }
 clap = { version = "4", features = ["derive"] }
 # The property-testing generator engine for `cdz test`: `bolero-generator` produces values from a seeded
 # driver (`driver::Rng`) — reproducible + shrinkable — used as a LIBRARY (not the `check!` cargo-test
