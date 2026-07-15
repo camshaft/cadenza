@@ -921,9 +921,7 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         // give the first tick its full stale window before judging it, rather than nuking a booting agent.
         let hb_age = heartbeat_age_secs(fleet, &a.name, now);
         let interval = parse_interval_secs(&a.interval);
-        // CAP the stale window: no agent should sit dead longer than `stale_cap` regardless of its
-        // interval. Without the cap, a 30m agent gets a 60min window (2×30m) and stalls for an hour.
-        let stale_after = interval.saturating_mul(stale_mult as u64).min(stale_cap);
+        let stale_after = stale_window_secs(interval, stale_mult, stale_cap);
         let Some(age) = hb_age else {
             continue; // never stamped yet — a booting agent; leave it for the next pass.
         };
@@ -1085,6 +1083,15 @@ fn parse_interval_secs(s: &str) -> u64 {
         "d" => n * 86400,
         _ => 600,
     }
+}
+
+/// How long to tolerate heartbeat SILENCE before presuming a loop dead: `interval × mult`, but hard-
+/// capped at `cap`. The cap is the key: the interval is a healthy agent's tick CADENCE, while this is
+/// our patience for silence — they must not scale together, or a 30m agent gets a 60min dead window.
+/// A heartbeat is stamped at the TOP of every tick, so a `cap` of ~10min is a safe "definitely stalled"
+/// bound for any interval, and the mult keeps a short-interval agent from being judged too eagerly.
+fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
+    interval_secs.saturating_mul(mult as u64).min(cap)
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -1540,5 +1547,30 @@ mod tests {
     #[test]
     fn interval_tolerates_surrounding_whitespace() {
         assert_eq!(parse_interval_secs("  15m "), 900);
+    }
+
+    #[test]
+    fn stale_window_is_capped_for_long_intervals() {
+        // The bug: a 30m agent at mult=2 got a 3600s (60min) dead window. With the 600s cap it's
+        // bounded to 10min — no agent sits dead for an hour regardless of its interval.
+        let cap = 600;
+        assert_eq!(stale_window_secs(1800, 2, cap), 600); // 30m×2 = 3600 → capped to 600
+        assert_eq!(stale_window_secs(3600, 2, cap), 600); // 60m×2 = 7200 → capped to 600
+    }
+
+    #[test]
+    fn stale_window_uncapped_below_the_cap() {
+        // A short-interval agent still gets the full interval×mult (under the cap), so it isn't
+        // judged stalled too eagerly during a normal-length tick.
+        let cap = 600;
+        assert_eq!(stale_window_secs(60, 2, cap), 120); // 1m×2 = 120, under cap
+        assert_eq!(stale_window_secs(300, 2, cap), 600); // 5m×2 = 600, exactly at cap
+        assert_eq!(stale_window_secs(299, 2, cap), 598); // just under
+    }
+
+    #[test]
+    fn stale_window_never_overflows() {
+        // A huge interval must saturate, not wrap, before the cap applies.
+        assert_eq!(stale_window_secs(u64::MAX, 2, 600), 600);
     }
 }
