@@ -10,9 +10,15 @@
 /// corrupted the extended `Set` scope threaded
 /// through the recursion — `free-vars (let ((x 5)) (+ x x))` returned 3 not 1 (the bound `x`s read as
 /// free). The sibling compiler-side dup fix (iter 48) resolved it, so a `Set`-scope threaded through a
-/// recursive `Ast` walk now survives — and this real resolver runs. It walks each list by INDEX
-/// (`List.at`), keeping `node` live via borrowing reads (the single-function index form; the natural
-/// mutual `check`/`check-list` pair still hits the one remaining mutual-recursion still-live face).
+/// recursive `Ast` walk now survives — and this real resolver runs.
+///
+/// 🎉 IDIOMATIC MUTUAL FORM (fleet 2026-07-15): the LAST still-live face — a `SumPayload` binder
+/// (`elems`, a borrowed alias of `node`'s payload) consumed by a mutual call while `node`'s head is
+/// re-read in a sibling operand — is now FIXED in the backend (a Perceus RETAIN `dup` for a SumPayload
+/// binder live past its consuming use). So the child list is walked by the NATURAL mutual pair
+/// `free-count` ↔ `free-list` (a cons-recursive `free-list` that recurses back into `free-count`),
+/// NOT the old single-function index walk (`List.at` per position). This is the shape a homoiconic
+/// resolver actually takes; the workaround it replaces is gone.
 
 import { Ast } from "ast"
 
@@ -31,7 +37,7 @@ def child-at(elems: List(Ast), i: Int64) = match List.at(elems, i) with
 ///   • an `Int`/`Str`/`Bool` leaf contributes 0;
 ///   • a `Name` contributes 1 unless it is in `scope`;
 ///   • a `List` dispatches on its head Name: `let`/`fn` bind, everything else is a generic form whose
-///     children are all checked under the same scope (walked by index, keeping `node` live).
+///     children are all checked under the same scope (the mutual `free-list` walk).
 def free-count(scope: Set(String), node: Ast) = match node with
   | Ast.Int(_) => 0
   | Ast.Str(_) => 0
@@ -40,15 +46,15 @@ def free-count(scope: Set(String), node: Ast) = match node with
   | Ast.List(elems) => (match name-at(elems, 0) with
     | Some(h) => (if h == "let" then free-let(scope, elems)
                   else (if h == "fn" then free-fn(scope, elems)
-                  else free-generic(scope, elems, 0, 0)))
-    | None(_) => free-generic(scope, elems, 0, 0))
+                  else free-list(scope, elems)))
+    | None(_) => free-list(scope, elems))
 
-/// A generic form: sum the free counts of every child (index walk; `elems` read via borrowing `List.at`).
-def free-generic(scope: Set(String), elems: List(Ast), i: Int64, acc: Int64) =
-  if i == List.len(elems) then
-    acc
-  else
-    free-generic(scope, elems, i + 1, acc + free-count(scope, child-at(elems, i)))
+/// A generic form: sum the free counts of every child — the IDIOMATIC mutual partner of `free-count`,
+/// cons-recursing over the child list and calling `free-count` back on each element. (Consumes `elems`
+/// across the mutual edge; the SumPayload-alias retain fix makes this correct — see the header.)
+def free-list(scope: Set(String), elems: List(Ast)) = match elems with
+  | [] => 0
+  | [h, .. r] => free-count(scope, h) + free-list(scope, r)
 
 /// `(let ((x <val>)) <body>)` — element 1 is the bindings clause `((x <val>))`, element 2 the body. Bind
 /// `x` (from the binding pair's head Name) for BOTH the RHS and the body (recursive-let scoping).
@@ -57,7 +63,7 @@ def free-let(scope: Set(String), elems: List(Ast)) =
     | Some(x) =>
       let inner = Set.insert(scope, x) in
       free-count(inner, binding-val(child-at(elems, 1))) + free-count(inner, child-at(elems, 2))
-    | None(_) => free-generic(scope, elems, 0, 0)
+    | None(_) => free-list(scope, elems)
 
 /// From a bindings clause `((x <val>))` (a `List` holding one `(x <val>)` pair), the bound name `x`.
 def binding-name(clause: Ast) = match clause with
@@ -79,7 +85,7 @@ def free-fn(scope: Set(String), elems: List(Ast)) =
     | Ast.List(params) =>
       let inner = bind-params(scope, params, 0) in
       free-count(inner, child-at(elems, 2))
-    | _ => free-generic(scope, elems, 0, 0)
+    | _ => free-list(scope, elems)
 
 /// Insert every parameter Name from `params` into `scope` (index walk, keeping `params` live).
 def bind-params(scope: Set(String), params: List(Ast), i: Int64) =
@@ -156,5 +162,13 @@ def sc-deep-nested-frees() =
   // (+ (let ((a 1)) a) (fn (b) (+ b c))) — a,b bound; c free; two + free → 3
   let e = plus(mk-let("a", Ast.Int(1), nm("a")), mk-fn1("b", plus(nm("b"), nm("c")))) in
   if free-vars(e) == 3 then unit else trap("c + outer-+ + inner-+ = 3 free")
+
+@test
+def sc-wide-generic-form-mutual-walk() =
+  // A WIDE generic form whose head is dispatched WHILE `free-list` consumes the whole child list across
+  // the mutual `free-count`↔`free-list` edge — the exact shape the SumPayload-alias fix unblocked.
+  // `(f a b a c b)` — head `f` free, then a,b,a,c,b all free (none bound) → 6 free names.
+  let e = lst([nm("f"), nm("a"), nm("b"), nm("a"), nm("c"), nm("b")]) in
+  if free-vars(e) == 6 then unit else trap("f a b a c b = 6 free through the mutual list walk")
 
 export { free-vars, is-closed }
