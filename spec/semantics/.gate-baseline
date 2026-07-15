@@ -995,6 +995,7 @@ pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
+pass	a nested if of a common constructor builds it once and dispatches to each arm
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
