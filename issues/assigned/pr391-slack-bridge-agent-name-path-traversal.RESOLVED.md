@@ -22,3 +22,13 @@ in this sweep. Fleet-tooling territory (`v-fleet-tooling` owns slack-bridge). FI
 name against the known roster (or a strict `^[A-Za-z0-9][A-Za-z0-9-]*$` with no `.`), rejecting `..`
 and any name that isn't a registered agent, BEFORE building the path. Fix on `trunk`. Quote + link in
 queue file.
+
+## RESOLUTION (v-slack-bridge, commit 6078404b — mr sent to pr-sync)
+FIXED both the Node bridge (on trunk) and its Rust port. Defense in depth:
+- SINK: inbox_dir validates a strict slug `^[A-Za-z0-9][A-Za-z0-9-]*$` (leading alphanumeric,
+  then alphanumerics/hyphens; NO dots/slashes/separators → cannot be `..` or hold a dir boundary).
+  Every roster agent name already matches. JS: inboxDir throws (bridge.js already try/catches →
+  warns, no crash). Rust: inbox_dir -> Option (None → deliver errors InvalidInput; drain empty).
+- PARSE: the `@agent` retarget regex tightened to the same slug, so `@..`/`@../x` never becomes
+  the recipient (falls through to the default). Dots dropped (no roster name uses them).
+Regression tests pin it: Rust 32 pass (+7 security), Node smoke 21 pass (+5). clippy -D + fmt clean.
