@@ -78,7 +78,24 @@ use tracing::trace;
 //= spec/capabilities/verification-layers.md#a-program-compiles-without-any-layer
 //# Engaging a verification layer MUST be something a program opts into, not a precondition of compiling.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
-    trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
+    // The default optimization level (`OptLevel::default()` = `O1`) — the fast-ish common case. A caller
+    // that wants a specific level (the `cdz compile --opt-level` flag, a `Project.cdz` release profile)
+    // uses `compile_with_opt` instead; this thin wrapper keeps every existing caller unchanged.
+    compile_with_opt(inputs, targets, crate::opt::OptLevel::default())
+}
+
+/// The optimization-level-parameterized compile entry — identical to [`compile`] but the caller chooses
+/// the [`crate::opt::OptLevel`]. This is the sink for v-cdz-tooling's `cdz compile --opt-level` flag and
+/// a `Project.cdz` profile: the requested level selects which backend-independent Core passes run (via
+/// the [`crate::opt::PassManager`]), with observably-IDENTICAL behavior at every level — only compile
+/// time / output speed differ. `compile(inputs, targets)` is exactly `compile_with_opt(inputs, targets,
+/// OptLevel::default())`.
+pub fn compile_with_opt(
+    inputs: &[Artifact],
+    targets: &[Target],
+    opt_level: crate::opt::OptLevel,
+) -> CompileOutput {
+    trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), level = %opt_level, "compile requested");
     // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
     // case) decodes directly — byte-identical to today. TWO OR MORE `ast` artifacts (or an explicit
     // `entry` marker) is a PACKAGE: the files are spliced into one arena under a synthesized `(do …)`
@@ -172,6 +189,14 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         }
     }
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
+
+    // Run the BACKEND-INDEPENDENT optimization passes the requested level enables, over the shared Core
+    // column — ABOVE the layout/backend split, so every backend inherits them (`DESIGN-tiered-
+    // optimization-levels-rcdzc.md`). This slice registers NO passes yet (the pipeline is empty, so this
+    // is a verified no-op and every level emits a byte-identical artifact); it establishes the seam the
+    // migration fills — each pass added here declares its `min_level`, and the `PassManager` runs only
+    // those the requested level reaches. The correctness bar is that every level is observably identical.
+    crate::opt::PassManager::for_level(opt_level).run(&mut db);
 
     // Decode the optional `sidecar` request list — the program that DRIVES this compilation
     // (`DESIGN-sidecar-api.md`). Absent (the common case) means "no requests": behavior is exactly

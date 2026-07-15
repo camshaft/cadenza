@@ -167,6 +167,66 @@ fn oracle_core(names: &[&str]) -> Vec<u8> {
     m.finish()
 }
 
+/// LEVEL-EQUIVALENCE: a program compiled at EVERY `OptLevel` must emit a BYTE-IDENTICAL wasm artifact —
+/// the correctness bar of the tiered-optimization framework (`DESIGN-tiered-optimization-levels-rcdzc.md`
+/// §The one rule). Today the `PassManager` registers no passes, so every level is trivially identical;
+/// this pins the invariant at the unit tier NOW, so a future migration slice that adds a pass at O2/O3
+/// which accidentally changes emitted bytes fails HERE. (A later slice adds a corpus-wide `--opt-sweep`
+/// gate that asserts the same VALUE at every level on both backends; this is the fast byte-identity
+/// companion over a couple of representative programs.)
+#[test]
+fn every_opt_level_emits_byte_identical_wasm() {
+    use crate::backend::Target;
+    use crate::compile::{compile, compile_with_opt};
+    use crate::opt::OptLevel;
+    for prog in [prog_scalar(), prog_if()] {
+        let art = |level: OptLevel| {
+            crate::host::run_with_compiler_stack(|| {
+                let out = compile_with_opt(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        prog.clone(),
+                    )],
+                    &[Target::Wasm],
+                    level,
+                );
+                out.artifact(Target::Wasm.artifact_kind())
+                    .expect("clean program emits a wasm artifact")
+                    .to_vec()
+            })
+        };
+        let baseline = art(OptLevel::O0);
+        for level in OptLevel::ALL {
+            assert_eq!(
+                art(level),
+                baseline,
+                "opt level {level} changed the emitted wasm — a higher level must be \
+                 observably identical, only faster/smaller"
+            );
+        }
+        // `compile` (no level) must equal the default level `O1` — the thin-wrapper contract.
+        let default_art = crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    prog.clone(),
+                )],
+                &[Target::Wasm],
+            );
+            out.artifact(Target::Wasm.artifact_kind())
+                .expect("clean program emits a wasm artifact")
+                .to_vec()
+        });
+        assert_eq!(
+            default_art,
+            art(OptLevel::O1),
+            "compile() must equal compile_with_opt(.., OptLevel::default())"
+        );
+    }
+}
+
 /// The hand-emitted envelope is byte-identical to the `wasm-encoder` oracle for a set of nullary-s64
 /// exports over one core, at N=1 and N=2 — what licenses hand-encoding the envelope (no external
 /// encoder in the byte path).
