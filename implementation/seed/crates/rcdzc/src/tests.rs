@@ -28919,11 +28919,27 @@ mod match_engine {
             Some("CDZ0201"),
             "Ast.Bool applied to a non-Bool payload is a type error"
         );
-        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
-        // `Ast.Str` variant this increment; Int/Bool/Name/List are realized) is NOT reified: it DECLINES
-        // (a Todo), never a miscompile.
+        // A STRING literal reifies to `(Ast.Str "…")` — a string is a syntactic form, DISTINCT from a
+        // name. `(quote "foo")` is `(Ast.Str "foo")`, not `(Ast.Name "foo")`, so they compare unequal.
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (quote \"hi\") (Ast.Str \"hi\"))) (export main))"
+            )
+            .is_none(),
+            "a quoted string equals the same Ast.Str node"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (quote \"foo\") (Ast.Name \"foo\"))) (export main))"
+            )
+            .is_none(),
+            "a quoted string vs a quoted name is well-typed (both Ast) — the runtime value is false"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a FLOAT literal — no
+        // `Ast.Float` variant; Int/Bool/Str/Name/List are realized) is NOT reified: it DECLINES (a Todo),
+        // never a miscompile.
         assert_eq!(
-            reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
+            reject_code("(module m (def (main) (quote 1.5)) (export main))"),
             None,
             "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
         );
@@ -28967,6 +28983,59 @@ mod match_engine {
                 "main"
             ),
             "print/read round-trips an Ast.Bool (bare word true/false)"
+        );
+    }
+
+    #[test]
+    fn an_ast_str_folds_through_reify_eval_and_round_trips_with_escapes() {
+        use crate::testkit::parse;
+        // The `Ast.Str` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
+        // Sum Type — a string is one of the syntactic forms, DISTINCT from a name). `(eval (quote "abcd"))`
+        // reconstructs the string literal and folds to the string (byte-len 4); encode/decode round-trips;
+        // print/read round-trips WITH the closed escape set (an embedded quote + newline).
+        let eval_str =
+            "(module m (def (main) (String.byte-len (eval (quote \"abcd\")))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(eval_str))).expect("compile"),
+                "main"
+            ),
+            4,
+            "(eval (quote \"abcd\")) executes the reconstructed string literal (byte-len 4)"
+        );
+        // encode → decode round-trips an `Ast.Str` (bijection over the whole tree, Ast.decode total).
+        let round_trip = "(module m (def (main) \
+            (match (Ast.decode (Ast.encode (Ast.Str \"hi\"))) \
+              ((Ok a) (= a (Ast.Str \"hi\"))) \
+              ((Err _) false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
+                "main"
+            ),
+            "encode/decode round-trips an Ast.Str to an equal value"
+        );
+        // print renders a `"…"` literal escaping the closed set; read inverts it — `read(print v) == v`
+        // over a payload with an embedded quote AND newline, so this exercises the escape path.
+        let print_read = "(module m (def (main) \
+            (= (read (print (Ast.Str \"a\\\"b\\nc\"))) (Ast.Str \"a\\\"b\\nc\"))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
+                "main"
+            ),
+            "print/read round-trips an Ast.Str with escapes (embedded quote + newline)"
+        );
+        // `Ast.Str` is DISTINCT from `Ast.Name`: `(quote "foo")` (a string) != `(quote foo)` (a name).
+        let distinct = "(module m (def (main) (= (quote \"foo\") (quote foo))) (export main))";
+        assert!(
+            !run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(distinct))).expect("compile"),
+                "main"
+            ),
+            "a quoted string and a quoted name are different Ast values (false)"
         );
     }
 

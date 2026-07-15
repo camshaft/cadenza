@@ -353,6 +353,14 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Bool", payload))
             }
+            // A string LITERAL -> `(Ast.Str "…")`. `Ast.Str` carries a `String` payload (a string is a
+            // syntactic form — `type-system.md`), DISTINCT from `Ast.Name` (an identifier reference): the
+            // reified node carries the string's TEXT as a String literal, so `(quote "hi")` reads back as
+            // the string value, not a name. The payload REUSES the literal's leaf.
+            leaf @ Leaf::Str(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Str", payload))
+            }
             // A bare name -> `(Ast.Name "foo")`. The name TEXT becomes a String payload (`Ast.Name`
             // carries the identifier as a String — `type-system.md`), so the identifier is captured as
             // data, not resolved as a reference.
@@ -360,7 +368,7 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, Leaf::Str(name));
                 Some(ast_ctor(ast, "Name", payload))
             }
-            // Any other leaf kind (Str/Float/Char/Sym/Bytes/…) has no `Ast` variant yet: not
+            // Any other leaf kind (Float/Char/Sym/Bytes/…) has no `Ast` variant yet: not
             // reifiable — bail so the whole quote declines rather than miscompiling.
             _ => None,
         },

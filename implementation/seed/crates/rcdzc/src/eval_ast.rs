@@ -161,6 +161,11 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     if let Some(payload) = ast_ctor_arg(ast, node, "Bool") {
         return Some(payload);
     }
+    // `(Ast.Str payload)` -> the payload AS SOURCE (the string-literal node). A reified string literal
+    // `(Ast.Str "hi")` unwraps back to the `"hi"` literal, which evaluates to itself.
+    if let Some(payload) = ast_ctor_arg(ast, node, "Str") {
+        return Some(payload);
+    }
     // `(Ast.Name payload)` -> the bare name the String payload spells. `Ast.Name` carries the identifier
     // as a String (the reifier turned a `Leaf::Name` into a `Leaf::Str`); reconstruction turns it back.
     if let Some(payload) = ast_ctor_arg(ast, node, "Name") {

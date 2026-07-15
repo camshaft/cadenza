@@ -256,6 +256,83 @@
   (input  (= (read (print (Ast.Bool false))) (Ast.Bool false)))
   (output (: true Bool)))
 
+; --- The Ast.Str leaf variant ---------------------------------------------------------------------
+; A STRING is one of the syntactic forms the `Ast` sum carries (type-system.md #The Abstract Syntax Tree
+; Type Is An Ordinary Sum Type: "an integer, a float, a STRING, a boolean, a name, and a list"), so
+; `(quote "hi")` is the `Ast` value `(Ast.Str "hi")`. `Ast.Str` is DISTINCT from `Ast.Name` even though
+; both carry a String payload: `Ast.Str` is a string LITERAL (a value), `Ast.Name` is an identifier
+; REFERENCE — so `(quote "foo")` (the string) and `(quote foo)` (the name) are different `Ast` values.
+; The leaf constructs, destructures by match, round-trips through `Ast.encode`/`Ast.decode` and
+; `print`/`read` (the printed `"…"` uses the closed escape set and reads back exactly), and `eval`
+; executes it (a string form evaluates to itself).
+
+(case "a quoted string equals the same node built by the Ast.Str constructor"
+  (doc    "`(quote \"hi\")` is the `Ast` sum value `(Ast.Str \"hi\")` (metaprogramming.md #Quote Produces
+           An AST Value; type-system.md #The Abstract Syntax Tree Type Is An Ordinary Sum Type — a string
+           is a syntactic form). `(= (quote \"hi\") (Ast.Str \"hi\"))` MUST be true (core-semantics.md
+           #Equality Is Structural), the string companion of the Int/Bool/Name equality cases.")
+  (input  (= (quote "hi") (Ast.Str "hi")))
+  (output (: true Bool)))
+
+(case "a quoted string is distinct from the same text quoted as a name"
+  (doc    "`Ast.Str` (a string LITERAL) and `Ast.Name` (an identifier reference) are different variants
+           even though both carry a String payload. `(quote \"foo\")` is `(Ast.Str \"foo\")`, NOT
+           `(Ast.Name \"foo\")`, so comparing them is FALSE — the reifier maps a string literal and a bare
+           name to distinct forms. Pins that a string is not collapsed to a name (they are separate
+           syntactic forms).")
+  (input  (= (quote "foo") (Ast.Name "foo")))
+  (output (: false Bool)))
+
+(case "a match binds an Ast.Str payload"
+  (doc    "The `Ast` sum is deconstructible by pattern matching (type-system.md #The Abstract Syntax Tree
+           Type Is An Ordinary Sum Type), so a match over `(quote \"hey\")` binds the `Ast.Str` payload —
+           the String literal — and `String.byte-len` of it is 3. The catch-all covers the other variants.")
+  (input  (match (quote "hey")
+            ((Ast.Str s) (String.byte-len s))
+            (_           0)))
+  (output (: 3 Int64)))
+
+(case "a built-in Ast.Str constructor applied to a wrong-type payload is a type error"
+  (doc    "`Ast.Str`'s payload type is String, so `(Ast.Str 5)` applies it to an Int64 — a type mismatch
+           the compiler MUST reject (CDZ0201), exactly as `(Ast.Int \"x\")` and `(Ast.Bool 5)` are. Pins
+           that the built-in `Ast.Str` constructor type-checks its declared payload like any sum variant.")
+  (input  (Ast.Str 5))
+  (error  CDZ0201))
+
+(case "a quoted compound form containing a string reifies with an Ast.Str element"
+  (doc    "A string nested inside a quoted compound reifies as an `Ast.Str` element. `(quote (f \"x\"))` is
+           `(Ast.List (list (Ast.Name \"f\") (Ast.Str \"x\")))` — the head `f` is a name, the argument
+           `\"x\"` a string literal — so comparing it against that hand-built node MUST be true. Pins that
+           the string leaf reifies structurally inside a list, distinct from the head name.")
+  (input  (= (quote (f "x")) (Ast.List (list (Ast.Name "f") (Ast.Str "x")))))
+  (output (: true Bool)))
+
+(case "eval of a quoted string executes it to the string value"
+  (doc    "eval executes an AST value as code (metaprogramming.md #Eval Is Optional For Macros And
+           Interactive Use); a string form evaluates to itself, so `(eval (quote \"abcd\"))` runs to the
+           string `\"abcd\"` — `String.byte-len` of it is 4. The string companion of `(eval (quote true))`
+           — `eval` reconstructs the source the `Ast.Str` denotes (the string literal) and folds it.")
+  (input  (do (def (main) (String.byte-len (eval (quote "abcd")))) (export main)))
+  (output (: 4 Int64)))
+
+(case "encoding and decoding an Ast.Str round-trips to an equal value"
+  (doc    "`(Ast.Str \"hi\")` is an AST value; encoding then decoding it MUST yield an equal AST
+           (ast-encoding.md #The Encoding Is A Bijection — decode(encode t) is t), exactly as the Int/Bool/
+           Name/List round-trips do. `Ast.decode` is total, so the round-trip matches the `Ok` arm.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Str "hi")))
+            ((Ok a)  (= a (Ast.Str "hi")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "print of an Ast.Str renders a quoted literal with escapes and read inverts it"
+  (doc    "`print : Ast → String` renders an `Ast.Str` as a `\"…\"` literal, escaping the closed set
+           (`\\n \\t \\r \\\\ \\\"`) — the canonical re-readable spelling — and `read : String → Ast`
+           parses it back, so `read(print v) == v` (compiler-pipeline.md — printer and reader are inverse).
+           The payload here holds an embedded quote and newline (`a\"b\\nc`), so this pins the escape
+           round-trip, not just plain text — distinct from `Ast.Name`, which prints the bare word.")
+  (input  (= (read (print (Ast.Str "a\"b\nc"))) (Ast.Str "a\"b\nc")))
+  (output (: true Bool)))
+
 (case "a quoted compound form equals the same AST built by the Ast.List constructor"
   (doc    "The list companion, and the sharpest case: `(quote (+ 1 2))` is
            `(Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2)))` — the very value form the FIRST
