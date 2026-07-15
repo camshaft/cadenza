@@ -156,6 +156,11 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
         return Some(payload);
     }
+    // `(Ast.Float payload)` -> the payload AS SOURCE (the float-literal node). A reified float literal
+    // `(Ast.Float 1.5)` unwraps back to the `1.5` literal, which evaluates to itself.
+    if let Some(payload) = ast_ctor_arg(ast, node, "Float") {
+        return Some(payload);
+    }
     // `((intrinsic "ast-lift") e)` -> the operand `e` AS SOURCE. `ast-lift` wraps a RUNTIME active-unquote
     // operand (a name / a computed expression — `quote::reify_active`), so reconstructing the source the
     // AST denotes unwraps it back to `e` (the evaluated code), reused live exactly as `Ast.Int`'s payload.

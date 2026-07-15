@@ -346,6 +346,13 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Int", payload))
             }
+            // A float literal -> `(Ast.Float d)`. `Ast.Float` carries a `Float64` payload (a float is a
+            // syntactic form — `type-system.md`). The payload REUSES the literal's `Decimal` leaf, so the
+            // reified constant reads back to the exact same double (its canonical bits are stable).
+            leaf @ Leaf::Float(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Float", payload))
+            }
             // A boolean literal -> `(Ast.Bool b)`. `Ast.Bool` carries a `Bool` payload (`type-system.md`
             // §The Abstract Syntax Tree Is An Ordinary Sum Type — "a boolean" is a syntactic form), so the
             // reified `true`/`false` reads back identically. The payload REUSES the literal's leaf.
@@ -368,7 +375,7 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, Leaf::Str(name));
                 Some(ast_ctor(ast, "Name", payload))
             }
-            // Any other leaf kind (Float/Char/Sym/Bytes/…) has no `Ast` variant yet: not
+            // Any other leaf kind (Char/Sym/Bytes/…) has no `Ast` variant yet: not
             // reifiable — bail so the whole quote declines rather than miscompiling.
             _ => None,
         },
@@ -444,11 +451,12 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             match ast.get(items[1]) {
                 Struct::Atom(l) => match ast.leaf(*l) {
                     Leaf::Int { .. } => Some(ast_ctor(ast, "Int", items[1])),
+                    Leaf::Float(_) => Some(ast_ctor(ast, "Float", items[1])),
                     Leaf::Bool(_) => Some(ast_ctor(ast, "Bool", items[1])),
                     Leaf::Str(_) => Some(ast_ctor(ast, "Str", items[1])),
                     // A NAME is a runtime reference — lift by inferred type at lower.
                     Leaf::Name(_) => Some(ast_lift(ast, items[1])),
-                    // A literal with no value-carrying `Ast` variant yet (Float/Char/Sym/Bytes) — bail.
+                    // A literal with no value-carrying `Ast` variant yet (Char/Sym/Bytes) — bail.
                     _ => None,
                 },
                 // A non-leaf operand (a computed expression) — a runtime value, lift by inferred type.

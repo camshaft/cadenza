@@ -29976,13 +29976,25 @@ mod match_engine {
             .is_none(),
             "a quoted string vs a quoted name is well-typed (both Ast) — the runtime value is false"
         );
-        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a FLOAT literal — no
-        // `Ast.Float` variant; Int/Bool/Str/Name/List are realized) is NOT reified: it DECLINES (a Todo),
-        // never a miscompile.
+        // A FLOAT literal reifies to `(Ast.Float d)` — a float is a syntactic form (the Ast sum now
+        // realizes the COMPLETE spec set: Int/Float/Bool/Str/Name/List). `(quote 3.0)` is `(Ast.Float
+        // 3.0)`, DISTINCT from `(Ast.Int 3)`, so they compare unequal.
+        assert!(
+            reject_code("(module m (def (main) (= (quote 1.5) (Ast.Float 1.5))) (export main))")
+                .is_none(),
+            "a quoted float equals the same Ast.Float node"
+        );
+        assert!(
+            reject_code("(module m (def (main) (= (quote 3.0) (Ast.Int 3))) (export main))")
+                .is_none(),
+            "a quoted float vs a quoted int is well-typed (both Ast) — the runtime value is false"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum still can't carry (a CHAR literal — no
+        // `Ast.Char` variant) is NOT reified: it DECLINES (a Todo), never a miscompile.
         assert_eq!(
-            reject_code("(module m (def (main) (quote 1.5)) (export main))"),
+            reject_code("(module m (def (main) (quote #\\a)) (export main))"),
             None,
-            "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
+            "an un-reifiable quote body (a char leaf) declines cleanly (no artifact, no coded rejection)"
         );
     }
 
@@ -30118,6 +30130,70 @@ mod match_engine {
             ),
             "a quoted string and a quoted name are different Ast values (false)"
         );
+    }
+
+    #[test]
+    fn an_ast_float_folds_through_reify_eval_and_round_trips() {
+        use crate::testkit::parse;
+        // The `Ast.Float` leaf variant end-to-end — the LAST of the spec's six Ast forms (type-system.md
+        // §The Abstract Syntax Tree Is An Ordinary Sum Type). `(eval (quote 1.5))` reconstructs the float
+        // literal and folds to `1.5`; encode/decode (the f64 bit pattern) and print/read (the shortest
+        // re-readable decimal) round-trip; and an integer-valued float `3.0` stays a float through read
+        // (its `.0` is preserved), NOT collapsed to `Ast.Int`.
+        let eval_float = "(module m (def (main) (eval (quote 1.5))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(eval_float))).expect("compile"),
+                "main"
+            ),
+            1.5,
+            "(eval (quote 1.5)) executes the reconstructed float literal to 1.5"
+        );
+        for (src, what) in [
+            (
+                "(module m (def (main) \
+                   (match (Ast.decode (Ast.encode (Ast.Float 1.5))) \
+                     ((Ok a) (= a (Ast.Float 1.5))) \
+                     ((Err _) false))) \
+                 (export main))",
+                "encode/decode round-trips an Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (read (print (Ast.Float 1.5))) (Ast.Float 1.5))) \
+                 (export main))",
+                "print/read round-trips an Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0))) \
+                 (export main))",
+                "an integer-valued Ast.Float (3.0) stays a float through read, not Ast.Int",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote 2.5))) \
+                      (Ast.List (list (Ast.Name \"f\") (Ast.Float 2.5))))) \
+                 (export main))",
+                "an active unquote of a float literal lifts to Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((x 4.5)) \
+                     (= (quasiquote (f (unquote x))) \
+                        (Ast.List (list (Ast.Name \"f\") (Ast.Float 4.5)))))) \
+                 (export main))",
+                "an active unquote of a runtime float lifts to Ast.Float by inferred type",
+            ),
+        ] {
+            assert!(
+                run_returns::<bool>(
+                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                    "main"
+                ),
+                "Ast.Float — {what}"
+            );
+        }
     }
 
     #[test]
