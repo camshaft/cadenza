@@ -4,10 +4,10 @@
 
 **What happened.** A `Map.*` operation applied to a map that arrives through a FUNCTION PARAMETER is
 declined "unsupported dotted-application", while the same operation on a map built inline works. `(def (f
-mp) (Map.size mp))` applied to a map declines; `(Map.size (Map.insert Map.empty 1 10))` (inline) works.
+mp) (Map.len mp))` applied to a map declines; `(Map.len (Map.insert Map.empty 1 10))` (inline) works.
 The map is the ONLY heap collection with this limitation: `(def (f xs) (List.len xs))`, `(def (f b)
 (Bytes.len b))`, and `(def (f s) (String.byte-len s))` all compile and run when the collection is a
-parameter. The `maps` capability itself is realized — inline `Map.insert`/`Map.size`/`Map.lookup`/
+parameter. The `maps` capability itself is realized — inline `Map.insert`/`Map.len`/`Map.lookup`/
 `Map.swap`/`Map.take`/`Map.remove` all pass on the gate — so this is specifically the map-operation
 dispatch not accepting a parameter (unknown-shape) map operand.
 
@@ -33,12 +33,12 @@ runtime persistent-map handle, which a parameter carries as well as an inline va
 collection's parameter operands (List, Bytes, String) is not carried to the sibling (Map). This is the
 "a mechanism proven on one form is not carried to its sibling" master pattern across the COLLECTION-TYPE
 dimension: three of four heap collections accept a parameter operand for their operations; Map does not.
-The tell: `(def (f c) (C.len c))` compiles for List/Bytes/String but `(def (f mp) (Map.size mp))` does
+The tell: `(def (f c) (C.len c))` compiles for List/Bytes/String but `(def (f mp) (Map.len mp))` does
 not — the operation dispatch branches on the collection type, and the Map branch requires a known-shape
 (inline) operand the others don't.
 
 **Corpus case added.** `spec/semantics/05-compound-types.sexp` §"a map operation applies to a map passed
-as a function parameter" — `(def (count mp) (Map.size mp))` applied to a two-entry map expects `2`. Gated
+as a function parameter" — `(def (count mp) (Map.len mp))` applied to a two-entry map expects `2`. Gated
 `(needs maps)`, which the seed realizes for inline maps, so the case runs; the seed currently DECLINES
 (the map-operation dispatch won't take a parameter operand), so the case classifies `todo` (gate stays
 GREEN apart from the unrelated c68 map-key FAIL). It will PASS when `Map.*` accepts a parameter map

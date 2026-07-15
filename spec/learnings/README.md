@@ -1219,7 +1219,7 @@ generations of Cadenza taught these lessons the expensive way; the specification
   — why the requested "pop a field / add a field / merge / split" operations are the explicit
   `project`/narrowing the rows learning promised but never pinned: three record primitives
   (`Record.project`/`without`/`merge`) plus derived `extend`/`with`/`pop`, and positional tuple
-  analogues (`Tuple.cat`/`split-at`/`pop`). Each yields a NEW closed value (no mutation), is shaped
+  analogues (`Tuple.concat`/`split-at`/`pop`). Each yields a NEW closed value (no mutation), is shaped
   statically, and stays a special form (field names/positions are static, not runtime values). `merge`
   is strict-unbiased (shared field → `CDZ0211`, no silent clobber); `extend` (absent) and `with`
   (present, may retype) are deliberately distinct; `pop` is row-typed not `Option` (field presence is

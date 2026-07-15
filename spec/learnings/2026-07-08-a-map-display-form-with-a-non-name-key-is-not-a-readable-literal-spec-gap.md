@@ -21,7 +21,7 @@ the RENDERER produces `(map (1 10))` as the canonical display form of an int-key
 form of an int-keyed map is not a program the reader accepts back.
 
 **Why it is UNPINNED (a spec gap, not a break).** There is no miscompile: int-keyed maps fully work via
-`Map.insert` — construct, `Map.size` (→2), `Map.lookup` (→`(Some 10)`), equality, and render (`(map (1
+`Map.insert` — construct, `Map.len` (→2), `Map.lookup` (→`(Some 10)`), equality, and render (`(map (1
 10))`) are all correct. The ONLY gap is that the `(map …)` *literal reader* can't express a non-name key,
 so the display form doesn't round-trip as input. And the spec is underspecified on this: collections-and-
 text.md #A Map's Canonical Form defines the canonical *display* form ("entries as key-value pairs …

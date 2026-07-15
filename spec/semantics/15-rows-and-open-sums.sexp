@@ -220,7 +220,7 @@
 
 ; --- Tuple reshaping: explicit positional operations yield a new tuple ----------------------
 ; type-system.md #A Tuple Is Reshaped Positionally By An Explicit Operation Yielding A New Value and its
-; companions: `Tuple.cat` concatenates, `Tuple.split-at` splits at a static position, `Tuple.pop` takes
+; companions: `Tuple.concat` concatenates, `Tuple.split-at` splits at a static position, `Tuple.remove` takes
 ; element 0 off. A tuple's arity is part of its type, so every result arity is fixed statically and there
 ; is no disjointness constraint (positions are anonymous). `k` is a compile-time position written as a
 ; literal, exactly as `(. x N)` writes its index; a split outside `0..=len` is a type error, the `(. x N)`
@@ -229,68 +229,68 @@
 
 (case "concatenating two tuples appends their elements"
   (doc    "Witnesses type-system.md #Two Tuples Are Concatenated Into One Of Their Combined Length:
-           `(Tuple.cat (tuple 1 2) (tuple 3 4))` yields `(tuple 1 2 3 4)` of arity 4 — the first tuple's
+           `(Tuple.concat (tuple 1 2) (tuple 3 4))` yields `(tuple 1 2 3 4)` of arity 4 — the first tuple's
            elements in order followed by the second's, each keeping its source position's type.")
-  (input  (Tuple.cat (tuple 1 2) (tuple 3 4)))
+  (input  (Tuple.concat (tuple 1 2) (tuple 3 4)))
   (output (: (tuple 1 2 3 4) (Tuple Int64 Int64 Int64 Int64))))
 
 (case "concatenating tuples preserves each element's type"
-  (doc    "The heterogeneous companion: `(Tuple.cat (tuple 1 true) (tuple \"x\"))` yields `(tuple 1 true
+  (doc    "The heterogeneous companion: `(Tuple.concat (tuple 1 true) (tuple \"x\"))` yields `(tuple 1 true
            \"x\")` of type `(Tuple Int64 Bool String)`. Pins that concatenation keeps the type of each
            source position rather than unifying to one element type — a tuple is a heterogeneous product,
            unlike a homogeneous list.")
-  (input  (Tuple.cat (tuple 1 true) (tuple "x")))
+  (input  (Tuple.concat (tuple 1 true) (tuple "x")))
   (output (: (tuple 1 true "x") (Tuple Int64 Bool String))))
 
 ; The concatenation cases above build both operand tuples from CONSTANT literals, so the result folds to a
 ; constant tuple at compile time. A tuple carrying a RUNTIME element — a boundary parameter — cannot fold:
 ; the concatenation runs on the value heap, and reading an element back exercises the emitted machinery. A
 ; case reads the result down to a SCALAR (a projection then arithmetic) so it returns from a parameterized
-; export. These pin `Tuple.cat` on a runtime operand — the value companion of the constant cases.
+; export. These pin `Tuple.concat` on a runtime operand — the value companion of the constant cases.
 
 (case "concatenating tuples with a runtime element reads elements from both operands"
-  (doc    "`(Tuple.cat (tuple n 2) (tuple 3 4))` with `n` a boundary parameter cannot fold — the first
+  (doc    "`(Tuple.concat (tuple n 2) (tuple 3 4))` with `n` a boundary parameter cannot fold — the first
            element is decided at run time, so the concatenation runs on the value heap. Reading element 0
            (the runtime `n`, from the first operand) and element 3 (4, from the second) and summing them
-           yields `n + 4`: 7+4 = 11. Pins that a runtime `Tuple.cat` places BOTH operands' elements into
+           yields `n + 4`: 7+4 = 11. Pins that a runtime `Tuple.concat` places BOTH operands' elements into
            the result at their combined positions, read back correctly by projection.")
   (input  (do (def (main (: n Int64))
-                (+ (. (Tuple.cat (tuple n 2) (tuple 3 4)) 0) (. (Tuple.cat (tuple n 2) (tuple 3 4)) 3))) (export main)))
+                (+ (. (Tuple.concat (tuple n 2) (tuple 3 4)) 0) (. (Tuple.concat (tuple n 2) (tuple 3 4)) 3))) (export main)))
   (call   main (: 7 Int64)) (output (: 11 Int64))
   (call   main (: 100 Int64)) (output (: 104 Int64)))
 
 (case "runtime tuple concatenation preserves element order across the seam"
-  (doc    "`(. (Tuple.cat (tuple 1 2) (tuple n 4)) 2)` reads position 2 of the concatenation — the FIRST
+  (doc    "`(. (Tuple.concat (tuple 1 2) (tuple n 4)) 2)` reads position 2 of the concatenation — the FIRST
            element of the second operand (`n`) — which lands just past the first operand's two elements. It
            is `n` for every `n` (99 → 99). Pins that the second operand's elements are appended AFTER the
            first's on the runtime path, so position 2 is the second tuple's element 0, not a first-operand
            element or a shifted slot.")
-  (input  (do (def (main (: n Int64)) (. (Tuple.cat (tuple 1 2) (tuple n 4)) 2)) (export main)))
+  (input  (do (def (main (: n Int64)) (. (Tuple.concat (tuple 1 2) (tuple n 4)) 2)) (export main)))
   (call   main (: 99 Int64)) (output (: 99 Int64))
   (call   main (: -7 Int64)) (output (: -7 Int64)))
 
 (case "concatenating an empty tuple on the left is the identity"
   (doc    "The empty tuple `(tuple)` — which IS the unit value (core-semantics.md #The Empty Tuple Is The
-           Unit Value) — is the identity of `Tuple.cat`: `(Tuple.cat (tuple) (tuple 1 2))` prepends no
+           Unit Value) — is the identity of `Tuple.concat`: `(Tuple.concat (tuple) (tuple 1 2))` prepends no
            elements, so the result is `(tuple 1 2)`. Pins the empty-operand identity the existing cat cases
            (which join two non-empty tuples) do not exercise — the tuple companion of the empty-string /
            empty-bytes concatenation-identity cases.")
-  (input  (Tuple.cat (tuple) (tuple 1 2)))
+  (input  (Tuple.concat (tuple) (tuple 1 2)))
   (output (: (tuple 1 2) (Tuple Int64 Int64))))
 
 (case "concatenating an empty tuple on the right is the identity"
-  (doc    "The mirror: `(Tuple.cat (tuple 1 2) (tuple))` appends no elements, so the result is `(tuple 1
+  (doc    "The mirror: `(Tuple.concat (tuple 1 2) (tuple))` appends no elements, so the result is `(tuple 1
            2)`. Pins that the empty tuple is the identity on the right as well as the left, so a cat with an
            empty operand on either side is a no-op on value.")
-  (input  (Tuple.cat (tuple 1 2) (tuple)))
+  (input  (Tuple.concat (tuple 1 2) (tuple)))
   (output (: (tuple 1 2) (Tuple Int64 Int64))))
 
 (case "concatenating two empty tuples is the empty tuple"
-  (doc    "The degenerate boundary: `(Tuple.cat (tuple) (tuple))` joins nothing to nothing, yielding the
+  (doc    "The degenerate boundary: `(Tuple.concat (tuple) (tuple))` joins nothing to nothing, yielding the
            empty tuple `(tuple)` — the unit value. Pins that cat handles the zero+zero case, not
            underflowing or producing a novel form, the tuple companion of the empty+empty string/bytes/set
            cases.")
-  (input  (Tuple.cat (tuple) (tuple)))
+  (input  (Tuple.concat (tuple) (tuple)))
   (output (: (tuple) (Tuple))))
 
 (case "splitting a tuple at a position yields a prefix and a suffix"
@@ -356,21 +356,21 @@
   (call   main (: 0 Int64)) (output (: 30 Int64)))
 
 (case "popping a tuple yields element zero and the remaining tuple"
-  (doc    "Witnesses type-system.md #A Tuple Is Reshaped Positionally: `Tuple.pop` takes element 0 off,
-           `(tuple (. t 0) <rest>)` — the positional analogue of `Record.pop`. `(Tuple.pop (tuple 1 2
+  (doc    "Witnesses type-system.md #A Tuple Is Reshaped Positionally: `Tuple.remove` takes element 0 off,
+           `(tuple (. t 0) <rest>)` — the positional analogue of `Record.pop`. `(Tuple.remove (tuple 1 2
            3))` yields `(tuple 1 (tuple 2 3))`. It is `(Tuple.split-at t 1)` with the singleton prefix
            unwrapped to its element.")
-  (input  (Tuple.pop (tuple 1 2 3)))
+  (input  (Tuple.remove (tuple 1 2 3)))
   (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "popping a tuple with a runtime element separates the head from the rest"
-  (doc    "The runtime companion: `(Tuple.pop (tuple n 20 30))` with `n` a boundary parameter splits the
+  (doc    "The runtime companion: `(Tuple.remove (tuple n 20 30))` with `n` a boundary parameter splits the
            head element 0 (`n`) from the rest `(tuple 20 30)`, built on the value heap because `n` is
            runtime. Reading the popped head (`.0` = `n`) and the rest's last element (`.1 .1` = 30) and
-           summing gives `n + 30`: 9+30 = 39. Pins that a runtime `Tuple.pop` places the operand's element
+           summing gives `n + 30`: 9+30 = 39. Pins that a runtime `Tuple.remove` places the operand's element
            0 as the head and the remaining elements as the rest tuple, both read back by projection.")
   (input  (do (def (main (: n Int64))
-                (+ (. (Tuple.pop (tuple n 20 30)) 0) (. (. (Tuple.pop (tuple n 20 30)) 1) 1))) (export main)))
+                (+ (. (Tuple.remove (tuple n 20 30)) 0) (. (. (Tuple.remove (tuple n 20 30)) 1) 1))) (export main)))
   (call   main (: 9 Int64)) (output (: 39 Int64))
   (call   main (: 0 Int64)) (output (: 30 Int64)))
 
