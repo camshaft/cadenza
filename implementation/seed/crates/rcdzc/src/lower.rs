@@ -9506,16 +9506,34 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                 }
             }
             None => {
-                // `type_specialize` returns `None` only when a `const` argument does NOT fold to a
-                // compile-time value (or a generic scheme's type arg is undetermined). For a `const`
-                // param this is a CONTRACT VIOLATION the author declared — a coded compile error, NOT a
-                // silent runtime fallback (Addendum 3: the author says the arg is compile-time; a runtime
-                // arg is rejected). `type_specialize` reported the specific coded reject; surface it.
-                trace!(target: "rcdzc::lower", head = head.0, callee, "specialization declined (a const arg is not compile-time-known / a type arg is undetermined)");
-                Core::Poison(Reject::coded(
-                    Code::Malformed,
-                    "an argument to a `const` parameter must be compile-time-known (it depends on runtime data), or a generic type argument is undetermined",
-                ))
+                // `type_specialize` returns `None` for TWO very different causes; name the one that
+                // actually applies rather than the conflated message that sent iterator authors down a
+                // dead end. (a) The callee declares a `const` param whose argument does not fold to a
+                // compile-time value — a CONTRACT VIOLATION (Addendum 3). (b) The callee has NO `const`
+                // param: it is a purely-inferred recursive-generic whose scheme carries an UNDETERMINED
+                // type variable the monomorphizer cannot bind — the classic being a recursive-generic
+                // PRODUCER (`from-list : List a -> Iter a`) whose result element var is NOT tied to its
+                // argument's (inferred `∀a b. List a -> Iter b`), so a call at ≥2 element types has no
+                // single value to bind `b` to. That is a known inference limitation, NOT a `const` issue;
+                // pointing at `const` is actively misleading. Distinguish by whether the callee declares a
+                // `const` param.
+                let callee_has_const = db.defs[callee].params.iter().any(|&p| {
+                    db.const_params
+                        .contains(&crate::eval::param_name_occ(db, p))
+                });
+                trace!(target: "rcdzc::lower", head = head.0, callee, callee_has_const, "specialization declined (const contract / undetermined generic type arg)");
+                let message = if callee_has_const {
+                    "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
+                } else {
+                    // The recursive-generic (producer) case: name the real cause + the workarounds an
+                    // author can act on now (the tie fix is a tracked inference follow-up).
+                    "this generic function's type variable is undetermined at this call — a recursive-generic \
+                     function whose RESULT type is not tied to its argument (e.g. a producer `List a -> Iter a` \
+                     whose element type is only inferred) cannot be monomorphized at more than one type in one \
+                     program. Use it at a single element type, annotate the result type, or make the type \
+                     concrete (a monomorphic definition)"
+                };
+                Core::Poison(Reject::coded(Code::Malformed, message))
             }
         };
     }

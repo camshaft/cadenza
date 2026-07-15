@@ -1291,6 +1291,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic producer at two element types is rejected with a tied-result-var diagnostic
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-sum payload projected more than once folds to a scalar
@@ -1943,9 +1944,11 @@ pass	an intra-program handler interposes on a delegated effect, counts it, and f
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
+pass	an open sum payload that does not match its schema yields a typed failure, not a trap
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
+pass	an open sum's payload decodes against a schema to a typed result
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it

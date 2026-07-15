@@ -3523,6 +3523,34 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+; The KNOWN LIMIT: a recursive-generic PRODUCER whose RESULT type variable is not tied to its ARGUMENT —
+; `from-list : List a -> Iter a` is inferred `∀a b. List a -> Iter b` (the produced element `b` comes from
+; `(Iter.Cons h …)` whose var is severed from the argument element `a`) — cannot be MONOMORPHIZED at more
+; than one element type in one program: with two instantiations the monomorphizer has no single value to
+; bind the loose result var. Rejected CDZ0201 with a message that NAMES this cause + the workarounds (single
+; element type, annotate the result, or a monomorphic type), NOT the misleading `const`-parameter message it
+; used to share (the decline conflated a `const`-contract violation with an undetermined generic type arg;
+; the message now branches on whether the callee declares a `const` param). A SINGLE instantiation compiles
+; + runs (the cases above); tying the result var across instantiations is a tracked inference follow-up.
+
+(case "a recursive-generic producer at two element types is rejected with a tied-result-var diagnostic"
+  (doc    "`from-list : List a -> Iter a` builds a generic `Iter` from a generic `List` — a recursive-generic
+           PRODUCER. Its result element var is not tied to its argument's (inferred `∀a b. List a -> Iter b`),
+           so composing `icount(from-list(xs))` at BOTH Int64 AND String in one program has no single type to
+           bind the loose result var → CDZ0201. A single instantiation compiles + runs; this is the ≥2-type
+           limit. The rejection names the recursive-generic-producer cause + workarounds (not the old
+           misleading `const`-parameter message). `cdz check` accepts it; the decline is at monomorphization.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main (: n Int64))
+              (+ (icount (from-list (list n (+ n 1)))) (icount (from-list (list "a" "b" "c")))))
+            (export main)))
+  (error  CDZ0201))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,
