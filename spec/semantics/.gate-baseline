@@ -1120,6 +1120,7 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
+pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
@@ -1347,6 +1348,7 @@ pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
+pass	a runtime BigInt in an Option payload crosses the host boundary
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value

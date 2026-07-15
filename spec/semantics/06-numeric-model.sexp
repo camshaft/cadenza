@@ -413,6 +413,25 @@
   (input  (/ (BigInt.of 100) (BigInt.of 7)))
   (output (: 14 BigInt)))
 
+(case "a runtime BigInt in an Option payload crosses the host boundary"
+  (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
+           not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option
+           BigInt)`. Pins that a runtime BigInt rides the value-encode walker THROUGH a sum payload (the
+           `Shape::BigInt` leaf nested under the Option's variant), the sum-payload companion of the bare
+           runtime-BigInt escape — a BigInt in a sum crosses with its exact value, not dropped or folded.")
+  (input  (Some (* (BigInt.of 1000000) (BigInt.of 1000000))))
+  (output (: (Some 1000000000000) (Option BigInt))))
+
+(case "a parameterized export drives an Option-of-runtime-BigInt on both arms"
+  (doc    "The parameterized companion: `main(v)` returns `None` for v=0 else `(Some (v * 10^6))`, a
+           runtime BigInt payload computed from the argument. v=5 → `(Some 5000000)`, v=0 → `None`. Pins
+           that both the Some (runtime BigInt payload crossing) and None arms of an `(Option BigInt)`
+           result render correctly from a boundary parameter.")
+  (input  (do (def (main (: v Int64))
+                (if (= v 0) (None) (Some (* (BigInt.of v) (BigInt.of 1000000))))) (export main)))
+  (call   main (: 5 Int64)) (output (: (Some 5000000) (Option BigInt)))
+  (call   main (: 0 Int64)) (output (: (None unit) (Option BigInt))))
+
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
            exact value with no width worry. Pins that BigInt carries a magnitude the fixed-width family
