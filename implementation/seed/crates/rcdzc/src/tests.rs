@@ -13988,6 +13988,49 @@ mod match_engine {
     }
 
     #[test]
+    fn an_operator_arg_structural_mismatch_names_the_delta_not_the_raw_unify_message() {
+        // Two SAME-KIND compounds compared/operated in an OPERATOR argument position — two records of a
+        // different field set (`(= (record (x 1)) (record (y 2)))`), two tuples of a different arity — fall
+        // through every coercion/wrap branch to the raw unify "type mismatch: (Record …) and (Record …)
+        // must be the same type here, but differ", which buries the actual difference. The check now
+        // rewords to the readable arg-site lead + the structural DELTA (which field/element differs), the
+        // same hint the annotation / peer-join sites carry.
+        // A record FIELD-SET difference names the missing/extra field.
+        let rec =
+            reject_full("(module m (def (main) (= (record (x 1)) (record (y 2)))) (export main))")
+                .expect("comparing two different-field records rejects");
+        assert_eq!(rec.code.as_deref(), Some("CDZ0203"), "got: {}", rec.message);
+        assert!(
+            rec.message.contains("missing field `x`")
+                && !rec.message.contains("must be the same type here"),
+            "the record delta replaces the raw unify message: {}",
+            rec.message
+        );
+        // A record FIELD-TYPE difference (same field set) names the differing field's types.
+        let field_ty = reject_full(
+            "(module m (def (main) (= (record (x 1)) (record (x true)))) (export main))",
+        )
+        .expect("comparing records with a differing field type rejects");
+        assert!(
+            field_ty
+                .message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "the field-type delta is named: {}",
+            field_ty.message
+        );
+        // A tuple ARITY difference names the element counts.
+        let tup =
+            reject_full("(module m (def (main) (= (tuple 1 2) (tuple 1 2 3))) (export main))")
+                .expect("comparing two different-arity tuples rejects");
+        assert!(
+            tup.message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "the tuple arity delta is named: {}",
+            tup.message
+        );
+    }
+
+    #[test]
     fn the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded() {
         // The ctor name comes from the DECLARATION, not a built-in `Some`/`Ok` — a user sum `Box` with a
         // single `Int64`-payload variant `Wrap` yields "wrap in `Wrap`" (no-keys-outside-the-prelude).
@@ -31430,19 +31473,20 @@ mod diagnostics {
             err.message
         );
         // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
-        // different arity) keep the GENERIC path — the different-compound-kind guard fires only across
-        // distinct kinds, so a same-kind structural mismatch is NOT relabeled a "kind boundary".
+        // different arity) are NOT relabeled a "kind boundary" (that guard fires only across DISTINCT
+        // kinds). The comparison-arg check now names the readable structural DELTA (the tuple arity), not
+        // the raw "must be the same type here" unify lead nor the kind-boundary message.
         let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
         )));
         assert!(
-            same_kind
-                .iter()
-                .any(|d| d.message.contains("must be the same type here"))
+            same_kind.iter().any(|d| d
+                .message
+                .contains("expected a tuple with 1 element, but this one has 2"))
                 && !same_kind
                     .iter()
                     .any(|d| d.message.contains("across that kind boundary")),
-            "two same-kind (tuple) compounds keep the generic mismatch, not the kind-boundary message: {:?}",
+            "two same-kind (tuple) compounds name the arity delta, not the kind-boundary message: {:?}",
             same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
