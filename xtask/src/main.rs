@@ -910,10 +910,15 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // `true`); written verbatim they are valid Rust literals whose type the fn signature fixes. A
     // negative arg is a valid Rust expression too. With no `(call …)`, invoke the sole export nullary.
     let (export, call_expr) = match call {
-        Some(c) => (
-            rust_ident(&c.export),
-            format!("{}({})", rust_ident(&c.export), c.args.join(", ")),
-        ),
+        Some(c) => {
+            // Each arg is a canonical sexp VALUE; a scalar passes through, a compound (`(tuple …)`,
+            // `(record …)`) is rebuilt as the Rust expression the backend's parameter type expects.
+            let args: Vec<String> = c.args.iter().map(|a| rust_call_arg(a)).collect();
+            (
+                rust_ident(&c.export),
+                format!("{}({})", rust_ident(&c.export), args.join(", ")),
+            )
+        }
         None => {
             // The sole export's name is the fn to call with no args — recover it from the emitted
             // signature. Sync mode emits `pub fn <name>(`; async mode emits `pub async fn <name><E:
@@ -935,15 +940,33 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
         }
     };
 
-    // A per-TRIAL temp dir, keyed by a content hash of the program AND its call expression. The key
-    // MUST include the call: one program is driven by several trials (a `(call …)` case runs the same
-    // export with different args) and the gate grades trials IN PARALLEL — keying on the program alone
-    // would point every trial at the SAME `prog.rs`/`prog`, so one worker recompiles `prog` while
-    // another execs it (a write-vs-exec race → "text file busy" / permission-denied, the flake this
-    // fixes). Distinct call expressions get distinct dirs, so parallel trials never touch one path.
+    // A per-INVOCATION temp dir, GLOBALLY UNIQUE so no two workers ever touch the same `prog.rs`/`prog`.
+    // The gate grades trials IN PARALLEL. Keying the dir on a content hash of `program+call` (the prior
+    // scheme) was NOT enough: two DISTINCT corpus cases can normalize to the SAME program+call, so two
+    // workers land in one dir and race on BOTH files — one worker rewrites `prog.rs` while another's rustc
+    // reads it (a truncated source → a spurious build error, its stderr often leading with an unrelated
+    // warning), and one execs `prog` while another relinks it (a write-vs-exec race → "text file busy" /
+    // "no such file" / permission-denied). All of those surfaced as non-deterministic `BadArtifact` fails
+    // whose SET changed run to run. A process-unique dir (a monotonic counter — `Date`/rng are unavailable
+    // and would break parallel determinism) gives every invocation its own paths, so there is nothing to
+    // race. The small cost is losing compile REUSE across identical programs; compilation is already the
+    // dominant cost and identical program+call across cases is rare, so correctness plainly wins.
+    static COMPILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let key = fnv1a(&format!("{program}\u{0}{call_expr}"));
-    let dir = std::env::temp_dir().join(format!("rcdzc-gate-rust-{key:016x}"));
+    let seq = COMPILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir().join(format!("rcdzc-gate-rust-{key:016x}-{pid}-{seq}"));
     let _ = std::fs::create_dir_all(&dir);
+    // Each invocation's dir is now unique (no reuse across cases), so it must clean itself up or /tmp
+    // grows unboundedly across a run. An RAII guard removes it on EVERY return path (the fn has many
+    // early `BadArtifact`/`Declined` exits). Best-effort — a leftover dir on a crash is harmless.
+    struct TmpDir(PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = TmpDir(dir.clone());
     let src = dir.join("prog.rs");
     let bin = dir.join("prog");
     // The driver's entry MUST NOT collide with the export: the corpus overwhelmingly names its export
@@ -1168,6 +1191,64 @@ fn rust_ident(name: &str) -> String {
         s.push('_');
     }
     s
+}
+
+/// Translate a corpus CALL ARGUMENT (a canonical sexp VALUE) into the Rust expression that reconstructs
+/// it, so a compound argument crosses into the emitted `pub fn` the way the Rust backend represents it.
+///
+/// The gate passes each arg as its canonical value text. A bare SCALAR (`20`, `-1`, `true`) is already a
+/// valid Rust literal whose type the fn signature fixes, so it passes through verbatim. A COMPOUND value
+/// must be rebuilt to match the backend's representation (mirroring `cdz_render_at`, the result side):
+///  - `(tuple v0 v1 …)` → the Rust tuple `(e0, e1, …)`; a ONE-element tuple gets the trailing-comma form
+///    `(e0,)` (Rust would otherwise read `(e0)` as a parenthesized scalar, not a 1-tuple).
+///  - `(record (name val) …)` → a Rust tuple of the field values in SORTED-KEY order — the same canonical
+///    order the backend lowers a record to (`(Record (x _) (y _))` → `(i64, i64)` with `x` first).
+///
+/// Anything else (a `list`/sum/`Some`/`Ok` arg, or a value shape not yet needed) passes through verbatim —
+/// no regression: those constructs decline at the BACKEND today (list/sum results have no native Rust form),
+/// so no trial reaches here relying on them, and a genuinely unhandled shape fails rustc exactly as before.
+fn rust_call_arg(val: &str) -> String {
+    let v = val.trim();
+    // A compound is a parenthesized head form; a bare token is a scalar literal → verbatim.
+    let inner = match v.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        Some(inner) => inner.trim(),
+        None => return v.to_string(),
+    };
+    let (head, rest) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
+    match head {
+        "tuple" => {
+            let elems: Vec<String> = split_top_level(rest)
+                .iter()
+                .map(|e| rust_call_arg(e))
+                .collect();
+            if elems.len() == 1 {
+                format!("({},)", elems[0]) // 1-tuple: trailing comma so it isn't a paren-scalar.
+            } else {
+                format!("({})", elems.join(", "))
+            }
+        }
+        "record" => {
+            // Each field is a `(name value)` pair; sort by NAME to match the backend's sorted-key tuple.
+            let mut fields: Vec<(String, String)> = split_top_level(rest)
+                .iter()
+                .filter_map(|f| {
+                    let f = f.trim();
+                    let body = f.strip_prefix('(')?.strip_suffix(')')?.trim();
+                    let (name, fval) = body.split_once(char::is_whitespace)?;
+                    Some((name.trim().to_string(), rust_call_arg(fval)))
+                })
+                .collect();
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            let elems: Vec<String> = fields.into_iter().map(|(_, v)| v).collect();
+            if elems.len() == 1 {
+                format!("({},)", elems[0])
+            } else {
+                format!("({})", elems.join(", "))
+            }
+        }
+        // Not a compound the harness rebuilds — pass through verbatim (declines at the backend if unsupported).
+        _ => v.to_string(),
+    }
 }
 
 /// Make a Cadenza SUM / VARIANT name a Rust identifier the SAME way the Rust backend's `types::sum_ident`
@@ -3473,5 +3554,29 @@ mod trap_grading_tests {
             vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
             "a single tuple payload stays nested: {vexpr}"
         );
+    }
+
+    #[test]
+    fn rust_call_arg_rebuilds_compound_values_as_rust_expressions() {
+        // A bare SCALAR passes through verbatim — it is already a valid Rust literal.
+        assert_eq!(rust_call_arg("20"), "20");
+        assert_eq!(rust_call_arg("-1"), "-1");
+        assert_eq!(rust_call_arg("true"), "true");
+        // A `(tuple …)` becomes a Rust tuple.
+        assert_eq!(rust_call_arg("(tuple 7 9)"), "(7, 9)");
+        // A `(record …)` becomes a Rust tuple of its field VALUES in SORTED-KEY order — matching the
+        // backend's record lowering. `(record (y 8) (x 3))` sorts x<y → `(3, 8)` regardless of source order.
+        assert_eq!(rust_call_arg("(record (y 8) (x 3))"), "(3, 8)");
+        assert_eq!(rust_call_arg("(record (x 3) (y 8))"), "(3, 8)");
+        // NESTING composes: a tuple containing a record and a scalar.
+        assert_eq!(
+            rust_call_arg("(tuple (record (a 1) (b 2)) 5)"),
+            "((1, 2), 5)"
+        );
+        // A ONE-element tuple/record needs a trailing comma so Rust reads it as a 1-tuple, not a paren-scalar.
+        assert_eq!(rust_call_arg("(tuple 4)"), "(4,)");
+        assert_eq!(rust_call_arg("(record (x 4))"), "(4,)");
+        // An unhandled head passes through verbatim (declines at the backend if unsupported).
+        assert_eq!(rust_call_arg("(list 1 2 3)"), "(list 1 2 3)");
     }
 }
