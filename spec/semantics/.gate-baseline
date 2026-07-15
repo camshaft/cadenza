@@ -548,6 +548,7 @@ pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
+pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
 pass	a duplicate TUPLE-shaped arm is dead code but the program still runs
@@ -1032,6 +1033,7 @@ pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
 pass	a nullary variant list element dispatches by its discriminant
+pass	a nullary-variant dotted pattern matches inside a match nested directly in an arm body
 pass	a one-concat rope nested in a tuple equals its flat twin
 pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
@@ -1091,6 +1093,7 @@ pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
 pass	a private module member is still visible to a sibling
+pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a program declares its own family unit and converts with it
@@ -1776,6 +1779,7 @@ pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
 pass	an export mixing a scalar and a tuple parameter returns a BigInt from both
 pass	an export mixing a scalar and a tuple parameter returns a list from both
+pass	an export name with a digit-led kebab segment is rejected, not silently invalid
 pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an export with a nested-tuple parameter returns a list from its leaves
 pass	an export with a record-with-a-tuple-field parameter returns a list from its leaves
@@ -2085,6 +2089,7 @@ pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted string executes it to the string value
+pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -2674,6 +2679,5 @@ todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
