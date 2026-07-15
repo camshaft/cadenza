@@ -1588,7 +1588,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::PayloadOf) if args.len() == 1 => lower_payload_of(db, args[0]),
                 // `decode` — decode a `payload-of` value against a `«T»-schema` to a typed Result. FOLD:
                 // the payload's constant type AGREES with the schema's target → `(Ok payload)`; a
-                // MISMATCH → `(Err (DecodeError unit))`, NEVER a trap (§214). Modelled on the Ast.decode
+                // MISMATCH → `(Err (TypeMismatch unit))`, NEVER a trap (§214). Modelled on the Ast.decode
                 // Result-building path. A runtime payload/schema declines (const-fold only, OQ-4).
                 Some(Prim::SchemaDecode) if args.len() == 2 => {
                     lower_schema_decode(db, id, args[0], args[1])
@@ -2849,7 +2849,7 @@ fn payload_of_node(db: &mut Db, variant: StructId) -> Result<StructId, Reject> {
 /// typed `Result` (`type-system.md §An Open Sum's Payload May Be Schema-Typed`; `value-interchange.md`
 /// §Decode Inverts Serialize And Refuses Otherwise). CONST-FOLD only (OQ-4 defers runtime): read the
 /// schema's TARGET type (the `Schema` sum's type argument) and the PAYLOAD's constant type; they AGREE
-/// → `(Ok payload)`, a MISMATCH → `(Err (DecodeError unit))` — NEVER a trap (§214: a schema mismatch is
+/// → `(Ok payload)`, a MISMATCH → `(Err (TypeMismatch unit))` — NEVER a trap (§214: a schema mismatch is
 /// a typed failure, so a fold over an open vocabulary handles a malformed payload as data). Modelled on
 /// `lower_ast_decode`'s Result-building (Ok/Err by discriminant via `result_discs`).
 fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: StructId) -> Core {
@@ -2894,7 +2894,7 @@ fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: Str
             (c, crate::infer::type_of(db, payload))
         }
     };
-    // AGREE → `(Ok payload)`; MISMATCH → `(Err (DecodeError unit))`. Never a trap (§214).
+    // AGREE → `(Ok payload)`; MISMATCH → `(Err (TypeMismatch unit))`. Never a trap (§214).
     if payload_ty.agrees_with(&target) {
         trace!(target: "rcdzc::fold", node = id.0, "decode folds a matching payload to (Ok payload)");
         // The `Ok` payload is the decoded value itself — a fresh node carrying the payload's core+type.
@@ -2904,8 +2904,8 @@ fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: Str
             payloads: vec![ok_payload],
         }
     } else {
-        trace!(target: "rcdzc::fold", node = id.0, "decode folds a mismatched payload to (Err (DecodeError unit))");
-        // `(Err (DecodeError unit))` — build the `DecodeError` value (its sole variant carrying `unit`),
+        trace!(target: "rcdzc::fold", node = id.0, "decode folds a mismatched payload to (Err (TypeMismatch unit))");
+        // `(Err (TypeMismatch unit))` — build the `DecodeError`'s `TypeMismatch` variant (disc 0),
         // then wrap in the Result `Err`. Never an `unreachable`/trap.
         let derr = build_decode_error(db);
         Core::SumNew {
@@ -2917,9 +2917,10 @@ fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: Str
 
 /// Build the constant `TypeMismatch` value — discriminant 0 of the multi-variant `DecodeError` prelude
 /// sum (`(type DecodeError TypeMismatch Eof)`), the schema-mismatch failure kind. A NULLARY variant (no
-/// payload), so a synthesized `Core::SumNew{disc:0, payloads:[]}`; it renders `(Err TypeMismatch)` — the
-/// honest canonical spelling (a single-variant sum would newtype-erase and drop the ctor name). The
-/// `Err` payload of a schema-mismatch `decode`; never a trap.
+/// payload), so a synthesized `Core::SumNew{disc:0, payloads:[]}`; it renders `(Err (TypeMismatch unit))`
+/// (a nullary variant crosses the boundary as `(Name unit)`) — the honest canonical spelling (a
+/// single-variant sum would newtype-erase and drop the ctor name). The `Err` payload of a schema-mismatch
+/// `decode`; never a trap.
 fn build_decode_error(db: &mut Db) -> StructId {
     // `DecodeError`'s `TypeMismatch` is discriminant 0 (declaration order), nullary.
     let ty = decode_error_ty(db);
@@ -2934,9 +2935,9 @@ fn build_decode_error(db: &mut Db) -> StructId {
 }
 
 /// The `Ty::Sum` type-value of the `DecodeError` prelude sum (monomorphic, no args), by declaration
-/// occurrence — so a built `(DecodeError unit)` value carries the right nominal type for rendering /
-/// `Result`-payload typing. Falls back to `Ty::Any` if the sum is not declared (it always is, via
-/// `sums::prelude_decls`).
+/// occurrence — so a built `(TypeMismatch unit)` value carries the right nominal type (`DecodeError`) for
+/// rendering / `Result`-payload typing. Falls back to `Ty::Any` if the sum is not declared (it always is,
+/// via `sums::prelude_decls`).
 fn decode_error_ty(db: &mut Db) -> crate::ty::Ty {
     for td in &db.type_decls {
         if td.name == "DecodeError" {

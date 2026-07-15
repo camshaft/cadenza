@@ -155,8 +155,9 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // sum) for two reasons: (1) a decode error genuinely HAS kinds (the concierge's design call —
     // "a decode error usually has kinds"); (2) a single-variant sum newtype-ERASES so its ctor name
     // vanishes at render (`(: unit DecodeError)`), whereas a multi-variant sum RENDERS its variant name
-    // — so `decode`'s mismatch yields `(Err TypeMismatch)`, an honest canonical spelling, not the
-    // unproducible `(DecodeError unit)`. `decode` builds `TypeMismatch` (disc 0) on a schema mismatch.
+    // — so `decode`'s mismatch yields `(Err (TypeMismatch unit))` (a nullary variant crosses the boundary
+    // as `(Name unit)`), an honest canonical spelling, not the unproducible `(DecodeError unit)`. `decode`
+    // builds `TypeMismatch` (disc 0) on a schema mismatch.
     // A program reaches these as the `Err` payload of `decode`'s result; nothing privileged — the same
     // `type_form`/`scan_type_decl` path as Option/Result.
     let decode_error = type_form(ast, "DecodeError", &[("TypeMismatch", &[]), ("Eof", &[])]);

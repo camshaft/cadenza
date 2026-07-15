@@ -452,9 +452,9 @@ pub enum Prim {
     /// `∀t. (Schema t) → Payload → (Result t DecodeError)` (`value-interchange.md` §Decode Inverts
     /// Serialize And Refuses Otherwise; type-system.md §An Open Sum's Payload May Be Schema-Typed). OS2
     /// folds the CONSTANT path (OQ-4 defers runtime): the payload's static type AGREES with the schema's
-    /// target → `(Ok payload)` (`Core::SumNew` at the Result `Ok` disc); a MISMATCH → `(Err (DecodeError
-    /// unit))`, NEVER a trap (§214 — a schema mismatch is a typed failure, so a fold over an open
-    /// vocabulary handles a malformed payload as data). Modelled on `lower_ast_decode` + `result_discs`.
+    /// target → `(Ok payload)` (`Core::SumNew` at the Result `Ok` disc); a MISMATCH → `(Err
+    /// (TypeMismatch unit))`, NEVER a trap (§214 — a schema mismatch is a typed failure, so a fold over an
+    /// open vocabulary handles a malformed payload as data). Modelled on `lower_ast_decode` + `result_discs`.
     /// NOTE: distinct from `Ast.decode` (`AstDecode`, a Bytes→Result deserializer) — this is the
     /// schema-directed open-sum-payload decode, a DIFFERENT prim with a different intrinsic name.
     SchemaDecode,
