@@ -2086,6 +2086,27 @@
   (call   main (: 1 Int64)) (output (: 120 Int64))
   (call   main (: 9 Int64)) (output (: 140 Int64)))
 
+(case "a many-arm string match consumed by concat beside a recursive call keeps both operands"
+  (doc    "The HEAP-operand face of the ≥4-arm non-tail escape (the scalar `+ 100` cases above pin the
+           scalar face). A FOUR-arm String match `(d …)` (a jump-table lowering, its arm bodies are heap
+           Strings) is consumed by `(String.concat (go (/ n 3)) (d (% n 3)))` — its SIBLING operand a
+           RECURSIVE call `(go …)`. The escape bit HERE too: the recursive left operand was dropped and
+           only the right `(d …)` survived — `go 4` returned \"b\" (byte-len 1) instead of \"bb\" (2),
+           because the br_table arm branched one block PAST the concat to the function result, discarding
+           the left handle. The recursive-call sibling is load-bearing: with the sibling a constant the
+           drop is masked (the surviving arm is the result anyway). Fixed with the arithmetic cases (each
+           arm branches to the match's own `$join`); pins that a heap-producing many-arm match yields its
+           value into a consuming op even when the sibling is a recursive call — go(2)=\"c\"→1,
+           go(4)=concat(\"b\",\"b\")→2, go(9)=concat(concat(\"b\",\"a\"),\"a\")→3.")
+  (input  (do
+            (def (d (: v Int64)) (match v (0 "a") (1 "b") (2 "c") (_ "?")))
+            (def (go (: n Int64)) (if (< n 3) (d n) (String.concat (go (/ n 3)) (d (% n 3)))))
+            (def (main (: n Int64)) (String.byte-len (go n)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 4 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 3 Int64)))
+
 (case "a Bool match with its arms in either order is exhaustive"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
            property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true

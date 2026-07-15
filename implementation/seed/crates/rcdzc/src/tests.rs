@@ -31026,6 +31026,10 @@ mod match_engine {
         );
         assert_eq!(run(&tail, 1), 20);
         assert_eq!(run(&tail, 9), 40);
+        // The HEAP-operand face of this escape — a ≥4-arm String match consumed by `String.concat` beside a
+        // RECURSIVE-CALL sibling — needs the value-heap runtime to execute (String.concat allocates), so it
+        // is pinned in the corpus instead: 02-binding-and-control.sexp "a many-arm string match consumed by
+        // concat beside a recursive call keeps both operands" (go(4)=concat("b","b")→byte-len 2, not 1).
     }
 
     #[test]
