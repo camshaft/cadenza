@@ -22,6 +22,10 @@ publish = false
 
 [dependencies]
 sha2 = "0.10"
+# The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
+# JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # The one argument parser for every workspace command — typed subcommands + generated `--help`,
 # replacing the hand-rolled `args.get(N)` dispatch (no positional-by-index, no env-var knobs).
 clap = { version = "4", features = ["derive"] }

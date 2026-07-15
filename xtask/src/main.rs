@@ -178,6 +178,13 @@ enum Cmd {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+    /// Orchestrate the autonomous-agent fleet: bring agents up as named tmux windows, tear them
+    /// down, inspect the board, add/remove agents, and route inbox messages. The durable manifest is
+    /// `.claude/fleet/registry.json`; see `.claude/fleet/AGENTS-fleet.md` for the agent contract.
+    Fleet {
+        #[command(subcommand)]
+        cmd: fleet::FleetCmd,
+    },
 }
 
 fn main() {
@@ -221,6 +228,7 @@ fn main() {
         Cmd::Bench { save } => bench::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
+        Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
     }
 }
 
@@ -262,6 +270,7 @@ fn miri(paths: &Paths, filter: &str) {
 
 mod bench;
 mod codegen;
+mod fleet;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
@@ -270,7 +279,7 @@ mod codegen;
 /// resolves to that worktree's own root).
 struct Paths {
     /// `<repo>` — the workspace root (parent of `<repo>/xtask`).
-    repo: PathBuf,
+    pub(crate) repo: PathBuf,
     /// `<repo>/implementation/seed` — the seed toolchain root that holds `crates/`.
     pub(crate) seed: PathBuf,
 }
