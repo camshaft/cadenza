@@ -566,6 +566,7 @@ pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decoded payload feeds ordinary arithmetic
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
+pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
@@ -989,6 +990,7 @@ pass	a multi-segment bin concatenates mixed-width signed and unsigned segments i
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
+pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
@@ -1592,6 +1594,7 @@ pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
+pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
 pass	a suffixed Rational literal annotated as Int64 is a type mismatch
@@ -1845,6 +1848,7 @@ pass	an active unquote of an Ast-valued expression splices the subtree as identi
 pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
+pass	an all-escapes Ast.Str round-trips through print and read
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
@@ -1903,6 +1907,8 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an empty-string Ast.Str round-trips through encode and decode
+pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
 pass	an entrypoint delegation lets a program reach its host function
 pass	an entrypoint delegation reaches an effect performed in a recursive callee
