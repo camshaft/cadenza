@@ -1,0 +1,173 @@
+/// parse-checked.cdz — a FALLIBLE recursive-descent parser: the same arithmetic grammar as `parse` (which
+/// is total — it never reports an error), but returning `Result(Expr, ParseError)` so a malformed token
+/// stream produces a DIAGNOSTIC (what went wrong + at which token index) instead of a silently-wrong tree.
+/// This is what a real front end does — parse errors are values threaded through the descent, not traps.
+/// It reuses `Tok`/`Expr` (imported cross-file from `parse`) and evaluates a successful parse via `parse`'s
+/// own tree structure.
+///
+/// It stresses `Result` threaded through MUTUAL recursion: `pexpr ↔ pterm ↔ pfactor` each return
+/// `Result(Tuple(Expr, Int64), ParseError)` — the parsed tree + next index, or an error — and the `Ok`
+/// path carries a COMPOUND (Expr, index) payload across every mutual-call edge, short-circuiting to the
+/// first `Err`. The grammar:
+///   expr   = term   (('+' | '-') term)*
+///   term   = factor (('*' | '/') factor)*
+///   factor = NUMBER | '(' expr ')'
+/// Errors: an operator/EOF where a factor is expected (`ExpectedFactor idx`), and a missing `)`
+/// (`ExpectedRParen idx`).
+
+import { Tok, Expr, parse, eval-expr } from "parse"
+
+type ParseError =
+  | ExpectedFactor(Int64)
+  | ExpectedRParen(Int64)
+
+/// The token at `i`, or `Tok.End` past the end (so the parser dispatches uniformly; `parse`'s `Tok` has
+/// an `End` variant for exactly this).
+def tok(toks: List(Tok), i: Int64) = match List.at(toks, i) with
+  | Option.Some(t) => t
+  | Option.None(_) => Tok.End
+
+/// factor = NUMBER | '(' expr ')'. Returns `(Expr, next-index)` or a `ParseError`.
+def pfactor(toks: List(Tok), i: Int64) = match tok(toks, i) with
+  | Tok.TNum(v) => Result.Ok((Expr.Lit(v), i + 1))
+  | TLP =>
+    // '(' expr ')' — parse the inner expr, then require ')'. NULLARY variant patterns use the BARE name
+    // (`TLP`/`TRP`), not `Tok.TLP` — a dotted nullary arm whose body nests a same-type match mis-resolves
+    // as member access (see `repros/reject-dotted-nullary-arm-with-nested-sametype-match.cdz`).
+    (match pexpr(toks, i + 1) with
+      | Result.Ok(inner) => (match tok(toks, inner.1) with
+        | TRP => Result.Ok((inner.0, inner.1 + 1))
+        | _ => Result.Err(ParseError.ExpectedRParen(inner.1)))
+      | Result.Err(e) => Result.Err(e))
+  | _ => Result.Err(ParseError.ExpectedFactor(i))
+
+/// term = factor (('*' | '/') factor)* — left-assoc fold, short-circuiting on error.
+def pterm(toks: List(Tok), i: Int64) = match pfactor(toks, i) with
+  | Result.Ok(f) => term-loop(toks, f.0, f.1)
+  | Result.Err(e) => Result.Err(e)
+
+def term-loop(toks: List(Tok), acc: Expr, i: Int64) = match tok(toks, i) with
+  | Tok.TOp(c) =>
+    (if c == 42 or c == 47 then
+      (match pfactor(toks, i + 1) with
+        | Result.Ok(rhs) => term-loop(toks, Expr.Bin(c, acc, rhs.0), rhs.1)
+        | Result.Err(e) => Result.Err(e))
+    else
+      Result.Ok((acc, i)))
+  | _ => Result.Ok((acc, i))
+
+/// expr = term (('+' | '-') term)* — left-assoc fold, short-circuiting on error.
+def pexpr(toks: List(Tok), i: Int64) = match pterm(toks, i) with
+  | Result.Ok(t) => expr-loop(toks, t.0, t.1)
+  | Result.Err(e) => Result.Err(e)
+
+def expr-loop(toks: List(Tok), acc: Expr, i: Int64) = match tok(toks, i) with
+  | Tok.TOp(c) =>
+    (if c == 43 or c == 45 then
+      (match pterm(toks, i + 1) with
+        | Result.Ok(rhs) => expr-loop(toks, Expr.Bin(c, acc, rhs.0), rhs.1)
+        | Result.Err(e) => Result.Err(e))
+    else
+      Result.Ok((acc, i)))
+  | _ => Result.Ok((acc, i))
+
+/// Parse a whole token list. Success requires the WHOLE input consumed (else the trailing tokens are an
+/// ExpectedFactor at the stop index — e.g. `1 2` stops after `1`, then `2` is unexpected). Returns the
+/// `Result(Expr, ParseError)`.
+def parse-checked(toks: List(Tok)) = match pexpr(toks, 0) with
+  | Result.Ok(p) => (match tok(toks, p.1) with
+    | End => Result.Ok(p.0)
+    | _ => Result.Err(ParseError.ExpectedFactor(p.1)))
+  | Result.Err(e) => Result.Err(e)
+
+/// Evaluate an `Expr` (the reference semantics for a successful parse).
+def evl(e: Expr) = match e with
+  | Expr.Lit(v) => v
+  | Expr.Bin(op, l, r) =>
+    let a = evl(l) in
+    let b = evl(r) in
+    (if op == 43 then a + b else (if op == 45 then a - b else (if op == 42 then a * b else a / b)))
+
+/// Parse + evaluate; returns the value, or `-1 - errcode` on a parse error (so tests can distinguish).
+/// errcode: ExpectedFactor at idx → idx*2, ExpectedRParen at idx → idx*2+1 (a reversible encoding).
+def err-code(e: ParseError) = match e with
+  | ParseError.ExpectedFactor(i) => i * 2
+  | ParseError.ExpectedRParen(i) => i * 2 + 1
+
+def run(toks: List(Tok)) = match parse-checked(toks) with
+  | Result.Ok(e) => evl(e)
+  | Result.Err(err) => 0 - 1 - err-code(err)
+
+/// Did parsing succeed?
+def ok(toks: List(Tok)) = match parse-checked(toks) with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+@test
+def pc-literal() = if run([Tok.TNum(42)]) == 42 then unit else trap("42")
+
+@test
+def pc-add() = if run([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) == 3 then unit else trap("1+2=3")
+
+@test
+def pc-precedence() =
+  // 1 + 2 * 3 = 7 (mul binds tighter)
+  if run([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3)]) == 7 then unit else trap("1+2*3=7")
+
+@test
+def pc-parens() =
+  // (1 + 2) * 3 = 9
+  if run([Tok.TLP, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TRP, Tok.TOp(42), Tok.TNum(3)]) == 9 then unit else trap("(1+2)*3=9")
+
+@test
+def pc-empty-is-error() =
+  // an empty input can't start a factor → ExpectedFactor(0) → err-code 0 → run = -1
+  if run([]) == 0 - 1 then unit else trap("empty → ExpectedFactor(0)")
+
+@test
+def pc-leading-op-is-error() =
+  // "+ 1" — a factor can't start with an operator → ExpectedFactor(0)
+  if ok([Tok.TOp(43), Tok.TNum(1)]) then trap("leading + must be an error") else unit
+
+@test
+def pc-missing-rparen() =
+  // "(1 + 2" — no closing paren. Tokens at indices 0..3 (TLP, TNum1, TOp+, TNum2); the inner expr is
+  // fully consumed by index 4 (past TNum2), where tok=End ≠ TRP → ExpectedRParen(4).
+  let toks = [Tok.TLP, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)] in
+  if ok(toks) then trap("missing ) must be an error") else
+    (if run(toks) == 0 - 1 - (4 * 2 + 1) then unit else trap("ExpectedRParen at index 4"))
+
+@test
+def pc-trailing-token-is-error() =
+  // "1 2" — parses 1, then 2 is unexpected at index 1 → ExpectedFactor(1)
+  let toks = [Tok.TNum(1), Tok.TNum(2)] in
+  if ok(toks) then trap("trailing token must be an error") else
+    (if run(toks) == 0 - 1 - (1 * 2) then unit else trap("ExpectedFactor at index 1"))
+
+@test
+def pc-op-without-rhs-is-error() =
+  // "1 +" — operator with no right operand → ExpectedFactor at index 2 (past the +)
+  let toks = [Tok.TNum(1), Tok.TOp(43)] in
+  if ok(toks) then trap("dangling + must be an error") else unit
+
+@test
+def pc-nested-parens-ok() =
+  // "((7))" parses fine → 7
+  if run([Tok.TLP, Tok.TLP, Tok.TNum(7), Tok.TRP, Tok.TRP]) == 7 then unit else trap("((7))=7")
+
+@test
+def pc-deep-valid() =
+  // "2 * (3 + 4) - 1" = 13
+  let toks = [Tok.TNum(2), Tok.TOp(42), Tok.TLP, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRP, Tok.TOp(45), Tok.TNum(1)] in
+  if run(toks) == 13 then unit else trap("2*(3+4)-1=13")
+
+@test
+def pc-agrees-with-total-parse() =
+  // on a VALID input, parse-checked's value must equal the total parser's `run`
+  let toks = [Tok.TNum(10), Tok.TOp(45), Tok.TNum(3), Tok.TOp(45), Tok.TNum(2)] in
+  if run(toks) == run-total(toks) then unit else trap("checked == total on valid input")
+
+/// Bridge to `parse`'s total evaluator, to cross-check agreement on valid inputs.
+def run-total(toks: List(Tok)) = eval-expr(parse(toks))
+
+export { parse-checked, run, ok }
