@@ -1443,6 +1443,7 @@ pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared and a differing element hoist across same-length list arms
 pass	a shared trapping operand before the differing one does not preempt a trapping condition
+pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement

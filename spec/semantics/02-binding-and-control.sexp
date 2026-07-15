@@ -3381,6 +3381,23 @@
   (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
   (trap   "integer overflow"))
 
+(case "a shared trapping operand before the differing one does not preempt a trapping condition (compare head)"
+  (doc    "The Compare-head twin of the Arith order pin above. `(if (< (+ e Int64.max) 0) (< (/ 100 d) a)
+           (< (/ 100 d) b))` at e = 1, d = 0: the hoist becomes `(< (/ 100 d) (if c a b))`, lifting the
+           SHARED lhs `(/ 100 d)` (÷0) outside the operand select, ahead of the operand `if`. A comparison
+           is total (its VALUE never traps), which is why the Compare arm was added — but its OPERANDS can
+           still be trapping arith, so the same trapping cond vs shared-operand order hazard applies. Source
+           order evaluates the condition FIRST → 'integer overflow', never 'divide by zero'. Pins that the
+           single order guard in hoist_common_arith covers the Compare head, not just Arith.")
+  (input  (do
+            (def (main (: e Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (< (+ e 9223372036854775807) 0)
+                  (< (/ 100 d) a)
+                  (< (/ 100 d) b)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (trap   "integer overflow"))
+
 (case "an effectful condition is performed exactly once under the operator hoist"
   (doc    "`(if (< (Ctr.tick) 1) (+ v 10) (+ v 20))` under a counter handler: the first perform
            returns 0 → the +10 arm → 15; the trailing `(Ctr.tick)` returns 1 (the state advanced

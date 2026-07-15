@@ -14077,8 +14077,8 @@ fn hoist_common_ctor(
 /// reproducing the taken arm's single evaluation. `cond` is evaluated once per DIFFERING operand: exactly
 /// one differing operand matches the original's single `cond` eval (unconditionally sound); 0 or ≥2
 /// require a TRAP-FREE `cond` (the same guard `hoist_common_ctor` uses). Returns `None` unless both arms
-/// are the same `Arith` operator (over 2 operands) or the same `Convert` op (1 operand) — a poison arm
-/// has neither core, so it never matches.
+/// are the same `Arith` operator, the same `Compare` operator (both over 2 operands), or the same
+/// `Convert` op (1 operand) — a poison arm has neither core, so it never matches.
 fn hoist_common_arith(
     db: &mut Db,
     cond: StructId,
@@ -14104,12 +14104,15 @@ fn hoist_common_arith(
                     rhs: re,
                 },
             ) if ot == oe => (Head::Arith(ot), vec![(lt, le), (rt, re)]),
-            // A COMPARISON is total (never traps, no guard), so the hoist is unconditionally value-safe:
-            // `(if c (< a k) (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of
-            // the SELECTED operand against `k`) with ONE compare instead of two. Operands are paired
-            // POSITIONALLY (`==` on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the
-            // `Eq`-commutativity `core_equiv` allows is irrelevant here since each position selects its own
-            // actual operand.
+            // A COMPARISON is total (never traps, no guard), so the hoist is value-safe: `(if c (< a k)
+            // (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of the SELECTED
+            // operand against `k`) with ONE compare instead of two. Operands are paired POSITIONALLY (`==`
+            // on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the `Eq`-commutativity
+            // `core_equiv` allows is irrelevant here since each position selects its own actual operand.
+            // Value-safe is NOT trap-ORDER-safe, though: the compare's OPERANDS can still be trapping arith
+            // (e.g. `(/ 100 d)`), and a SHARED trapping operand hoisted ahead of a trapping `cond` would
+            // preempt `cond`'s trap. The shared-operand order guard below (`!is_trap_free(db, cond)` →
+            // preceding-operand scan) applies to this Head arm exactly as it does to `Arith`.
             (
                 Core::Compare {
                     op: ot,
