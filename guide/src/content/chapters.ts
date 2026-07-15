@@ -195,6 +195,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Units.tsx")),
   },
   {
+    slug: "metaprogramming",
+    title: "Metaprogramming",
+    blurb: "Code is data: quote a program to an AST value, take it apart, build it up, eval it.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Metaprogramming.tsx")),
+  },
+  {
     // NOT "playground": the top-level `/playground` route (the full IDE) is matched before `/:slug`,
     // so a chapter with that slug would be shadowed and unreachable. Use a distinct slug.
     slug: "using-the-playground",

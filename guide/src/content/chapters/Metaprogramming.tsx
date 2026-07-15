@@ -1,0 +1,201 @@
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { Runnable } from "../../components/Runnable.tsx";
+import { Exercise } from "../../components/Exercise.tsx";
+import { Why } from "../../components/Why.tsx";
+
+export default function Metaprogramming() {
+  return (
+    <article>
+      <H1>Metaprogramming</H1>
+      <Lede>
+        Code is data. <C>quote</C> hands you a program's structure as an ordinary value you can inspect,
+        take apart, build up, and — if you like — run. There's no separate macro language: the AST is a
+        sum type like any other, so you already know how to work with it.
+      </Lede>
+
+      <H2>Quote: a program as a value</H2>
+      <P>
+        Normally <C>(+ 1 2)</C> evaluates to <C>3</C>. Wrap it in <C>quote</C> and it doesn't run at all —
+        you get back the <em>structure</em> of the expression instead: a list whose head is the name{" "}
+        <C>+</C> and whose arguments are the integers <C>1</C> and <C>2</C>.
+      </P>
+      <Runnable source={`(quote (+ 1 2))`} />
+      <P>
+        The result reads <C>{`Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)])`}</C> — a value of type{" "}
+        <C>Ast</C>. Each syntactic form is a variant: an integer literal is an <C>Ast.Int</C>, a name is
+        an <C>Ast.Name</C>, a compound form is an <C>Ast.List</C> of its parts. Quoting <em>reifies</em>{" "}
+        the code into that tree without evaluating a thing inside it.
+      </P>
+
+      <H2>The AST is an ordinary sum</H2>
+      <P>
+        Because the AST is a plain sum type, you take it apart with <C>match</C>, exactly like{" "}
+        <C>Option</C> or a traffic-light symbol. Match a quoted integer and bind its payload:
+      </P>
+      <Runnable
+        source={`(match (quote 42)
+  ((Ast.Int n) n)
+  (_           0))`}
+      />
+      <P>
+        The <C>Ast.Int</C> arm binds <C>n = 42</C>. A quoted <em>compound</em> form is an <C>Ast.List</C>,
+        so you can reach into its elements — here, count them:
+      </P>
+      <Runnable
+        source={`(match (quote (+ 1 2))
+  ((Ast.List elems) (List.len elems))
+  (_                0))`}
+      />
+      <P>
+        Three elements: the operator name and its two arguments. And since <C>Ast</C> is an ordinary sum,
+        its match obeys the same exhaustiveness rule as any other — a match that inspects one form carries
+        a catch-all <C>_</C> for the rest.
+      </P>
+
+      <Note>
+        You can build an AST directly with its constructors, too — and the two routes agree. A quoted
+        literal equals the same node written by hand, so <C>(= (quote 42) (Ast.Int 42))</C> is <C>true</C>.
+        Quote is just a convenient way to write down a tree you could also assemble constructor by
+        constructor.
+      </Note>
+      <Runnable
+        source={`(def (main)
+  (if (= (quote 42) (Ast.Int 42)) 1 0))`}
+      />
+
+      <H2>Booleans quote too</H2>
+      <P>
+        Every literal kind has its AST variant. A boolean quotes to an <C>Ast.Bool</C>, matches like any
+        other variant, and its payload is a real <C>Bool</C>:
+      </P>
+      <Runnable
+        source={`(match (quote false)
+  ((Ast.Bool b) b)
+  (_            true))`}
+      />
+      <P>
+        The <C>Ast.Bool</C> arm binds <C>b = false</C>, so the whole match is <C>false</C>. And because a
+        constructor is type-checked like any other, <C>(Ast.Bool 5)</C> is a compile error — the payload
+        must be a <C>Bool</C>, not an integer.
+      </P>
+      <Runnable source={`(Ast.Bool 5)`} expect="error" />
+
+      <H2>Building a tree yourself</H2>
+      <P>
+        Since the AST is just a sum, you can assemble a form node by node with the constructors —{" "}
+        <C>Ast.List</C> over the operator name and its arguments. This builds the very same tree that{" "}
+        <C>(quote (+ 1 2))</C> gives, so the two are equal:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (if (= (quote (+ 1 2))
+         (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))
+    1 0))`}
+      />
+      <P>
+        Constructing by hand is what you reach for when the pieces come from <em>values</em> rather than
+        being written out — a computed argument, a name chosen at run time.
+      </P>
+
+      <Note>
+        The conventional surface has lighter sugar for this: <C>quasiquote</C> (a backtick template) quotes
+        a form but lets an <C>unquote</C> (a comma) drop a value into a hole — <C>{"`(+ ,x 10)"}</C> with{" "}
+        <C>x = 2</C> builds the AST for <C>(+ 2 10)</C>, i.e.{" "}
+        <C>{`Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(10)])`}</C>. It's exactly the constructor call
+        above, written as a template — construction, not execution: the <C>,x</C> evaluates <em>x</em> to
+        get a value to embed, not the whole form.
+      </Note>
+
+      <H2>Eval: run a tree</H2>
+      <P>
+        An AST is inert data until you <C>eval</C> it, which executes the tree as code. Evaluating the
+        quoted <C>(+ 1 2)</C> finally gives <C>3</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (eval (quote (+ 1 2))))`}
+      />
+      <P>
+        And a tree you <em>built</em> runs the same way. Assemble a call to <C>double</C> on the argument{" "}
+        <C>21</C> and eval it — the reconstructed <C>(double 21)</C> folds to <C>42</C>. That's the shape of
+        a macro: build a form, then run it.
+      </P>
+      <Runnable
+        source={`(def (double x) (* 2 x))
+(def (main)
+  (eval (Ast.List (list (Ast.Name "double") (Ast.Int 21)))))`}
+      />
+
+      <Note>
+        A tree can also be serialized: <C>Ast.encode</C> turns an AST into bytes and <C>Ast.decode</C>{" "}
+        reads them back (as a <C>Result</C>, since arbitrary bytes might not be a valid tree). Encoding a
+        node and decoding it returns an equal value — the AST survives the round-trip intact, which is how
+        one generation of the compiler hands a program to the next.
+      </Note>
+      <Runnable
+        source={`(match (Ast.decode (Ast.encode (Ast.Int 7)))
+  ((Ok a)  (if (= a (Ast.Int 7)) 1 0))
+  ((Err _) 0))`}
+      />
+
+      <Why tenet="One representation for code, and it's an ordinary value">
+        Many languages bolt on a separate macro system — a second little language, with its own rules,
+        for programs that write programs. Cadenza doesn't. The AST is a sum type declared like any other,
+        so the tools you already have — <C>match</C>, constructors, <C>=</C>, lists — are the whole
+        metaprogramming toolkit. The compiler itself operates on these AST values natively rather than
+        poking at string-tagged reflection, and <C>eval</C> is an optional extra (for macros and the
+        REPL), not something the core depends on. Code as data, with no new machinery to learn.
+      </Why>
+
+      <H2>Your turn</H2>
+      <Exercise
+        id="metaprogramming:1"
+        prompt={
+          <>
+            <C>quote</C> reifies a form without running it, so a quoted compound is an <C>Ast.List</C> of
+            its parts. Fill the arm so this counts the elements of <C>(quote (f 1 2 3))</C> — its operator
+            plus three arguments — giving <C>4</C>.
+          </>
+        }
+        starter={`(match (quote (f 1 2 3))
+  ((Ast.List elems) ?)
+  (_                0))`}
+        solution={`(match (quote (f 1 2 3))
+  ((Ast.List elems) (List.len elems))
+  (_                0))`}
+        expected="4"
+        hint={
+          <>
+            The <C>Ast.List</C> arm binds <C>elems</C> to the list of child nodes. Its length is{" "}
+            <C>(List.len elems)</C> — one for the name <C>f</C> and one for each argument, so <C>4</C>.
+          </>
+        }
+      />
+
+      <Exercise
+        id="metaprogramming:2"
+        prompt={
+          <>
+            Build a call and run it. The tree is a <C>(triple 14)</C> form assembled by hand — an{" "}
+            <C>Ast.List</C> of the name <C>triple</C> and one argument. Fill the argument node so{" "}
+            <C>eval</C> runs <C>(triple 14)</C> and gives <C>42</C>.
+          </>
+        }
+        starter={`(def (triple x) (* 3 x))
+(def (main)
+  (eval (Ast.List (list (Ast.Name "triple") ?))))`}
+        solution={`(def (triple x) (* 3 x))
+(def (main)
+  (eval (Ast.List (list (Ast.Name "triple") (Ast.Int 14)))))`}
+        expected="42"
+        hint={
+          <>
+            The argument is the integer <C>14</C> as an AST node — an <C>Ast.Int</C>, the same kind{" "}
+            <C>(quote 14)</C> would give. So the hole is <C>(Ast.Int 14)</C>, and <C>eval</C> then runs{" "}
+            <C>(triple 14)</C>.
+          </>
+        }
+      />
+    </article>
+  );
+}
