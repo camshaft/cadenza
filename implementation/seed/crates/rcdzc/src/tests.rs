@@ -49309,6 +49309,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_producer_wrapping_elements_in_a_user_sum_is_consumed_at_one_type() {
+        // COVERAGE (v-inference): the same recursive-generic producer→consumer path as above, but the
+        // produced element is a USER-defined generic sum `(Box a)` — `wrapall : List a -> List (Box a)`
+        // wraps each element, `sumfirst` unwraps + sums. Exercises the A+B list-pattern shaping over a
+        // USER sum's payload (not just the built-in List element): the producer's `xs` shapes `List _` and
+        // its result carries the element through the `Box.Wrap` construction. Single element type (Int64) →
+        // monomorphizes + runs. `sumfirst(wrapall([n,n,n]))` = `3·n`. Pins the user-sum producer path so a
+        // future change to `pattern_implied_ty`/`solve_recursive_params` can't silently regress it.
+        let src = "(module m \
+            (type Box (Wrap a)) \
+            (def (wrapall xs) \
+              (match xs ((list) (list)) ((list h .. t) (List.push (wrapall t) (Box.Wrap h))))) \
+            (def (unwrap1 b) (match b ((Box.Wrap v) v))) \
+            (def (sumfirst xs) \
+              (match xs ((list) 0) ((list h .. t) (+ (unwrap1 h) (sumfirst t))))) \
+            (def (main (: n Int64)) (sumfirst (wrapall (list n n n)))) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "6"); // 3·2
+        assert_eq!(run_closure(src, 4).unwrap(), "12"); // 3·4
+    }
+
+    #[test]
     fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
         // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
         // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
