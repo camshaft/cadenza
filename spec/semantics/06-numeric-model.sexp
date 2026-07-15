@@ -1237,6 +1237,39 @@
   (call   main (: 2 Int64))
   (output (: 1 Int64)))
 
+; ── SELF-OPERAND arithmetic identities on a RUNTIME value: which fold, and which MUST NOT ────────────
+; The two-of-a-kind operand cases `x ⊕ x` — where BOTH operands are the same runtime binding — have fixed
+; results the compiler may fold: `x - x = 0` (always, even at Int64.min — subtraction of equals never
+; overflows), `x ^ x = 0` (every bit cancels), `x & x = x` and `x | x = x` (idempotent). Each is a
+; backend-independent value the emit computes correctly on both backends. But `x / x` is the CRITICAL
+; NON-identity: it is NOT 1 in general, because at `x = 0` it is `0 / 0`, a DIVIDE-BY-ZERO TRAP — folding
+; `x / x → 1` would ELIDE that defined trap (a miscompile). So the compiler must keep the division; these
+; pin that `x - x`/`x ^ x`/`x & x`/`x | x` compute their identity value AND that `x / x` still traps at 0.
+
+(case "self-operand subtraction and xor are zero, and-or are the operand, on a runtime value"
+  (doc    "The self-operand identities that hold unconditionally over a runtime `x`: `(- x x)` = 0 (even at
+           Int64.min — equals never overflow), `(^ x x)` = 0 (bits cancel), `(& x x)` = `(| x x)` = x
+           (idempotent). Packed into `(tuple (- x x) (^ x x) (& x x) (| x x))`: x = 7 → (0, 0, 7, 7),
+           x = Int64.min → (0, 0, min, min) (the boundary survives the keeping identities). Pins the
+           value of each self-operand fold on both backends.")
+  (input  (do (def (main (: x Int64)) (tuple (- x x) (^ x x) (& x x) (| x x))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: (tuple 0 0 7 7) (Tuple Int64 Int64 Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: (tuple 0 0 -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64 Int64 Int64))))
+
+(case "self-operand division is NOT folded to one — it still traps at zero"
+  (doc    "The critical NON-identity: `(/ x x)` is NOT `1` in general, because at x = 0 it is `0 / 0`, a
+           divide-by-zero trap. A compiler that folded `x / x → 1` would ELIDE that defined trap — a
+           miscompile. So the division is kept: x = 7 → 1 (7/7), but x = 0 → TRAPS. Pins that the
+           self-operand fold family stops at division, preserving the trap on both backends (a runtime x
+           keeps the divisor out of the constant fold).")
+  (input  (do (def (main (: x Int64)) (/ x x)) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
 ; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
 ; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic
 ; SIMPLIFICATION the compiler applies at the Core (backend-independent) tier: `x * 0` and `x & 0` fold to

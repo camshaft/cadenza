@@ -2540,6 +2540,8 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+pass	self-operand division is NOT folded to one — it still traps at zero
+pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
@@ -2845,5 +2847,8 @@ todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+todo	a tagged template expands via its binding-dispatched tag function
+todo	a tagged template weaves a hole into its expansion
+todo	a tagged template's spliced result folds through the ordinary path
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
