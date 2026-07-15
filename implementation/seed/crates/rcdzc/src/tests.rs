@@ -32884,6 +32884,62 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_structurally_duplicate_tuple_or_nested_ctor_arm_is_redundant() {
+        // EXACT-DUPLICATE detection for TUPLE / REFINING-CONSTRUCTOR arms (`ArmCover::Shape`) — two arms of
+        // the same structural shape (binders normalized to `_`, literals by value) match the same region, so
+        // the later is unreachable. The tuple/nested analogue of the variant/literal/list duplicate check.
+        for src in [
+            // A duplicate tuple arm (`(tuple true a)` vs `(tuple true b)` — same shape `(t b:true _)`).
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // A duplicate NESTED-ctor arm (`(Some (Some x))` vs `(Some (Some y))`).
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (Some y)) y) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A duplicate tuple arm with a refining element + literal (`(tuple (Some x) 0)` twice).
+            "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some y) 0) y) (_ 9))) \
+             (def (main) (f (tuple (None) 1))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a structurally-duplicate tuple/nested-ctor arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_tuple_or_nested_ctor_arms_do_not_warn() {
+        // Negatives — no arm structurally repeats an earlier one, so none is flagged. Critically, a set of
+        // REFINING arms that jointly EXHAUST a nested sum (`(Some (Some x)) + (Some (None)) + (None)`) must
+        // NOT be mis-saturated: a `Shape` cover is PARTIAL (covers only part of the `Some` variant), so it
+        // does not count toward the 2-variant `Option` saturation and no arm is wrongly flagged.
+        for src in [
+            // Exhaustive nested-Option refinement — three distinct shapes, no duplicate, no over-saturation.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // Distinct tuple first-column values.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple false b) b))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // Distinct refining-element LITERALS in the same tuple shape.
+            "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some x) 1) x) (_ 9))) \
+             (def (main) (f (tuple (None) 2))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a match whose tuple/nested arms are structurally distinct must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
         // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
         // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
