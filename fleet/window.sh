@@ -60,15 +60,21 @@ concierge and keep working — never wait for a reply."
 # system OFF (the machine and repo are trusted; this matches how the prior /loop crons ran). That is
 # why `--dangerously-skip-permissions` is set below. Do NOT copy this launcher for an interactive or
 # untrusted session — the bypass is scoped to this trusted, unattended fleet on purpose.
-CLAUDE_ARGS=(--effort "$EFFORT" --model "$MODEL" --dangerously-skip-permissions)
-
+#
+# ⚠ ARG ORDER MATTERS: `--disallowedTools` is a SPACE-SEPARATED VARIADIC flag — if it is the last
+# flag before the positional prompt, clap slurps the whole KICKOFF string into it (splitting it into
+# bogus "tool names") and the agent gets NO prompt. So the disallow flag goes FIRST (immediately
+# followed by another flag that stops its consumption), and the args END with the boolean
+# `--dangerously-skip-permissions`, so the final `"$KICKOFF"` lands as the positional prompt.
+CLAUDE_ARGS=()
 # Structural guard: every window EXCEPT the interactive roles (concierge, design) is denied the
 # human-question tool, so no unattended agent can pop an interactive prompt in its window. The
 # describe output sets DISALLOW_ASK=0 for the interactive roles. (Independent of the approval bypass.)
 if [ "${DISALLOW_ASK:-1}" = "1" ]; then
   CLAUDE_ARGS+=(--disallowedTools AskUserQuestion)
 fi
+CLAUDE_ARGS+=(--effort "$EFFORT" --model "$MODEL" --dangerously-skip-permissions)
 
 echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL effort=$EFFORT interval=$INTERVAL) in $WORKTREE"
-echo "           claude ${CLAUDE_ARGS[*]}"
+echo "           claude ${CLAUDE_ARGS[*]} <kickoff>"
 exec claude "${CLAUDE_ARGS[@]}" "$KICKOFF"
