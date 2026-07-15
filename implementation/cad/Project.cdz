@@ -1,0 +1,23 @@
+// The project manifest for Cadenza CAD — an OpenSCAD-like solid-modeling library written in Cadenza
+// itself (GH #400). `cdz` reads these well-known top-level defs to build / run / test the project, the
+// same manifest shape the compiler-ml port uses (a def is the manifest — no new syntax).
+//
+//   cdz test implementation/cad     — run the CAD library's @test suite (like cargo test)
+//   cdz test implementation/cad/.   — same, naming this directory
+//
+// This is the pure-Cadenza CSG MODEL layer (increment G1 of DESIGN-cad-solid-modeling.md): a recursive
+// `Solid` sum over parameter payloads = the port of camshaft/rsolid's operation-tree, with ZERO compiler
+// change. The mesh backend (G2, manifold-csg) and render surfaces (G3, three.js) are per-surface DRIVERS
+// that consume the `Solid` tree as DATA — they are NOT part of this library.
+
+def name = "cad"
+
+// The model library — every source file under src/ (a wildcard, so a new module drops into src/ and is
+// picked up with no manifest edit, exactly as compiler-ml grows).
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite (same-file with their code for now).
+def tests = ["src/*.cdz"]
+
+// Files removed from the globs above (none yet).
+def exclude = []
