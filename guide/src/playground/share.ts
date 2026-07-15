@@ -2,10 +2,15 @@
 /// exactly as the TypeScript Playground does. No backend, no gist token — a static-hosted site can
 /// share a program by URL alone. The hash never hits the server and doesn't trigger a navigation.
 
-// lz-string is a CommonJS module: a NAMED import (`import { compress… }`) fails under a strict ESM
-// loader ("Named export not found") — Vite's bundler papers over it, but it's fragile and blocks
-// node-based unit tests. The default import gets the whole module.exports object, which works under
-// both Vite and node.
+// lz-string is a CommonJS module. Import shape matters and is easy to get wrong (it's been flagged
+// twice in review):
+//   - a NAMED import (`import { compress… }`) fails a strict ESM loader ("Named export not found") and
+//     blocks node-based unit tests;
+//   - a NAMESPACE import (`import * as LZString`) type-checks, but at NODE runtime the fns live under
+//     `.default`, so `LZString.compress…` is `undefined` — breaks the tests;
+//   - the DEFAULT import (below) gets the whole module.exports object and works under BOTH Vite and node.
+// It type-checks under `verbatimModuleSyntax:true` WITHOUT `esModuleInterop` because tsconfig uses
+// `moduleResolution:"bundler"`, which implies `allowSyntheticDefaultImports`. Keep this a default import.
 import LZString from "lz-string";
 import type { Surface } from "../compiler/client.ts";
 
