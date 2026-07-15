@@ -12,10 +12,12 @@
 //! runtime. Each message is dispatched by method name; a document's diagnostics are recomputed and
 //! published whenever it opens or changes (the "diagnostics as you type" primitive).
 //!
-//! Increment 1 (this module's current scope): the `initialize`/`shutdown` handshake, full-document sync
-//! (`didOpen`/`didChange`/`didClose`), and `textDocument/publishDiagnostics`. Hover (`type-at`),
-//! semantic tokens (`highlight`), and go-to (`def`) are the next increments — each a read of a column
-//! the query engine already exposes, wired to its LSP request.
+//! Capabilities implemented so far: the `initialize`/`shutdown` handshake, full-document sync
+//! (`didOpen`/`didChange`/`didClose`), `textDocument/publishDiagnostics` (← the `Diagnostics` query),
+//! `textDocument/hover` (← the `TypeAt` query), and `textDocument/semanticTokens/full` (← the
+//! `Highlight` query). Go-to-definition (← `ResolveOf`), references (← `UsesOf`), completion (←
+//! `ScopeAt`), and code actions (← the `Diagnostics` fix columns) are the next increments — each a
+//! read of a column the query engine already exposes, wired to its LSP request.
 
 use std::collections::HashMap;
 
@@ -24,12 +26,15 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     PublishDiagnostics,
 };
-use lsp_types::request::{HoverRequest, Request as _, Shutdown};
+use lsp_types::request::{HoverRequest, Request as _, SemanticTokensFullRequest, Shutdown};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, MarkedString, Position, PublishDiagnosticsParams, Range,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -74,14 +79,77 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// The capabilities this server advertises: FULL text-document sync (the client resends the whole
 /// document on each change — simplest correct model; incremental sync is a later refinement),
 /// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
-/// capability flag beyond sync is required for the classic push model), and `hover` (the "type at
-/// cursor" read, backed by the `TypeAt` query).
+/// capability flag beyond sync is required for the classic push model), `hover` (the "type at
+/// cursor" read, backed by the `TypeAt` query), and `semanticTokens/full` (colour-by-meaning,
+/// backed by the `Highlight` query — the token legend is `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                legend: semantic_token_legend(),
+                // No range request (a `full` document tokenization is cheap for this query); `full`
+                // without delta (we recompute the whole token list per request — simplest correct model).
+                range: Some(false),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+            },
+        )),
         ..Default::default()
     }
+}
+
+/// The ORDERED semantic-token-type legend the server publishes; a token's `token_type` field is an
+/// INDEX into this list. It must stay in sync with [`highlight_kind_to_token_index`] (which maps each
+/// Cadenza `HighlightKind` wire spelling to its index here). LSP defines a standard token-type
+/// vocabulary; we use its members so a client's default theme colours our tokens without custom config.
+fn semantic_token_legend() -> SemanticTokensLegend {
+    SemanticTokensLegend {
+        token_types: SEMANTIC_TOKEN_TYPES.to_vec(),
+        token_modifiers: Vec::new(),
+    }
+}
+
+/// The token types, in legend order. Indexed by [`highlight_kind_to_token_index`]. Standard LSP token
+/// types (a client theme knows them); Cadenza's `constructor` maps to `enumMember`, `label` to
+/// `property`, `effect` to `event`, and `unbound`/`char`/`bytes`/`symbol`/`literal` fold to the nearest
+/// standard type (a lexical fallback still applies for anything unmapped).
+const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
+    SemanticTokenType::KEYWORD,     // 0
+    SemanticTokenType::TYPE,        // 1
+    SemanticTokenType::ENUM_MEMBER, // 2  (a variant constructor)
+    SemanticTokenType::FUNCTION,    // 3
+    SemanticTokenType::PARAMETER,   // 4
+    SemanticTokenType::VARIABLE,    // 5
+    SemanticTokenType::EVENT,       // 6  (an effect)
+    SemanticTokenType::PROPERTY,    // 7  (a label — record field / member key)
+    SemanticTokenType::NUMBER,      // 8
+    SemanticTokenType::STRING,      // 9
+    SemanticTokenType::OPERATOR,    // 10 (fallback for unbound / symbol / misc)
+];
+
+/// Map a `HighlightKind` wire spelling (the `Highlight` query's per-token second column) to its index
+/// in [`SEMANTIC_TOKEN_TYPES`], or `None` to leave the token unclassified (the editor's lexical
+/// fallback paints it). Kept exhaustive against the query's closed vocabulary so a new highlight kind
+/// forces a decision here rather than silently dropping.
+fn highlight_kind_to_token_index(kind: &str) -> Option<u32> {
+    Some(match kind {
+        "keyword" => 0,
+        "type" => 1,
+        "constructor" => 2,
+        "function" => 3,
+        "param" => 4,
+        "variable" => 5,
+        "effect" => 6,
+        "label" => 7,
+        "number" => 8,
+        "string" | "char" | "bytes" => 9,
+        // `symbol`/`literal`/`unbound` have no closer standard type; map to OPERATOR so they still get a
+        // consistent colour (an editor can theme it, and a lexical fallback covers the rest).
+        "symbol" | "literal" | "unbound" => 10,
+        _ => return None,
+    })
 }
 
 /// One open document's state: its full source text. The parsed program is recomputed on demand (a query
@@ -145,6 +213,11 @@ impl Server {
                 let result = self.hover(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            SemanticTokensFullRequest::METHOD => {
+                let (id, params) = cast_request::<SemanticTokensFullRequest>(req)?;
+                let result = self.semantic_tokens(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -167,6 +240,19 @@ impl Server {
         let pos = &params.text_document_position_params;
         let doc = self.docs.get(&pos.text_document.uri)?;
         hover_at(&doc.text, doc.is_ml, pos.position)
+    }
+
+    /// Answer a `textDocument/semanticTokens/full`: classify every token in the document by the role it
+    /// plays (type vs constructor vs local vs unbound), backed by the `Highlight` query. `None` when the
+    /// document is not open; an empty token set otherwise (total). The tokens are LSP-delta-encoded
+    /// against the published legend (`semantic_token_legend`).
+    fn semantic_tokens(&self, params: &SemanticTokensParams) -> Option<SemanticTokensResult> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        let tokens = semantic_tokens_for(&doc.text, doc.is_ml);
+        Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        }))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -546,6 +632,92 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     })
 }
 
+// ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
+
+/// Compute the LSP semantic tokens for `text` — colour-by-meaning, backed by the `Highlight` query
+/// (which classifies every user LEAF by the role it plays: type/constructor/function/param/local/…).
+/// Each classified leaf's node id is mapped to its source span, then to an LSP (line, start-char,
+/// length) triple, sorted by position, and DELTA-encoded per the LSP wire format (each token's line/
+/// start are relative to the previous token). TOTAL: an un-analyzable buffer yields no tokens.
+///
+/// LSP requires a token to lie on a SINGLE line and to be non-overlapping; a leaf that spans multiple
+/// lines (a multi-line string) or whose kind has no legend mapping is skipped (the editor's lexical
+/// fallback paints it) — a defined omission, not a crash.
+fn semantic_tokens_for(text: &str, is_ml: bool) -> Vec<SemanticToken> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let ast_bytes = cadenza_syntax::codec::encode(&arenas);
+    let sidecar_bytes =
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Highlight)]);
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+    ];
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_HIGHLIGHT) else {
+        return Vec::new();
+    };
+    let hl_text = String::from_utf8_lossy(bytes);
+
+    // Gather each classified leaf as an absolute (line, start-char, length, token-type) tuple. The
+    // Highlight query already emits leaves in ascending node-id order, but node id is not source order,
+    // so sort by (line, start) before delta-encoding (LSP requires ascending position).
+    let mut abs: Vec<(u32, u32, u32, u32)> = Vec::new();
+    for line in hl_text.lines() {
+        let mut cols = line.splitn(2, '\t');
+        let (Some(node), Some(kind)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        let Some(token_type) = highlight_kind_to_token_index(kind) else {
+            continue;
+        };
+        let Some(id) = node.parse::<u32>().ok() else {
+            continue;
+        };
+        let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {
+            continue;
+        };
+        let start = byte_to_position(text, span.start);
+        let end = byte_to_position(text, span.end);
+        // LSP tokens are single-line; skip a leaf that crosses a line boundary (rare — a multi-line
+        // string literal), leaving it to the editor's lexical fallback.
+        if start.line != end.line || end.character < start.character {
+            continue;
+        }
+        let length = end.character - start.character;
+        if length == 0 {
+            continue;
+        }
+        abs.push((start.line, start.character, length, token_type));
+    }
+    abs.sort_by_key(|&(line, ch, _, _)| (line, ch));
+
+    // Delta-encode: each token's line is relative to the previous token's line; its start char is
+    // relative to the previous token's start when on the SAME line, else absolute.
+    let mut out = Vec::with_capacity(abs.len());
+    let mut prev_line = 0u32;
+    let mut prev_start = 0u32;
+    for (line, start, length, token_type) in abs {
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 {
+            start - prev_start
+        } else {
+            start
+        };
+        out.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type,
+            token_modifiers_bitset: 0,
+        });
+        prev_line = line;
+        prev_start = start;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +807,77 @@ mod tests {
         let _ = hover_at(text, true, Position::new(50, 50));
         // On leading whitespace of an empty-ish buffer.
         assert!(hover_at("   ", true, Position::new(0, 1)).is_none());
+    }
+
+    #[test]
+    fn highlight_kind_map_covers_the_whole_query_vocabulary() {
+        // Every `HighlightKind` wire spelling the query can emit must map to a legend index (or be a
+        // deliberate fallback) — a new kind must force a decision here, not silently drop. All indices
+        // must be in range of the published legend.
+        for kind in [
+            "keyword",
+            "type",
+            "constructor",
+            "function",
+            "param",
+            "variable",
+            "effect",
+            "label",
+            "number",
+            "string",
+            "char",
+            "bytes",
+            "symbol",
+            "literal",
+            "unbound",
+        ] {
+            let idx = highlight_kind_to_token_index(kind)
+                .unwrap_or_else(|| panic!("highlight kind `{kind}` has no token index"));
+            assert!(
+                (idx as usize) < SEMANTIC_TOKEN_TYPES.len(),
+                "index {idx} for `{kind}` is out of legend range"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_classify_a_definition_and_delta_encode() {
+        // A function definition yields tokens for its parts. The FIRST token's delta_line/delta_start are
+        // absolute (no previous token); every token references a legend index and has a non-zero length.
+        let toks = semantic_tokens_for("def double(x: Int64) -> Int64 = x + x", true);
+        assert!(!toks.is_empty(), "expected some semantic tokens");
+        for t in &toks {
+            assert!(t.length > 0, "a token must have positive length");
+            assert!(
+                (t.token_type as usize) < SEMANTIC_TOKEN_TYPES.len(),
+                "token_type {} out of legend range",
+                t.token_type
+            );
+        }
+        // Reconstruct absolute (line, start) from the deltas and assert strictly-ascending position —
+        // the LSP wire-format invariant a client relies on.
+        let mut line = 0u32;
+        let mut start = 0u32;
+        let mut prev: Option<(u32, u32)> = None;
+        for t in &toks {
+            line += t.delta_line;
+            start = if t.delta_line == 0 {
+                start + t.delta_start
+            } else {
+                t.delta_start
+            };
+            if let Some(p) = prev {
+                assert!((line, start) >= p, "tokens must be in ascending position");
+            }
+            prev = Some((line, start));
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_on_malformed_source_is_total() {
+        // An un-analyzable buffer yields a defined (possibly empty) token set, never a panic.
+        let _ = semantic_tokens_for("def (f x = (", true);
+        let _ = semantic_tokens_for("", true);
     }
 
     #[test]
