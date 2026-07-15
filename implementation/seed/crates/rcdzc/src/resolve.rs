@@ -109,6 +109,12 @@ const GRAMMAR: &[&str] = &[
     crate::effects::HANDLE_INTERNAL,
     "host",
     "resume",
+    // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). CONTROL FLOW,
+    // not a strict prelude record: it may abort the enclosing fallible boundary rather than always
+    // yielding a value, so it is grammar (like `if`/`match`), dispatched structurally. Kept here so a
+    // top-level / leftover `(try …)` is an expression the resolver routes to `resolve_try`, not an
+    // unbound name.
+    "try",
 ];
 
 /// Whether `head` is a recognized GRAMMAR head — a binding/control/declaration form the resolver
@@ -369,6 +375,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("if") => resolve_if(db, id),
                 Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
                 Some("not") => resolve_not(db, id),
+                Some("try") => resolve_try(db, id),
                 Some("match") => resolve_match(db, id),
                 Some("quote") => resolve_quote(db, id),
                 Some(h @ ("unquote" | "unquote-splicing")) => resolve_unquote(db, id, h),
@@ -3437,6 +3444,24 @@ fn resolve_not(db: &Db, id: StructId) -> Resolved {
         ));
     }
     Resolved::Not { operand: tail[0] }
+}
+
+/// Resolve `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`), the s-expr
+/// form of the ML postfix `e?`. EXACTLY ONE operand (the `Result`/`Option` expression it unwraps). A
+/// zero- or multi-operand `(try …)` is malformed with the surplus-delete fix (`arity_one_operand_reject`,
+/// shared with `quote`), mirroring `resolve_not`'s fixed-arity check. The well-formed node is carried
+/// first-class through infer (so a type error / a missing-boundary CDZ0230 points at the `?`) and
+/// desugared at Hir→Mir against the enclosing boundary.
+fn resolve_try(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "try").unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(arity_one_operand_reject(
+            id,
+            tail,
+            "try takes exactly one operand — the fallible expression it unwraps",
+        ));
+    }
+    Resolved::Try { operand: tail[0] }
 }
 
 /// Resolve `(quote FORM)` — the non-strict quotation form. `quote` requires EXACTLY ONE operand: the form

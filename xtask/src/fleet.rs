@@ -813,12 +813,24 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
         eprintln!("fleet ack: --outcome must be `merged` or `reject` (got `{outcome}`)");
         std::process::exit(1);
     }
-    // Resolve the request file: an explicit path, or a basename in pr-sync's inbox.
+    // Resolve the request file: an explicit path to an existing file, OR a bare basename in pr-sync's
+    // inbox. The basename branch joins `request` into a path, so an unvalidated value like
+    // `../registry.json` (or `processed/../…`) would make ack READ then RENAME a file OUTSIDE the
+    // inbox — a path-traversal write primitive. So in the basename branch require a single, safe path
+    // component (no separators, no `.`/`..`). An explicit existing-file path is trusted as-is (the
+    // caller is pr-sync naming a real request file; `is_file()` already proves it exists).
     let path = {
         let p = PathBuf::from(request);
         if p.is_file() {
             p
         } else {
+            if !is_safe_component(request) {
+                eprintln!(
+                    "fleet ack: request {request:?} is neither an existing file nor a safe inbox \
+                     basename (no path separators, no `.`/`..`) — refusing (path-traversal guard)"
+                );
+                std::process::exit(1);
+            }
             fleet.inbox("pr-sync").join(request)
         }
     };
@@ -1503,6 +1515,21 @@ fn validate_agent_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Is `s` a single, safe path component — one that stays inside its parent directory when joined?
+/// Rejects a path separator (`/` or `\`), a `.`/`..` component, an embedded `..`, an empty string, and
+/// a NUL. Unlike [`validate_agent_name`] this is charset-PERMISSIVE (an inbox basename legitimately has
+/// digits, dots and dashes, e.g. `000000000001-42-merge-request.json`); it guards only against
+/// TRAVERSAL, not against arbitrary characters. Used by `fleet ack` for the inbox-basename branch.
+fn is_safe_component(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && !s.contains('/')
+        && !s.contains('\\')
+        && !s.contains('\0')
+        && !s.contains("..")
+}
+
 /// A process-local monotonic sequence for message ordering (wall-clock is unavailable in the
 /// toolchain, and even so a counter is enough to order messages within one sender's run).
 fn next_seq() -> u64 {
@@ -1779,6 +1806,38 @@ mod tests {
             "a\0b",        // NUL
         ] {
             assert!(validate_agent_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn safe_component_accepts_real_inbox_basenames() {
+        // Inbox filenames legitimately carry digits, dashes, and dots — only traversal is barred.
+        for ok in [
+            "000000000001-1234-merge-request.json",
+            "000000000099-99999-merge-request.json",
+            "a.json",
+            "request",
+        ] {
+            assert!(is_safe_component(ok), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn safe_component_rejects_traversal() {
+        // The PR#392 class: a `fleet ack` request basename that escapes pr-sync's inbox must be barred.
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../registry.json",
+            "processed/../x",
+            "a/b",
+            "a\\b",
+            "/abs/path",
+            "x..y", // embedded `..`
+            "a\0b",
+        ] {
+            assert!(!is_safe_component(bad), "should reject {bad:?}");
         }
     }
 }

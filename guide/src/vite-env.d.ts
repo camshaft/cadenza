@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+// The per-build id, injected by Vite's `define` (see vite.config.ts). The app compares it to the polled
+// `version.json` to detect that a newer version was deployed while this tab stayed open.
+declare const __BUILD_ID__: string;
+
 // `?url` asset imports resolve to a string URL Vite fingerprints (the compiler/runtime wasm).
 declare module "*.wasm?url" {
   const url: string;

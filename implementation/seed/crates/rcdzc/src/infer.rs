@@ -474,6 +474,19 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             let _o = type_of(db, operand);
             Ty::Bool
         }
+        // `(try e)` UNWRAPS a fallible value: its type is the SUCCESS PAYLOAD of the operand's
+        // `Option(a)`/`Result(a, b)` type (the `a` yielded on the normal path). The short-circuit path
+        // does not contribute to the node's value type — it exits to the boundary. Reading the operand's
+        // type is the backward demand; the operand-is-fallible and boundary-agreement CHECKS (CDZ0230 /
+        // CDZ0203) are `type_errors`' job. Falls back to `Any` when the operand is not a recognized
+        // fallible sum, so an ill-formed `?` stays a soft `Any` here and the fault surfaces in `collect`.
+        Resolved::Try { operand } => {
+            let ot = type_of(db, operand);
+            match fallible_shape(db, &ot) {
+                Some((_, payload, _)) => payload,
+                None => Ty::Any,
+            }
+        }
         // A match's type is the JOIN of its arm bodies (like an `if` over N branches) — every arm must
         // produce the same type, and a branch that fixed a deferred width contributes it. The
         // arms-agree and exhaustiveness CHECKS are `type_errors`' job; this fills the value column.
@@ -3927,6 +3940,45 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
         }
     }
     subst.apply(&cur)
+}
+
+/// Which built-in fallible sum a type is, for the `?`/`try` operator (`DESIGN-try-operator-rcdzc.md`).
+/// `Option` short-circuits with `None`; `Result` short-circuits with `Err`. Identified STRUCTURALLY by
+/// the declaration's variant NAMES (`Some`/`None`, `Ok`/`Err`) — never by the type's spelled name — so
+/// the built-in prelude sums are recognized without a hard-coded name key (the no-keys-outside-the-prelude
+/// rule; the same variant-name scan `option_discs`/`result_discs` do in `lower`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FallibleKind {
+    /// A `(type Option (Some a) None)` — `?` unwraps `Some a`, short-circuits on `None`.
+    Option,
+    /// A `(type Result (Ok a) (Err b))` — `?` unwraps `Ok a`, short-circuits carrying `Err b`.
+    Result,
+}
+
+/// Classify a solved type as a built-in fallible sum (`Option`/`Result`) for the `?` operator, returning
+/// its kind together with its SUCCESS PAYLOAD type (the `a` a `?` yields: `Some`'s / `Ok`'s payload) — for
+/// `Result` also the error type (`Err`'s payload). `None` when `ty` is not one of the two built-in
+/// fallible sums (a non-sum, a user sum, or an `Option`/`Result` whose args are not yet solved to the
+/// arity its variant set implies). Recognizes the sum by its declaration's variant names, then reads the
+/// payload types off the positional `Ty::Sum::args` (params are in first-appearance order, so `Option`'s
+/// `a` and `Result`'s `Ok`/`Err` payloads are `args[0]`/`args[1]`).
+pub(crate) fn fallible_shape(db: &Db, ty: &Ty) -> Option<(FallibleKind, Ty, Option<Ty>)> {
+    let Ty::Sum { decl, args, .. } = ty else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(*decl)?;
+    let names: Vec<&str> = decl_ref.variants.iter().map(|v| v.name.as_str()).collect();
+    let has = |n: &str| names.contains(&n);
+    if names.len() == 2 && has("Some") && has("None") {
+        let payload = args.first().cloned().unwrap_or(Ty::Any);
+        Some((FallibleKind::Option, payload, None))
+    } else if names.len() == 2 && has("Ok") && has("Err") {
+        let ok = args.first().cloned().unwrap_or(Ty::Any);
+        let err = args.get(1).cloned();
+        Some((FallibleKind::Result, ok, err))
+    } else {
+        None
+    }
 }
 
 /// The PAYLOAD type of a variant `variant_head` at the scrutinee's instantiation `scrut_ty` — the type
@@ -8641,6 +8693,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Reject::coded(
                         Code::Malformed,
                         format!("`not` operand must be Bool, found {}", t.render_name()),
+                    )
+                    .at(operand),
+                );
+            }
+            collect(db, operand, out);
+        }
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The OPERAND
+        // must be a fallible sum (`Option`/`Result`) — a `?` on anything else has nothing to unwrap. Fault
+        // (CDZ0203, the ordinary type mismatch) ONLY when the operand's type is a DEFINITE concrete
+        // non-fallible type: an unsolved var / `Any` / a poison operand is left alone (no over-rejection —
+        // its own fault surfaces via the descent), exactly as the `Not`/`And` operand checks do. The
+        // BOUNDARY check (a `?` whose enclosing function is not itself `Result`/`Option` → CDZ0230) and the
+        // operand-vs-boundary agreement land in the next slice; this pins the operand-shape half.
+        Resolved::Try { operand } => {
+            let t = type_of(db, operand);
+            let concrete = !matches!(t, Ty::Any | Ty::Var(_));
+            if concrete && fallible_shape(db, &t).is_none() {
+                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: try operand not Option/Result (CDZ0203)");
+                out.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "`?` operand must be a fallible `Result`/`Option`, found {}",
+                            t.render_name()
+                        ),
                     )
                     .at(operand),
                 );

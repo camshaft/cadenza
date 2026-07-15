@@ -2918,6 +2918,32 @@
   (call   main (: 0 Int64) (: 1 Int64))
   (trap   "integer overflow"))
 
+; The hoist COMPOSES through NESTED `if`s: `(if c1 (K a) (if c2 (K b) (K c)))` builds `K` ONCE across the
+; whole decision tree (each per-`if` fold fires bottom-up — the inner `if` hoists `K` out, then the outer
+; `if` sees both arms as `K` and hoists again), so the payload becomes a nested select/`if` and a single
+; construct is emitted for all three arms. This pins the composition (which the flat two-arm cases above
+; do not exercise): the value must be the matched arm's payload in every direction.
+
+(case "a nested if of a common constructor builds it once and dispatches to each arm"
+  (doc    "`(if c1 (Some a) (if c2 (Some b) (Some d)))` — a three-way nested `if` whose every leaf builds
+           `Some`. The common-constructor hoist composes bottom-up (inner `if` first, then the outer),
+           so ONE `Some` is built around a nested payload select rather than three separate `sum-new`s.
+           Observed through an outer match, the payload is the selected arm's in every direction: c1 →
+           a (10), else-then-c2 → b (20), else-else → d (30). Pins the nested/composing case the flat
+           two-arm common-constructor pins above do not reach.")
+  (input  (do
+            (def (main (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64) (: d Int64))
+              (match (if c1 (Option.Some a) (if c2 (Option.Some b) (Option.Some d)))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: true Bool) (: false Bool) (: 10 Int64) (: 20 Int64) (: 30 Int64))
+  (output (: 10 Int64))
+  (call   main (: false Bool) (: true Bool) (: 10 Int64) (: 20 Int64) (: 30 Int64))
+  (output (: 20 Int64))
+  (call   main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64) (: 30 Int64))
+  (output (: 30 Int64)))
+
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
 ; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces
@@ -3377,6 +3403,23 @@
               (if (< (+ e 9223372036854775807) 0)
                   (+ (/ 100 d) a)
                   (+ (/ 100 d) b)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (trap   "integer overflow"))
+
+(case "a shared trapping operand before the differing one does not preempt a trapping condition (compare head)"
+  (doc    "The Compare-head twin of the Arith order pin above. `(if (< (+ e Int64.max) 0) (< (/ 100 d) a)
+           (< (/ 100 d) b))` at e = 1, d = 0: the hoist becomes `(< (/ 100 d) (if c a b))`, lifting the
+           SHARED lhs `(/ 100 d)` (÷0) outside the operand select, ahead of the operand `if`. A comparison
+           is total (its VALUE never traps), which is why the Compare arm was added — but its OPERANDS can
+           still be trapping arith, so the same trapping cond vs shared-operand order hazard applies. Source
+           order evaluates the condition FIRST → 'integer overflow', never 'divide by zero'. Pins that the
+           single order guard in hoist_common_arith covers the Compare head, not just Arith.")
+  (input  (do
+            (def (main (: e Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (< (+ e 9223372036854775807) 0)
+                  (< (/ 100 d) a)
+                  (< (/ 100 d) b)))
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
   (trap   "integer overflow"))

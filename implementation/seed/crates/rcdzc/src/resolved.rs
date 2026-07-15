@@ -1025,6 +1025,17 @@ pub enum Resolved {
     /// A logical negation `(not a)` — `a` is a Bool, the result its complement. Strict (one operand,
     /// nothing to shield). Lowers to `Core::Not` (emitted `i32.eqz`).
     Not { operand: StructId },
+    /// The fallible short-circuit operator `(try e)` — the s-expr form of the ML postfix `e?`
+    /// (`DESIGN-try-operator-rcdzc.md`). `operand` is a `Result(a, b)` / `Option(a)` expression; `(try e)`
+    /// UNWRAPS its success payload (yielding `a`) on the normal path, and on the failure variant SHORT-
+    /// CIRCUITS the enclosing fallible boundary (the enclosing function's `Result`/`Option` result type),
+    /// making the boundary's value the failure itself. NOT a monad wedge and NOT a user-visible effect: it
+    /// is a compile-time desugar onto the effects system's within-function abortive lowering (a synthesized
+    /// `Mir::Block` + `Mir::Break`, reusing the E4 substrate), so it contributes nothing to the effect row.
+    /// Carried as a first-class node through resolve/infer so a type error points at the `?`, then desugared
+    /// at Hir→Mir against the boundary. A `?` with no fallible boundary is CDZ0230; a `?`'d type that
+    /// disagrees with the boundary is the ordinary CDZ0203 mismatch.
+    Try { operand: StructId },
     /// A `(match scrutinee (pattern body)…)` — the pattern engine's surface. `scrutinee` is the value
     /// examined; each arm is a `(pattern-occ, body-occ)` pair, tried top-to-bottom. A pattern is carried
     /// as its AST occurrence (NOT a `Pattern` enum — `intermediate-representations.md`: patterns are

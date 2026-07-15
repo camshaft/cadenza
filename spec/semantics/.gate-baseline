@@ -133,6 +133,8 @@ pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	`try` takes exactly one operand — a two-operand form is malformed
+pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
@@ -269,6 +271,8 @@ pass	a UInt32 addition that overflows the 32-bit width is rejected at compile ti
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a `?` on a String operand is a type error
+pass	a `?` on a non-fallible operand is a type error
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -434,6 +438,7 @@ pass	a composed call over a record-transforming function with an arithmetic fiel
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a rope is found by its flat-twin key
+pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
@@ -749,6 +754,7 @@ pass	a line comment wrapping a top-level form does not hide it
 pass	a line comment wrapping a type declaration is seen through
 pass	a line comment wrapping the entry point is seen through
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
+pass	a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
 pass	a list arm with two constructor elements binds both payloads
@@ -989,6 +995,7 @@ pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
+pass	a nested if of a common constructor builds it once and dispatches to each arm
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
@@ -1438,6 +1445,7 @@ pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared and a differing element hoist across same-length list arms
 pass	a shared trapping operand before the differing one does not preempt a trapping condition
+pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -2683,11 +2691,13 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	`?` on the failure variant short-circuits the boundary (Option, None path)
+todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
-todo	a match on an open sum omitting the open-tail arm is rejected
-todo	a match on an open sum with an open-tail arm is exhaustive
+pass	a match on an open sum omitting the open-tail arm is rejected
+pass	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result

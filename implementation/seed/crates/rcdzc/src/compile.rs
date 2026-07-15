@@ -3795,9 +3795,19 @@ fn finite_cover_size(db: &mut Db, scrutinee: StructId) -> Option<usize> {
     // newtype over a scalar) has no variant set → not finite here.
     match crate::infer::type_of(db, scrutinee) {
         crate::ty::Ty::Bool => Some(2),
-        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => db
-            .type_decl_by_occ(decl)
-            .and_then(|d| (!d.variants.is_empty()).then_some(d.variants.len())),
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => {
+            db.type_decl_by_occ(decl).and_then(|d| {
+                // An OPEN sum (`(type T … .. r)`) has NO finite cover size — the row variable stands for
+                // variants not named, so its value set is not closed and a `_` arm over it is NEVER
+                // redundant (it is the only cover for the open tail, `type-system.md §206`). Returning
+                // `None` here keeps the redundant-arm pass from ever flagging that `_` (an open sum's `_`
+                // never closes finite coverage). A CLOSED sum keeps its variant count as the finite size.
+                if d.open_tail.is_some() {
+                    return None;
+                }
+                (!d.variants.is_empty()).then_some(d.variants.len())
+            })
+        }
         _ => None,
     }
 }
@@ -3823,6 +3833,16 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         let Resolved::Match { scrutinee, arms } = crate::resolve::resolved_of(db, id) else {
             continue;
         };
+        // A match whose lowering POISONS — a malformed/typo'd arm pattern (a bare name that is a variant
+        // TYPO, `(match c (Rd 1) …)` on `(type Color Red Green)` → CDZ0201 "did you mean `Red`?"), a
+        // wrong-arity ctor, a non-linear binder — is being REJECTED; a later arm reading "unreachable"
+        // because the typo'd arm was (mis)read as a catch-all binder is CONSEQUENT noise, not an
+        // INDEPENDENT problem. Skip the whole match's redundant-arm pass, deferring to the poison the SAME
+        // lowering produces (the CDZ0201 the two can never disagree with) — the redundant-arm twin of the
+        // guard `collect_unused`'s match-binder pass already applies.
+        if matches!(core_of(db, id), Core::Poison(_)) {
+            continue;
+        }
         // The scrutinee's finite cover size — `Some(n)` iff the specific arms CAN exhaust the type (a sum
         // of `n` variants, or Bool = 2). `None` for an open type, where only a catch-all closes coverage.
         let cover_size = finite_cover_size(db, scrutinee);
@@ -4065,6 +4085,9 @@ fn walk_for_dead_traps(
         // negation's single operand is unconditionally evaluated.
         Resolved::And { lhs, .. } => walk_for_dead_traps(db, lhs, out, seen),
         Resolved::Not { operand } => walk_for_dead_traps(db, operand, out, seen),
+        // `(try e)` unconditionally evaluates its operand (the fallible value is always computed before
+        // the disc check that may short-circuit), so descend into it exactly like `not`.
+        Resolved::Try { operand } => walk_for_dead_traps(db, operand, out, seen),
         // Effect control forms decline at lowering (E1a), so no `handle`/`host`/`resume` reaches
         // emission — the dead-trap walk over one is moot (it emits nothing). Treated as non-descending,
         // like any form that lowers to a poison; when E1 lowers them, revisit whether an unconditionally-

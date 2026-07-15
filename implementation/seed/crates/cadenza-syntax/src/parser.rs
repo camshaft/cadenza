@@ -760,7 +760,20 @@ impl<'a> Parser<'a> {
                 let name = if self.at(Kind::Ident) {
                     let name_span = self.cur_span();
                     let t = self.bump().unwrap();
-                    self.name(self.text(t), name_span)
+                    let bare = self.name(self.text(t), name_span);
+                    // `@tag("slow")` — a call-STYLE annotation argument: an application GLUED to the name
+                    // (`tag(…)`) makes the name slot the application `(tag "slow")`, so the tree is
+                    // `(@ (tag "slow") form)`. A bare `@test` stays `(@ test form)`. The `(` must be GLUED
+                    // (no intervening whitespace/newline) — `postfix`'s `LParen` arm does NOT check
+                    // adjacency, so without this guard a space-separated `@test (g)` would wrongly eat
+                    // `(g)` as `test`'s call args instead of leaving it as the annotated form. Same
+                    // adjacency discipline the quantity/`.member` sugars use. Once glued, `postfix`
+                    // handles the call (and any chained `.member`/further calls) uniformly.
+                    if self.at(Kind::LParen) && self.prev_span().end == self.cur_span().start {
+                        self.postfix(bare, name_span)
+                    } else {
+                        bare
+                    }
                 } else {
                     self.error("expected an annotation name after `@`");
                     self.error_node(self.cur_span())
@@ -3019,6 +3032,31 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
             "(def (s (: xs (List Int64))) xs)"
+        );
+    }
+
+    #[test]
+    fn parameterized_annotation_name_takes_a_glued_application() {
+        use crate::sexpr;
+        // `@tag("slow")` — a call-style annotation argument: a `(` GLUED to the annotation name makes
+        // the name slot the application `(tag "slow")`, so the tree is `(@ (tag "slow") form)`.
+        assert_eq!(
+            sexpr::print(&parse_ok("@tag(\"slow\")\ndef f() = 1")),
+            "(@ (tag \"slow\") (def (f) 1))"
+        );
+        // A bare `@test` (no glued paren) keeps the plain-name slot.
+        assert_eq!(
+            sexpr::print(&parse_ok("@test\ndef f() = 1")),
+            "(@ test (def (f) 1))"
+        );
+        // GLUING GUARD: a `(` NOT glued to the name (whitespace/newline between) is the annotated FORM,
+        // not the name's call args — `@test` then `(g)` on the next line is `(@ test g)`, NOT
+        // `(@ (test g) …)`. (postfix's LParen arm doesn't check adjacency; the `@`-arm guard does.)
+        assert_eq!(sexpr::print(&parse_ok("@test\n(g)")), "(@ test g)");
+        // Multiple args + stacking with a bare annotation.
+        assert_eq!(
+            sexpr::print(&parse_ok("@test\n@cfg(\"a\", \"b\")\ndef f() = 1")),
+            "(@ test (@ (cfg \"a\" \"b\") (def (f) 1)))"
         );
     }
 

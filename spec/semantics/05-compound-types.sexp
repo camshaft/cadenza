@@ -1408,6 +1408,33 @@
             (export main)))
   (output (: 8 Int64)))
 
+(case "a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)"
+  (doc    "The PROJECTION face of the still-live-binding family: the shared value is not the let-binding
+           itself but a nested-compound PROJECTION of it. `t = (build …) : (Tuple (List Int64) Int64)` with
+           `t.0 = [0,1,2]`; the list is read TWICE by projecting `(. t 0)` — once consumed by
+           `(List.push (. t 0) 99)` (length → 4) and once read as the ORIGINAL `(. t 0)` (length → 3), so
+           4 + 3 = 7. It returned 8 (= 4 + 4): `arr-get` returns the child list as a BORROW (no rc++), so
+           the child had refcount 1 (only `t`'s array cell), and `List.push` FBIP-mutated it IN PLACE — the
+           later re-projection read the grown list. Dup'ing the binder `t` (the existing retain) does NOT
+           help: it bumps the AGGREGATE's rc, not the child's. The fix `dup`s the projected CHILD at a
+           consuming nested-compound projection of a still-live binder, so the push takes the persistent
+           copy path and `t`'s array is untouched. `build` threads the list through the recursion so `t` is a
+           genuine runtime value (no const-fold). Order-sensitive (read-first → 7 throughout); binding
+           `(. t 0)` to a `let` was already correct (a LocalRef the retain covers) — this pins the DIRECT
+           repeated-projection form.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Tuple (List Int64) Int64)))
+              (if (< i n)
+                (build (+ i 1) n (tuple (List.push (. acc 0) i) (+ (. acc 1) 1)))
+                acc))
+            (def (main (: n Int64))
+              (let ((t (build 0 n (tuple (list) 0))))
+                (+ (List.len (List.push (. t 0) 99)) (List.len (. t 0)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
            Like a runtime list/set, it escapes via the runtime value-encode walker guided by a

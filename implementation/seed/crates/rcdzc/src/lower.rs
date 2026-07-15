@@ -811,6 +811,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The DESUGAR to
+        // a synthesized boundary `Mir::Block` + a `match … | short => Mir::Break` is the next slice (T1);
+        // until then it DECLINES (a Todo, never a miscompile — self-hosting-and-bootstrap.md §An
+        // Unsupported Construct Is Declined). The operand is still walked so its own core faults surface.
+        Resolved::Try { operand } => match core_of(db, operand) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "the `?`/`try` operator does not lower yet (boundary desugar pending)",
+            )),
+        },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
@@ -6721,6 +6731,33 @@ fn pattern_constraints(
         {
             return Ok(vec![(path.into(), disc)]);
         }
+        // A bare name that is NOT a variant of the scrutinee's sum but is a PLAUSIBLE TYPO of one — `Rd`
+        // over a `(type Color Red Green)` scrutinee — is almost certainly a misspelled nullary-variant
+        // pattern, NOT a catch-all binder the author intended. Treating it as a binder silently turns the
+        // arm into a wildcard, masking the real variants (a later `Green` arm reads "unreachable") and
+        // drawing a misleading CDZ0306 "unused binding `Rd`" — the exact confusion the DOTTED form
+        // (`Color.Rd`) avoids with "the type `Color` has no variant `Rd` — did you mean `Red`?". Give the
+        // bare form the SAME enrichment: reject CDZ0201 with a did-you-mean + a replace fix on the name,
+        // when `name` is a confident near-miss (`suggest::nearest`) of a variant of the scrutinee sum.
+        // GATED to a real near-miss so a genuine binder (`x`, or any name unlike every variant) still
+        // binds — only a name close to an existing variant is judged a typo, never an arbitrary lowercase
+        // binder. (The value-position twin of `enrich_pattern_head_suggestion`; here the pattern is a bare
+        // atom, which never reaches that compound-head path.)
+        if name != "_"
+            && let Some(candidate) = nearest_variant_typo(db, ty, &name)
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "this match arm names `{name}`, which is not a variant of the matched type \
+                     {} — did you mean `{candidate}`? (a bare name here is read as a catch-all \
+                     binding, which is almost certainly not intended)",
+                    ty.render_name()
+                ),
+            )
+            .at(pat)
+            .with_fix(Fix::replace_heuristic(pat, candidate)));
+        }
         return Ok(Vec::new()); // a binder / wildcard — no constraint
     }
     // A TUPLE pattern `(tuple p0 p1…)` at `path` — a variant's tuple PAYLOAD, destructured positionally
@@ -7271,6 +7308,28 @@ fn non_exhaustive_sum_reject(
     let Some(t) = db.type_decl_by_occ(decl) else {
         return Reject::coded(Code::NonExhaustive, generic);
     };
+    // An OPEN sum (`(type T … .. r)`) is exhaustive ONLY WITH an open-tail `_` arm — its variant set is
+    // not closed, so however many NAMED variants a match covers, the row variable stands for variants it
+    // cannot enumerate (`type-system.md §206`). When every named variant IS covered but the match lacks a
+    // `_` arm, name the open-tail requirement + carry the "add a `_` arm" fix (the open-sum analogue of
+    // the missing-variant fix below). The `_` body is a diverging `(trap "TODO")` placeholder.
+    let is_open = t.open_tail.is_some();
+    let missing_named = t
+        .variants
+        .iter()
+        .enumerate()
+        .any(|(i, _)| !tested.contains(&(i as u32)));
+    if is_open && !missing_named {
+        let message =
+            "non-exhaustive match: an open sum requires an open-tail `_` arm covering its unnamed variants"
+                .to_string();
+        return match db.parent_of(scrutinee) {
+            Some(match_form) => Reject::coded(Code::NonExhaustive, message).with_fix(
+                Fix::insert_arms_heuristic(match_form, vec!["(_ (trap \"TODO\"))".to_string()]),
+            ),
+            None => Reject::coded(Code::NonExhaustive, message),
+        };
+    }
     // The variants whose discriminant no arm tested, in declaration order (a deterministic list).
     let missing: Vec<&crate::db::Variant> = t
         .variants
@@ -7388,6 +7447,27 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
         .iter()
         .position(|v| v.name == name)
         .map(|i| i as u32)
+}
+
+/// A CONFIDENT near-miss variant of the scrutinee sum `ty` for a bare arm-pattern `name` that is NOT
+/// itself a variant — the "did you mean `Red`?" candidate for a misspelled bare nullary-variant pattern
+/// (`Rd` over `(type Color Red Green)`). `None` when `ty` is not a sum, `name` IS a variant (no typo), or
+/// no variant is within `suggest::nearest`'s edit-distance cutoff (a genuine binder, not a typo). This is
+/// what distinguishes a misspelled variant arm from an intentional catch-all binder: only a name close to
+/// an EXISTING variant is judged a typo. Reads the sum's variant names off its `decl` (the same candidate
+/// set `enrich_pattern_head_suggestion` uses for the compound-head form).
+fn nearest_variant_typo(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<String> {
+    let decl = match ty {
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+        _ => return None,
+    };
+    let t = db.type_decl_by_occ(decl)?;
+    // Already a variant → not a typo (the caller's `variant_disc_by_name` handles the exact match).
+    if t.variants.iter().any(|v| v.name == name) {
+        return None;
+    }
+    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    crate::diag::suggest::nearest(name, &names)
 }
 
 /// A map from an access PATH to the solved TYPE of the sub-value there — populated as the tree descends
@@ -7685,10 +7765,20 @@ fn build_tree(
         Some(Core::SumNew { disc, .. }) => Some(disc),
         _ => None,
     };
+    // Whether the switched sum is declared OPEN (`(type T … .. r)`). An open sum's variant set is not
+    // closed — the row variable stands for variants this match cannot enumerate — so it is exhaustive
+    // ONLY WITH an open-tail (`_`/binder default) arm, regardless of how many NAMED variants are covered
+    // (`type-system.md §206`). A match over an open sum WITHOUT a default is non-exhaustive even when every
+    // named variant is covered (there may always be an unnamed one). A CLOSED sum keeps the classic rule
+    // (every variant covered OR a default). Read off the declaration's `open_tail`.
+    let is_open = db
+        .type_decl_by_occ(decl)
+        .is_some_and(|t| t.open_tail.is_some());
     // Exhaustiveness: every variant tested, or a default (wildcard/binder) present — else CDZ0210. Against
-    // the TYPE's variant set, independent of `known_disc` (see above).
+    // the TYPE's variant set, independent of `known_disc` (see above). An OPEN sum ALWAYS needs a default,
+    // even when every named variant is covered.
     let has_default = !default_rows.is_empty();
-    if !has_default && tested.len() < variant_count {
+    if !has_default && (is_open || tested.len() < variant_count) {
         // Name the missing variants + carry an "add the missing arms" fix — but ONLY at the ROOT switch
         // (`switch_path` empty): there the missing-variant arms append directly to the `(match …)` form
         // and are well-formed top-level patterns. A NESTED non-exhaustive (a gap inside a payload
@@ -9458,6 +9548,9 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
             collect_binding_uses(db, rhs, false, out);
         }
         Resolved::Not { operand } => collect_binding_uses(db, operand, false, out),
+        // `(try e)` — the operand is used as a WHOLE value (it is matched/unwrapped), so it does not
+        // count as a projection position; recurse with `proj_operand = false`.
+        Resolved::Try { operand } => collect_binding_uses(db, operand, false, out),
         Resolved::Let { bindings, body } => {
             for (_, v) in &bindings {
                 collect_binding_uses(db, *v, false, out);
@@ -14037,8 +14130,8 @@ fn hoist_common_ctor(
 /// reproducing the taken arm's single evaluation. `cond` is evaluated once per DIFFERING operand: exactly
 /// one differing operand matches the original's single `cond` eval (unconditionally sound); 0 or ≥2
 /// require a TRAP-FREE `cond` (the same guard `hoist_common_ctor` uses). Returns `None` unless both arms
-/// are the same `Arith` operator (over 2 operands) or the same `Convert` op (1 operand) — a poison arm
-/// has neither core, so it never matches.
+/// are the same `Arith` operator, the same `Compare` operator (both over 2 operands), or the same
+/// `Convert` op (1 operand) — a poison arm has neither core, so it never matches.
 fn hoist_common_arith(
     db: &mut Db,
     cond: StructId,
@@ -14064,12 +14157,15 @@ fn hoist_common_arith(
                     rhs: re,
                 },
             ) if ot == oe => (Head::Arith(ot), vec![(lt, le), (rt, re)]),
-            // A COMPARISON is total (never traps, no guard), so the hoist is unconditionally value-safe:
-            // `(if c (< a k) (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of
-            // the SELECTED operand against `k`) with ONE compare instead of two. Operands are paired
-            // POSITIONALLY (`==` on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the
-            // `Eq`-commutativity `core_equiv` allows is irrelevant here since each position selects its own
-            // actual operand.
+            // A COMPARISON is total (never traps, no guard), so the hoist is value-safe: `(if c (< a k)
+            // (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of the SELECTED
+            // operand against `k`) with ONE compare instead of two. Operands are paired POSITIONALLY (`==`
+            // on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the `Eq`-commutativity
+            // `core_equiv` allows is irrelevant here since each position selects its own actual operand.
+            // Value-safe is NOT trap-ORDER-safe, though: the compare's OPERANDS can still be trapping arith
+            // (e.g. `(/ 100 d)`), and a SHARED trapping operand hoisted ahead of a trapping `cond` would
+            // preempt `cond`'s trap. The shared-operand order guard below (`!is_trap_free(db, cond)` →
+            // preceding-operand scan) applies to this Head arm exactly as it does to `Arith`.
             (
                 Core::Compare {
                     op: ot,

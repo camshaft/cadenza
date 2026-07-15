@@ -15,13 +15,28 @@ what `Unit.in` / the `as`/`in` surface RETURNS. Read §0 first.
 >    target unit AND strips the quantity wrapper. `5 kilometer as inches` → `196850.393…` (a plain
 >    number), not a `(Qty T inch)`. This is the operator's "unwrap the value out of being a
 >    quantity." It is a deliberate EXIT from the units world.
-> 2. **A stored Qty is ALWAYS at the dimension's reference unit — no hidden `scale` factor is ever
->    carried on a stored value.** `5 kilometer` normalizes AT CONSTRUCTION to `5000 @ meter`. Named
->    non-reference units (`kilometer`, `foot`, `mbps`, `KiB`) are pure CONSTRUCTION SUGAR for
->    `value × scale @ reference`. Display always shows the reference unit.
-> 3. **A mixed-unit combine's result carries the dimension's reference unit** (order-independent) —
->    unchanged from today, and now the ONLY unit any stored value is ever in.
-> 4. **Land this design doc; hand a vertical to the PM.** Implementation (Q1→Q5) is queued.
+> 2. **A stored Qty is kept EXACT — normalization is LAZY, never an eager truncation at construction.**
+>    *(REVISED 2026-07-15 by operator decision — supersedes the original "eagerly normalize at
+>    construction" wording, which truncated Int magnitudes at a fractional reference.)* A quantity
+>    retains enough to reproduce its exact value — its source unit's exact scale on the type (the
+>    `ty::Unit` already carries `scale_num/scale_den`) — and the scale is applied LAZILY at the point it
+>    is observed (display, or a combine that forces a common unit), NOT eagerly at `Qty.of`. So
+>    `(Qty.of 2 (Unit.of "foot"))` stays exactly 2 foot and `2 foot in inch` = **24** (the direct
+>    source→target ratio, foot/inch = ×12, with NO intermediate truncation through a fractional meter),
+>    and `(Qty.of 5.0 (kilo meter))` reads 5000.0 at meter (Float) / stays exact over Rational. The Int
+>    magnitude MUST NOT be truncated to the reference at construction: `2 foot` is never silently `0 m`.
+>    Float rounds and Rational is exact by their own numeric contracts; Int stays exact by keeping the
+>    magnitude in a unit that divides (its source unit), converting only where the ratio is whole or the
+>    target is chosen by the program (`Unit.in`).
+> 3. **A mixed-unit combine's result carries the dimension's reference unit** (order-independent),
+>    reached by each operand's exact scale — unchanged from today (this lazy combine path already works;
+>    it is the *construction* path that must NOT pre-normalize).
+> 4. **The CALC RELABEL BUG is a DISPLAY bug, not a construction bug** — `5 kilometer` printing
+>    `5 meter` (relabel to base without ×1000) is the render dropping the scale, and the fix is to make
+>    the single-quantity render number and unit AGREE (either scaled-to-reference `5000 meter` where the
+>    numeric type represents it exactly, or the source unit `5 kilometer`), reusing the same
+>    scale-aware routine the combine path uses — WITHOUT changing construction.
+> 5. **Land this design doc; hand a vertical to the PM.** Implementation (Q1→Q5) is queued.
 
 ---
 
@@ -52,7 +67,20 @@ a footgun; some code path will always forget. The fix is to make the stored (mag
 
 Two decisions, and together they collapse the representation to something with no hidden state:
 
-### 1a. A stored Qty is ALWAYS at the dimension's reference unit — no stored scale factor
+### 1a. A stored Qty is kept EXACT; normalization is LAZY, not eager-at-construction
+
+> **⚠ REVISED 2026-07-15 (operator decision).** The original text below proposed EAGER normalization
+> at construction (`Qty.of x u` → `(x × u.scale, reference)`). That was implemented as quantity-Q2 and
+> found to **truncate Int magnitudes at a fractional reference**: `(Qty.of 2 (Unit.of "foot"))` →
+> `2 × 381/1250 = 0` over Int64, so `2 foot in inch` gave `0` instead of `24`. The operator's call:
+> **do NOT eagerly normalize; keep the value exact and normalize LAZILY** (at display / at a combine
+> that forces a common unit). The `ty::Unit` already carries the exact scale (`scale_num/scale_den`),
+> so a quantity retains what it needs to reproduce its exact value; `Unit.in` converts by the direct
+> source→target ratio (no intermediate reference truncation), so `2 foot in inch` = 24 exactly. The
+> calc relabel bug is a **display** bug (the render drops the scale) — fix the render to make number and
+> unit AGREE, not the construction. The eager-at-construction paragraph below is SUPERSEDED; it is kept
+> for context (it explains why lazy is required). Int stays exact by keeping its magnitude in a unit
+> that divides; Float rounds and Rational is exact by their own numeric contracts.
 
 `Qty.of x u` **eagerly normalizes**: it converts `x` into `u`'s reference unit at construction and
 stores `(x × u.scale, u.at_reference())`. So:
@@ -265,12 +293,23 @@ narrow display fix first if the calc needs to be correct before the vertical lan
   design (the operator wants unwrap). If a future need arises for "convert but stay a Qty," it's a
   NEW op (`Unit.as-qty`?), not a reversal — don't quietly keep the old behavior on a second spelling
   (that's the garbage-render / two-spellings trap). Note it in the spec as a considered non-goal.
-- **Eager normalize + Float inner rounds at CONSTRUCTION, not at combine.** `5 foot` (Float) rounds
-  to `1.524 m` immediately. This is fine (Float is inexact by contract) and actually MORE predictable
-  (rounding happens once, at a named point) — but the vertical must confirm no corpus case depended
-  on a deferred-rounding artifact. Rational constructions stay exact.
-- **`Qty.unit` becoming reference-only** is a (minor) expressiveness loss — you can no longer recover
-  the unit a value was WRITTEN in. That's inherent to normalize-at-construction and is the operator's
-  chosen tradeoff (the written unit is sugar, not identity). Pin it in the spec.
+- **⚠ REALIZED RISK (2026-07-15): eager normalize TRUNCATED Int at a fractional reference.** The
+  eager-at-construction model (quantity-Q2) computed `x × u.scale` at `Qty.of` in the inner type. Over
+  **Int**, `2 foot × (381/1250)` truncates to `0` immediately, so `2 foot in inch` gave `0` not `24` —
+  a real precision loss the direct source→target conversion never had. The breaker's cases
+  (`2 foot in inch = 24`, `3000-via-foot = 3000`, landed `@7019646a2`) caught it. **Operator decision:
+  fix the model — normalize LAZILY, keep the value exact; do NOT truncate at construction.** So this
+  risk is now a DESIGN CONSTRAINT: construction never scales an Int magnitude into a unit it does not
+  divide. Float rounding-at-observation is still fine (Float is inexact by contract), Rational is exact;
+  only the Int-at-fractional-reference path forced the model change from eager to lazy.
+- **The calc relabel bug fix is a DISPLAY change, not a construction change.** `5 kilometer` printing
+  `5 meter` is the render substituting the base-dimension name while dropping the scale — so the number
+  (`5`) and unit (`meter`) disagree. Fix the single-quantity render to reuse the scale-aware
+  normalize-to-reference routine the combine path already uses (one source of truth), so it shows a
+  number and unit that AGREE (`5000 meter` where the numeric type represents it, or the source unit
+  `5 kilometer`). Construction is untouched, so no Int truncation is introduced.
+- **`Qty.unit`** returns the quantity's unit as authored/derived (its `ty::Unit`, scale retained), so a
+  program can still reconstruct an equivalent quantity; the lazy model does not force a reference-only
+  unit the way the eager model did.
 - **Land in this worktree, hand to pr-sync via `merge-request`** (fleet single-writer model) — never
   advance trunk directly.

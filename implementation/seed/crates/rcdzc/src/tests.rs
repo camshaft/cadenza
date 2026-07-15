@@ -23375,6 +23375,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
+        // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
+        // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
+        // itself. `t = (build …) : (Tuple (List Int64) Int64)` with `t.0 = [0 1 2]`; the list is CONSUMED by
+        // `(List.push (. t 0) 99)` (len → 4) and READ again as `(. t 0)` (len → 3), so 4 + 3 = 7. Before the
+        // fix `arr-get` returned the child list as a BORROW (no rc++), so the child had rc==1 and `List.push`
+        // FBIP-mutated it in place → the re-projection read the grown list → 8 (silent wrong value). Dup'ing
+        // the binder `t` did NOT help (it bumps the aggregate's rc, not the child's); the fix `dup`s the
+        // projected CHILD at the consuming projection so the push takes the persistent path. `build` threads
+        // the list through the recursion so `t` is a genuine runtime value (no const-fold).
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n acc) (if (< i n) \
+                   (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc)) \
+               (def (main) (let ((t (build 0 3 (tuple (list) 0)))) \
+                             (+ ((. List len) ((. List push) (. t 0) 99)) ((. List len) (. t 0))))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "7",
+            "a consuming projection must not mutate the child a later re-projection reads"
+        );
+    }
+
+    #[test]
+    fn a_single_use_projected_list_consume_needs_no_extra_child_dup() {
+        // The FBIP fast path for the projection face: a projected list consumed EXACTLY once (no later
+        // re-projection) must NOT get the extra child retain — `build 0 3` = `[0 1 2]`, `(. t 0)` pushed to
+        // `[0 1 2 99]`, length 4. Pins that `mark_binder_dups` marks the consuming projection ONLY with a
+        // later live use (the `live_after` gate), so a single projected consume stays lean.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n acc) (if (< i n) \
+                   (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc)) \
+               (def (main) (let ((t (build 0 3 (tuple (list) 0)))) \
+                             ((. List len) ((. List push) (. t 0) 99)))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "4", "single-use projected push then length");
+    }
+
+    #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
         // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
         // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
@@ -34508,6 +34556,60 @@ mod diagnostics {
         );
     }
 
+    /// A BARE (un-dotted) arm pattern name that is a TYPO of a scrutinee-sum variant — `Rd` over `(type
+    /// Color Red Green)` — is almost certainly a misspelled nullary-variant pattern, NOT a catch-all
+    /// binder. Treating it as a binder silently turns the arm into a wildcard (a later real-variant arm
+    /// reads "unreachable" CDZ0213) and draws a misleading CDZ0306 "unused binding `Rd`". Now it gets the
+    /// SAME did-you-mean the DOTTED form (`Color.Rd`) already gives: CDZ0201 "not a variant of the matched
+    /// type Color — did you mean `Red`?" + a replace fix on the name, and the consequent CDZ0213/CDZ0306
+    /// are suppressed (the match's `core_of` poisons, so the redundant-arm + unused-binding passes skip it).
+    #[test]
+    fn a_bare_variant_typo_arm_suggests_the_variant_not_a_binder() {
+        let src = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Rd 1) (_ 2))) (export f))";
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`Rd`")
+                && d.message.contains("Color")
+                && d.message.contains("did you mean `Red`?"),
+            "names the typo + the near variant: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Red"),
+            "carries the replace-with-`Red` fix: {}",
+            d.message
+        );
+        // The consequent CDZ0213 "unreachable" (the typo'd arm was mis-read as a catch-all) and CDZ0306
+        // "unused binding `Rd`" are SUPPRESSED — one clean primary error, not a pile of consequent noise.
+        let all = diags_of(src);
+        assert!(
+            all.iter()
+                .all(|x| x.code.as_deref() != Some("CDZ0213")
+                    && x.code.as_deref() != Some("CDZ0306")),
+            "no consequent unreachable/unused-binding noise on a typo arm: {all:?}"
+        );
+        // NO false positive on a GENUINE binder: a bare name UNLIKE any variant (`zzzptql`) stays a
+        // catch-all binder — the usual CDZ0306 unused-binding warning, never the typo CDZ0201.
+        let far = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (zzzptql 2))) (export f))";
+        let fd = diags_of(far);
+        assert!(
+            fd.iter().all(|x| x.code.as_deref() != Some("CDZ0201")),
+            "a far-miss bare name is a genuine binder, not a typo reject: {fd:?}"
+        );
+        // A lowercase binder near a variant is still a binder — the typo heuristic is edit-distance-gated,
+        // and an intentional catch-all `x` is nowhere near `Red`/`Green`, so it binds cleanly (no reject).
+        let bind = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (x 2))) (export f))";
+        assert!(
+            diags_of(bind)
+                .iter()
+                .all(|x| x.severity != crate::abi::Severity::Error),
+            "an intentional catch-all binder still compiles: {:?}",
+            diags_of(bind)
+        );
+    }
+
     /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
     /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
     /// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
@@ -34908,6 +35010,99 @@ mod diagnostics {
                 "a catch-all after a finite type is fully covered is redundant (CDZ0213): `{src}`, got {redundant:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_open_sum_match_requires_an_open_tail_wildcard_arm() {
+        // OS1 — an OPEN sum `(type T … .. r)` is exhaustive ONLY WITH an open-tail `_` arm
+        // (`type-system.md §A Sum Type May Be Open, With A Mandatory Open-Tail Arm`, §206). Its row
+        // variable `r` stands for variants the module does not name, so a match covering EVERY NAMED
+        // variant but omitting `_` still cannot be exhaustive → CDZ0210. The CONTRAST: the SAME arm set
+        // over a CLOSED sum (no `.. r`) IS exhaustive (every variant covered, no `_` needed).
+
+        // (a) Open sum, both named variants covered, NO `_` → non-exhaustive (CDZ0210), even though a
+        // closed sum with the same arms would be complete.
+        let open_missing_tail = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_missing_tail
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "an open sum match without a `_` arm is non-exhaustive: {open_missing_tail:?}"
+        );
+
+        // (b) The SAME sum declared CLOSED (no `.. r`) with the same two arms is exhaustive — no `_`
+        // required. This isolates the open-tail marker as the sole cause of (a)'s rejection.
+        let closed_ok = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64)) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            !closed_ok
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a CLOSED sum covering every variant needs no `_` arm: {closed_ok:?}"
+        );
+
+        // (c) Open sum WITH the `_` arm compiles clean — the open-tail arm satisfies exhaustiveness.
+        let open_with_tail = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_with_tail.is_empty(),
+            "an open sum match WITH a `_` arm is exhaustive and compiles clean: {open_with_tail:?}"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_arm_over_an_open_sum_is_never_redundant() {
+        // OS1 — the redundant-arm dual: over a CLOSED sum, a `_` after every variant is covered is
+        // CDZ0213 (the finite type is saturated). Over an OPEN sum the `_` is the ONLY cover for the
+        // row-variable tail, so it is NEVER redundant — `finite_cover_size` returns `None` for an open
+        // sum, so its `_` never closes finite coverage. No CDZ0213 even with every named variant covered.
+        let open_wildcard = redundant_arms_of(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_wildcard.is_empty(),
+            "a `_` over an open sum is never redundant (it covers the open tail): {open_wildcard:?}"
+        );
+
+        // CONTRAST — the SAME arms over a CLOSED sum DO saturate it, so the trailing `_` is CDZ0213.
+        let closed_wildcard = redundant_arms_of(
+            "(module m (type V (Known Int64) (Unknown Int64)) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert_eq!(
+            closed_wildcard.len(),
+            1,
+            "a `_` after a CLOSED sum is fully covered IS redundant (CDZ0213): {closed_wildcard:?}"
+        );
+    }
+
+    #[test]
+    fn an_undeclared_capitalized_ctor_still_rejects_cdz0101() {
+        // OS1 LOAD-BEARING constraint — the open-sum row variable does NOT sanction undeclared local
+        // constructor names. A bare capitalized head that names no declared variant STILL rejects
+        // CDZ0101 (`07-type-system.sexp:47` pins the type-position twin). Open-ness is declared via the
+        // explicit `.. r` marker on `(type …)`, NOT by any-undeclared-ctor-is-open (option 1a, which
+        // §208 forbids). This pins that the marker did not open a hole for typo'd ctor names.
+        let d = first_error("(module m (def (main) (Nope 5)) (export main))");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0101"),
+            "an undeclared capitalized ctor is still unbound (CDZ0101): {}",
+            d.message
+        );
     }
 
     #[test]
@@ -49159,6 +49354,99 @@ mod stage1 {
         let c = reduce_ctor(&mut db, p, w8, &[w8]).expect("build");
         assert_ne!(a, c, "different widths are different modules");
     }
+
+    // ── the `?`/`try` fallible short-circuit operator — T0a: node plumbing + operand typing ─────────
+    // (DESIGN-try-operator-rcdzc.md). These pin the FRONT-HALF invariants the later slices build on:
+    // `(try e)` resolves as a first-class node, its type is the operand's SUCCESS payload, an operand
+    // that is not a fallible sum is CDZ0203, and (until the boundary desugar lands, T1) a well-formed
+    // `(try e)` DECLINES rather than miscompiling.
+
+    /// The type of `main`'s body (`(try …)`) at a given operand — the success payload the `?` yields.
+    fn try_body_ty(body: &str) -> crate::ty::Ty {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let ast = parse(&src);
+        let mut db = crate::db::Db::load(ast);
+        let b = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .and_then(|d| d.body)
+            .expect("def main has a body");
+        crate::infer::type_of(&mut db, b)
+    }
+
+    #[test]
+    fn try_on_an_option_yields_the_some_payload_type() {
+        // `(try (Int64.checked-add 20 22))` — the operand is `(Option Int64)`, so the `?` UNWRAPS the
+        // `Some` payload: the node's type is `Int64`. (The value does not lower yet — T1; this pins the
+        // TYPE half.)
+        let ty = try_body_ty("(try (Int64.checked-add 20 22))");
+        assert_eq!(
+            ty.render_name(),
+            "Int64",
+            "`(try (Option Int64))` yields the Some payload Int64, got {}",
+            ty.render_name()
+        );
+    }
+
+    #[test]
+    fn try_on_a_result_yields_the_ok_payload_type() {
+        // `(try (Ok 1))` — the operand is `(Result Int64 _)`, so `?` yields the `Ok` payload `Int64`
+        // (the `Err` type is a still-unsolved phantom here, which does not affect the success payload).
+        let ty = try_body_ty("(try (Ok 1))");
+        assert_eq!(
+            ty.render_name(),
+            "Int64",
+            "`(try (Result Int64 _))` yields the Ok payload Int64, got {}",
+            ty.render_name()
+        );
+    }
+
+    #[test]
+    fn try_on_a_non_fallible_operand_is_a_type_mismatch() {
+        // A `?` on a plain Int64 has nothing to unwrap — the ordinary type mismatch CDZ0203 (the operand
+        // must be a `Result`/`Option`). Anchored at the operand.
+        let d = expect_error("(try 5)");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0203"),
+            "a `?` on a non-fallible operand is CDZ0203, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("fallible"),
+            "message should say the operand must be fallible: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn try_with_the_wrong_arity_is_malformed() {
+        // `(try)` / `(try a b)` are malformed — `try` takes EXACTLY one operand (the surplus-delete fix
+        // path shared with `quote`). CDZ0201.
+        for body in ["(try)", "(try 1 2)"] {
+            let d = expect_error(body);
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0201"),
+                "`{body}` is malformed (arity), got: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_try_declines_until_the_boundary_desugar_lands() {
+        // T0a carries `(try e)` through resolve/infer but does NOT lower it yet (the boundary `Mir::Block`
+        // + `Mir::Break` desugar is T1). A well-formed `(try (Ok 1))` therefore DECLINES — a Todo, never a
+        // miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined). This test
+        // FLIPS to an executing-value test when T1 lands.
+        let msg = expect_decline("(try (Ok 1))");
+        assert!(
+            msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
+            "a well-formed `(try …)` declines pending the desugar: {msg}"
+        );
+    }
 }
 
 // ── value-heap R0: the canonical `list<u8>` ABI (memory + cabi_realloc + list<u8> lift) ────────────
@@ -62571,6 +62859,53 @@ mod cross_component_oracle {
             ),
             cdz_run::Outcome::Trap(t) => panic!("non-kebab peer-op run trapped: {t}"),
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL5 — a peer whose op ARITY disagrees with the consumer's binding is rejected at COMPOSE TIME with
+    // an actionable error, not an opaque runtime trap. `run_with_peers` forwards each peer func via a raw
+    // dynamic closure (no linker subtype check), so a mismatch (consumer imports `add : (Int64,Int64) ->
+    // Int64`, peer exports `add : (Int64) -> Int64`) would otherwise trap deep in the callee with a bare
+    // wasm backtrace. The compose-time check (`check_peer_iface_signatures`) catches it, naming the
+    // interface, op, and both arities. Guards the composition edge of the peer-linking surface.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_arity_mismatch_is_rejected_at_compose_time_not_a_trap() {
+        use crate::testkit::parse;
+        // PROVIDER: exports `add` taking ONE argument.
+        let provider = compile_provider(
+            "(do (def (add (: x Int64)) (+ x 1)) (export add))",
+            "cadenza:math/api",
+        );
+        // CONSUMER: binds `Math.add` as taking TWO arguments — an arity mismatch with the peer.
+        let src = "(do \
+            (effect Math (op add (-> Int64 Int64 Int64))) \
+            (bind Math \"cadenza:math/api\") \
+            (def (main (: x Int64)) (host (Math) (Math.add x x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect_err("an arity-mismatched peer must be REJECTED, not run to a trap");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("signature mismatch")
+                && msg.contains("add")
+                && msg.contains("2 argument(s)")
+                && msg.contains("1 argument(s)"),
+            "the compose error must name the op + both arities, not be an opaque trap: {msg}"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------

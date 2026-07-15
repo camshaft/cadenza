@@ -4,6 +4,8 @@ import { createBrowserRouter, Outlet, RouterProvider, ScrollRestoration } from "
 import { Layout } from "./components/Layout.tsx";
 import HomePage from "./components/HomePage.tsx";
 import { RouteError } from "./components/RouteError.tsx";
+import { UpdateToast } from "./components/UpdateToast.tsx";
+import { clearAutoReloadGuard } from "./components/chunkError.ts";
 import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { ProgressProvider } from "./progress/ProgressContext.tsx";
 import "./index.css";
@@ -21,6 +23,9 @@ function RootLayout() {
     <>
       <ScrollRestoration getKey={(location) => location.pathname} />
       <Outlet />
+      {/* Proactive stale-deploy detection: polls version.json, prompts a refresh when a newer bundle
+          ships while this tab is open. Sits at the root so it's present on every route. */}
+      <UpdateToast />
     </>
   );
 }
@@ -70,3 +75,18 @@ createRoot(document.getElementById("root")!).render(
     </ProgressProvider>
   </StrictMode>,
 );
+
+// Re-arm the stale-deploy auto-reload once the app has stayed up briefly. `RouteError` sets a one-shot
+// sessionStorage guard when it auto-reloads on a chunk 404, so a genuinely-broken deploy can't reload-
+// loop. But if the reload SUCCEEDED (we're here, running, seconds later), the incident is resolved —
+// clear the guard so a LATER stale deploy in the same tab-session can auto-reload again. The delay is
+// what preserves loop protection: a broken deploy re-throws the chunk error almost immediately (before
+// this fires), so the guard is still set and the second reload is suppressed into the manual prompt.
+setTimeout(() => {
+  try {
+    clearAutoReloadGuard(sessionStorage);
+  } catch {
+    // sessionStorage can throw in some privacy modes — a failure to re-arm just leaves auto-reload
+    // disarmed until the tab closes, which is safe.
+  }
+}, 10_000);
