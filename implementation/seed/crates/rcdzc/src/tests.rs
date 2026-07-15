@@ -47817,6 +47817,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_applied_through_an_unbuilt_sibling_variant_gets_its_call_type() {
+        // A sum boxes TWO distinctly-typed closures — `Unary (Int64->Int64)` and `Binary
+        // (Int64->Int64->Int64)`. `apply-it` matches BOTH arms and applies each arm's closure (`(f x)` /
+        // `(g x y)`), so BOTH `call_indirect`s are statically emitted. But `main` constructs only ONE
+        // variant, so the OTHER arm's closure type is never built — no lifted lambda of its `(env, args…)
+        // ->ret` shape exists, and the `call_indirect` had NO type-section functype to reference,
+        // DECLINING "a runtime closure application has no matching function type". The fix registers an
+        // extra functype for each reachable closure-application shape no lifted lambda supplies
+        // (`Layout::closure_call_types`). This is the minimized iterator `scan`+`flat-map` coexistence
+        // (a sum with a binary-accumulator closure AND an element→sub-iterator closure). Both directions
+        // must compile+run: build Unary (runs the `(f x)` arm → 10) and build Binary (runs `(g x y)` → 14).
+        use crate::testkit::parse;
+        let cases = [
+            (
+                "build Unary; Binary arm's (g x y) is the unbuilt call type",
+                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
+                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
+                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
+                   (def (main) (apply-it (T.Unary (fn ((: n Int64)) (* n 2))) 5 9)) (export main))",
+                "10",
+            ),
+            (
+                "build Binary; Unary arm's (f x) is the unbuilt call type",
+                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
+                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
+                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
+                   (def (main) (apply-it (T.Binary (fn ((: a Int64) (: b Int64)) (+ a b))) 5 9)) (export main))",
+                "14",
+            ),
+        ];
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        for (label, src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile unbuilt-sibling-closure ({label}): {e:?}"));
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("unbuilt-sibling-closure trapped ({label}): {t}")
+                }
+            }
+        }
+    }
+
+    #[test]
     fn lambda_lifting_dedups_by_body_and_gives_distinct_lambdas_distinct_slots() {
         // `Db::lift_lambda` dedups by the lambda's `body` occurrence via an O(1) index (was a linear scan
         // of `db.lifted` per lift → O(N²) for a program lifting N distinct closures). This locks in the two

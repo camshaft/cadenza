@@ -108,6 +108,17 @@ pub struct Layout {
     /// extern call's core-func index is `host + runtime + its position`. Empty for a program binding no
     /// peer (byte-identical to before). Target-agnostic, filled by the backend's `with_extern_order`.
     pub extern_order: Vec<(String, String)>,
+    /// EXTRA closure-application functypes a `call_indirect` needs but NO lifted lambda supplies — each a
+    /// `(env-prefixed param valtypes, result valtype-or-unit)` shape. A `Core::CallClosure` reaches a
+    /// closure through a sum/param whose lifted body is NOT built in this program: the applied variant is
+    /// statically reachable (the `match` arm is emitted) but dynamically dead (no `Core::Closure` of that
+    /// type is ever constructed, so no lifted lambda of that shape exists). The `call_indirect` still needs
+    /// a TYPE-SECTION functype of the right structural shape to reference. These are collected in `compute`
+    /// from the reachable `Core::CallClosure` signatures that no reached lifted lambda covers, laid in the
+    /// type section AFTER the lifted functypes (so no existing index shifts), and resolved by
+    /// `closure_call_type_index`. Empty for a program whose every applied closure has a built lifted body
+    /// (byte-identical to before). Each entry is `(param valtypes INCLUDING the leading i32 env, ret)`.
+    pub closure_call_types: Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)>,
 }
 
 impl Layout {
@@ -146,7 +157,30 @@ impl Layout {
             host_order: Vec::new(),
             host_strings: Vec::new(),
             extern_order: Vec::new(),
+            closure_call_types: Vec::new(),
         }
+    }
+
+    /// A copy of this layout with the EXTRA closure-application functypes set — the `call_indirect`
+    /// signatures no lifted lambda supplies (see the field doc). Set in `compute` after the lifted set +
+    /// the reachable `Core::CallClosure` signatures are both known.
+    pub fn with_closure_call_types(
+        &self,
+        closure_call_types: Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)>,
+    ) -> Layout {
+        Layout {
+            closure_call_types,
+            ..self.clone()
+        }
+    }
+
+    /// The TYPE-section index of the EXTRA closure-application functype at position `i` in
+    /// `closure_call_types` — laid AFTER the imports, the `order` defs, AND the lifted lambdas, so its
+    /// index is `import_count + order.len() + lifted.len() + i`. A `call_indirect` applying a closure whose
+    /// shape no lifted lambda supplies references this. (Structural functypes: the index only needs the
+    /// matching `(env, param…)->result` shape.)
+    pub fn closure_call_type_index(&self, i: usize, import_count: u32) -> u32 {
+        import_count + (self.order.len() + self.lifted.len() + i) as u32
     }
 
     /// A copy of this layout with a different `import_base` (the backend shifts the base once the
@@ -452,13 +486,152 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
     // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
     // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
     // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
-    Ok(Layout::with_lifted(
-        exports,
-        order,
-        0,
-        lifted,
-        lifted_reached,
-    ))
+    let base_layout = Layout::with_lifted(exports, order, 0, lifted, lifted_reached);
+
+    // EXTRA closure-application functypes: a `Core::CallClosure` can reach a closure of a type NO lifted
+    // lambda in this program builds — the applied variant's `match` arm is statically emitted but never
+    // dynamically constructed (e.g. an `Iter` sum with a `ScanI(Int64->Int64->Int64)` AND a
+    // `FlatMapI(Int64->Iter)` variant where only `ScanI` is ever built: the `FlatMapI` arm still emits a
+    // `call_indirect f(x)` needing an `(env:i32, i64)->i32` functype, but no such lifted body exists). The
+    // `call_indirect` needs a type-section functype of the matching structural shape regardless. Collect
+    // the reachable `Core::CallClosure` signatures (over the emitted defs + reached lifted bodies) whose
+    // `(env, arg valtypes)->ret` shape no reached lifted lambda supplies, and register one functype each —
+    // laid after the lifted functypes so no existing index shifts. Without this the application declines
+    // ("a runtime closure application has no matching function type"), rejecting a valid program.
+    let mut sigs: Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)> = Vec::new();
+    let mut seen_sig: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The shapes a reached lifted lambda already covers (its functype is `(env:i32, params…)->ret`).
+    let mut lifted_shapes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (code, l) in base_layout.lifted.iter().enumerate() {
+        if !base_layout
+            .lifted_reached
+            .get(code)
+            .copied()
+            .unwrap_or(true)
+        {
+            continue; // an unreached lifted body is a stub, but its functype IS in the type section
+        }
+        if let Some(key) = closure_shape_key(&closure_env_param_vts(l), &l.ret_ty) {
+            lifted_shapes.insert(key);
+        }
+    }
+    // Every reached lifted lambda's functype exists whether reached or not (both emit a function), so an
+    // UNREACHED lifted lambda's shape is covered too — include those shapes so we don't double-register.
+    for (code, l) in base_layout.lifted.iter().enumerate() {
+        let _ = code;
+        if let Some(key) = closure_shape_key(&closure_env_param_vts(l), &l.ret_ty) {
+            lifted_shapes.insert(key);
+        }
+    }
+    // Walk every emitted body (order defs + reached lifted bodies) for `Core::CallClosure` signatures.
+    let mut walk_roots: Vec<StructId> = Vec::new();
+    for &def in &base_layout.order {
+        if let Some(body) = db.defs[def].body {
+            walk_roots.push(body);
+        }
+    }
+    for (code, l) in base_layout.lifted.iter().enumerate() {
+        if base_layout
+            .lifted_reached
+            .get(code)
+            .copied()
+            .unwrap_or(true)
+        {
+            walk_roots.push(l.body);
+        }
+    }
+    for root in walk_roots {
+        let mut found: Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)> = Vec::new();
+        collect_closure_call_sigs(db, root, &mut found);
+        for (param_vts, ret) in found {
+            let Some(key) = closure_shape_key(&param_vts, &ret) else {
+                continue;
+            };
+            if lifted_shapes.contains(&key) || !seen_sig.insert(key) {
+                continue; // covered by a lifted lambda, or an already-collected extra shape
+            }
+            sigs.push((param_vts, ret));
+        }
+    }
+
+    Ok(base_layout.with_closure_call_types(sigs))
+}
+
+/// The full param valtypes of a lifted lambda's functype — the leading i32 ENV cell, then each source
+/// param's valtype. Mirrors the backend's `(env, param…) -> result` lowering (a param with no machine rep
+/// is dropped, matching `stub_function`; such a lambda would already have declined). Used to key a lifted
+/// lambda's structural shape against a `Core::CallClosure`'s.
+fn closure_env_param_vts(
+    l: &crate::lower::LiftedLambda,
+) -> Vec<crate::backend::wasm::lir::ValType> {
+    use crate::backend::wasm::lir::{ValType, valtype_of};
+    let mut vts = vec![ValType::I32]; // slot 0: the env cell (an i32 handle)
+    for (_, pt) in &l.params {
+        if let Some(v) = valtype_of(pt) {
+            vts.push(v);
+        }
+    }
+    vts
+}
+
+/// A stable string key for a closure functype's structural shape (`(param valtypes) -> ret valtype-or-unit`)
+/// — used to dedup extra closure-application functypes and to test lifted-lambda coverage. `None` if the
+/// result type has no machine representation (the application would decline elsewhere).
+fn closure_shape_key(param_vts: &[crate::backend::wasm::lir::ValType], ret: &Ty) -> Option<String> {
+    use crate::backend::wasm::lir::valtype_of;
+    let params: Vec<String> = param_vts.iter().map(|v| format!("{v:?}")).collect();
+    let ret_key = match valtype_of(ret) {
+        Some(v) => format!("{v:?}"),
+        None if matches!(ret, Ty::Unit) => "unit".to_string(),
+        None => return None,
+    };
+    Some(format!("{}->{ret_key}", params.join(",")))
+}
+
+/// Collect each reachable `Core::CallClosure`'s functype shape under `id` — `(env-prefixed param valtypes,
+/// result type)`, matching the backend's `(env:i32, args…)->result` `call_indirect` signature. The env i32
+/// is prepended; each arg's valtype comes from its solved type; the result type is the closure type peeled
+/// by the arg count. A signature whose args/result have no machine rep is skipped (the application declines
+/// at select). Walks the whole core tree via `core_child_ids` (the generic child walker), depth-guarded like
+/// the sibling closure/callee walks so a non-normalizing deep core chain cannot overflow the compiler stack.
+fn collect_closure_call_sigs(
+    db: &mut Db,
+    id: StructId,
+    out: &mut Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)>,
+) {
+    use crate::backend::wasm::lir::{ValType, valtype_of};
+    use crate::core::Core;
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    if let Core::CallClosure { closure, args } = crate::lower::core_of(db, id) {
+        // The application's env-prefixed param valtypes + result type — the shape the `call_indirect` needs.
+        let arg_vts: Option<Vec<ValType>> =
+            args.iter().map(|&a| valtype_of(&type_of(db, a))).collect();
+        if let Some(arg_vts) = arg_vts {
+            let mut result_ty = type_of(db, closure);
+            let mut ok = true;
+            for _ in 0..args.len() {
+                result_ty = match result_ty {
+                    Ty::Fn(_, r) => *r,
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                };
+            }
+            if ok {
+                let mut param_vts = vec![ValType::I32]; // the env cell
+                param_vts.extend(arg_vts);
+                out.push((param_vts, result_ty));
+            }
+        }
+    }
+    for child in crate::backend::wasm::select::core_child_ids(db, id) {
+        collect_closure_call_sigs(db, child, out);
+    }
+    db.walk_depth -= 1;
 }
 
 /// Force MONOMORPHIZATION to run over the whole program — lower EVERY definition body, so

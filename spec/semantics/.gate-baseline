@@ -358,6 +358,7 @@ pass	a checked conversion of a negative CONSTANT into an unsigned type is reject
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
+pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a capturing closure and calls it through a recursive HOF
@@ -2376,6 +2377,7 @@ pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte length of a run-time multibyte string exceeds its scalar length

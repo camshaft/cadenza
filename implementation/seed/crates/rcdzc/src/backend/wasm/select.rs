@@ -683,8 +683,9 @@ fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<Str
 }
 
 /// Every immediate child NODE id of a Core node (all sub-expression occurrences, regardless of position).
-/// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here.
-fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
+/// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here. Also drives
+/// `layout::collect_closure_call_sigs` (the extra closure-application functype collection) — hence `pub`.
+pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
     let mut cs: Vec<StructId> = Vec::new();
     match core_of(db, id) {
         Core::ListLen { operand }
@@ -4521,15 +4522,30 @@ fn closure_type_index(
     }
     let rv = valtype_of(&result_ty)?;
     // Find a lifted lambda with the same param valtypes (in order) + result valtype.
-    let slot = layout.lifted.iter().position(|l| {
+    if let Some(slot) = layout.lifted.iter().position(|l| {
         l.params.len() == arg_vts.len()
             && l.params
                 .iter()
                 .zip(&arg_vts)
                 .all(|((_, pt), av)| valtype_of(pt) == Some(*av))
             && valtype_of(&l.ret_ty) == Some(rv)
-    })?;
-    Some(layout.lifted_type_index(slot, layout.import_base))
+    }) {
+        return Some(layout.lifted_type_index(slot, layout.import_base));
+    }
+    // No lifted lambda supplies this shape — the applied closure is of a type NO `Core::Closure` in this
+    // program builds (a statically-reachable but dynamically-dead `match` arm applying a variant's boxed
+    // closure). `layout.closure_call_types` registered an EXTRA functype of the needed `(env:i32, args…)
+    // ->result` shape; find it and use its type-section index. The lifted lambda's functype prepends an
+    // i32 env, so the extra functype's params are `[i32, arg_vts…]` — match on that full param list.
+    let want_params: Vec<crate::backend::wasm::lir::ValType> =
+        core::iter::once(crate::backend::wasm::lir::ValType::I32)
+            .chain(arg_vts.iter().copied())
+            .collect();
+    let i = layout
+        .closure_call_types
+        .iter()
+        .position(|(pvts, ret)| *pvts == want_params && valtype_of(ret) == Some(rv))?;
+    Some(layout.closure_call_type_index(i, layout.import_base))
 }
 
 /// Whether the value at node `id` has an ENUM-DISCRIMINANT type — a C-style enum represented directly as
