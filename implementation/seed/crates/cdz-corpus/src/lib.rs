@@ -22,6 +22,10 @@
 
 pub mod markdown;
 
+/// The command surface (`CorpusArgs` + `run`), embeddable so the unified `cdz` binary can mount
+/// `cdz corpus`. The standalone `cdz-corpus` bin is a thin shim over it.
+pub mod cli;
+
 use cadenza_syntax::ast::{Arenas, Builder, StructId};
 use cadenza_syntax::sexpr;
 

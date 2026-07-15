@@ -83,6 +83,14 @@ enum Cmd {
     /// `cdz` on the PATH both compiles and runs (`cdz compile foo.cdz -o - | cdz run -`).
     Run(cdz_run::cli::RunArgs),
 
+    // ── corpus (cdz-corpus) ─────────────────────────────────────────────────────────────────────
+    /// Read + migrate the executable-semantics corpus (`records`/`migrate`/`check`) — the maintenance
+    /// tool for `spec/semantics/*.sexp`. Folded in from the `cdz-corpus` bin so it needn't be a separate
+    /// binary on the PATH. `cdz corpus records FILE…` emits the flat record stream the gate consumes;
+    /// `migrate` projects a `.sexp` corpus to literate markdown; `check` proves a migration is
+    /// behaviour-preserving.
+    Corpus(cdz_corpus::cli::CorpusArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -169,6 +177,8 @@ fn main() -> ExitCode {
         Cmd::Compile(a) => run_compile(a),
         // `cdz run` — mounted from the `cdz-run` lib; the same code the standalone `cdz-run` bin runs.
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
+        // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
+        Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
