@@ -1662,6 +1662,9 @@ pass	an absolute-value branch traps on the minimum integer it cannot represent
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an active unquote of a boolean literal lifts to an Ast.Bool node
+pass	an active unquote of a string literal lifts to an Ast.Str node
+pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes

@@ -399,9 +399,12 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
 /// root of the fresh `Ast` construction tree, or `None` (bail — leave for resolve) on an un-reifiable
 /// leaf, an ACTIVE splice, or an arity fault. Selective evaluation happens at an ACTIVE unquote (see the
 /// module docs §Quasiquote):
-///  - `(unquote e)` at depth 1 → ACTIVE: reuse `e` LIVE, wrap `(Ast.Int e)` — `e` is evaluated as
-///    ordinary code (unbound name → CDZ0101; its Int64 value lifts to an `Ast.Int` node). Int-only lift
-///    this increment (a non-Int active unquote gets `Ast.Int`'s payload type-error).
+///  - `(unquote e)` at depth 1 → ACTIVE: reuse `e` LIVE, wrap in the `Ast.*` ctor matching its VALUE —
+///    `e` is evaluated as ordinary code (unbound name → CDZ0101). A value LITERAL dispatches by kind (Int
+///    → `Ast.Int`, Bool → `Ast.Bool`, String → `Ast.Str`; a Float/Char literal bails — no value variant
+///    yet). A runtime operand (a NAME or a call) wraps `Ast.Int` — its type is unknown pre-typecheck, so a
+///    non-Int runtime operand still hits `Ast.Int`'s payload type-error (the general inferred-type lift is
+///    a later increment).
 ///  - `(unquote-splicing e)` at depth 1 → ACTIVE splice: BAIL (deferred — leave for resolve).
 ///  - `(unquote e)` at depth>1 → inert `(Ast.List (list (Ast.Name "unquote") <reify e @ depth-1>))`.
 ///  - `(quasiquote t)` at any depth → inert `(Ast.List (list (Ast.Name "quasiquote") <reify t @ depth+1>))`.
@@ -424,29 +427,34 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             if items.len() != 2 {
                 return None;
             }
-            // A NON-INTEGER LITERAL operand (`,2.0`, `,"s"`, `,true`) cannot lift: the only value-carrying
-            // `Ast` variant this increment builds is `Ast.Int` (Int64 payload). Wrapping such a literal
-            // `(Ast.Int 2.0)` would leak the INTERNAL reification mechanism as a misleading "variant
-            // constructor's payload has declared type Int64, but Float64 was applied" — worse, its
-            // coercion fix would silently REWRITE the author's `2.0`→`2`, corrupting their value. BAIL
-            // instead (as `reify` does for a bare non-Int leaf), so the quasiquote declines honestly with
-            // "quasiquote produces an AST value (not yet built)" — the type-directed lift of a non-Int
-            // active operand is a later increment (module docs §Quasiquote). A NON-literal operand (a
-            // NAME `,n` or a call `,(f x)`) stays LIVE and wraps in `Ast.Int` as before — its type is
-            // unknown at reify time (pre-typecheck), and an Int-valued one is the corpus case.
+            // Wrap the LIVE operand in the `Ast.*` ctor matching its VALUE. The operand stays live (it is
+            // evaluated code, not reified) so an unbound name in it is still the ordinary CDZ0101.
             //
-            // 🔑 A `Leaf::Name` is NOT a literal — it is a runtime REFERENCE (a let-bound var `,n` or a
-            // param), which the comment above says stays live. Only a non-int VALUE literal
-            // (Float/String/Bool/Char) bails; a bare int literal `,42` lifts. So exclude `Leaf::Name` from
-            // the bail (else `(let ((n 42)) `(op-const ,n))` and a `,param` regress to a spurious decline).
-            if let Struct::Atom(l) = ast.get(items[1])
-                && !matches!(ast.leaf(*l), Leaf::Int { .. } | Leaf::Name(_))
-            {
-                return None;
-            }
-            // Reuse the operand node LIVE (it is evaluated code, not reified) and wrap it `(Ast.Int e)`:
-            // the Int64 value lifts to an `Ast.Int` node identical to a const fold's.
-            Some(ast_ctor(ast, "Int", items[1]))
+            // When the operand is a VALUE LITERAL whose kind is known structurally here, dispatch to the
+            // matching leaf ctor: an Int → `Ast.Int`, a Bool → `Ast.Bool`, a String → `Ast.Str` (each an
+            // ordinary value-carrying `Ast` variant). Wrapping a literal in the WRONG ctor (e.g. every
+            // literal in `Ast.Int`) would surface a misleading payload type-error and its coercion fix
+            // would silently rewrite the author's value — so a literal the `Ast` sum has no value variant
+            // for yet (a Float/Char) BAILS, and the quasiquote declines honestly ("not yet built").
+            //
+            // 🔑 A `Leaf::Name` is a runtime REFERENCE (a let-bound var `,n` / a param), NOT a literal —
+            // its type is unknown at reify time (pre-typecheck), so it stays wrapped in `Ast.Int` as
+            // before (the corpus active-unquote operand is Int-valued). A non-Int NAME operand still hits
+            // `Ast.Int`'s payload type-error — the general type-directed lift of a runtime operand (wrap
+            // by the operand's INFERRED type) is a separate later increment. A non-leaf operand (a call
+            // `,(f x)`) is likewise wrapped `Ast.Int`.
+            let ctor = match ast.get(items[1]) {
+                Struct::Atom(l) => match ast.leaf(*l) {
+                    Leaf::Int { .. } | Leaf::Name(_) => "Int",
+                    Leaf::Bool(_) => "Bool",
+                    Leaf::Str(_) => "Str",
+                    // A literal with no value-carrying `Ast` variant yet (Float/Char/Sym/Bytes) — bail.
+                    _ => return None,
+                },
+                // A non-leaf operand (a computed expression) — its Int64 value lifts to `Ast.Int`.
+                Struct::List(_) => "Int",
+            };
+            Some(ast_ctor(ast, ctor, items[1]))
         }
         Some("unquote-splicing") if depth == 1 => None,
         // A nested unquote (depth>1) is INERT structure at depth-1; its head + operand reify structurally.

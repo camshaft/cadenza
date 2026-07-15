@@ -29496,20 +29496,40 @@ mod match_engine {
             Some("CDZ0201"),
             "splicing a non-list is CDZ0201 (the ast-splice-lift operand check, not a miscompile)"
         );
-        // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
-        // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
-        // "quasiquote produces an AST value (not yet built)"), NOT the leaky CDZ0201 "variant
-        // constructor's payload has declared type Int64, but Float64 was applied" the naive `(Ast.Int
-        // 2.0)` wrap produced — whose coercion fix would have silently rewritten the author's `2.0`→`2`.
-        // The reifier bails so no misleading coded reject + no value-corrupting fix is emitted.
-        for lit in ["2.0", "\"s\"", "true"] {
-            let src = format!("(module m (def (main) (quasiquote (unquote {lit}))) (export main))");
-            let d = reject_full(&src);
+        // An active unquote of a BOOL or STRING literal now LIFTS to the matching `Ast` leaf (`Ast.Bool`/
+        // `Ast.Str`) — those value forms are realized. `` `(f ,true) `` and `` `(f ,"x") `` build the same
+        // node quote of that literal produces, so they compile clean and equal the quoted form.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote true))) (quote (f true)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active unquote of a boolean literal lifts to Ast.Bool (equals the quoted form)"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote \"x\"))) (quote (f \"x\")))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active unquote of a string literal lifts to Ast.Str (equals the quoted form)"
+        );
+        // A literal the `Ast` sum has no value variant for yet (a FLOAT — no `Ast.Float`) still cannot
+        // lift. It DECLINES honestly (a Todo: "quasiquote produces an AST value (not yet built)"), NOT the
+        // leaky CDZ0201 "variant constructor's payload has declared type Int64, but Float64 was applied"
+        // the naive `(Ast.Int 2.0)` wrap produced — whose coercion fix would have silently rewritten the
+        // author's `2.0`→`2`. The reifier bails so no misleading coded reject + no value-corrupting fix.
+        {
+            let src = "(module m (def (main) (quasiquote (unquote 2.0))) (export main))";
+            let d = reject_full(src);
             assert!(
                 d.as_ref().is_none_or(|d| {
                     d.code.is_none() && !d.message.contains("variant constructor's payload")
                 }),
-                "an active unquote of a non-int literal declines honestly, not the leaky Ast.Int \
+                "an active unquote of a float literal declines honestly, not the leaky Ast.Int \
                  payload error: {d:?}"
             );
         }
