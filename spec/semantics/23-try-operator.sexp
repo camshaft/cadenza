@@ -98,3 +98,44 @@
                   (Some (+ x y)))))
             (export main)))
   (output (: (None unit) (Option Int64))))
+
+; ── T1a gate pins: invariants the constant-fold desugar must hold (all PASS today) ───────────────────
+; These pin now-passing behaviors so a future change to the `?` desugar (or the BRICK sequence) cannot
+; silently flip them. Added by v-try-operator after adversarially probing the landed BRICK 2a/3a folds.
+
+(case "`?` unwraps an Ok payload under a Result boundary (happy path)"
+  (doc    "The Result companion of the Option happy path: `(try (Ok 42))` under a `(Result Int64 Int64)`
+           boundary unwraps the `Ok` payload to `42`, and the body's tail `(Ok x)` re-wraps it, so `main`
+           = `(Ok 42)`. The result type is annotated so the `Err` type is determined (a bare `(Ok 42)`
+           leaves `Err` unsolved — CDZ0203). Pins that the success fold reads the `Ok` disc off a Result
+           exactly as it reads `Some` off an Option (`success_disc_of`, by variant NAME).")
+  (input  (do (def (main) (: (let ((x (try (Ok 42)))) (Ok x)) (Result Int64 Int64))) (export main)))
+  (output (: (Ok 42) (Result Int64 Int64))))
+
+(case "two `?`s in one boundary both unwrap (nested happy path)"
+  (doc    "The `parse-pair` shape with constant operands: `(let ((x (try (Some 20)))) (let ((y (try (Some
+           22)))) (Some (+ x y))))` — both `?`s see a `Some`, so `x` = 20, `y` = 22, and the boundary
+           falls through to `(Some 42)`. Pins that MULTIPLE `?`s under one boundary each unwrap
+           independently and the happy path threads through to the body's tail — the nested-match collapse
+           the operator asked for.")
+  (input  (do
+            (def (main)
+              (let ((x (try (Some 20)))) (let ((y (try (Some 22)))) (Some (+ x y)))))
+            (export main)))
+  (output (: (Some 42) (Option Int64))))
+
+(case "`?` unwraps a COMPOUND (tuple) payload"
+  (doc    "`(try (Some (tuple 1 2)))` unwraps the tuple payload whole, so `(Some x)` = `(Some (tuple 1
+           2))`. Pins that the payload the `?` binds is not restricted to a scalar — a compound (tuple/
+           record/sum) payload flows through the success fold intact, its type preserved
+           (`(Option (Tuple Int64 Int64))`).")
+  (input  (do (def (main) (let ((x (try (Some (tuple 1 2))))) (Some x))) (export main)))
+  (output (: (Some (tuple 1 2)) (Option (Tuple Int64 Int64)))))
+
+(case "a `?` result is usable mid-body, not only in tail position"
+  (doc    "`(let ((x (try (Some 10)))) (Some (+ x 5)))` — the unwrapped `x` = 10 feeds an arithmetic op
+           BEFORE the boundary's tail, giving `(Some 15)`. Pins that `?` UNWRAPS to an ordinary value the
+           rest of the body computes with (it is not confined to a tail `(Some …)` re-wrap): the success
+           payload is a first-class value in its continuation.")
+  (input  (do (def (main) (let ((x (try (Some 10)))) (Some (+ x 5)))) (export main)))
+  (output (: (Some 15) (Option Int64))))

@@ -153,6 +153,8 @@ pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
 pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 pass	`?` on the success variant unwraps the payload (Option, happy path)
+pass	`?` unwraps a COMPOUND (tuple) payload
+pass	`?` unwraps an Ok payload under a Result boundary (happy path)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -299,6 +301,7 @@ pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
+pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` with no fallible enclosing function boundary is rejected
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
@@ -2707,6 +2710,7 @@ pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
+pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
