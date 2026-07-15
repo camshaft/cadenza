@@ -38,6 +38,8 @@
 ///                              either runs out (the shorter one bounds the result).
 ///   - `ScanI((f, acc, src))` — inclusive left scan: yield the running accumulator `f(acc, x)` for
 ///                              each `x` from `src`.
+///   - `IterateI((f, cur))`   — the INFINITE iterator `cur, f(cur), f(f(cur)), …`; bound it with
+///                              `take`/`take-while` to make it finite.
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -49,6 +51,7 @@ type Iter =
   | ChainI(Tuple(Iter, Iter))
   | ZipWithI(Tuple((Int64 -> Int64 -> Int64), Tuple(Iter, Iter)))
   | ScanI(Tuple((Int64 -> Int64 -> Int64), Tuple(Int64, Iter)))
+  | IterateI(Tuple((Int64 -> Int64), Int64))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -94,6 +97,9 @@ def next(it) = match it with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => (match p with | (v, rest) =>
           let acc2 = f(acc, v) in Option.Some((acc2, Iter.ScanI((f, (acc2, rest)))))))))
+  | Iter.IterateI(itf) => (match itf with | (f, cur) =>
+    // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
+    Option.Some((cur, Iter.IterateI((f, f(cur))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -105,6 +111,9 @@ def from-list(xs) = Iter.FromList(xs)
 
 /// Yield `lo, lo+1, …, hi-1` (half-open interval). Empty when `lo >= hi`.
 def range(lo, hi) = Iter.RangeI((lo, hi))
+
+/// The INFINITE iterator `seed, f(seed), f(f(seed)), …`. Bound it with `take`/`take-while`.
+def iterate(seed, f: Int64 -> Int64) = Iter.IterateI((f, seed))
 
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
@@ -171,6 +180,38 @@ def any(it, p: Int64 -> Bool) = match find(it, p) with
 def all(it, p: Int64 -> Bool) = match next(it) with
   | Option.None(_) => true
   | Option.Some(pr) => (match pr with | (v, rest) => if p(v) then all(rest, p) else false)
+
+/// The last element, or `None` if the iterator is empty. Diverges on an infinite iterator, so bound
+/// such a source with `take` first.
+def last(it) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => (match next(rest) with
+    | Option.None(_) => Option.Some(v)
+    | Option.Some(_) => last(rest)))
+
+/// The element at zero-based index `n`, or `None` if the iterator is shorter.
+def nth(it, n) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => if n <= 0 then Option.Some(v) else nth(rest, n - 1))
+
+// running helpers keep the current best while pulling the rest (closure-free — no fold combinator)
+def max-from(it, best) = match next(it) with
+  | Option.None(_) => best
+  | Option.Some(p) => (match p with | (v, rest) => if v > best then max-from(rest, v) else max-from(rest, best))
+
+def min-from(it, best) = match next(it) with
+  | Option.None(_) => best
+  | Option.Some(p) => (match p with | (v, rest) => if v < best then min-from(rest, v) else min-from(rest, best))
+
+/// The largest element, or `None` if empty.
+def max(it) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => Option.Some(max-from(rest, v)))
+
+/// The smallest element, or `None` if empty.
+def min(it) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => Option.Some(min-from(rest, v)))
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -345,5 +386,64 @@ def scan-is-lazy() =
     unit
   else
     trap("scan lazy take 3")
+
+@test
+def iterate-doubles() =
+  // 1, 2, 4, 8, 16 — take 5 of the doubling sequence
+  if int-list-eq(collect-list(take(iterate(1, fn(x) => x * 2), 5)), [1, 2, 4, 8, 16]) then
+    unit
+  else
+    trap("iterate *2 take 5")
+
+@test
+def iterate-is-lazy() =
+  // an infinite iterator is only safe because `take` bounds the pull
+  if int-list-eq(collect-list(take(iterate(0, fn(x) => x + 3), 4)), [0, 3, 6, 9]) then
+    unit
+  else
+    trap("iterate +3 take 4")
+
+@test
+def iterate-take-while() =
+  // bound an infinite source with take-while: powers of 2 under 100
+  if int-list-eq(collect-list(take-while(iterate(1, fn(x) => x * 2), fn(x) => x < 100)), [1, 2, 4, 8, 16, 32, 64]) then
+    unit
+  else
+    trap("powers of 2 under 100")
+
+@test
+def last-of-range() = match last(range(0, 5)) with
+  | Option.Some(v) => if v == 4 then unit else trap("last of 0..5 is 4")
+  | Option.None(_) => trap("should have a last")
+
+@test
+def last-of-empty() = match last(empty()) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("empty has no last")
+
+@test
+def nth-hits() = match nth(range(10, 20), 3) with
+  | Option.Some(v) => if v == 13 then unit else trap("nth 3 of 10.. is 13")
+  | Option.None(_) => trap("should have index 3")
+
+@test
+def nth-past-end() = match nth(range(0, 3), 5) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("no index 5 in 0..3")
+
+@test
+def max-finds-largest() = match max(from-list([3, 1, 4, 1, 5, 9, 2, 6])) with
+  | Option.Some(v) => if v == 9 then unit else trap("max is 9")
+  | Option.None(_) => trap("should have a max")
+
+@test
+def min-finds-smallest() = match min(from-list([3, 1, 4, 1, 5, 9, 2, 6])) with
+  | Option.Some(v) => if v == 1 then unit else trap("min is 1")
+  | Option.None(_) => trap("should have a min")
+
+@test
+def max-of-empty() = match max(empty()) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("empty has no max")
 
 export { Iter.* }
