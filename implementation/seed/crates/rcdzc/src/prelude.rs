@@ -270,6 +270,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // instantiates it fresh at each use and unifies it with whatever the position demands — `(trap "x")`
     // fits an Int64 branch, a Float operand, a match scrutinee alike, with NO dedicated `Never` type. Its
     // `(meta apply)` is the `trap` intrinsic → `Prim::Trap` → `Core::Trap` (an unconditional `unreachable`).
+    // The quantified result IS how the language realizes the empty-sum type of a diverging expression: it
+    // has no dedicated `Never`, so the divergence's type is a fresh variable, which unifies with any
+    // expected type exactly as the empty sum must:
+    //= spec/capabilities/type-system.md#never-is-the-empty-sum
+    //# The type of an expression that diverges rather than producing a value — a trap, or requiring the value of an absent optional — MUST be the empty sum, and that type MUST unify with any expected type, because a diverging expression yields no value that could be of the wrong type.
     {
         let lambda = trap_type_lambda(ast);
         names.insert("trap".to_string(), list_op_record(ast, "trap", lambda));
