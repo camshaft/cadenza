@@ -167,12 +167,25 @@ test("renderFleetMessage omits absent ref/body cleanly", () => {
 
 test("renderFleetMessage caps a huge body so the Slack post can't fail", () => {
   const s = renderFleetMessage({ from: "v-x", kind: "ask", subject: "big", body: "x".repeat(20000) });
-  assert.ok(s.length <= 3500, `capped under Slack's limit: ${s.length}`);
+  assert.ok([...s].length <= 3500, `capped under Slack's limit (code points): ${[...s].length}`);
   assert.ok(s.includes("truncated"), "elision marker present");
   assert.ok(s.includes("big"), "header/subject survives");
   // A normal short message is untouched.
   const short = renderFleetMessage({ from: "pr-sync", kind: "merged", subject: "landed", body: "all green" });
   assert.ok(!short.includes("truncated"));
+});
+
+test("renderFleetMessage caps by code points and never splits a surrogate pair (PR #405)", () => {
+  // Astral-plane char (👍 = 1 code point, 2 UTF-16 units) repeated well past the cap. A UTF-16 `slice`
+  // could cut mid-surrogate → an ill-formed string (a lone U+FFFD replacement char). Code-point slicing
+  // must not, and must match the Rust chars() cap.
+  const s = renderFleetMessage({ from: "v-x", kind: "ask", subject: "emoji", body: "👍".repeat(4000) });
+  assert.ok([...s].length <= 3500, `capped by code points: ${[...s].length}`);
+  assert.ok(s.includes("truncated"), "elision marker present");
+  assert.ok(!s.includes("�"), "no replacement char — surrogate pair not split");
+  // The kept body is whole 👍s (no lone surrogate): every char before the marker is intact.
+  const body = s.slice(0, s.indexOf("\n…[truncated"));
+  assert.ok(!/[\uD800-\uDFFF]/.test(body.replace(/\uD83D[\uDC4D]/g, "")), "no unpaired surrogate remains");
 });
 
 test("helpText names the default recipient and the prefixes", () => {

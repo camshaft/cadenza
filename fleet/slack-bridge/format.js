@@ -77,9 +77,15 @@ function renderFleetMessage(msg) {
   if (msg.ref) lines.push("`" + msg.ref + "`");
   if (msg.body && msg.body.trim()) lines.push(msg.body.trim());
   const out = lines.join("\n");
-  if (out.length <= SLACK_TEXT_CAP) return out;
+  // Cap by CODE POINTS, not UTF-16 code units: `out.length`/`slice` count UTF-16 units and would split an
+  // astral-plane char (surrogate pair) at the boundary into an ill-formed string, AND disagree with the
+  // Rust bridge's chars() (Unicode scalars). Iterate as code points ([...out]) so JS and Rust truncate
+  // identically (PR #405).
+  const cp = [...out];
+  if (cp.length <= SLACK_TEXT_CAP) return out;
   const marker = "\n…[truncated — full text in the fleet inbox]";
-  return out.slice(0, SLACK_TEXT_CAP - marker.length) + marker;
+  const keep = SLACK_TEXT_CAP - [...marker].length;
+  return cp.slice(0, keep).join("") + marker;
 }
 
 /// A short usage/help string shown when the operator sends an empty message or `help`.

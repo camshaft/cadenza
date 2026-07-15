@@ -281,6 +281,22 @@ mod tests {
     }
 
     #[test]
+    fn render_caps_astral_chars_by_scalar_no_split() {
+        // Parity with the Node side (PR #405): cap an emoji body by Unicode scalars, never producing a
+        // partial char. `chars()` can't yield a lone surrogate, so this just pins the count + that the
+        // kept text is still valid UTF-8 (trivially true for a String, but the count is the contract).
+        let m = Message::new("v-x", "slack-bridge", "ask", "emoji").with_body("👍".repeat(4000));
+        let s = render_fleet_message(&m);
+        assert!(
+            s.chars().count() <= SLACK_TEXT_CAP,
+            "capped by scalar: {}",
+            s.chars().count()
+        );
+        assert!(s.contains("truncated"));
+        assert!(!s.contains('\u{FFFD}'), "no replacement char");
+    }
+
+    #[test]
     fn render_does_not_touch_a_normal_message() {
         let m = Message::new("pr-sync", "slack-bridge", "merged", "landed").with_body("all green");
         let s = render_fleet_message(&m);
