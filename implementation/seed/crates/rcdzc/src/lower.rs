@@ -17123,12 +17123,28 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
 }
 
 /// Lower `(Set.to-list set)` → `Core::SetToList`. Always emits the runtime op (no const-fold): the
-/// canonical element ORDER is the runtime's sorted walk, so even a constant set must go through the
-/// runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
+/// canonical element ORDER is the runtime's sorted walk, so even a NON-EMPTY constant set must go through
+/// the runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
 /// comes from the operand set's solved `Ty::Set`, and bakes the shape descriptor the runtime orders by.
+///
+/// The ONE compile-time fold: a provably-EMPTY constant set (`Core::SetOf` with no elements) folds to the
+/// empty `Core::ListNew` — its canonical enumeration is `[]` regardless of element type, so no ordering
+/// descriptor is needed. This is also SOUNDNESS-load-bearing: an empty set LITERAL (`Set.of([])`) leaves
+/// its element type UNDETERMINED (a free `Ty::Var` — no element ever constrained it), and a var has no
+/// orderable shape descriptor. Without this fold `Set.to-list` on such a set declined at the BACKEND
+/// ("no orderable descriptor") though the type-checker accepted the program — a check/compile divergence.
+/// Folding it here (the element type is irrelevant to an empty enumeration) keeps the emit total.
 fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, set) {
         return Core::Poison(r);
+    }
+    // A compile-time-visible EMPTY constant set enumerates to the empty list — no descriptor, no element
+    // type needed. (A non-empty `SetOf` must still run the runtime op to observe canonical order.)
+    if let Core::SetOf { elems, .. } = core_of(db, set)
+        && elems.is_empty()
+    {
+        trace!(target: "rcdzc::fold", node = set.0, "Set.to-list folds an empty constant set to the empty list");
+        return Core::ListNew { elems: vec![] };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
         return Core::Poison(Reject::decline(

@@ -3826,6 +3826,64 @@ fn set_to_list_enumerates_in_canonical_order() {
     );
 }
 
+/// `Set.to-list` of a provably-EMPTY constant set folds to the empty list — no ordering descriptor, no
+/// element type needed. An empty `Set.of (list)` LITERAL has an UNDETERMINED element type (no element
+/// ever constrained it), so no shape descriptor can be baked; but an empty set enumerates to `[]`
+/// regardless of element type, so the compiler folds it straight to `Core::ListNew { elems: [] }`. This
+/// is a reject-don't-diverge fix: before the fold the type-checker ACCEPTED the program while the backend
+/// declined at emit ("no orderable descriptor") — a check/compile divergence. The FOLD unit needs no
+/// runtime; the wasmtime run (`#[ignore]`, needs the store) confirms the empty list has length 0.
+#[test]
+fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // FOLD unit: `(Set.to-list (Set.of (list)))` — an empty set literal, element type undetermined — folds
+    // to the empty `Core::ListNew` (NOT a `SetToList` needing a descriptor, NOT a decline).
+    let fold = |body: &str| -> Core {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main has a body");
+        core_of(&mut db, m_body)
+    };
+    match fold("(Set.to-list (Set.of (list)))") {
+        Core::ListNew { elems } => assert!(
+            elems.is_empty(),
+            "an empty set's to-list must fold to the EMPTY list, got {} elements",
+            elems.len()
+        ),
+        other => panic!(
+            "Set.to-list of an empty set must fold to an empty ListNew (no descriptor needed), got {other:?}"
+        ),
+    }
+    // The fold also fires through an inlined nullary call whose body is the empty-set literal — the
+    // element type is undetermined at the call site too, so the descriptor-free fold is what saves it.
+    match fold("(Set.to-list (Set.of (list 1 2)))") {
+        Core::SetToList { .. } => {} // a NON-empty constant set still emits the runtime op (canonical order)
+        other => panic!("a non-empty Set.to-list must emit the runtime op, got {other:?}"),
+    }
+}
+
+/// The wasmtime run for the empty-set fold: `(List.len (Set.to-list (Set.of (list))))` is 0, and the fold
+/// sees through an inlined nullary `(def (es) (Set.of (list)))` — the exact seed shape. Because the whole
+/// expression const-folds to `0`, the program imports NO runtime (`run_returns`, not `ComposedRuntime`),
+/// so no store is needed and this need not be `#[ignore]`.
+#[test]
+fn set_to_list_of_an_empty_set_runs_to_the_empty_list() {
+    use crate::testkit::parse;
+    // Through an inlined nullary call whose element type is undetermined — the exact seed shape.
+    let src = "(module m (def (es) (Set.of (list))) \
+               (def (main) (List.len (Set.to-list (es)))) (export main))";
+    let comp =
+        compile_component(&crate::codec::encode(&parse(src))).expect("empty Set.to-list compiles");
+    assert_eq!(
+        run_returns::<i64>(&comp, "main"),
+        0,
+        "Set.to-list of an empty set is the empty list — length 0"
+    );
+}
+
 /// `Map.to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order — the map
 /// companion of `Set.to-list`, realizing collections-and-text.md §A Map Renders As Its Entries In
 /// Canonical Key Order. Runs under wasmtime: the first entry's KEY is the smallest (canonical, not
