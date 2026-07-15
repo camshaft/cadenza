@@ -7172,6 +7172,14 @@ fn encode_sum_walk_body(
 ///
 //= spec/contracts/component-abi.md#every-exported-type-has-a-stable-boundary-representation
 //# A type that has no defined boundary representation MUST NOT appear in an exported or imported signature.
+///
+/// A result crosses as its PROPER component type — a scalar as its faithful component primitive (`s64`/
+/// `u8`/`bool`/…), a compound as the typed `list<u8>` of its canonical value form — never collapsed to a
+/// dynamically-tagged or stringly-typed value, so the exported boundary is strictly, statically typed:
+//= spec/capabilities/self-hosting-surface.md#the-result-crosses-the-boundary-as-its-proper-type
+//# A compiled program's entry MUST export its result as the result's proper component type, so that the boundary is strictly, statically typed rather than a dynamically-tagged value.
+//= spec/capabilities/self-hosting-surface.md#the-result-crosses-the-boundary-as-its-proper-type
+//# The compiler MUST NOT collapse a typed result to an untyped string at the boundary in place of the result's proper component type, so that static typing is enforced at the boundary rather than deferred to a stringly-typed convention.
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     // A NOMINAL newtype's boundary form is its ERASED underlying type (the tag adds nothing to the
     // representation): peel it so a nominal-over-scalar crosses as its scalar, and a nominal-over-compound
