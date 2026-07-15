@@ -344,6 +344,8 @@ pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
+pass	a binding consumed in the left call arg while read in the right is retained
+pass	a binding consumed in the right call arg while read in the left is retained
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
@@ -2073,6 +2075,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
@@ -2750,6 +2753,7 @@ pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements are evaluated left to right
+pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region

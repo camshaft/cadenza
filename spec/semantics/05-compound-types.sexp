@@ -8862,3 +8862,68 @@
             (def (main) (List.len (Map.to-list (Map.remove (Map.insert Map.empty 1 10) 1))))
             (export main)))
   (output (: 0 Int64)))
+
+; --- Simultaneously-live sibling operands: the order and shape faces --------------------------------
+; 0382b3628 fixed the right-to-left liveness fold missing a consume-in-a-RIGHT-sibling while a LEFT
+; sibling holds the same binding (the threaded-loop drift is its pin). These pin the order symmetry
+; and the shape family — call args, tuple elements, list elements, and a double consume — each an
+; operand group whose members are all live before any one runs.
+
+(case "a binding consumed in the right call arg while read in the left is retained"
+  (doc    "`(f (List.len xs) (List.len (List.push xs 9)))` — the LEFT arg reads `xs`, the RIGHT
+           consumes it. Both args are simultaneously live (pushed before the call), so the consume
+           must retain: f(1, 2) = 12. The exact order the right-to-left liveness fold missed (the
+           mirrored consume-left/read-right control is pinned beside it — a directional fix that
+           swapped the miss instead of closing it fails exactly one of the pair).")
+  (input  (do
+            (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (f (List.len xs) (List.len (List.push xs 9)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 12 Int64)))
+
+(case "a binding consumed in the left call arg while read in the right is retained"
+  (doc    "The mirror control: `(f (List.len (List.push xs 9)) (List.len xs))` = f(2, 1) = 21 — the
+           order the fold always covered. Pinned as the pair-mate so the two directions are graded
+           together (see the right-consume case above).")
+  (input  (do
+            (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (f (List.len (List.push xs 9)) (List.len xs))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 21 Int64)))
+
+(case "tuple elements consume and read a shared binding in both orders"
+  (doc    "The CONSTRUCTOR-element face of the same operand-group liveness: two tuples over one
+           binding, one consuming left/reading right (2, 1), the other reading left/consuming right
+           (1, 2) → 2112 packed as digits. A ctor's elements are simultaneously live exactly like
+           call args (the fix's helper covers 'call args, constructor elements, …' — this grades the
+           ctor half in both directions).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (let ((t1 (tuple (List.len (List.push xs 9)) (List.len xs)))
+                      (t2 (tuple (List.len xs) (List.len (List.push xs 9)))))
+                  (+ (* 1000 (. t1 0)) (+ (* 100 (. t1 1)) (+ (* 10 (. t2 0)) (. t2 1)))))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 2112 Int64)))
+
+(case "both sibling args consume the same binding independently"
+  (doc    "`(f (List.len (List.push xs 8)) (List.len (List.push xs 9)))` — BOTH args consume `xs`:
+           each push must path-copy its own view of the original [7] → f(2, 2) = 22. The
+           double-consume face: one retain is not enough if the second consume's occurrence was
+           counted as the 'last use' (an off-by-one in the dup-site count mutates the second push's
+           input to [7, 8] → 32... or 23 by order). 22 pins both retains.")
+  (input  (do
+            (def (f (: a Int64) (: b Int64)) (+ (* a 10) b))
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (f (List.len (List.push xs 8)) (List.len (List.push xs 9)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 22 Int64)))
