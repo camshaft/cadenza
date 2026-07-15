@@ -339,6 +339,16 @@
   (input  (Qty.value (* (Qty.of 5 (Unit.base #"meter")) 2)))
   (output (: 10 Int64)))
 
+(case "multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled"
+  (doc    "`(* (Qty.of 5 (Unit.prefix kilo meter)) 1)` — the calc `5 kilometer * 1` case: multiplying by
+           the bare integer `1` keeps the dimension (the `* 1` does NOT drop the unit) and the result
+           DISPLAYS at the reference `meter` with the magnitude scaled — `(Qty.of 5000 (Unit.base
+           #\"meter\"))`. Pins both fixes together: the apply_type reorder (a `(Qty T u) * <bare T>` stays
+           a quantity, not a bare number) and the reference-normalized display (5 km renders 5000 m). This
+           closes the calc relabel bug's last item (`5 kilometer * 1` used to drop the unit entirely).")
+  (input  (* (Qty.of 5 (Unit.prefix kilo (Unit.base #"meter"))) 1))
+  (output (: (Qty.of 5000 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
 (case "a unit multiplied by its own inverse cancels to the dimensionless unit"
   (doc    "`(/ (Qty.of 6.0 meter) (Qty.of 2.0 meter))` derives meter/meter = Unit.one — the base cancels
            its inverse (the free-abelian-group law) — leaving a dimensionless `(Qty Float64 Unit.one)`
