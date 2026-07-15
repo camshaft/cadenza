@@ -952,4 +952,122 @@ mod tests {
             assert!(spans.get(id).is_some(), "node {id:?} has a span");
         }
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random VALID JSON value string, bounded by `depth` (depth 0 = a scalar, so generation
+    /// terminates). Mixes objects (incl. duplicate/unicode keys), arrays (heterogeneous), null, and the
+    /// scalar kinds (int, float, exponent, string with escapes, bool) — the properties the faithful JSON
+    /// surface must preserve.
+    fn gen_json(rng: &mut Rng, depth: usize) -> String {
+        let scalar = |rng: &mut Rng| -> String {
+            match rng.below(8) {
+                0 => rng.below(100000).to_string(),
+                1 => format!("-{}", rng.below(1000)),
+                2 => format!("{}.{}", rng.below(1000), rng.below(1000)),
+                3 => format!("{}e{}", rng.below(100), rng.below(30)),
+                4 => "true".to_string(),
+                5 => "false".to_string(),
+                6 => "null".to_string(),
+                // A string with an escape and a unicode char.
+                _ => format!("\"s{}\\n\\t\\\"{}\"", rng.below(100), "é中"),
+            }
+        };
+        if depth == 0 {
+            return scalar(rng);
+        }
+        match rng.below(5) {
+            0 | 1 => scalar(rng),
+            2 => {
+                // array (0..=3 elements), possibly heterogeneous
+                let n = rng.below(4);
+                let elems: Vec<String> = (0..n).map(|_| gen_json(rng, depth - 1)).collect();
+                format!("[{}]", elems.join(","))
+            }
+            _ => {
+                // object (0..=3 members); keys drawn from a small set to exercise DUPLICATE keys, plus a
+                // unicode key — all of which the surface must preserve verbatim (never dedup/normalize).
+                let keys = ["a", "b", "a", "duplicate", "ké中"];
+                let n = rng.below(4);
+                let members: Vec<String> = (0..n)
+                    .map(|_| {
+                        let k = keys[rng.below(keys.len())];
+                        format!("\"{}\":{}", k, gen_json(rng, depth - 1))
+                    })
+                    .collect();
+                format!("{{{}}}", members.join(","))
+            }
+        }
+    }
+
+    #[test]
+    fn json_surface_is_idempotent_over_generated_documents() {
+        // The surface contract (arena-idempotence: read(print(read(json))) == read(json)) swept over
+        // random JSON, complementing the hand-picked cases above. A generator explores nestings and
+        // duplicate-key / unicode-key / heterogeneous-array / exact-number COMBINATIONS the fixed tests
+        // don't, so a printer/parser asymmetry that no hand-written case hits still gets caught. Fixed
+        // seeds → reproducible; a failure prints the source + reprint via `assert_idempotent`.
+        let seeds: [u64; 3] = [
+            0x0bad_c0de_dead_beef,
+            0x5eed_1234_5678_9abc,
+            0xfeed_face_cafe_babe,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..1500 {
+                let depth = 1 + rng.below(4);
+                assert_idempotent(&gen_json(&mut rng, depth));
+                total += 1;
+            }
+        }
+        assert!(total >= 4000, "swept a meaningful space, got {total}");
+    }
+
+    #[test]
+    fn json_read_never_panics_on_arbitrary_input() {
+        // `read` operates on UNTRUSTED text; it must return a diagnostic, never panic. Sweep random
+        // byte-ish strings (drawn from JSON's structural chars + digits + escapes + unicode) plus
+        // truncated/odd fragments. Any panic (OOB slice, unwrap, bad-UTF-8 boundary) fails this test.
+        let alphabet: Vec<char> = "{}[]\":,0123456789.-+eEtfn\\/ \tλ".chars().collect();
+        let mut rng = Rng(0x1357_9bdf_2468_ace0);
+        for len in 0..=32usize {
+            for _ in 0..80 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[rng.below(alphabet.len())])
+                    .collect();
+                let _ = read(&s); // must not panic (Ok or Err, never crash)
+            }
+        }
+        // A few deliberately truncated openers.
+        for s in [
+            "{",
+            "[",
+            "\"",
+            "{\"a\":",
+            "[1,",
+            "\"\\u",
+            "-",
+            "1e",
+            "tru",
+            "nul",
+            "{\"a\":1,",
+        ] {
+            let _ = read(s);
+        }
+    }
 }
