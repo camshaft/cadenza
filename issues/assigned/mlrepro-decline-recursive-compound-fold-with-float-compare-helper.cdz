@@ -1,0 +1,56 @@
+/// MISCOMPILE-CLASS DECLINE (2nd, sharper trigger) — 2026-07-15, seed rcdzc (wasm backend), found by the
+/// `v-cad` vertical building the CAD `bounding-box` fold (GH #400). SAME error string as
+/// `mlrepro-decline-scalar-eq-misclassified-after-compound-binding-reused.cdz` but a DIFFERENT, recursion-
+/// gated trigger — likely the same root defect in the float comparison-lowering classification:
+///
+///   error: "comparison of a compound value needs a heap walk (not yet built)"
+///
+/// `cdz check` CLEAN; `cdz compile FILE -o -` DECLINES. All comparisons are SCALAR `Float64` (the `<`/`>`
+/// inside `v3-min`/`v3-max`), so a scalar compare is again being routed to the compound (heap-walk) path.
+///
+/// SHARP — the trigger is a RECURSIVE function that returns a COMPOUND and combines its child results via a
+/// helper that does nested compound `match`es + `Float64` compares. Bisected to the minimal delta:
+///   • NON-recursive `aabb-union(p, q)` alone (two `Aabb.Box` matched, a `Box` built from `v3-min`/`v3-max`
+///     over the payloads) COMPILES + runs correctly — see the CONTROL below (`bbox` removed).
+///   • Adding the RECURSIVE `bbox` that folds `aabb-union(bbox a, bbox b)` over a `Union` node makes the
+///     SAME `v3-min`/`v3-max` scalar `<`/`>` decline as a compound compare. Recursion is the only added
+///     element — remove the self-call and it compiles.
+///   • FLOAT-specific (as in the first repro): the identical shape with `Int64` coordinates + `Int64`
+///     min/max compiles + runs.
+///   • Independent of a 2-variant sum / a `Nothing` sentinel: reproduces with a SINGLE-variant `Aabb.Box`.
+///
+/// So the residual after the first repro: even with NO reused compound binding, a recursive compound-
+/// returning fold whose combine-helper compares `Float64` fields trips the misclassification. This BLOCKS
+/// the CAD `bounding-box`/extent analysis (any recursive geometry fold that does min/max over Float64
+/// coordinates), which is why v-cad shipped `count-nodes`/`leaf-count`/`depth` (Int64 folds, unaffected)
+/// but had to DEFER `bounding-box`. Reject-don't-miscompile (no wrong value) — but it's pervasive for
+/// numeric tree folds. Fix locus (as filed): backend/wasm float-compare lowering (select.rs / value-eq)
+/// deciding scalar-vs-compound from surrounding liveness/recursion state rather than the operand's OWN type.
+///
+/// `run` is the single export so `cdz compile FILE -o -` reproduces the decline directly.
+type Vec3 = | V3(Float64, Float64, Float64)
+type Solid = | Cube(Vec3) | Union(Solid, Solid)
+type Aabb = | Box(Vec3, Vec3)
+
+def v3-min(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) => (match b with | Vec3.V3(bx, by, bz) =>
+    Vec3.V3(if ax < bx then ax else bx, if ay < by then ay else by, if az < bz then az else bz))
+
+def v3-max(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) => (match b with | Vec3.V3(bx, by, bz) =>
+    Vec3.V3(if ax > bx then ax else bx, if ay > by then ay else by, if az > bz then az else bz))
+
+def aabb-union(p: Aabb, q: Aabb) =
+  match p with | Aabb.Box(plo, phi) => (match q with | Aabb.Box(qlo, qhi) =>
+    Aabb.Box(v3-min(plo, qlo), v3-max(phi, qhi)))
+
+/// The RECURSIVE compound-returning fold — this self-call is the necessary trigger (remove it → compiles).
+def bbox(s: Solid) = match s with
+  | Solid.Cube(sz) => Aabb.Box(Vec3.V3(0.0, 0.0, 0.0), sz)
+  | Solid.Union(a, b) => aabb-union(bbox(a), bbox(b))
+
+def run() =
+  match bbox(Solid.Union(Solid.Cube(Vec3.V3(1.0, 1.0, 1.0)), Solid.Cube(Vec3.V3(3.0, 3.0, 3.0)))) with
+    | Aabb.Box(_, hi) => (match hi with | Vec3.V3(x, _, _) => x)
+
+export { run }
