@@ -2944,6 +2944,21 @@
             (def (main) (f (list (Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a guard on a tuple arm reads the tuple's element binders"
+  (doc    "A user `(guard …)` on a TUPLE-match arm reading the tuple's element binders — `(guard (tuple a b)
+           (> (+ a b) 5))`. `a`/`b` must be in scope for the guard cond. Regression: no guard-cond resolution
+           case handled a tuple pattern (`find_binder_in_pattern`, used by the variant guard case, excludes
+           the `tuple` head; only the list case was covered), so it reported a false CDZ0101 unbound `a`. The
+           fix adds `guard_cond_tuple_binds` (resolve Case 6tg) routing a tuple guard to `find_binder_in_tuple`
+           — the tuple analogue of the list-guard support. `f (tuple 3 4)`: (> 7 5) holds → a+b = 7.")
+  (input  (do
+            (def (f (: t (Tuple Int64 Int64)))
+              (match t
+                ((guard (tuple a b) (> (+ a b) 5)) (+ a b))
+                (_                                 -1)))
+            (def (main) (f (tuple 3 4))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a nullary variant list element dispatches by its discriminant"
   (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
            whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor

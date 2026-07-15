@@ -689,6 +689,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflo
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
+pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order

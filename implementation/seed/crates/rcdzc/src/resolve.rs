@@ -1417,6 +1417,20 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 6tg: `form` is a GUARD `(guard (tuple p0 p1 …) <cond>)`, ascended from `<cond>` → an element
+    // binder of the tuple pattern (possibly nested) is in scope in the guard cond (`(guard (tuple a b) (> (+
+    // a b) 5))` — the guard reads `a`/`b`). The TUPLE analogue of Case 6lg: `find_binder_in_tuple` descends
+    // each element (recursing into nested tuple/list/ctor sub-patterns), so the binder resolves to a
+    // `SumPayload` at its `Elem(i)`/… path. Without this, a guard on a tuple arm reported CDZ0101 unbound for
+    // its element binders (`find_binder_in_pattern`, which `guard_cond_variant_binds` uses, EXCLUDES the
+    // `tuple` head). Caught here for the same reason as 6g/6lg (at the arm, `from` is the guard wrapper).
+    if let Some((scrutinee, steps, heads)) = guard_cond_tuple_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: steps.into(),
+            heads: heads.into(),
+        });
+    }
     // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
     // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
     // parameter, the binder resolves to its own occurrence (a `Param` formal) — the compile-time evaluator
@@ -2011,6 +2025,50 @@ fn guard_cond_list_binds(
         vec![crate::core::PathStep::RestFrom(lead)],
         Vec::new(),
     ))
+}
+
+/// If `form` is a guard `(guard (tuple p0 p1 …) <cond>)` ascended from its `<cond>`, and the TUPLE pattern
+/// binds `name` at some element (possibly nested), the `(scrutinee, path, heads)` for a `SumPayload` read —
+/// the TUPLE analogue of [`guard_cond_list_binds`]. `(guard (tuple a b) (> (+ a b) 0))` binds `a` at
+/// `[Elem(0)]` and `b` at `[Elem(1)]` for the guard cond. `None` otherwise. Reuses [`find_binder_in_tuple`]
+/// (the same descent the arm BODY uses via Case 6), which recurses into nested tuple/list/ctor sub-patterns.
+/// Complements Case M/6: a reference in the guard cond ascends into the `(guard …)` form (this case) before
+/// it would reach the arm (where `from` is the guard wrapper, not the cond).
+fn guard_cond_tuple_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
+    // `form` must be `(guard <tuple-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    // Only a `(tuple …)` inner pattern (a `(list …)`/`(map …)`/variant guard is another case's concern).
+    if !is_tuple_pattern(db, pattern) {
+        return None;
+    }
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    // Descend the tuple pattern to find where `name` is bound (its element path + per-step heads).
+    let mut path = Vec::new();
+    let mut heads = Vec::new();
+    find_binder_in_tuple(db, pattern, name, &mut path, &mut heads)
+        .then_some((scrutinee, path, heads))
 }
 
 /// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from
