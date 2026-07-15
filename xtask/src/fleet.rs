@@ -1451,6 +1451,17 @@ fn ensure_inbox(fleet: &Fleet, name: &str) {
 /// Deliver a message: write it to a temp file then rename into the recipient's inbox, so a reader
 /// never observes a partial file. The filename sorts in send order (`<seq>-<pid>-<kind>.json`).
 fn deliver(fleet: &Fleet, msg: &Message) {
+    // Path-traversal guard: the recipient name becomes a path component (`inbox/<to>`). An unchecked
+    // name like `..` / `../../x` would write OUTSIDE the inbox tree. Names are our own controlled
+    // identifiers (registry rows / CLI), but a bridge that forwards an external sender's name (the
+    // Slack bridge) makes this a real write primitive — so validate at the single write chokepoint.
+    if let Err(why) = validate_agent_name(&msg.to) {
+        eprintln!(
+            "fleet: refusing to deliver to invalid agent name {:?}: {why}",
+            msg.to
+        );
+        std::process::exit(1);
+    }
     let inbox = fleet.inbox(&msg.to);
     std::fs::create_dir_all(&inbox).expect("create recipient inbox");
     let fname = format!("{:012}-{}-{}.json", msg.seq, std::process::id(), msg.kind);
@@ -1458,6 +1469,38 @@ fn deliver(fleet: &Fleet, msg: &Message) {
     let tmp = inbox.join(format!(".{fname}.tmp"));
     std::fs::write(&tmp, json).expect("write message tmp");
     std::fs::rename(&tmp, inbox.join(&fname)).expect("rename message into inbox");
+}
+
+/// Validate an agent name that will become a filesystem path component (`inbox/<name>`,
+/// `stop/<name>`, `heartbeat/<name>`, a tmux window target). Enforces `^[A-Za-z0-9][A-Za-z0-9-]*$`:
+/// a leading ASCII alphanumeric, then alphanumerics and hyphens only. This is deliberately IDENTICAL
+/// to the Slack bridge's sink validation (`v-slack-bridge`, PR#391) so the two boundaries agree — a
+/// dot is exactly what enables the `..` traversal and NO real agent name uses a dot or underscore
+/// (checked the whole roster: `pr-sync`, `corpus-bugfix`, `v-*`, `fix-*`, `github-liaison`, …), so
+/// banning them outright is safe and simpler than allowing dots-minus-`..`. This is the Rust-boundary
+/// suspenders to the bridge's JS-boundary belt: no path separator, no `.`/`..`, no dotfile/flag lookalike.
+fn validate_agent_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("empty");
+    }
+    if name.len() > 128 {
+        return Err("too long");
+    }
+    // Must start with an ASCII alphanumeric (no leading `-` flag-lookalike; and since dots are
+    // disallowed entirely, no `.`/`..`/dotfile can even form).
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Err("must start with an ASCII letter or digit");
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(
+            "only ASCII alphanumerics and `-` are allowed (no dots/underscores/separators)",
+        );
+    }
+    Ok(())
 }
 
 /// A process-local monotonic sequence for message ordering (wall-clock is unavailable in the
@@ -1693,5 +1736,49 @@ mod tests {
     fn stale_window_never_overflows() {
         // A huge interval must saturate, not wrap, before the cap applies.
         assert_eq!(stale_window_secs(u64::MAX, 2, 600), 600);
+    }
+
+    #[test]
+    fn agent_name_accepts_real_names() {
+        // Every real roster name: alphanumerics + hyphens, leading alphanumeric. No dots/underscores.
+        for ok in [
+            "pr-sync",
+            "corpus-bugfix",
+            "fix-two-string-payloads",
+            "v-fleet-tooling",
+            "concierge",
+            "breaker",
+            "github-liaison",
+            "a",
+        ] {
+            assert!(validate_agent_name(ok).is_ok(), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn agent_name_rejects_path_traversal_and_non_roster_chars() {
+        // The PR#391 class: a name that escapes the inbox tree must be refused — plus dots/underscores
+        // (no real name uses them, and a dot is what enables the `..` traversal), matching the Slack
+        // bridge's stricter `^[A-Za-z0-9][A-Za-z0-9-]*$`.
+        for bad in [
+            "..",
+            ".",
+            "../x",
+            "../../etc",
+            "a/b",
+            "a\\b",
+            "/abs",
+            "",
+            ".hidden",     // leading dot (dotfile-lookalike)
+            "-flag",       // leading dash (flag-lookalike)
+            "a..b",        // embedded `..`
+            "a.b",         // any dot now rejected (aligns with the bridge)
+            "a_b",         // underscore now rejected (no roster name uses one)
+            "fix-pr391.2", // dot rejected
+            "a b",         // space (not in the charset)
+            "a\0b",        // NUL
+        ] {
+            assert!(validate_agent_name(bad).is_err(), "should reject {bad:?}");
+        }
     }
 }
