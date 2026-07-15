@@ -2392,6 +2392,44 @@
             (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64)))
 
+; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
+; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser
+; instead PROJECTS the returned tuple by member access (`(. inner 0)`/`(. inner 1)`) and REBUILDS a fresh
+; tuple that pairs a boxed-sum node built from the value slot with the threaded cursor slot — `(tuple (Neg
+; (. inner 0)) (. inner 1))`. So a boxed-sum payload is projected out of one recursive-return tuple, wrapped
+; in a NEW sum ctor, and returned in a new tuple ACROSS the mutual `pa↔pb` edge while the cursor from the
+; other projection is threaded on. This is the slot-alias-prone shape (a boxed sum projected from a tuple
+; and re-threaded through a self/mutual loop — the compiler-ml decode/parser stress, self-hosting-surface.md
+; #The Reader Is Written In Cadenza); pinning it green guards the tuple-projection slot allocator against a
+; refcount/slot change that would alias the projected-sum handle with the cursor arith temp.
+
+(case "a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge"
+  (doc    "`pa`/`pb` mutually recurse over a token list, each returning `(Expr, next-index)`. `pa` at index
+           i reads the token: on `0` it recurses via `pb(i+1)`, PROJECTS that return with `(. inner 0)` /
+           `(. inner 1)`, and rebuilds `(tuple (Expr.Neg (. inner 0)) (. inner 1))` — a boxed sum built from
+           the projected value slot paired with the threaded cursor slot; otherwise it returns `(tuple
+           (Expr.Lit t) (+ i 1))`. `run` parses two factors in sequence, threading the cursor `(. a 1)` into
+           the second parse, and sums their evaluated values. toks `[0,7,0,7]`: `pa(0)` sees 0 → `Neg(pb(1))`
+           = `Neg(Lit 7)` at cursor 2, `pa(2)` sees 0 → `Neg(Lit 7)` at cursor 4, so `ev` gives -7 + -7 =
+           -14. Pins that a boxed-sum payload projected from a recursive-return tuple, re-wrapped in a new
+           ctor, and re-threaded across the mutual-recursion edge stays correct — the recursive-descent
+           parser shape the self-hosted compiler takes, and a slot-allocator guard for the projected-sum /
+           cursor-temp seam.")
+  (input  (do
+            (type Expr (Lit Int64) (Neg Expr))
+            (def (toks) (list 0 7 0 7))
+            (def (pa (: i Int64))
+              (let ((t (match (List.at (toks) i) ((Some x) x) ((None _) -1))))
+                (if (= t 0)
+                    (let ((inner (pb (+ i 1)))) (tuple (Expr.Neg (. inner 0)) (. inner 1)))
+                    (tuple (Expr.Lit t) (+ i 1)))))
+            (def (pb (: i Int64)) (pa i))
+            (def (ev (: e Expr)) (match e ((Expr.Lit n) n) ((Expr.Neg x) (- 0 (ev x)))))
+            (def (run)
+              (let ((a (pa 0))) (let ((b (pa (. a 1)))) (+ (ev (. a 0)) (ev (. b 0))))))
+            (export run)))
+  (output (: -14 Int64)))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
