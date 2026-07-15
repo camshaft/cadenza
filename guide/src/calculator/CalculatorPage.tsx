@@ -189,20 +189,32 @@ export default function CalculatorPage() {
         <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
           <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-auto p-3 font-mono text-sm">
             {tape.length === 0 && (
-              <div className="space-y-2 text-slate-500">
-                <p>Type an expression and press Enter. Try:</p>
-                <ul className="space-y-1">
+              <div className="space-y-3 text-slate-500">
+                <p>Type an expression and press Enter — or tap an example to try it:</p>
+                <ul className="flex flex-col gap-2">
                   {(STARTERS[surface] ?? STARTERS.ml).map((s) => (
                     <li key={s.label}>
                       <button
+                        type="button"
                         onClick={() => {
                           setInput(s.expr);
                           inputRef.current?.focus();
                         }}
-                        className="text-left text-cadenza-400 hover:text-cadenza-300"
-                        title={s.expr}
+                        // Read as a tappable chip: bordered pill, hover lift, explicit pointer cursor,
+                        // the label as a badge next to the actual expression it inserts — so it's
+                        // unmistakably interactive, not prose.
+                        className="group flex w-full cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2 text-left transition hover:border-cadenza-500 hover:bg-slate-800"
+                        title={`Insert: ${s.expr}`}
                       >
-                        {s.label}
+                        <span className="shrink-0 rounded bg-slate-700/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300 group-hover:bg-cadenza-600 group-hover:text-white">
+                          {s.label}
+                        </span>
+                        <code className="min-w-0 flex-1 truncate text-cadenza-400 group-hover:text-cadenza-300">
+                          {s.expr}
+                        </code>
+                        <span aria-hidden className="shrink-0 text-slate-600 group-hover:text-cadenza-400">
+                          ↵
+                        </span>
                       </button>
                     </li>
                   ))}
