@@ -8,7 +8,6 @@
     { "name": "fuzzer", "role": "fuzzer", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-iterators", "role": "vertical", "vertical": "iterators", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-effects", "role": "vertical", "vertical": "effects", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
-    { "name": "v-binary-matching", "role": "vertical", "vertical": "binary-matching", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-patterns", "role": "vertical", "vertical": "patterns", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-diagnostics", "role": "vertical", "vertical": "diagnostics", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-compiler-perf", "role": "vertical", "vertical": "compiler-perf", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
