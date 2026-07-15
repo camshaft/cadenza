@@ -1110,6 +1110,7 @@ pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
 pass	a quoted compound form containing a string reifies with an Ast.Str element
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
+pass	a quoted form's head reifies as a Name while its string argument is a Str
 pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
 pass	a quoted string equals the same node built by the Ast.Str constructor
@@ -2512,6 +2513,7 @@ pass	the width-indexed and aliased float annotations of one value do not conflic
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	three distinct closure signatures cross as three resource types
 pass	three distinct closure signatures cross as three resource types
+pass	three leaf variants in one quoted form each dispatch their own tag
 pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error

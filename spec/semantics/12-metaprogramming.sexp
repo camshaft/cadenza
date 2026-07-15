@@ -813,3 +813,38 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
+
+(case "a quoted form's head reifies as a Name while its string argument is a Str"
+  (doc    "`(quote (f \"s\"))` — ONE form carrying both String-payload leaf variants: the head `f` is an
+           identifier reference (Ast.Name) and the argument a string literal (Ast.Str), same payload
+           TYPE, different variants. The nested element match takes the Name arm for the head (→ 2) and
+           a Str head-pattern does not fire (→ not 1). Pins the reifier keys the variant on the
+           SYNTACTIC role, not the payload type — a quote that tags every string-payload leaf uniformly
+           collapses call-heads and literals, and eval would then look up string literals as names.")
+  (input  (do
+            (def (main (: d Int64))
+              (match (quote (f "s"))
+                ((Ast.List (list (Ast.Str _) .. _)) 1)
+                ((Ast.List (list (Ast.Name _) .. _)) 2)
+                (_ 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "three leaf variants in one quoted form each dispatch their own tag"
+  (doc    "`(quote (\"s\" 5 true))` reifies a list whose three elements are DISTINCT leaf variants —
+           Ast.Str, Ast.Int, Ast.Bool — bound by one list pattern and classified by a shared `kind`
+           match: 1·100 + 2·10 + 3 = 123. The all-variants integration pin: each leaf realization was
+           landed separately (Int/Name first, then Bool, then Str), and this case fails if ANY leaf's
+           tag collides with another's inside a compound reification (a mis-tagged element shifts one
+           digit of the answer, naming the culprit).")
+  (input  (do
+            (def (kind (: a Ast))
+              (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) (_ 9)))
+            (def (main (: d Int64))
+              (match (quote ("s" 5 true))
+                ((Ast.List (list a b c)) (+ (+ (* 100 (kind a)) (* 10 (kind b))) (kind c)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 123 Int64)))
