@@ -133,6 +133,8 @@ pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	XOR cancellation returns the original runtime value (constant key)
+pass	XOR cancellation returns the original value even when the key is a runtime value
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -2410,6 +2412,7 @@ pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
+pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking reports the minimal failing input
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	size after a runtime-key insert reflects replace-vs-add
@@ -2459,6 +2462,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the LEB128 byte composition runs on a runtime operand
+pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
