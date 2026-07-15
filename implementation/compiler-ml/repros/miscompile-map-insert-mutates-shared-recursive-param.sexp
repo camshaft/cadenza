@@ -1,4 +1,12 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc). `cdz check` CLEAN; `cdz compile -t wasm`
+;; ✅ FIXED (2026-07-15, seed rcdzc). `main 0` now returns 3. Same root + fix as
+;; `miscompile-selfcall-plus-consuming-op-share-param` (a general Perceus RETAIN gap, NOT self-call
+;; specific): a heap binding/param consumed while it has a later live use now gets a `dup` at that
+;; occurrence (`backend/wasm/select.rs` `collect_dup_sites`/`emit_binder_ref`). The `Map.insert(env,…)` in
+;; the left `(ev a env)` no longer mutates the `env` the right `(ev b env)` reads. Corpus witness:
+;; `spec/semantics/05-compound-types.sexp` "a runtime map shared across two recursive-call operands is not
+;; mutated by an insert in one". KEPT as a regression repro; run `cdz compile` and check `main 0` == 3.
+;;
+;; ORIGINAL REPORT (2026-07-14, seed rcdzc). `cdz check` CLEAN; `cdz compile -t wasm`
 ;; SUCCEEDS; runs and returns the WRONG value. A persistent `Map.insert(env, …)` MUTATES its operand map
 ;; when that map is a PARAMETER shared across the SIBLING recursive calls of a self-recursive function —
 ;; violating `collections-and-text.md` §"A Map Is Built By Functional Construction" ("Each MUST produce a

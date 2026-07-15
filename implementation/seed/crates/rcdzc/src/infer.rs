@@ -7455,20 +7455,35 @@ fn check_application(
                         );
                     } else if let Some(variant) = wrap_variant_for(db, &sparam, &sat) {
                         // A value of the sum's PAYLOAD type where the SUM itself is expected — `5 : Int64`
-                        // where `(Option Int64)` is required, in an OPERATOR/ctor argument position. The
-                        // rustc-flagship repair: WRAP the value in the matching constructor — `(Some 5)`.
-                        // `wrap_variant_for` picks the sum's UNIQUE single-payload variant whose payload
-                        // equals the actual type (general over any sum, not hard-coded to Option/Some — it
-                        // reads the expected sum's own variant set), so the wrap type-checks in one shot.
-                        // HEURISTIC: wrapping resolves the mismatch, but WHICH variant the author meant is a
-                        // guess when a value could be the payload of more than one construction — and an
-                        // ambiguous match returns None, so we only suggest when the choice is forced.
-                        out.push(reject.with_fix(Fix::wrap_heuristic(
-                            arg,
-                            format!("({variant} "),
-                            ")",
-                            format!("wrap the value in `{variant}`"),
-                        )));
+                        // where `(Option Int64)` is required, in an OPERATOR/ctor argument position (e.g.
+                        // `(= o 5)` for `o : (Option Int64)` — the `=` scheme grounds its first operand, so
+                        // the second is checked against `(Option Int64)`). The rustc-flagship repair: WRAP
+                        // the value in the matching constructor — `(Some 5)`. `wrap_variant_for` picks the
+                        // sum's UNIQUE single-payload variant whose payload equals the actual type (general
+                        // over any sum, not hard-coded to Option/Some — it reads the expected sum's own
+                        // variant set), so the wrap type-checks in one shot. HEURISTIC: wrapping resolves the
+                        // mismatch, but WHICH variant the author meant is a guess when a value could be the
+                        // payload of more than one construction — an ambiguous match returns None, so we
+                        // only suggest when the choice is forced. REWORD the raw unify lead ("type mismatch:
+                        // (Option Int64) and Int64 must be the same type here, but differ" — an internal-
+                        // clash read) to the readable arg-site phrasing the coercion / option-payload
+                        // siblings use, keeping the code + the wrap fix.
+                        out.push(
+                            Reject {
+                                message: format!(
+                                    "this argument is {}, but a value of type {} is expected here",
+                                    sat.render_with_article(),
+                                    sparam.render_name()
+                                ),
+                                ..reject
+                            }
+                            .with_fix(Fix::wrap_heuristic(
+                                arg,
+                                format!("({variant} "),
+                                ")",
+                                format!("wrap the value in `{variant}`"),
+                            )),
+                        );
                     } else if let Some(hint) = option_payload_mismatch_hint(&sparam, &sat) {
                         // The INVERSE of the wrap-variant case: the ARGUMENT is `(Option T)` where the
                         // param wants the bare payload `T` — a fallible read (`(+ ((. List at) xs i) 1)`)

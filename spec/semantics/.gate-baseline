@@ -2,6 +2,12 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
+pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
+pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
+pass	COMPOUND RESULT PAYLOAD: (Result Int64 (Tuple Int64 Int64)) — the ERR side is compound
+pass	COMPOUND RESULT PAYLOAD: a compound-Result closure beside a scalar closure (distinct-sig)
+pass	COMPOUND RESULT PAYLOAD: two same-sig closures share one call (multi-export)
 pass	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
 pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload
 pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None
@@ -210,6 +216,7 @@ pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
+pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
@@ -515,6 +522,8 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a doubly-nested strength-reduced multiply chains shift into shift
+pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
+pass	a duplicate TUPLE-shaped arm is dead code but the program still runs
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error

@@ -1244,10 +1244,24 @@ the component type. The new work:
   type, and threading a named structural type through the nested resource-reexport component (where the `call`
   IMPORT can't reference a locally-defined type) is the larger export-a-named-type lift, refuted this tick by an
   oracle (`func not valid to be used as import`).
+- **✅ COMPOUND Result payload — a `(Result tuple/record …)` closure arg (`spec@17cfde47`).** A `(Result ok err)`
+  where AT LEAST ONE side's payload is a fixed-shape tuple/record — e.g. `(Result (Tuple Int64 Int64) Int64)` —
+  now crosses as a native `result<ok, err>` whose ok/err valtypes are each a primitive byte (scalar side) or a
+  minted `tuple<…>` (compound side); both formers anonymous-allowed. The canonical ABI flattens it to `(disc:
+  i32, <joined leaves…>)`: the two arms' payloads join POSITION-BY-POSITION (join length = the longer arm; each
+  position's width = the wider arm). The guest rebuilds the selected arm's cell over a PREFIX of the joined
+  slots — a `SumArmPayload::Compound` arm for a compound side, `Scalar` for a scalar side. `envelope::ArgSlot::
+  ResultCompound(ResultSide, ResultSide)` + `ResultSide` (Scalar(byte) | Compound(shape)) mint the boundary;
+  `fixed_shape_result_compound_arg` classifies it (`.or_else` after the all-scalar path at every call site +
+  distinct-sig group). Scope: each shared join position has the SAME core width across both arms (a differing
+  per-position width would need per-leaf wrap inside the compound rebuild — declines cleanly). Composes with
+  multi-export + distinct-sig for free. Oracle `a_result_tuple_payload_closure_arg_crosses_by_native_flattening`
+  pins the join ABI under wasmtime. Corpus: 6 cases (ok-compound/err-scalar drive both arms, both-compound,
+  err-compound/ok-scalar, multi-export, distinct-sig).
   **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED
-  `variant<…>` — the export-a-named-type step, oracle-scoped this tick as a real architectural lift, not an ABI
-  wall); a COMPOUND Result payload (the Result arms don't yet carry a compound rebuild); a LIST result over a
-  sum arg (the list cores thread tuples, not sums).
+  `variant<…>` — the export-a-named-type step, oracle-scoped as a real architectural lift, not an ABI wall); a
+  DIFFERING-per-position-width compound Result payload (per-leaf wrap inside the compound rebuild); a LIST result
+  over a sum arg (the list cores thread tuples, not sums).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that

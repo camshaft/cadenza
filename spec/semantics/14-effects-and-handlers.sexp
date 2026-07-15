@@ -1052,6 +1052,23 @@
                 (match (Look.find 41) ((Some v) v) (None 0)))) (export main)))
   (output (: 42 Int64)))
 
+(case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
+  (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
+           `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
+           on the variant — the fallible-parser-step shape (a step returns `Ok value` on success or `Err
+           code` on failure). `Parse.step : Int64 -> (Result Int64 Int64)`, arm `(step (n) s (resume (if (>
+           n 0) (Ok (+ n s)) (Err 99)) (+ s 1)))` — the RESUME value itself branches on the argument. Seeded
+           0, `(Parse.step 5)` (n > 0) resumes `(Ok (+ 5 0))` = `(Ok 5)`, and `(match … ((Ok v) v) ((Err e)
+           e))` binds `v = 5`. Pins that a `Result`-typed resume value — constructed by an `if` INSIDE the
+           arm — folds into the scrutinee and dispatches on Ok/Err (the control the fallible pass runs on;
+           the Err path, `(Parse.step -3)` → `(Err 99)` → 99, is its complement). Both backends agree.")
+  (input  (do
+            (effect Parse (op step (-> Int64 (Result Int64 Int64))))
+            (def (main)
+              (handle Parse 0 ((step (n) s (resume (if (> n 0) (Ok (+ n s)) (Err 99)) (+ s 1))))
+                (match (Parse.step 5) ((Ok v) v) ((Err e) e)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a TUPLE-returning operation resumes a pair built from the handler state, then projected"
   (doc    "An operation whose declared RESULT is a `(Tuple Int64 Int64)`, resumed with a pair BUILT from the
            handler state. `P.pair : Unit -> (Tuple Int64 Int64)`; the arm resumes `(tuple s (+ s 1))` — a

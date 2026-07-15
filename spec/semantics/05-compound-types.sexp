@@ -4936,6 +4936,33 @@
   (call   main)
   (output (: 1 Int64)))
 
+(case "a duplicate TUPLE-shaped arm is dead code but the program still runs"
+  (doc    "The redundant-arm warning extends past a variant to a structural TUPLE shape: `(tuple true a)`
+           and `(tuple true c)` have the SAME shape (a `true` literal then a binder), so the second can
+           never be reached — first-match-wins takes the first arm. `(pick true 5)` returns 5 (the first
+           arm's `a`), NOT 105 (the dead second arm's `(+ c 100)`), and the build succeeds — a non-error
+           CDZ0213 warning, the tuple companion of the variant-duplicate case above. The value discriminates
+           that the first shape-equal arm wins and the second is dead.")
+  (input  (do
+            (def (pick (: b Bool) (: n Int64))
+              (match (tuple b n) ((tuple true a) a) ((tuple true c) (+ c 100)) (_ 0)))
+            (def (main) (pick true 5)) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
+(case "a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs"
+  (doc    "The nested-refining-constructor shape: `(Some (Some x))` and `(Some (Some y))` refine the Option
+           payload identically, so the second is unreachable. `(unwrap (Some (Some 7)))` takes the first arm
+           → 7, NOT 107 (the dead second arm), build succeeds (CDZ0213 warning). Pins that the structural-
+           duplicate detection reaches a nested constructor pattern, not only a flat tuple or a bare
+           variant — the deepest of the three shapes the redundant-arm check now recognizes.")
+  (input  (do
+            (def (unwrap (: o (Option (Option Int64))))
+              (match o ((Some (Some x)) x) ((Some (Some y)) (+ y 100)) (_ 0)))
+            (def (main) (unwrap (Some (Some 7)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type
@@ -6699,6 +6726,89 @@
             (def (both e) (+ (* 10 (use e 1)) (use e 2)))
             (def (main) (both (list))) (export main)))
   (output (: 12 Int64)))
+
+; The case above shares an EMPTY-LITERAL list under CONSTANT arithmetic, which const-folds away before the
+; heap runs — so it does not actually exercise the runtime reference-count discipline. The cases below force
+; a genuinely RUNTIME list (`build 0 n (list)` pushes `0..n-1` at run time, so its length is not a constant
+; the compiler can fold) and observe the aliasing INVARIANT directly: a `let`/parameter list CONSUMED by a
+; functional constructor (`List.push`, which produces a new list and MUST leave its operand unchanged —
+; collections-and-text.md #A List Is Grown By Functional Construction) in one operand, while the SAME
+; binding is read again in a LATER operand of the same strict expression, must let the later read observe
+; the ORIGINAL list. The consuming op must retain (dup) the shared reference, not free/reuse the backing the
+; later read still needs — the Perceus discipline (memory-and-resource-model.md #A Value Must Not Be
+; Observably Mutated Through One Reference While It Is Read Through Another). A generation without runtime
+; list-growth declines these.
+
+(case "a runtime list consumed by push in one operand is unchanged when read in a later operand"
+  (doc    "`(let ((e (build 0 2 (list)))) (+ (List.len (List.push e 9)) (List.len e)))` — `e` is a length-2
+           runtime list. The LEFT operand consumes it with `List.push` (a new length-3 list, whose `List.len`
+           is 3); the RIGHT operand reads the ORIGINAL `e` (still length 2). The sum is 3 + 2 = 5. `List.push`
+           produces a NEW list and leaves its operand unchanged, so the later read of `e` must see length 2,
+           not 3 — the consuming push must dup the shared binding rather than mutate/free the backing the
+           right operand still reads. (A binding consumed in the LEFT operand and read in the RIGHT is the
+           sharp case: left-to-right evaluation runs the consume FIRST.)")
+  (input  (do
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main) (let ((e (build 0 2 (list)))) (+ (List.len (List.push e 9)) (List.len e))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged"
+  (doc    "The self-hosting shape: `(def (f n xs) (if (= n 0) (List.len xs) (+ (List.len (List.push xs 9))
+           (f 0 xs))))`. In the recursive arm `xs` is CONSUMED by `List.push` in the left operand and passed
+           to the self-call `(f 0 xs)` in the right operand — both read the SAME parameter `xs`. `f 1 [0 1]`
+           is `List.len (push [0 1] 9)` (= 3) + `f 0 [0 1]` (= `List.len [0 1]` = 2) = 5. The push builds a
+           NEW list and must leave the parameter `xs` unchanged, so the self-call sees the original length-2
+           list — the consuming push must retain the shared parameter. (This is the minimal form of the
+           interpreter-shaped `Map.insert` case below; the same defect reproduces for a parameter, not only a
+           `let`.)")
+  (input  (do
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (f n xs) (if (= n 0) (List.len xs) (+ (List.len (List.push xs 9)) (f 0 xs))))
+            (def (main) (f 1 (build 0 2 (list))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a runtime map shared across two recursive-call operands is not mutated by an insert in one"
+  (doc    "The tree-walking interpreter's environment shape, on a `Map`: `ev` recurses over an expression
+           tree threading an environment `env` (a `Map Int64 Int64`). `(Add a b)` evaluates BOTH sub-trees
+           under the SAME `env` (`(+ (ev a env) (ev b env))`), and `(Bind body)` recurses with `Map.insert
+           env 0 2` (a NEW map binding key 0 to 2). On `(Add (Bind Var) Var)` under `env = {0↦1}`: the left
+           `(ev (Bind Var) env)` looks 0 up under `{0↦2}` (→ 2), the right `(ev Var env)` looks 0 up under
+           the ORIGINAL `env` `{0↦1}` (→ 1), so the result is 2 + 1 = 3. `Map.insert` produces a NEW map and
+           MUST leave its operand map unchanged (collections-and-text.md #A Map Is Built By Functional
+           Construction), so the right operand's shared `env` must still read 1 — the insert in the left
+           sub-call must dup the shared parameter, not mutate/reuse the backing the right sub-call reads.")
+  (input  (do
+            (type E (Var) (Bind E) (Add E E))
+            (def (ev e env)
+              (match e
+                (((. E Var))       (Option.expect (Map.lookup env 0) "v"))
+                (((. E Bind) body) (ev body (Map.insert env 0 2)))
+                (((. E Add) a b)   (+ (ev a env) (ev b env)))))
+            (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) 0 1)))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a runtime set shared across two recursive-call operands is not mutated by an insert in one"
+  (doc    "The `Set` face of the same aliasing invariant, in the recursive interpreter shape: `ev` threads a
+           `Set Int64` `s`; `(Add a b)` evaluates both sub-trees under the SAME `s`, `(Grow body)` recurses
+           with `Set.insert s 9` (a NEW one-larger set), `Leaf` reads `Set.len s`. On `(Add (Grow Leaf)
+           Leaf)` under `s = {1}`: the left sub-call reads `Set.len {1,9}` (= 2), the right reads the
+           ORIGINAL `Set.len {1}` (= 1), so the result is 2 + 1 = 3. `Set.insert` produces a NEW set and
+           leaves its operand set unchanged (collections-and-text.md #A Set Is Built By Functional
+           Construction), so the shared `s` in the right sub-call must still have size 1 — the insert in the
+           left sub-call must dup the shared parameter.")
+  (input  (do
+            (type E (Leaf) (Grow E) (Add E E))
+            (def (ev e s)
+              (match e
+                (((. E Leaf))      (Set.len s))
+                (((. E Grow) body) (ev body (Set.insert s 9)))
+                (((. E Add) a b)   (+ (ev a s) (ev b s)))))
+            (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert (Set.of (list)) 1)))
+            (export main)))
+  (output (: 3 Int64)))
 
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the

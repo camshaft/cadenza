@@ -3465,6 +3465,14 @@ enum ArmCover {
     /// — covers every length ≥ `k`. A later list arm (exact or rest) whose lengths all fall in `[k, ∞)` is
     /// shadowed. `k == 0` (`(list .. rest)`) covers EVERY list — a whole-list catch-all.
     ListFrom(usize),
+    /// A canonical STRUCTURAL KEY of a TUPLE or REFINING-CONSTRUCTOR pattern — a `(tuple …)` or a ctor with
+    /// a refining payload sub-pattern (`(tuple true a)`, `(Some (Some x))`), which the coarser covers above
+    /// do not classify. The key renders the pattern with every binder/`_` normalized to `_` and each literal
+    /// by value, so two arms of the SAME shape (`(tuple true a)` and `(tuple true b)`) share a key. Used ONLY
+    /// for EXACT-DUPLICATE detection: an identical key later in the arm list matches exactly the same region,
+    /// so it is unreachable. (A BROADER earlier arm subsuming a narrower later one is product-subsumption, not
+    /// modeled — this catches only structural repeats, the high-signal case; a non-repeat never false-flags.)
+    Shape(String),
 }
 
 /// Classify a match arm's pattern into the part of the scrutinee it covers, for redundant-arm detection —
@@ -3528,6 +3536,11 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
     // A constructor-headed pattern `(C.Red)`, `(Some x)`, `((. Sum V) x)`. It covers the WHOLE variant
     // only when every payload sub-pattern is a bare binder/wildcard; a refining sub-pattern (a nested
     // literal/constructor) covers only part, so it is not classified.
+    // A TUPLE pattern `(tuple p0 p1 …)` — never a full cover of any finite type, but a STRUCTURAL-KEY
+    // candidate: two identical tuple arms (`(tuple true a)`/`(tuple true b)`) are exact duplicates. Key it.
+    if db.ast.as_form(pat, "tuple").is_some() || db.ast.as_ctor_form(pat, "tuple").is_some() {
+        return pattern_shape_key(db, pat).map(ArmCover::Shape);
+    }
     if let crate::ast::Struct::List(children) = db.ast.get(pat) {
         let children = children.to_vec();
         // The ctor head: a bare member `(. Sum V)` used whole is the pattern itself; else the first child.
@@ -3537,13 +3550,81 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
             None => return None,
         };
         let disc = crate::eval::variant_disc_of(db, head)?;
-        // Every payload sub-pattern must be a bare binder/wildcard for this to be a FULL-variant cover; a
-        // refining sub-pattern (not a bare name) covers only part of the variant, so bail to `None`.
-        for &sub in &children[payload_start.min(children.len())..] {
-            db.ast.as_name(sub)?;
+        // Every payload sub-pattern a bare binder/wildcard → a FULL-variant cover. A REFINING sub-pattern (a
+        // nested literal/ctor, `(Some (Some x))`) covers only PART of the variant, so it is not a full cover
+        // — but it IS a structural-key candidate (an identical refining arm later is an exact duplicate).
+        if children[payload_start.min(children.len())..]
+            .iter()
+            .all(|&sub| db.ast.as_name(sub).is_some())
+        {
+            return Some(ArmCover::Variant(disc));
         }
-        return Some(ArmCover::Variant(disc));
+        return pattern_shape_key(db, pat).map(ArmCover::Shape);
     }
+    None
+}
+
+/// A CANONICAL STRUCTURAL KEY of a pattern, for EXACT-DUPLICATE redundant-arm detection — two patterns
+/// share a key exactly when they match the same region (a binder and `_` both normalize to `_`, a literal
+/// keys by value, a ctor by its discriminant + sub-keys, a tuple by its element sub-keys). `None` for a
+/// pattern whose region is NOT decidable from the shape alone — a GUARDED sub-pattern (conditional), or a
+/// shape this function does not model (a map/record/list sub-pattern) — so an unclassifiable pattern never
+/// yields a spurious duplicate. Recurses to any depth (`(Some (Some 0))`).
+fn pattern_shape_key(db: &mut Db, pat: StructId) -> Option<String> {
+    // A guarded sub-pattern is conditional — its region is not decidable, so no exact-duplicate claim.
+    if db.ast.as_form(pat, "guard").is_some() {
+        return None;
+    }
+    // A bare binder / `_` — matches everything at this position; normalize both to `_`.
+    if db.ast.as_name(pat).is_some() {
+        // A bare NULLARY-VARIANT name (`None`) keys by its discriminant, not as a wildcard.
+        if let Some(disc) = crate::eval::variant_disc_of(db, pat) {
+            return Some(format!("v{disc}"));
+        }
+        return Some("_".to_string());
+    }
+    // A scalar literal keys by value (the same value-unique encoding `arm_cover` uses).
+    match crate::resolve::resolved_of(db, pat) {
+        crate::resolved::Resolved::Int(v) => {
+            return Some(format!("i{}:{:x?}", v.negative, v.magnitude));
+        }
+        crate::resolved::Resolved::Bool(b) => return Some(format!("b{b}")),
+        crate::resolved::Resolved::Str(s) => return Some(format!("s{s}")),
+        _ => {}
+    }
+    // A TUPLE `(tuple p0 …)` — key = `(t <sub-key>…)`, recursing each element.
+    if let Some(elems) = db
+        .ast
+        .as_form(pat, "tuple")
+        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .map(<[_]>::to_vec)
+    {
+        let mut key = String::from("(t");
+        for e in elems {
+            key.push(' ');
+            key.push_str(&pattern_shape_key(db, e)?);
+        }
+        key.push(')');
+        return Some(key);
+    }
+    // A CONSTRUCTOR `(C.V p…)` / bare-member `(. Sum V)` — key = `(c<disc> <payload-sub-key>…)`.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.to_vec();
+        let (head, payload_start) = match children.first().copied() {
+            Some(first) if db.ast.as_name(first) == Some(".") => (pat, children.len()),
+            Some(first) => (first, 1),
+            None => return None,
+        };
+        let disc = crate::eval::variant_disc_of(db, head)?;
+        let mut key = format!("(c{disc}");
+        for &sub in &children[payload_start.min(children.len())..] {
+            key.push(' ');
+            key.push_str(&pattern_shape_key(db, sub)?);
+        }
+        key.push(')');
+        return Some(key);
+    }
+    // A map/record/list sub-pattern — not modeled here (conservative → no duplicate claim).
     None
 }
 
@@ -3599,6 +3680,11 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
         // distinct-variant arms scanned the growing covered list).
         let mut covered: std::collections::HashSet<ArmCover> = std::collections::HashSet::new();
+        // The subset of `covered` that are FULL-TYPE-value covers (`Variant`/`Lit`) — the only ones that
+        // count toward a FINITE type's saturation. A `Shape`/list cover is a PARTIAL/region cover and must
+        // not close variant coverage (see the insert site below).
+        let mut finite_covers: std::collections::HashSet<ArmCover> =
+            std::collections::HashSet::new();
         // The SMALLEST rest-arm lead seen so far — a prior `(list p… .. rest)` of lead `k` covers every
         // length ≥ k, so it SHADOWS any later list arm whose lengths all fall in `[k, ∞)` (a later exact
         // `(list …n…)` with n ≥ k, or a later rest of lead ≥ k). `None` until a rest arm appears. Tracked
@@ -3653,11 +3739,19 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                     if let ArmCover::ListFrom(k) = c {
                         min_list_from = Some(min_list_from.map_or(k, |m| m.min(k)));
                     }
+                    // Count only FULL-TYPE-value covers toward finite-type saturation: a `Variant` (a whole
+                    // sum variant) or a `Lit` (a whole Bool value — `bool_exhaustive`). A `Shape` (a REFINING
+                    // ctor / tuple — covers only PART of a variant) or a `ListExact`/`ListFrom` (a list-length
+                    // region, not a finite type) must NOT close variant coverage: e.g. `(Some (Some x)) +
+                    // (Some (None)) + (None)` over `(Option (Option Int))` has two `Shape`s + one `Variant`,
+                    // and counting the Shapes would wrongly saturate the 2-variant type and flag `(None)`.
+                    if matches!(c, ArmCover::Variant(_) | ArmCover::Lit(_)) {
+                        finite_covers.insert(c.clone());
+                    }
                     covered.insert(c);
-                    // If the distinct full covers now saturate a FINITE type, coverage is closed: any
-                    // later arm (including a catch-all) is unreachable. Count only `Variant`/`Lit` covers
-                    // (a `CatchAll` already closed above), which is exactly `covered`'s size here.
-                    if cover_size.is_some_and(|n| covered.len() >= n) {
+                    // If the distinct FULL covers now saturate a FINITE type, coverage is closed: any later
+                    // arm (including a catch-all) is unreachable.
+                    if cover_size.is_some_and(|n| finite_covers.len() >= n) {
                         coverage_closed = true;
                     }
                 }
