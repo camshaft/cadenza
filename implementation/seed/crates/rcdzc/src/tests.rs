@@ -20097,6 +20097,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_homogeneity_reject_anchors_at_the_offending_entry_or_argument() {
+        // The map homogeneity CDZ0201 rejects must anchor at the CULPRIT — the outlier entry's key/value in
+        // a `(map …)` literal, or the inserted key/value in `Map.insert` — not the whole `(map …)` /
+        // `(Map.insert …)` node, so the squiggle points at the minimal locus (the Map twin of the list-op
+        // anchoring, PR #399). Without the anchor, `collect`'s `set_origin_if_absent` stamped the enclosing
+        // node.
+        let anchor_of = |src: &str| -> Option<String> {
+            let d = reject_full(src)?;
+            let db = crate::db::Db::load(parse(src));
+            d.node
+                .and_then(|n| db.ast.as_str(crate::ast::StructId(n)).map(str::to_string))
+        };
+        // Map LITERAL — the outlier value `"bad"` (a String among Int64 values) is the locus.
+        assert_eq!(
+            anchor_of("(module m (def (main) ((. Map len) (map (\"a\" 1) (\"b\" \"bad\")))) (export main))")
+                .as_deref(),
+            Some("bad"),
+            "a map-literal value-heterogeneity reject anchors at the outlier value `\"bad\"`, not the map"
+        );
+        // Map.insert VALUE — the inserted `"bad"` (a String into a `Map String Int64`) is the locus.
+        assert_eq!(
+            anchor_of(
+                "(module m (def (f (: mm (Map String Int64))) ((. Map insert) mm \"k\" \"bad\")) (export f))"
+            )
+            .as_deref(),
+            Some("bad"),
+            "a Map.insert value-clash reject anchors at the inserted value `\"bad\"`, not the call"
+        );
+        // Map.insert KEY — the inserted key `"nope"` (a String key where the map's keys are Int64) is the
+        // locus. (Map keys Int64, value Int64; insert a String key.)
+        assert_eq!(
+            anchor_of(
+                "(module m (def (f (: mm (Map Int64 Int64))) ((. Map insert) mm \"nope\" 1)) (export f))"
+            )
+            .as_deref(),
+            Some("nope"),
+            "a Map.insert key-clash reject anchors at the inserted key `\"nope\"`, not the call"
+        );
+    }
+
+    #[test]
     fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
         // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
         // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a
@@ -49038,6 +49079,38 @@ mod stage1 {
             (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
             (def (main) (run (Box.Un (fn ((: x Int64)) (* x 3))))) (export main))";
         assert_eq!(run_closure_nullary(src_un).unwrap(), "27"); // g 9 = 9 * 3
+    }
+
+    #[test]
+    fn a_boxed_nested_unary_curried_closure_applies_at_full_arity() {
+        // A closure of type `(-> Int64 (-> Int64 Int64))` written NESTED-UNARY — `(def (add n) (fn (m) (+
+        // n m)))` — boxed in a sum, extracted, and applied CURRIED `((f x) y)`. `run` spine-flattens the
+        // curried application into ONE `Core::CallClosure { args:[x,y] }` needing a `(env,i64,i64)->i64`
+        // functype. The BUG: a nested-unary value lifted CHAINED (an outer `(env,i64)->i32` returning a
+        // closure handle + a separate inner `(env,i64)->i64`), so the flattened `call_indirect` referenced
+        // a functype the chained value did NOT implement — the module validated structurally but TRAPPED
+        // 'indirect call type mismatch' at run time. The fix FLATTENS a directly-nested curried lambda into
+        // one multi-param lift `(fn (n m) …)` — the SAME single `(env,i64,i64)->i64` function the sugar
+        // form `(fn (a b) …)` produces — so the flattened call resolves. `run (C add) 3 4` → add 3 4 = 7.
+        let src = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
+            (def (add (: n Int64)) (fn ((: m Int64)) (+ n m))) \
+            (def (main) (run (Box.C add) 3 4)) (export main))";
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "7"); // add 3 4 = 3 + 4
+        // The SUGAR form of the identical type MUST coincide with the nested-unary one's representation —
+        // a curried arrow has ONE machine shape. `run (C (fn (a b) (* a b))) 3 4` → 12. Boxed in the SAME
+        // `Box.C` variant as the nested-unary value, so both must lift to the identical `(env,i64,i64)->i64`
+        // function; a mismatch would trap exactly as the un-flattened nested-unary form did.
+        let src_sugar = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
+            (def (main) (run (Box.C (fn ((: a Int64) (: b Int64)) (* a b))) 3 4)) (export main))";
+        assert_eq!(run_closure_nullary(src_sugar).unwrap(), "12"); // (* 3 4)
     }
 
     #[test]

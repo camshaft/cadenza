@@ -5894,6 +5894,17 @@ fn referenced_binders(db: &mut Db, body: StructId) -> std::collections::HashSet<
 /// reserved for a genuine two-types-must-AGREE UNIFICATION conflict — an `if`'s branches, a value
 /// annotation `(: e T)`, a cross-shape comparison — NOT a collection's internal heterogeneity. Takes
 /// the peer types for signature stability with the call sites, but the code is now uniform.
+///
+/// Returning `Code::Malformed` (`CDZ0201`) is the reject code every collection-homogeneity fault
+/// carries, and returning ONE code regardless of the peer types `_a`/`_b` is what makes it uniform:
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# A construction whose elements, keys, or values do not share one type MUST be rejected as a malformed collection with the diagnostic code `CDZ0201`, so that a heterogeneous collection is treated as the collection being unbuildable rather than as a value of some other type.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of the collection kind — list, map, or set — so that the diagnostic names one category rather than one per collection kind.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the construction is written, whether a literal or a functional-construction operation such as append, replace-at-index, concatenate, or insert, so that the code does not vary with the construction form.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the element types differ, whether a cross-kind clash, a numeric mix that does not silently promote, or two same-kind values of different shape, so that a consumer branching on the code sees one category for "this collection is not homogeneous" rather than a code that varies with the incidental shape of the disagreement (*diagnostics.md §Every Diagnostic Has A Stable Code*).
 fn list_homogeneity_code(_a: &Ty, _b: &Ty) -> Code {
     Code::Malformed
 }
@@ -7134,6 +7145,9 @@ fn check_application(
             // EXPECTED side, the inserted key the ACTUAL, so this is the directional `structural_delta_hint`
             // (M184 audit: the Map.insert op arm missed the delta its peer-join twin carries).
             let delta = structural_delta_hint(&kt, &key_ty).unwrap_or_default();
+            // Anchor at the inserted KEY (`args[1]`), the actionable locus, not the whole `(Map.insert …)`
+            // application node — the squiggle points at the mismatching key (matches the file's "anchor the
+            // specific offending element" pattern; the Map twin of the list-op anchoring, PR #399).
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
@@ -7142,7 +7156,8 @@ fn check_application(
                     kt.render_name(),
                     key_ty.render_name()
                 ),
-            );
+            )
+            .at(args[1]);
             if let Some(fix) = float_literal_retype_fix(db, args[1], &key_ty, &kt) {
                 reject = reject.with_fix(fix);
             }
@@ -7154,6 +7169,8 @@ fn check_application(
             // is EXPECTED, the inserted value ACTUAL — so a same-kind compound value mismatch names the
             // field/element/payload conflict rather than leaving the reader to diff two rendered types.
             let delta = structural_delta_hint(&vt, &val_ty).unwrap_or_default();
+            // Anchor at the inserted VALUE (`args[2]`), not the whole application — same locus fix as the
+            // key arm above.
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
@@ -7162,7 +7179,8 @@ fn check_application(
                     vt.render_name(),
                     val_ty.render_name()
                 ),
-            );
+            )
+            .at(args[2]);
             if let Some(fix) = float_literal_retype_fix(db, args[2], &val_ty, &vt) {
                 reject = reject.with_fix(fix);
             }
@@ -7415,6 +7433,9 @@ fn check_application(
                     // same-kind compounds (a record field / tuple position / sum payload) — the peer-join
                     // hint the list/if/match/set sites carry.
                     let delta = peer_type_delta_hint(&fkt, &kt).unwrap_or_default();
+                    // Anchor at the OUTLIER key `k` (the one that broke homogeneity against the first
+                    // entry's key type), not the whole `(map …)` literal — the squiggle lands on the off
+                    // entry's key, not the entire map (the map-literal twin of the list-outlier anchoring).
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
@@ -7422,7 +7443,8 @@ fn check_application(
                             fkt.render_name(),
                             kt.render_name()
                         ),
-                    );
+                    )
+                    .at(k);
                     if let Some(fix) = float_literal_retype_fix(db, fk, &fkt, &kt)
                         .or_else(|| float_literal_retype_fix(db, k, &kt, &fkt))
                     {
@@ -7433,6 +7455,8 @@ fn check_application(
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
                     let delta = peer_type_delta_hint(&fvt, &vt).unwrap_or_default();
+                    // Anchor at the OUTLIER value `v`, not the whole `(map …)` literal — same locus fix as
+                    // the key arm above.
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
@@ -7440,7 +7464,8 @@ fn check_application(
                             fvt.render_name(),
                             vt.render_name()
                         ),
-                    );
+                    )
+                    .at(v);
                     if let Some(fix) = float_literal_retype_fix(db, fv, &fvt, &vt)
                         .or_else(|| float_literal_retype_fix(db, v, &vt, &fvt))
                     {

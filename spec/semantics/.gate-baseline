@@ -111,9 +111,12 @@ pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
+pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
 pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
+pass	String.from-bytes rejects a lone continuation byte
+pass	String.from-bytes rejects an overlong encoding
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	THREE Tuple args cross the direct-call boundary
@@ -141,6 +144,7 @@ pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
+pass	`?` on the success variant unwraps the payload (Option, happy path)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -341,12 +345,14 @@ pass	a bottom-up fold matches a tuple of its recursive results with constructor 
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
+pass	a boxed nested-unary curried closure applies without trapping
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
+pass	a built-in Ast.Float constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Str constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
@@ -881,6 +887,7 @@ pass	a match arm reading two elements of a boxed payload tuple shares the sum-pa
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match binds an Ast.Bool payload
+pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Str payload
 pass	a match building one Some per arm sinks to a single Some around a payload match
 pass	a match not covering the scrutinee is a compile-time rejection
@@ -1168,6 +1175,8 @@ pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
 pass	a quoted compound form containing a string reifies with an Ast.Str element
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
+pass	a quoted float equals the same node built by the Ast.Float constructor
+pass	a quoted float is distinct from the same magnitude quoted as an integer
 pass	a quoted form's head reifies as a Name while its string argument is a Str
 pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
@@ -1763,7 +1772,9 @@ pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
+pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
+pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type
 pass	an active unquote of a let-bound integer still lifts to Ast.Int
 pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
 pass	an active unquote of a string literal lifts to an Ast.Str node
@@ -2155,6 +2166,7 @@ pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
+pass	encoding and decoding an Ast.Float round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
@@ -2172,6 +2184,7 @@ pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
+pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted string executes it to the string value
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
@@ -2366,7 +2379,9 @@ pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	print of an Ast.Bool renders the bare word and read inverts it
+pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
+pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
@@ -2770,7 +2785,6 @@ pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	`?` on the failure variant short-circuits the boundary (Option, None path)
-pass	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode

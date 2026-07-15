@@ -119,3 +119,31 @@ fn cdz_run_on_a_missing_file_errors_with_the_cdz_prog_name() {
         "error names `cdz` and mentions the read failure: {err}"
     );
 }
+
+#[test]
+fn cdz_run_on_a_trap_prefixes_the_message_with_the_prog_name() {
+    // A RUNTIME trap (here: integer divide by zero on a runtime divisor) prints `cdz: trap: …` on
+    // stderr with a FAILURE exit — the `{prog}:` prefix on the trap line is consistent with every other
+    // `cdz` stderr message. (Both trap sites in cdz_run::cli emit `{prog}: trap:`, not a bare `trap:`.)
+    let (dir, wasm) = compile_component(
+        "trap",
+        "boom",
+        "(module m (def (boom (: n Int64) (: d Int64)) (/ n d)) (export boom))",
+    );
+    let (ok, _out, err) = run(&[
+        "run",
+        wasm.to_str().unwrap(),
+        "--call",
+        "boom",
+        "--arg",
+        "5",
+        "--arg",
+        "0",
+    ]);
+    assert!(!ok, "a divide-by-zero trap should fail");
+    assert!(
+        err.contains("cdz: trap:"),
+        "trap line carries the `cdz:` prog prefix: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

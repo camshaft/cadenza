@@ -27,3 +27,5 @@
 def quote(x: Int64) = x + 2
 
 export { quote }
+
+/// RESOLVED 2026-07-15 (trunk@f9a316eae, fix f9a316eae / PR #406): a user (def (quote x) …) no longer hijacked. ROOT was NOT resolve.rs:380 head-dispatch (v-syntax hypothesis) but quote::reify_quotes — a LOAD-time shape pre-pass rewrote (quote x) → (Ast.Name x) before build_scope_binders, erasing the param. Fix: reify_quotes skips def-sig/fn-param lists. Witness in 12-metaprogramming.sexp. bin/if/match never affected.

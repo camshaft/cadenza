@@ -59,7 +59,7 @@ pub struct RunArgs {
 /// process exit code. `prog` names the tool in diagnostics (`cdz-run` for the standalone bin, `cdz` for
 /// the unified one), so an error message points at the command the user actually typed.
 pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
-    match real_run(args) {
+    match real_run(args, prog) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{prog}: {e:#}");
@@ -68,7 +68,7 @@ pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
     }
 }
 
-fn real_run(cli: &RunArgs) -> anyhow::Result<ExitCode> {
+fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // The component bytes: from a file, or from stdin when the path is `-`.
     let component_bytes = if cli.component.as_os_str() == "-" {
         let mut buf = Vec::new();
@@ -167,7 +167,7 @@ fn real_run(cli: &RunArgs) -> anyhow::Result<ExitCode> {
                 Ok(ExitCode::SUCCESS)
             }
             Outcome::Trap(msg) => {
-                eprintln!("trap: {msg}");
+                eprintln!("{prog}: trap: {msg}");
                 Ok(ExitCode::FAILURE)
             }
         };
@@ -199,7 +199,7 @@ fn real_run(cli: &RunArgs) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Outcome::Trap(msg) => {
-            eprintln!("trap: {msg}");
+            eprintln!("{prog}: trap: {msg}");
             Ok(ExitCode::FAILURE)
         }
     }

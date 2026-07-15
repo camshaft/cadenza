@@ -8797,6 +8797,32 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
             crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE,
         ));
     }
+    // FLATTEN a directly-nested curried lambda `(fn (n) (fn (m) …))` into ONE multi-param lift
+    // `(fn (n m) …)`. A curried arrow type `(-> A (-> B R))` has exactly ONE machine representation
+    // across a program, and the SUGAR form `(fn (a b) …)` — and every CALLER that spine-flattens a curried
+    // application `((f x) y)` into a single `Core::CallClosure { args:[x,y] }` (see the runtime-closure
+    // spine in `core_of`) — assumes the FLAT `(env, a, b) -> r` lift. Left un-flattened, a nested-unary
+    // value lifts CHAINED instead (an outer `(env, a) -> i32` returning a closure handle, plus a separate
+    // inner `(env, b) -> r`); a spine-flattened call then references a `(env, a, b) -> r` functype the
+    // chained value does NOT implement, so the module validates structurally but TRAPS 'indirect call type
+    // mismatch' at run time. Merging the param lists (and using the innermost non-lambda body) makes the
+    // nested-unary value lift to the SAME single function the sugar form does, so both representations
+    // coincide. This is sound for the only supported application shape — a FULL-arity call: a genuine
+    // PARTIAL application `(f x)` (stopping short of the flattened arity) still declines at select, exactly
+    // as it did for the chained representation. Only DIRECT nesting is merged (the body IS a lambda, no
+    // intermediate work between the arrows); an outer lambda that computes before returning the inner
+    // (`(fn (n) (let … (fn (m) …)))`) is left as-is.
+    let mut params: Vec<StructId> = params.to_vec();
+    let mut body = body;
+    while let Resolved::Lambda {
+        params: inner_params,
+        body: inner_body,
+    } = resolved_of(db, body)
+    {
+        params.extend_from_slice(&inner_params);
+        body = inner_body;
+    }
+    let params: &[StructId] = &params;
     let param_occs: Vec<StructId> = params
         .iter()
         .map(|&p| crate::eval::param_name_occ(db, p))
