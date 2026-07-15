@@ -26,13 +26,16 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     PublishDiagnostics,
 };
-use lsp_types::request::{HoverRequest, Request as _, SemanticTokensFullRequest, Shutdown};
+use lsp_types::request::{
+    GotoDefinition, HoverRequest, References, Request as _, SemanticTokensFullRequest, Shutdown,
+};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, MarkedString, Position, PublishDiagnosticsParams, Range,
-    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
+    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
     TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
@@ -80,12 +83,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// document on each change — simplest correct model; incremental sync is a later refinement),
 /// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
 /// capability flag beyond sync is required for the classic push model), `hover` (the "type at
-/// cursor" read, backed by the `TypeAt` query), and `semanticTokens/full` (colour-by-meaning,
+/// cursor" read, backed by the `TypeAt` query), `definition` (go-to, backed by `ResolveOf`),
+/// `references` (find-all-uses, backed by `UsesOf`), and `semanticTokens/full` (colour-by-meaning,
 /// backed by the `Highlight` query — the token legend is `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -218,6 +224,16 @@ impl Server {
                 let result = self.semantic_tokens(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            GotoDefinition::METHOD => {
+                let (id, params) = cast_request::<GotoDefinition>(req)?;
+                let result = self.goto_definition(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            References::METHOD => {
+                let (id, params) = cast_request::<References>(req)?;
+                let result = self.references(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -253,6 +269,34 @@ impl Server {
             result_id: None,
             data: tokens,
         }))
+    }
+
+    /// Answer a `textDocument/definition`: resolve the cursor's reference to its DEFINING occurrence
+    /// (backed by the `ResolveOf` query — a def name, a `let` initializer, a parameter binder), returned
+    /// as a `Location` in the same document. `None` when the document is not open, the position is not a
+    /// navigable reference, or the target has no source span (a prelude/built-in binding) — total.
+    fn goto_definition(&self, params: &GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let loc = definition_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
+        Some(GotoDefinitionResponse::Scalar(loc))
+    }
+
+    /// Answer a `textDocument/references`: every occurrence that references the SAME definition as the
+    /// name under the cursor (backed by the `UsesOf` query, keyed by the cursor's name). Honors the
+    /// client's `include_declaration` flag — when set, the definition's own name occurrence is added.
+    /// `None`/empty when the cursor is not on a name or the name has no references — total.
+    fn references(&self, params: &ReferenceParams) -> Option<Vec<Location>> {
+        let pos = &params.text_document_position;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let include_decl = params.context.include_declaration;
+        Some(references_at(
+            &doc.text,
+            doc.is_ml,
+            pos.position,
+            &pos.text_document.uri,
+            include_decl,
+        ))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -463,7 +507,15 @@ fn parse_surface(
 > {
     if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(text);
-        Ok((parsed.arenas, parsed.spans, parsed.errors))
+        // CANONICALIZE the ML arena and remap the spans — the SAME normalization `load_program_spanned`
+        // (the one-shot subcommands' loader) applies before handing the program to the compiler. This is
+        // load-bearing for every NODE-ID-keyed query (definition/references/hover/tokens): the compiler
+        // resolves + types over the CANONICAL arena, so a raw `read_ml` arena's node ids would not line up
+        // with the ids the queries answer in — a go-to-definition would then jump to the wrong node. The
+        // remapped span table keeps `node_at_offset` and each answer id pointing at the right source range.
+        let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
+        let spans = parsed.spans.remap(&id_map, arenas.structure.len());
+        Ok((arenas, spans, parsed.errors))
     } else {
         // The s-expr surface: a single top-level form stays bare (mirrors the ML root convention), else
         // wrap in `(do …)`. `read_spanned` succeeds iff there is exactly one form; fall back to the
@@ -630,6 +682,116 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
         contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
         range,
     })
+}
+
+// ── the analysis: cursor → definition / references, via the `ResolveOf` / `UsesOf` queries ───────────
+
+/// Run a single sidecar `query` over `arenas` and return its answer artifact of `kind` as text, or
+/// `None` if the compile produced no such artifact. Shared by the query-backed analyses.
+fn run_query_text(
+    arenas: &cadenza_syntax::Arenas,
+    query: rcdzc::sidecar::Query,
+    kind: &str,
+) -> Option<String> {
+    let ast_bytes = cadenza_syntax::codec::encode(arenas);
+    let sidecar_bytes = rcdzc::sidecar::encode(&[rcdzc::Request::Query(query)]);
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+    ];
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    compiled
+        .artifact(kind)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+}
+
+/// The `Location` (in `uri`) of a node id in `spans`, or `None` if the node has no recorded span (a
+/// prelude/built-in/synthesized node — nothing to navigate to).
+fn node_location(
+    text: &str,
+    spans: &cadenza_syntax::spans::SpanTable,
+    uri: &Uri,
+    node: u32,
+) -> Option<Location> {
+    let span = spans.get(cadenza_syntax::StructId(node))?;
+    Some(Location {
+        uri: uri.clone(),
+        range: byte_range_to_range(text, span.start, span.end),
+    })
+}
+
+/// Go-to-definition: resolve the reference under `pos` to its defining occurrence (the `ResolveOf`
+/// query) and return its `Location`. `None` when the buffer does not parse, the position maps to no
+/// node, the node is not a navigable reference, or the target has no source span — total.
+fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Location> {
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    let byte = position_to_byte(text, pos);
+    let node = spans.node_at_offset(byte)?;
+    let answer = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::ResolveOf { node: node.0 },
+        rcdzc::sidecar::KIND_RESOLVE,
+    )?;
+    // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
+    let target: u32 = answer.trim().parse().ok()?;
+    node_location(text, &spans, uri, target)
+}
+
+/// Find-references: every occurrence that references the SAME definition as the NAME under `pos`
+/// (the `UsesOf` query, keyed by that name). When `include_declaration`, the definition the name
+/// resolves to (via `ResolveOf`) is added so its own site appears in the list. Returns an empty vec
+/// when the cursor is not on a name or the name has no references — total, never a panic.
+fn references_at(
+    text: &str,
+    is_ml: bool,
+    pos: Position,
+    uri: &Uri,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let byte = position_to_byte(text, pos);
+    let Some(node) = spans.node_at_offset(byte) else {
+        return Vec::new();
+    };
+    // The name under the cursor: `UsesOf` is by NAME, so the cursor node must be a name atom. A cursor
+    // on a non-name (a literal, a list form) has no name to find references of → empty.
+    let Some(name) = arenas.as_name(node).map(str::to_string) else {
+        return Vec::new();
+    };
+
+    let mut locations: Vec<Location> = Vec::new();
+    if let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::UsesOf { name: name.clone() },
+        rcdzc::sidecar::KIND_USES,
+    ) {
+        for line in answer.lines() {
+            if let Ok(id) = line.trim().parse::<u32>()
+                && let Some(loc) = node_location(text, &spans, uri, id)
+            {
+                locations.push(loc);
+            }
+        }
+    }
+
+    // Optionally include the DECLARATION site (the def's name occurrence the cursor's name resolves to).
+    // `UsesOf` excludes the defining occurrence by design, so `include_declaration` adds it back.
+    if include_declaration
+        && let Some(answer) = run_query_text(
+            &arenas,
+            rcdzc::sidecar::Query::ResolveOf { node: node.0 },
+            rcdzc::sidecar::KIND_RESOLVE,
+        )
+        && let Ok(target) = answer.trim().parse::<u32>()
+        && let Some(loc) = node_location(text, &spans, uri, target)
+        && !locations.contains(&loc)
+    {
+        locations.push(loc);
+    }
+
+    locations
 }
 
 // ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
@@ -942,5 +1104,84 @@ mod tests {
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(d.code, None);
         assert_eq!(d.message, "something is unused");
+    }
+
+    /// A throwaway document URI for the position-based analyses.
+    fn test_uri() -> Uri {
+        use std::str::FromStr;
+        Uri::from_str("file:///t.cdz").unwrap()
+    }
+
+    /// The line/character of a `Position`, as a tuple, for terse assertions.
+    fn lc(p: Position) -> (u32, u32) {
+        (p.line, p.character)
+    }
+
+    #[test]
+    fn definition_jumps_from_a_use_to_the_defining_name() {
+        // `helper` is defined on line 0 and used on line 1; go-to-definition from the USE lands on the
+        // DEFINITION's name occurrence (line 0), not the use.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef main = helper(1)";
+        // Cursor on the `helper` call in `main` (line 1). "def main = " is 11 chars, so `helper` at col 11.
+        let loc =
+            definition_at(text, true, Position::new(1, 11), &test_uri()).expect("a definition");
+        assert_eq!(
+            loc.range.start.line, 0,
+            "definition is on line 0, got {loc:?}"
+        );
+        // It points at the `helper` name (col 4 of `def helper…`), not its body.
+        assert_eq!(lc(loc.range.start), (0, 4), "should land on the def name");
+    }
+
+    #[test]
+    fn definition_off_a_reference_is_none() {
+        // A cursor on a literal (not a navigable reference) yields no definition — total, never a panic.
+        let text = "def answer = 42";
+        // Cursor on the `42` literal.
+        assert!(definition_at(text, true, Position::new(0, 13), &test_uri()).is_none());
+        // Cursor past the end.
+        assert!(definition_at(text, true, Position::new(9, 9), &test_uri()).is_none());
+    }
+
+    #[test]
+    fn references_finds_every_use_of_the_name_under_the_cursor() {
+        // `helper` is used twice (lines 1 and 2). References from any occurrence finds both uses;
+        // excluding the declaration by default (UsesOf excludes the defining occurrence).
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)\n\
+                    def b = helper(2)";
+        // Cursor on the `helper` use in `a` (line 1, col 8: "def a = " = 8 chars).
+        let refs = references_at(text, true, Position::new(1, 8), &test_uri(), false);
+        assert_eq!(refs.len(), 2, "two uses expected, got {refs:?}");
+        let lines: Vec<u32> = refs.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            lines.contains(&1) && lines.contains(&2),
+            "uses on lines 1 and 2: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn references_include_declaration_adds_the_definition_site() {
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)";
+        // With include_declaration, the def's own name occurrence (line 0) is added to the one use (line 1).
+        let refs = references_at(text, true, Position::new(1, 8), &test_uri(), true);
+        let lines: Vec<u32> = refs.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            lines.contains(&0),
+            "declaration (line 0) should be included: {lines:?}"
+        );
+        assert!(
+            lines.contains(&1),
+            "the use (line 1) should be present: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn references_off_a_name_is_empty() {
+        // A cursor not on a name (a literal) yields no references — total.
+        let text = "def answer = 42";
+        let refs = references_at(text, true, Position::new(0, 13), &test_uri(), false);
+        assert!(refs.is_empty(), "expected no references, got {refs:?}");
     }
 }
