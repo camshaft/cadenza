@@ -6,25 +6,31 @@
 ; is a pattern like any other, and the `bin` head constrains the scrutinee to Bytes exactly as `(Some n)`
 ; constrains it to a sum.
 ;
-; A `bin` is a sequence of segments, each written like a constructor `(<kind> <slot> <modifier>...)`:
-;   (u8 v) (u16 v) (u32 v) (u64 v)   unsigned N-bit integer, BIG-ENDIAN by default
-;   (i8 v) (i16 v) (i32 v) (i64 v)   signed N-bit integer (two's complement)
+; A `bin` is a sequence of segments, each written like a constructor `(<kind> <slot> <modifier>...)`.
+; On CONSTRUCTION a fixed-width integer segment REQUIRES the width-matching typed value (the type carries
+; the width, so the value provably fits — see the fit paragraph below):
+;   (u8 v) (u16 v) (u32 v) (u64 v)   unsigned N-bit integer, BIG-ENDIAN by default; v : UInt<N>
+;   (i8 v) (i16 v) (i32 v) (i64 v)   signed N-bit integer (two's complement); v : Int<N>
 ;   (uNN v le)                        the `le` modifier selects little-endian byte order
-;   (bits v k)                        the low k bits of v; k is a COMPILE-TIME CONSTANT
+;   (bits v k)                        the low k bits of v; k is a COMPILE-TIME CONSTANT; v : (UInt k)
 ;   (bytes b)                         splice all of b (build); bind the REST (match, final segment only)
 ;   (bytes b n)                       exactly n bytes; n MAY be a name bound by an earlier segment
 ;                                       (dependent size) — the crown jewel, entirely value-level
 ; A literal in the slot means match-by-equality (magic numbers, opcodes) — the direct analogue of the
-; existing literal patterns `(match 2 (2 "two") …)`.
+; existing literal patterns `(match 2 (2 "two") …)`. In MATCH position a segment binder decodes a general
+; integer (a `(u16 m)` binder is a plain integer, losslessly holding the decoded field).
 ;
 ; Byte-alignment is STATIC: the whole `bin` must be byte-aligned. `bits` widths are compile-time
 ; constants so their running sum is checkable at compile time; a `bin` whose bits do not close a byte, a
 ; non-final unsized `bytes`, or a `bits` width that is not a constant is an ILL-FORMED BINARY FORM,
-; rejected CDZ0220 (options/diagnostics-schema/, the CDZ02xx types-and-patterns band). At RUN time, a
-; value that does not fit its segment (a u8 given 256, a u8 given -1, a `bits k` value that needs more
-; than k bits) has no defined encoding, so construction TRAPS with reason "binary value does not fit
-; segment" (core-semantics.md #Partial Operations Have A Defined Outcome), the companion of the Bytes
-; out-of-range trap. Exhaustiveness is the existing rule: a `bin` pattern never covers every byte
+; rejected CDZ0220 (options/diagnostics-schema/, the CDZ02xx types-and-patterns band). FIT is by TYPE, not
+; a runtime check: a fixed-width segment requires its exact width type (`(u8 v)` takes `UInt8`, `(bits v k)`
+; takes `(UInt k)`), so a value that does not fit the segment is a COMPILE-TIME TYPE ERROR (CDZ0203), never
+; a runtime trap — construction is TOTAL. A bare literal that overflows its segment grounds to that width
+; and is a provable range error (CDZ0304 / CDZ0220). Narrowing a wider value is the CALLER's job and is
+; explicit: `UInt8.wrap` truncates to the low 8 bits, `UInt8.of` narrows CHECKED. (This is why there is no
+; "binary value does not fit segment" runtime trap — the width-typed value provably fits.) Exhaustiveness
+; is the existing rule: a `bin` pattern never covers every byte
 ; sequence (empty input, wrong length, an unequal literal all fail to match), so a match over Bytes needs
 ; a catch-all arm or it is rejected CDZ0210 (core-semantics.md #Matching Is Exhaustive Or Rejected) — no
 ; special case, exactly like a non-exhaustive sum match.
