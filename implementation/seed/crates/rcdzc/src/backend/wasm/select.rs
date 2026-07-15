@@ -9673,6 +9673,36 @@ fn emit_checked_arith_to(
     dest: ResultDest,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
+    // GUARD-ELIDED FAST PATH: when interval arithmetic proves the result stays in the type, NO overflow
+    // guard and NO range-check follow — so each operand is used EXACTLY ONCE (only the machine op reads
+    // it). There is then no reason to stash a non-reusable operand in a scratch slot for the guards to
+    // re-read: emit both operands straight onto the wasm operand stack, run the machine op, and place the
+    // result per `dest`. This skips both operand scratch slots AND the `$r` slot for the common
+    // masked/refined-arith idiom (`(+ (& x 7) (& y 7))`, a loop counter step under a proving refinement).
+    // `emit_operand` grounds a bare-literal operand to the op width `ot` (an out-of-range literal is still
+    // rejected CDZ0302), exactly as the guarded path's `operand_src`/`emit_operand_into` do. B's transient
+    // scratch (a nested computation) floats above `base` and never aliases A's already-pushed stack value.
+    // Uses the SAME `arith_provably_in_range` predicate the guarded path below checks after the op — moved
+    // up so the slot machinery is skipped entirely rather than claimed-then-unused.
+    let result_ty = IntTy::fixed(m.signed, m.width);
+    if crate::lower::arith_provably_in_range(db, op, lhs, rhs, result_ty) {
+        emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
+        // B emits its own transient scratch above the running high-water — A is already on the stack, so B
+        // never needs a slot A used; a fresh floor keeps B's width-disjoint scratch from re-typing a slot.
+        let b_base = base.max(*high);
+        emit_operand(db, rhs, ot, slots, b_base, high, scratch_ty, layout, out)?;
+        out.push(match op {
+            Prim::Add => m.add(),
+            Prim::Sub => m.sub(),
+            Prim::Mul => m.mul(),
+            _ => return Err(Reject::decline("not a checked arithmetic op")),
+        });
+        match dest {
+            ResultDest::Stack => {}
+            ResultDest::Slot(d) => out.push(Lir::LocalSet(d)),
+        }
+        return Ok(());
+    }
     // Each operand's SOURCE at every use site (the machine op + the guard's re-reads): a reusable
     // operand — a matching local, or a compile-time constant — is pushed directly (`local.get` / an
     // inline `const`) and needs NO scratch slot; only a nested computation is stashed in a fresh
@@ -9789,27 +9819,11 @@ fn emit_checked_arith_to(
         Prim::Mul => m.mul(),
         _ => return Err(Reject::decline("not a checked arithmetic op")),
     });
-    // GUARD ELISION: when interval arithmetic over the operands' known ranges proves the result CANNOT
-    // leave the type (`(+ (& x 15) (& y 15))` sums two `[0,15]` values → `[0,30]`, fits Int64), BOTH the
-    // machine overflow guard AND the narrow range-check are dead — the machine op already computed the
-    // exact result. Skip them. `arith_provably_in_range` is conservative (a value with no finite range
-    // bound → keep the guards), and verified sound by exhaustive endpoint checks.
-    // The op's AUTHORITATIVE result type — `m`'s width/sign (from the arith node's solved type), NOT an
-    // operand node's possibly-deferred type — so the fit-check bounds the result at the RIGHT width.
-    let result_ty = IntTy::fixed(m.signed, m.width);
-    if crate::lower::arith_provably_in_range(db, op, lhs, rhs, result_ty) {
-        // NO guard reads `$r`, so the `local.set $r` (needed only to let the guards re-read the result)
-        // is pure waste. For `Stack` the machine op's result is ALREADY on the stack — leave it, emitting
-        // NOTHING (before, `set $r ; get $r` round-tripped through a dead slot: an inlined-call argument
-        // `(- n 1)` under a proving refinement teed into a slot never read). For `Slot(d)` store once into
-        // the caller's destination.
-        match dest {
-            ResultDest::Stack => {}
-            ResultDest::Slot(d) => out.push(Lir::LocalSet(d)),
-        }
-        return Ok(());
-    }
-    // A guard follows and reads `$r` — store the machine result there first.
+    // GUARD ELISION was already checked at the top of this fn (the `arith_provably_in_range` fast path):
+    // when the result provably stays in the type, BOTH the machine overflow guard AND the narrow
+    // range-check are dead, and — since no guard then re-reads the operands or the result — that path
+    // emits the operands inline with NO scratch slots at all and returns before the slot machinery here.
+    // So reaching THIS point means a guard follows and reads `$r` — store the machine result there first.
     out.push(Lir::LocalSet(sr));
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
     // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
@@ -12651,6 +12665,42 @@ mod tests {
             matches!(next, Lir::Call(_) | Lir::ReturnCall(_)),
             "a guard-elided (- n 1) argument flows straight into the call — no dead store between \
              the sub and the call; got next = {next:?} in {code:?}"
+        );
+    }
+
+    #[test]
+    fn a_guard_elided_arith_emits_its_operands_inline_with_no_scratch_slots() {
+        // `(+ (& x 7) (& y 7))`: both operands ∈ [0,7], sum ∈ [0,14], fits → the overflow guard AND the
+        // narrow range-check are elided. With NO guard to re-read the operands or the result, each operand
+        // is used EXACTLY ONCE (only the `i64.add` reads it), so a non-reusable operand need not be stashed
+        // in a scratch slot: both masked operands emit straight onto the stack. The whole body declares ZERO
+        // locals (before, each masked operand was `local.set` into a slot then reloaded, plus a dead `$r`).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 7) (& y 7))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.declared,
+            Vec::<ValType>::new(),
+            "a guard-elided masked add needs no scratch slots — operands emit inline; got {:?}",
+            f.code
+        );
+        // The exact inline sequence: mask x, mask y, add — no `local.set`/`local.tee` anywhere.
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(_) | Lir::LocalTee(_))),
+            "no operand is stashed in a slot when the guard is elided; got {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::I64Add)
+                && f.code.iter().filter(|i| matches!(i, Lir::I64And)).count() == 2,
+            "the body is `(& x 7)` inline, `(& y 7)` inline, `i64.add`; got {:?}",
+            f.code
         );
     }
 
