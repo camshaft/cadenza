@@ -66,3 +66,5 @@
                     ((. T Leaf) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@2ac25eab): fix landed, gate PASSes. Agent self-removed.

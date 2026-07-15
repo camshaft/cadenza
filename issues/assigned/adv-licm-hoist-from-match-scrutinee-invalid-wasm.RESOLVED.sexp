@@ -68,3 +68,5 @@
             (def (main) (loop 0 4))
             (export main)))
   (output (: 5 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@2ac25eab): fix landed, gate PASSes. Agent self-removed.

@@ -77,3 +77,5 @@
             (def (main) (. (f (f (record (a 0) (b 5)))) a))
             (export main)))
   (output (: 2 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@2ac25eab): fix landed, gate PASSes. Agent self-removed.
