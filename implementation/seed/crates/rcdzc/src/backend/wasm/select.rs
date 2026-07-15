@@ -874,6 +874,38 @@ fn mark_binder_dups(
     live_after: bool,
     sites: &mut HashSet<StructId>,
 ) -> bool {
+    // Thin entry: every position EXCEPT a `Proj`'s own operand is a "top" position for child-dup marking.
+    mark_binder_dups_inner(db, id, binder, consuming, live_after, false, sites)
+}
+
+/// Whether `id` is a chain of nested-compound `Core::Proj`s ultimately rooted at `binder` — `binder`
+/// itself (`(. binder k)`), or a projection of such a chain (`(. (. binder j) k)`, arbitrarily deep). Each
+/// intermediate `Proj` is a BORROW (`arr-get` returns a child handle into the parent), so every child in
+/// the chain aliases a cell that lives inside `binder`; a consuming op on the innermost child would
+/// FBIP-mutate it while `binder` still owns it. Used by [`mark_binder_dups_inner`] to decide a child-retain
+/// (`dup`) site. Only follows `Proj` links (not `SumPayload`/`ListAt`/… — those have their own retain
+/// paths); bottoms out at the `LocalRef`/`Param` for `binder`.
+fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
+        Core::Proj { operand, .. } => proj_chain_roots_at_binder(db, operand, binder),
+        _ => false,
+    }
+}
+
+/// The worker of [`mark_binder_dups`]. `in_proj_operand` is set ONLY when `id` is the aggregate operand of
+/// an enclosing `Core::Proj` (an `arr-get`-borrowed intermediate) — used to suppress a redundant child-dup
+/// mark on a nested projection in a chain (only the OUTERMOST consuming projection dups its child). Every
+/// other recursion resets it to `false` (via the `mark_binder_dups` wrapper the closures call).
+fn mark_binder_dups_inner(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    consuming: bool,
+    live_after: bool,
+    in_proj_operand: bool,
+    sites: &mut HashSet<StructId>,
+) -> bool {
     // A borrowing child position — recurse borrowing, threading `live_after` unchanged.
     let borrow = |db: &mut Db, c: StructId, la: bool, s: &mut HashSet<StructId>| {
         mark_binder_dups(db, c, binder, false, la, s)
@@ -925,17 +957,33 @@ fn mark_binder_dups(
             // FBIP-mutates it in place, corrupting a LATER re-projection `(. binder k)` that reads the same
             // child. Dup the child here so the consumer takes the persistent (copy) path and the parent's
             // array stays intact. Marked at THIS Proj node (its own id); the emit `dup`s the arr-get result.
-            // Only when the operand IS the (live) binder directly — a projection off a nested/computed operand
-            // is a different (fresh/owned) handle handled by the `reclaim` path. Scalar elements COPY out, so
-            // they never alias — no dup (the FBIP single-use fast path and scalar reads stay untouched).
-            let operand_is_binder = matches!(
-                core_of(db, operand),
-                Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder
-            );
-            if consuming && !scalar_element && live_after && operand_is_binder {
+            // The operand must resolve to the (live) `binder` through a CHAIN of nested-compound projections
+            // (each an intermediate BORROW — `(. binder k)`, or `(. (. binder j) k)` two deep, …), which all
+            // alias the SAME leaf child living inside `binder`'s cells. A projection off a nested/COMPUTED
+            // operand (a call result, a fresh constructor) is a different owned handle handled by the
+            // `reclaim` path. Scalar elements COPY out, so they never alias — no dup (the FBIP fast path and
+            // scalar reads stay untouched). Only the OUTERMOST consuming projection marks (a chain's
+            // intermediate projection is reached below as an `arr-get`-borrowed operand — `in_proj_operand`
+            // suppresses a redundant child-dup there).
+            if consuming
+                && !scalar_element
+                && !in_proj_operand
+                && live_after
+                && proj_chain_roots_at_binder(db, operand, binder)
+            {
                 sites.insert(id);
             }
-            mark_binder_dups(db, operand, binder, !scalar_element, live_after, sites)
+            // Recurse for BINDER-marking (the aggregate's own dup) as before, flagging that `operand` is a
+            // projection operand (borrowed) so a nested `Proj` there does not re-mark a child-dup site.
+            mark_binder_dups_inner(
+                db,
+                operand,
+                binder,
+                !scalar_element,
+                live_after,
+                true,
+                sites,
+            )
         }
         Core::MapSize { map } => borrow(db, map, live_after, sites),
         Core::SetLen { set } => borrow(db, set, live_after, sites),

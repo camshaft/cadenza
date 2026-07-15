@@ -1435,6 +1435,31 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
+  (doc    "The projection-DEPTH companion of the case above: the shared list lives TWO projections deep,
+           `(. (. t 0) 0)`, inside `t : (Tuple (Tuple (List Int64) Int64) Int64)`. The consuming op's operand
+           is a `Proj`-of-`Proj` (an intermediate BORROW `(. t 0)` reads the inner tuple, then `(. … 0)`
+           reads the list). Consumed by `(List.push (. (. t 0) 0) 99)` (len → 4) and read again as
+           `(. (. t 0) 0)` (len → 3) → 4 + 3 = 7. It returned 8: the retain that fixed the single-level case
+           gated on a DIRECT binder operand, so a two-deep chain got no child `dup` and `List.push`
+           FBIP-mutated the innermost list in place. The fix walks the projection CHAIN to its root binder
+           (each link an intermediate borrow that aliases a cell inside `t`) and `dup`s the innermost child
+           at the consuming leaf; only the OUTERMOST projection of the chain dups (no wasted intermediate
+           dup). `build` threads the list so `t` is a genuine runtime value (no fold).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Tuple (Tuple (List Int64) Int64) Int64)))
+              (if (< i n)
+                (build (+ i 1) n
+                  (tuple (tuple (List.push (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1)))
+                acc))
+            (def (main (: n Int64))
+              (let ((t (build 0 n (tuple (tuple (list) 0) 0))))
+                (+ (List.len (List.push (. (. t 0) 0) 99)) (List.len (. (. t 0) 0)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
            Like a runtime list/set, it escapes via the runtime value-encode walker guided by a

@@ -23459,6 +23459,34 @@ mod match_engine {
     }
 
     #[test]
+    fn a_doubly_nested_projected_list_consumed_then_reread_is_retained() {
+        // The projection-DEPTH face: the shared list lives TWO projections deep, `(. (. t 0) 0)`, inside a
+        // `(Tuple (Tuple (List Int64) Int64) Int64)`. The consuming op's operand is a Proj-of-Proj (an
+        // intermediate borrow reads the inner tuple, then the list). The single-level retain gated on a
+        // DIRECT binder operand, so this got no child dup and `List.push` FBIP-mutated the innermost list
+        // (→ 8, want 7). The fix walks the projection chain to the root binder and dups the innermost child
+        // at the consuming leaf (only the OUTERMOST projection dups — no wasted intermediate dup). `build 0
+        // 3` → `[0 1 2]`; consumed len 4 + re-read original len 3 = 7.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n acc) (if (< i n) \
+                   (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) \
+                                           (+ (. acc 1) 1))) acc)) \
+               (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) \
+                             (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) \
+                                ((. List len) (. (. t 0) 0))))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "7",
+            "a doubly-nested projected list must retain its innermost child through the proj chain"
+        );
+    }
+
+    #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
         // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
         // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`

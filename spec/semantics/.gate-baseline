@@ -175,6 +175,7 @@ pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
+pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
