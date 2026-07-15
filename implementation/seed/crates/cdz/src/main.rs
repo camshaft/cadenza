@@ -34,6 +34,10 @@ use std::process::ExitCode;
 use cadenza_syntax::cli as syntax_cli;
 use rcdzc::cli as compiler_cli;
 
+// The LSP server (`cdz lsp`) — its own module so `main.rs` gains only the `Cmd::Lsp` arm + dispatch,
+// keeping the server implementation (owned by the v-lsp vertical) out of the shared command file.
+mod lsp;
+
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
@@ -134,6 +138,14 @@ enum Cmd {
     /// arguments (a recursive generic at each element type, a type-valued-parameter def at each type, and
     /// a `const` dictionary parameter at each concrete dictionary — the ad-hoc-polymorphism case).
     Instantiations(InstantiationsArgs),
+
+    // ── editor integration ────────────────────────────────────────────────────────────────────────
+    /// Run a Language Server (LSP) over stdio — the persistent editor face of the in-process query
+    /// engine. An editor launches `cdz lsp` and speaks the Language Server Protocol; the server holds
+    /// each open document in memory and republishes its diagnostics on every edit ("diagnostics as you
+    /// type"), reusing the SAME compiler queries the one-shot subcommands drive. No arguments — it
+    /// communicates only over stdin/stdout.
+    Lsp,
 }
 
 fn main() -> ExitCode {
@@ -172,6 +184,20 @@ fn main() -> ExitCode {
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
         Cmd::Instantiations(a) => run_instantiations(&a),
+        Cmd::Lsp => run_lsp(),
+    }
+}
+
+/// `cdz lsp` — run the stdio Language Server to completion. Returns FAILURE only on a transport-level
+/// error (a broken stream); a clean client shutdown is SUCCESS. The server itself never fails on a bad
+/// buffer — a query is total (an un-analyzable document yields empty diagnostics, never a crash).
+fn run_lsp() -> ExitCode {
+    match lsp::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{PROG} lsp: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
