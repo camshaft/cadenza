@@ -1472,6 +1472,7 @@ pass	a set built at run time escapes to the host as its value form
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set collapses a duplicate element
+pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant

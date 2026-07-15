@@ -439,6 +439,33 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 0 Int64)))
 
+; --- A Set consumed by Set.insert in one operand is UNCHANGED for a later read of the same binding ------
+; The set analogue of the shared-`let` List persistence cases (05-compound-types): `Set.insert` is
+; PERSISTENT — it produces a new set and MUST leave its operand unchanged (collections-and-text.md: a value
+; must not be observably mutated through one reference while read through another). A set bound by `let`
+; and read TWICE — once consumed by an insert, once read as the original — is SHARED, so the consuming op
+; must copy, not FBIP-mutate in place. The compiler emits a Perceus RETAIN (`dup`) at the consumed
+; occurrence of a binding with a later live use; without it the CHAMP insert would mutate the shared trie
+; and the later read would see the grown set (the same defect the List/projection persistence cases pin).
+
+(case "a set consumed by Set.insert in one operand is unchanged for a later read of the same binding"
+  (doc    "`s = build 0 3` = {0,1,2} (a genuine runtime set, no const-fold); read twice: the left operand
+           inserts 99 and measures (→ 4), the right reads the ORIGINAL `s` size (→ 3), so 4 + 3 = 7. If the
+           insert mutated the shared `s` in place (a CHAMP FBIP update whose retain was missing on a
+           multi-use binding), the second read would see {0,1,2,99} → 8. Order-sensitive (reading `s` first
+           → 7 regardless), the tell of an in-place mutation. Pins that a persistent Set.insert leaves a
+           shared operand unchanged — the Set companion of the List.push persistence case.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert acc i)) acc))
+            (def (main (: n Int64))
+              (let ((s (build 0 n (Set.of (list)))))
+                (+ (Set.len (Set.insert s 99)) (Set.len s))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 ; --- Set.contains / Set.remove / Set.insert must NOT fold against a set holding a RUNTIME element -------
 ; `Set.of (list …)` folds a CONSTANT list to a canonical constant `Core::SetOf`, and `Set.contains`/
 ; `Set.remove`/`Set.insert` fold against such a constant set by comparing elements at COMPILE TIME
