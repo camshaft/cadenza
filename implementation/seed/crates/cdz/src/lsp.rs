@@ -427,10 +427,43 @@ impl Server {
     /// empty list — total, never an error.
     fn publish(&mut self, uri: &Uri) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         let diags = match self.docs.get(uri) {
-            Some(doc) => diagnostics_for(&doc.text, doc.is_ml),
+            Some(doc) => self.compute_diagnostics(uri, doc),
             None => Vec::new(),
         };
         self.send_diagnostics(uri, diags)
+    }
+
+    /// The diagnostics for one open document. When the document (a) has a filesystem path and (b)
+    /// declares `(import …)`, analyze it as a PACKAGE — follow its import closure so cross-file names
+    /// resolve — and return only THIS file's faults (an imported file's faults belong to its own
+    /// document). An imported file that is itself OPEN contributes its live (unsaved) buffer text via the
+    /// overlay, so editing a library is reflected immediately in its importer's diagnostics. Otherwise
+    /// (a non-`file` URI like an untitled buffer, or a document with no imports) fall back to the
+    /// single-buffer `diagnostics_for`.
+    fn compute_diagnostics(&self, uri: &Uri, doc: &Document) -> Vec<Diagnostic> {
+        // Only a `file://` document with imports takes the package path; everything else is single-buffer.
+        let Some(entry_path) = uri_to_path(uri) else {
+            return diagnostics_for(&doc.text, doc.is_ml);
+        };
+        let declares_import = match parse_surface(&doc.text, doc.is_ml) {
+            Ok((arenas, _spans, _errs)) => {
+                !crate::closure::declared_import_paths(&arenas).is_empty()
+            }
+            Err(_) => false,
+        };
+        if !declares_import {
+            return diagnostics_for(&doc.text, doc.is_ml);
+        }
+        // The overlay: an imported file that is OPEN in the editor contributes its LIVE buffer text (so
+        // unsaved edits to a library flow into its importer's diagnostics), else the closure reads disk.
+        let open = |p: &std::path::Path| -> Option<String> {
+            self.docs
+                .iter()
+                .find_map(|(u, d)| (uri_to_path(u).as_deref() == Some(p)).then(|| d.text.clone()))
+        };
+        package_diagnostics_for(&entry_path.to_string_lossy(), &open)
+            // A closure-load failure (e.g. the entry path vanished) → the single-buffer path, still total.
+            .unwrap_or_else(|| diagnostics_for(&doc.text, doc.is_ml))
     }
 
     /// Send a `textDocument/publishDiagnostics` notification for `uri`.
@@ -488,10 +521,9 @@ fn uri_is_ml(uri: &Uri) -> bool {
 /// parse the `file://[host]/path` form ourselves and percent-decode the path. This is the URI→path
 /// bridge the workspace `(import …)` closure needs (an imported sibling is resolved relative to the
 /// entry file's directory). A `file://` with a non-empty host (a UNC share) is not handled — returns the
-/// path portion as-is, which is correct for the common `file:///abs/path` (empty host) case.
-// Not yet wired into a request path — it's the URI→path bridge the pending workspace-closure increment
-// (see the vertical log) consumes. Kept + tested now so that increment builds on a proven helper.
-#[allow(dead_code)]
+/// path portion as-is, which is correct for the common `file:///abs/path` (empty host) case. Used by
+/// `compute_diagnostics` to find a document's on-disk path (the closure entry) + match open imported
+/// siblings for the overlay.
 fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
@@ -506,7 +538,6 @@ fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
 
 /// Percent-decode a URI path component (`%20` → space, `%2F` → `/`, …). Minimal, dependency-free — just
 /// what a `file://` path needs. A malformed `%`-escape (not two hex digits) is left verbatim.
-#[allow(dead_code)] // used by `uri_to_path` (both consumed by the pending workspace-closure increment).
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -543,17 +574,124 @@ fn cast_request<R: lsp_types::request::Request>(
 
 // ── the analysis: source text → LSP diagnostics, via the SAME query engine `cdz check` uses ─────────
 
-/// Compute the LSP diagnostics for `text` on the given surface — the "diagnostics as you type" read.
-/// Parses the buffer in-memory (the ML reader RECOVERS from a syntax error, so a mid-edit buffer still
-/// yields a tree and its recovered parse errors), then drives the compiler's `Diagnostics` query over
-/// the parsed program and maps each fault's node id back to a source `Range` via the span table. TOTAL:
-/// an un-analyzable buffer yields whatever partial set the recovering parse + query produce, never a
-/// panic — matching the one-shot `cdz check` path and the spec's totality obligation.
-///
-/// Single-buffer scope (increment 1): a document's own `(import …)` closure is NOT followed here (that
-/// needs the workspace file set); a cross-file reference reads as unresolved, exactly as a lone-file
-/// `cdz check` on an importing file would before the package path. Following the closure is a later
-/// increment (it needs the server to hold the workspace, not just open buffers).
+/// The PACKAGE diagnostics for the entry file at `entry_path` — follow its `(import …)` closure (reusing
+/// `crate::closure::load`, the SAME loader `cdz check` uses), run `Diagnostics` over the whole spliced
+/// package, and return only the faults belonging to the ENTRY file (an imported file's faults belong to
+/// its own document, published when that document is analyzed). `open(path)` supplies an open buffer's
+/// live text for an imported sibling (the overlay), else the closure reads disk. `None` when the closure
+/// can't be loaded (the caller falls back to single-buffer). Cross-file node ids are demuxed to the
+/// entry via the compiler's `link-map` (`FileSpan` ranges) — the same demux `run_check`'s package path
+/// uses — so a fault reported at a global node id maps back to the entry file's local span.
+fn package_diagnostics_for(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Option<Vec<Diagnostic>> {
+    let files = crate::closure::load(entry_path, open).ok()?;
+    // Splice every closure file's AST + a Diagnostics request + the entry marker — exactly `run_check`'s
+    // package build, so the compiler links the package and resolves cross-file names.
+    let mut inputs: Vec<rcdzc::Artifact> = files
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let bytes = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?;
+    let diag_text = String::from_utf8_lossy(bytes);
+
+    // Demux a global node id to `(file index, local id)` via the link-map. Empty map (a lone importing
+    // file) → the entry with id unchanged.
+    let link_map = compiled
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    let file_of_node = |n: u32| -> Option<usize> {
+        if link_map.is_empty() {
+            return Some(0);
+        }
+        let fs = link_map
+            .iter()
+            .find(|fs| n >= fs.struct_base && n < fs.struct_base + fs.struct_count)?;
+        files.iter().position(|f| f.name == fs.path)
+    };
+
+    // The entry file is `files[0]`; keep only faults whose node maps to it, mapped through ITS spans.
+    let entry = &files[0];
+    let mut out = Vec::new();
+    for line in diag_text.lines() {
+        // Reuse the shared fault-line parser, but first restrict to the entry file's faults and rewrite
+        // the node column to the entry-LOCAL id so `parse_diag_line` resolves it in the entry's spans.
+        let Some((local_line, on_entry)) =
+            rewrite_to_entry_local(line, &link_map, &files, &file_of_node)
+        else {
+            continue;
+        };
+        if !on_entry {
+            continue; // a fault in an imported file — published when that document is analyzed.
+        }
+        if let Some(d) = parse_diag_line(&local_line, &entry.source, &entry.spans) {
+            out.push(d);
+        }
+    }
+    Some(out)
+}
+
+/// If a diagnostics line's node belongs to the ENTRY file, rewrite its node column to the entry-LOCAL id
+/// and return `(rewritten_line, true)`; if it belongs to another file, return `(line, false)`; an
+/// unanchored (`-`) node stays on the entry (`true`) so a package-level fault with no node is still
+/// shown. `None` only on a malformed line.
+fn rewrite_to_entry_local(
+    line: &str,
+    link_map: &[rcdzc::link::FileSpan],
+    files: &[crate::closure::LoadedFile],
+    file_of_node: &dyn Fn(u32) -> Option<usize>,
+) -> Option<(String, bool)> {
+    // The node id is the THIRD tab column (`severity  code  node  …`).
+    let mut cols: Vec<&str> = line.splitn(8, '\t').collect();
+    if cols.len() < 8 {
+        return None;
+    }
+    let node = cols[2];
+    let Ok(global) = node.parse::<u32>() else {
+        // Unanchored (`-`) or non-numeric — treat as an entry-level fault, line unchanged.
+        return Some((line.to_string(), true));
+    };
+    match file_of_node(global) {
+        Some(0) => {
+            // Entry file: rewrite the global id to the entry-local id (base 0 when no link-map).
+            let local = if link_map.is_empty() {
+                global
+            } else {
+                match link_map.iter().find(|fs| fs.path == files[0].name) {
+                    Some(fs) => global - fs.struct_base,
+                    None => global,
+                }
+            };
+            let local_s = local.to_string();
+            cols[2] = &local_s;
+            Some((cols.join("\t"), true))
+        }
+        _ => Some((line.to_string(), false)), // another file, or unmapped — not the entry's fault
+    }
+}
+
+/// Compute the LSP diagnostics for `text` on the given surface — the SINGLE-BUFFER "diagnostics as you
+/// type" read (used for a document with no imports, or a non-`file` URI). Parses the buffer in-memory
+/// (the ML reader RECOVERS from a syntax error, so a mid-edit buffer still yields a tree + its recovered
+/// parse errors), drives the `Diagnostics` query, and maps each fault's node id to a source `Range` via
+/// the span table. TOTAL: an un-analyzable buffer yields whatever partial set the recovering parse +
+/// query produce, never a panic. A document that DECLARES imports is instead analyzed as a package by
+/// `package_diagnostics_for` (so cross-file names resolve) — `compute_diagnostics` routes between them.
 fn diagnostics_for(text: &str, is_ml: bool) -> Vec<Diagnostic> {
     // Parse in-memory to arenas + a span table. Both surfaces produce a span table (the spanned readers);
     // the ML reader recovers, the s-expr reader hard-errors on a malformed program (then we surface the

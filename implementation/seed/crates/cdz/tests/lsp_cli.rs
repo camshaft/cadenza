@@ -346,3 +346,41 @@ fn lsp_didchange_re_lints_and_didclose_clears() {
         pushes[2]
     );
 }
+
+#[test]
+fn lsp_follows_the_import_closure_for_a_multi_file_package() {
+    // A multi-file package: `lib.sexp` exports `helper`, `main.sexp` imports + uses it. Opening the
+    // IMPORTER must NOT report `helper` as an unknown import (CDZ0201) — the server follows the
+    // `(import …)` closure (reading the sibling from disk) so the cross-file name resolves. Before this
+    // increment the single-buffer analysis reported a false "unknown package file lib".
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-pkg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.sexp"),
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+
+    // The document URI is the on-disk main.sexp (so the server can find its import closure).
+    let uri = format!("file://{}", main_path.display());
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the opened importer");
+    assert!(
+        opened.is_empty(),
+        "the importer should have NO diagnostics — helper resolves across files (no false CDZ0201): {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
