@@ -2298,8 +2298,17 @@ impl<'a> Parser<'a> {
     /// bare `:` re-ascription. `A -> B -> C` right-associates to `(-> A (-> B C))`.
     fn type_ref(&mut self) -> StructId {
         let start = self.cur_span();
-        let head = self.prefix();
-        let left = self.postfix(head, start);
+        // A parenthesized form in TYPE position is a tuple TYPE (or a grouping), NOT the tuple VALUE
+        // constructor the shared `prefix`/`paren` path would build. `(A, B)` here is `Tuple(A, B)` and
+        // `(A)` is just `A` (a grouping) — the same surface `(a, b)` a tuple VALUE/pattern uses, but on
+        // the RHS of a `:` the reader knows it denotes a type. Handled directly so no value ctor
+        // (`("tuple" …)`) is ever emitted in type position (which resolved to a value → CDZ0203).
+        let left = if self.at(Kind::LParen) {
+            self.type_paren(start)
+        } else {
+            let head = self.prefix();
+            self.postfix(head, start)
+        };
         if self.at(Kind::Arrow) {
             self.bump(); // `->`
             let arrow = self.name("->", start);
@@ -2309,6 +2318,35 @@ impl<'a> Parser<'a> {
         } else {
             left
         }
+    }
+
+    /// `( T, … )` in TYPE position → the tuple TYPE node `(Tuple T …)` (head is the `Tuple` type name,
+    /// the same node `Tuple(A, B)` builds — one canonical type spelling). A single `( T )` is a grouping
+    /// (returns `T`); `()` is the `unit` type. Each element is parsed by `type_ref`, so a nested tuple
+    /// type (`(A, (B, C))`) and a function-type element (`((A) -> B, C)`) work. This makes the natural
+    /// `def f(p: (Int64, Int64))` an accepted pair type instead of the CDZ0203 the value-ctor lowering
+    /// produced — tuple values/patterns and tuple TYPES now share the `(…)` spelling (as lists do).
+    fn type_paren(&mut self, start: Span) -> StructId {
+        self.expect(Kind::LParen, "`(`");
+        if self.at(Kind::RParen) {
+            self.bump();
+            let span = start.merge(self.prev_span());
+            return self.name("unit", span);
+        }
+        let first = self.type_ref();
+        if !self.at(Kind::Comma) {
+            // A single parenthesized type is a transparent grouping — `(A)` is `A`.
+            self.expect(Kind::RParen, "`)`");
+            return first;
+        }
+        let head = self.name("Tuple", start);
+        let mut items = vec![head, first];
+        while self.sep_continue(Kind::RParen) {
+            items.push(self.type_ref());
+        }
+        self.expect(Kind::RParen, "`)`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
     }
 
     /// A `Name` atom for a construct keyword head, at `span`.
@@ -2940,6 +2978,48 @@ mod tests {
             sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
             "(def (s (: xs (List Int64))) xs)"
         );
+    }
+
+    #[test]
+    fn paren_comma_in_type_position_is_a_tuple_type() {
+        use crate::sexpr;
+        // A paren-comma form `(A, B)` in TYPE position (the RHS of a `:`) is the tuple TYPE
+        // `(Tuple A B)` — NOT the tuple VALUE ctor `("tuple" A B)` the shared prefix path builds for a
+        // value/pattern. Before this, `def f(p: (Int64, Int64))` lowered to the value ctor and resolved
+        // to a value where a type is required (CDZ0203). Now tuple values/patterns and tuple TYPES
+        // share the `(…)` spelling. The `Tuple` name head is byte-identical to the `Tuple(A, B)` form.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(p: (Int64, Int64)) = p.0")),
+            "(def (f (: p (Tuple Int64 Int64))) (. p 0))"
+        );
+        // The paren-comma spelling and the explicit `Tuple(…)` spelling produce the IDENTICAL type.
+        assert!(
+            parse_ok("def f(p: (Int64, Int64)) = p.0")
+                .structurally_eq(&parse_ok("def f(p: Tuple(Int64, Int64)) = p.0")),
+            "(A, B) and Tuple(A, B) in type position must be the same arena"
+        );
+        // A function-type OPERAND spelled with paren-comma is a tuple type: `(A, B) -> C`.
+        assert_eq!(
+            sexpr::print(&parse_ok("def g(f: (Int64, Bool) -> Int64) = f")),
+            "(def (g (: f (-> (Tuple Int64 Bool) Int64))) f)"
+        );
+        // A nested tuple type: `(A, (B, C))` → `(Tuple A (Tuple B C))`.
+        assert_eq!(
+            sexpr::print(&parse_ok("def h(p: (Int64, (Bool, Int64))) = p.0")),
+            "(def (h (: p (Tuple Int64 (Tuple Bool Int64)))) (. p 0))"
+        );
+        // A SINGLE parenthesized type is a transparent grouping — `(A)` is `A`, not a 1-tuple.
+        assert_eq!(
+            sexpr::print(&parse_ok("def i(p: (Int64)) = p")),
+            "(def (i (: p Int64)) p)"
+        );
+        // `()` in type position is the `unit` type.
+        assert_eq!(
+            sexpr::print(&parse_ok("def j(p: ()) = p")),
+            "(def (j (: p unit)) p)"
+        );
+        // A VALUE-position paren-comma still builds the tuple VALUE ctor — the retyping is TYPE-only.
+        assert_eq!(sexpr::print(&parse_ok("(1, 2)")), r#"("tuple" 1 2)"#);
     }
 
     #[test]
