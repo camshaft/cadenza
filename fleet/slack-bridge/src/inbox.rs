@@ -69,9 +69,30 @@ impl Message {
     }
 }
 
-/// The inbox directory for `agent` under `fleet_dir` (`<fleet_dir>/inbox/<agent>`).
-pub fn inbox_dir(fleet_dir: &Path, agent: &str) -> PathBuf {
-    fleet_dir.join("inbox").join(agent)
+/// True iff `agent` is a safe fleet agent name: a strict slug — a leading alphanumeric then
+/// alphanumerics/hyphens (`pr-sync`, `design-jsx`, `v-slack-bridge`, `fix-foo`). NO dots, slashes, or
+/// other separators, so it can never be a path component like `..` or contain a directory boundary.
+///
+/// SECURITY: the agent name flows from untrusted Slack input (a `@agent` retarget) into a filesystem path
+/// via [`inbox_dir`]; an unvalidated `..`/`../../x` would let a Slack sender write OUTSIDE the inbox tree
+/// (PR #391). This is the sink-side guard; the parser (`format`) also restricts the charset.
+pub fn is_valid_agent_name(agent: &str) -> bool {
+    let mut chars = agent.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false, // empty, or non-alphanumeric first char
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The inbox directory for `agent` under `fleet_dir` (`<fleet_dir>/inbox/<agent>`). Returns `None` on an
+/// invalid agent name rather than building a traversal-capable path — the single chokepoint `deliver` and
+/// `drain` route through, so validating here sandboxes every filesystem access.
+pub fn inbox_dir(fleet_dir: &Path, agent: &str) -> Option<PathBuf> {
+    if !is_valid_agent_name(agent) {
+        return None;
+    }
+    Some(fleet_dir.join("inbox").join(agent))
 }
 
 /// Deliver `msg` into `to`'s inbox as one atomic JSON file, byte-for-byte in the shape the Rust `xtask`
@@ -79,7 +100,12 @@ pub fn inbox_dir(fleet_dir: &Path, agent: &str) -> PathBuf {
 /// fresh sequence. Creates the inbox dir on demand (matching `xtask`, which delivers even before the
 /// recipient is registered). Returns the written file path.
 pub fn deliver(fleet_dir: &Path, to: &str, mut msg: Message) -> io::Result<PathBuf> {
-    let dir = inbox_dir(fleet_dir, to);
+    let dir = inbox_dir(fleet_dir, to).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid fleet agent name (path-traversal guard): {to:?}"),
+        )
+    })?;
     std::fs::create_dir_all(&dir)?;
 
     msg.to = to.to_string();
@@ -112,7 +138,11 @@ pub struct Drained {
 /// success then calls `mark_processed` per handled file, so a crash mid-relay re-delivers rather than
 /// drops. A missing inbox is an empty drain, not an error.
 pub fn drain(fleet_dir: &Path, agent: &str) -> io::Result<Vec<Drained>> {
-    let dir = inbox_dir(fleet_dir, agent);
+    let dir = match inbox_dir(fleet_dir, agent) {
+        Some(d) => d,
+        // An invalid name has no valid inbox; treat as empty rather than error (drain is a read).
+        None => return Ok(Vec::new()),
+    };
     let rd = match std::fs::read_dir(&dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -237,7 +267,7 @@ mod tests {
             Message::new("slack-bridge", "", "note", "x"),
         )
         .unwrap();
-        let leftover: Vec<_> = std::fs::read_dir(inbox_dir(&dir, "concierge"))
+        let leftover: Vec<_> = std::fs::read_dir(inbox_dir(&dir, "concierge").unwrap())
             .unwrap()
             .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
@@ -271,6 +301,7 @@ mod tests {
         assert_eq!(after[0].msg.subject, "second");
         assert!(
             inbox_dir(&dir, "slack-bridge")
+                .unwrap()
                 .join("processed")
                 .join(pending[0].file.file_name().unwrap())
                 .exists()
@@ -286,7 +317,7 @@ mod tests {
     #[test]
     fn drain_ignores_processed_dir_and_dotfiles() {
         let dir = tmp_fleet("ignore");
-        let box_dir = inbox_dir(&dir, "slack-bridge");
+        let box_dir = inbox_dir(&dir, "slack-bridge").unwrap();
         std::fs::create_dir_all(box_dir.join("processed")).unwrap();
         std::fs::write(box_dir.join(".000000000001-1-note.json.tmp"), "{partial").unwrap();
         deliver(&dir, "slack-bridge", Message::new("x", "", "note", "real")).unwrap();
@@ -303,5 +334,71 @@ mod tests {
         assert_eq!(m.r#ref, "");
         assert_eq!(m.body, "");
         assert_eq!(m.kind, "ask");
+    }
+
+    // ── SECURITY: agent-name path-traversal guard (PR #391) ─────────────────────────────────────────
+
+    #[test]
+    fn valid_agent_names_accepted() {
+        for name in [
+            "pr-sync",
+            "concierge",
+            "v-slack-bridge",
+            "fix-foo",
+            "design-jsx",
+            "a",
+            "a1",
+        ] {
+            assert!(is_valid_agent_name(name), "should accept {name}");
+        }
+    }
+
+    #[test]
+    fn traversal_and_separator_names_rejected() {
+        // The exact PR #391 payloads plus assorted escapes/separators.
+        for name in [
+            "..",
+            "../x",
+            "../../etc",
+            ".",
+            ".hidden",
+            "a.b", // dots are out (no roster name uses them; a dot enables `..`-style tricks)
+            "a/b",
+            "a\\b",
+            "",         // empty
+            "-leading", // must start alphanumeric
+            "a b",      // space
+            "a\0b",     // NUL
+            "inbox/../x",
+        ] {
+            assert!(!is_valid_agent_name(name), "should REJECT {name:?}");
+            assert!(
+                inbox_dir(std::path::Path::new("/tmp/f"), name).is_none(),
+                "no path for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deliver_to_traversal_name_errors_and_writes_nothing() {
+        let dir = tmp_fleet("traversal");
+        // A Slack sender's `@.. hi` would reach here as to="..". It must NOT write at the fleet root.
+        let err = deliver(&dir, "..", Message::new("attacker", "", "note", "pwn")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // Nothing created outside a valid inbox: the fleet dir has no stray files/dirs from this.
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "no traversal write happened: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn drain_of_traversal_name_is_empty() {
+        let dir = tmp_fleet("traversal-drain");
+        assert!(drain(&dir, "../../x").unwrap().is_empty());
     }
 }

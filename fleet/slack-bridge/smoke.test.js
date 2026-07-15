@@ -15,7 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { deliver, drain, markProcessed, inboxDir } = require("./inbox.js");
+const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
 const { parseOperatorMessage, renderFleetMessage, helpText } = require("./format.js");
 
 let passed = 0;
@@ -170,6 +170,47 @@ test("helpText names the default recipient and the prefixes", () => {
   assert.ok(h.includes("concierge"));
   assert.ok(h.includes("@agent"));
   assert.ok(h.includes("!kind"));
+});
+
+// ---- SECURITY: agent-name path-traversal guard (PR #391) ------------------------------------------
+
+test("isValidAgentName accepts real names and rejects traversal/separators", () => {
+  for (const ok of ["pr-sync", "concierge", "v-slack-bridge", "fix-foo", "design-jsx", "a", "a1"]) {
+    assert.ok(isValidAgentName(ok), `accept ${ok}`);
+  }
+  for (const bad of ["..", "../x", "../../etc", ".", ".hidden", "a.b", "a/b", "a\\b", "", "-x", "a b", "inbox/../x"]) {
+    assert.ok(!isValidAgentName(bad), `reject ${JSON.stringify(bad)}`);
+  }
+});
+
+test("inboxDir throws on a traversal agent name (no path built)", () => {
+  assert.throws(() => inboxDir("/tmp/fleet", ".."), /path-traversal/);
+  assert.throws(() => inboxDir("/tmp/fleet", "../../x"), /path-traversal/);
+});
+
+test("deliver to a traversal name throws and writes nothing outside the inbox", () => {
+  const dir = tmpFleet();
+  assert.throws(
+    () => deliver(dir, "..", { from: "attacker", kind: "note", subject: "pwn" }),
+    /path-traversal/,
+  );
+  // The fleet dir must have no stray files/dirs created by the attempt.
+  assert.deepStrictEqual(fs.readdirSync(dir), [], "no traversal write happened");
+});
+
+test("a @.. retarget never becomes the recipient (parser guard)", () => {
+  const i = parseOperatorMessage("@.. hi", "concierge");
+  assert.strictEqual(i.to, "concierge", "traversal name never becomes recipient");
+  assert.ok(isValidAgentName(i.to));
+  const i2 = parseOperatorMessage("@../../etc pwn", "concierge");
+  assert.strictEqual(i2.to, "concierge");
+});
+
+test("every parsed recipient is a valid agent name", () => {
+  for (const msg of ["@pr-sync go", "@.. x", "@a/b y", "plain", "@-bad z", "@design-jsx !assign do"]) {
+    const i = parseOperatorMessage(msg, "concierge");
+    assert.ok(isValidAgentName(i.to), `unsafe recipient ${JSON.stringify(i.to)} from ${msg}`);
+  }
 });
 
 console.log(`\n${passed} checks passed`);

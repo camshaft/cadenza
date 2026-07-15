@@ -24,8 +24,26 @@ function nextSeq() {
   return SEQ++;
 }
 
-/// The inbox directory for `agent` under `fleetDir` (`<fleetDir>/inbox/<agent>`).
+/// A fleet agent name is a strict slug — a leading alphanumeric then alphanumerics/hyphens
+/// (`pr-sync`, `design-jsx`, `v-slack-bridge`, `fix-foo`). NO dots, slashes, or other separators, so it
+/// can never be a path component like `..` or contain a directory boundary.
+const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/// True iff `agent` is a safe agent name to use as a path component. SECURITY: the agent name flows from
+/// untrusted Slack input (a `@agent` retarget), and `inboxDir` joins it into a filesystem path — an
+/// unvalidated `..` or `../../x` would let a Slack sender write OUTSIDE the inbox tree (PR #391). Reject
+/// anything that isn't a strict slug.
+function isValidAgentName(agent) {
+  return typeof agent === "string" && AGENT_NAME_RE.test(agent);
+}
+
+/// The inbox directory for `agent` under `fleetDir` (`<fleetDir>/inbox/<agent>`). THROWS on an invalid
+/// agent name rather than building a traversal-capable path — this is the single chokepoint both
+/// `deliver` and `drain` route through, so validating here sandboxes every filesystem access.
 function inboxDir(fleetDir, agent) {
+  if (!isValidAgentName(agent)) {
+    throw new Error(`invalid fleet agent name (path-traversal guard): ${JSON.stringify(agent)}`);
+  }
   return path.join(fleetDir, "inbox", agent);
 }
 
@@ -95,4 +113,4 @@ function markProcessed(file) {
   }
 }
 
-module.exports = { deliver, drain, markProcessed, inboxDir, nextSeq };
+module.exports = { deliver, drain, markProcessed, inboxDir, nextSeq, isValidAgentName };

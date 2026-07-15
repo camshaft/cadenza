@@ -21,4 +21,4 @@ pub mod inbox;
 
 pub use config::{Config, SlackTokens};
 pub use format::{Intent, help_text, parse_operator_message, render_fleet_message};
-pub use inbox::{Drained, Message, deliver, drain, inbox_dir, mark_processed};
+pub use inbox::{Drained, Message, deliver, drain, inbox_dir, is_valid_agent_name, mark_processed};

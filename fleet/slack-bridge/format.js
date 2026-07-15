@@ -42,7 +42,10 @@ function parseOperatorMessage(text, defaultTo) {
   let to = defaultTo;
   let kind = "note";
 
-  const atMatch = rest.match(/^@([A-Za-z0-9._-]+)\s*(.*)$/s);
+  // Agent-name charset is a strict slug — a leading alphanumeric then alphanumerics/hyphens (NO dots or
+  // separators), so a `@..`/`@../x` retarget can't become a path-traversal agent name (PR #391). This is
+  // the parse-side guard; inbox.js re-validates at the filesystem sink (defense in depth).
+  const atMatch = rest.match(/^@([A-Za-z0-9][A-Za-z0-9-]*)\s*(.*)$/s);
   if (atMatch) {
     to = atMatch[1];
     rest = atMatch[2].trim();
