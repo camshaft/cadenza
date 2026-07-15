@@ -50749,19 +50749,56 @@ mod stage1 {
     }
 
     #[test]
-    fn a_constant_failure_try_declines_until_the_boundary_break() {
-        // The companion: a constant FAILURE operand (`None`/`Err`) must SHORT-CIRCUIT the boundary — it
-        // needs the `Core::Block` + `Core::Break` desugar (BRICK 3), so it DECLINES cleanly for now (a
-        // Todo, never a miscompile). `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` would
-        // break `main` to `None`. Pins that BRICK 2's fold is SUCCESS-ONLY — a failure does not silently
-        // fold (which would drop the short-circuit and miscompile).
-        let msg = expect_decline("(let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))");
+    fn a_constant_failure_try_short_circuits_the_boundary_to_the_failure() {
+        // BRICK 3a (DESIGN-try-operator-rcdzc.md §4 v1): a `?` on a constant FAILURE (`None`/`Err`) short-
+        // circuits the enclosing FUNCTION boundary — the failure value flows out as the function's value.
+        // `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` in the let-init `Core::Break`s, and
+        // `lower_let` folds the whole `let` to `None` (the body + later bindings never run). No boundary
+        // block node for v1 (the function body IS the boundary). It COMPILES (the corpus case "`?` on the
+        // failure variant short-circuits the boundary" runs it to `(None unit)`).
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))) \
+                   (export main))";
         assert!(
-            msg.contains("try")
-                || msg.contains('?')
-                || msg.contains("break")
-                || msg.contains("brick"),
-            "a constant-failure `?` declines pending the boundary break (BRICK 3): {msg}"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`None` `?` short-circuits the boundary to `None`, not declines"
+        );
+    }
+
+    #[test]
+    fn a_constant_err_try_short_circuits_a_result_boundary() {
+        // The Result companion: a constant `Err` `?` under a Result boundary short-circuits to the `Err`.
+        // `(try (Err 7))` breaks `main` to `(Err 7)`. Pins that the fold reads the SUCCESS disc (`Ok`) off
+        // the operand type and treats the non-success `Err` as the break, symmetric with the Option/`None`
+        // case. The operand + boundary are annotated `(Result Int64 Int64)` so the Result type is fully
+        // determined (an unannotated `(Ok x)` alone leaves `(Result _ _)` undetermined — a separate
+        // type-determinism concern, not the `?` fold).
+        let src = "(module m (def (main) (: (let ((x (try (: (Err 7) (Result Int64 Int64))))) (Ok x)) \
+                   (Result Int64 Int64))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`Err` `?` short-circuits the Result boundary to `Err`"
+        );
+    }
+
+    #[test]
+    fn a_constant_failure_after_an_effectful_binding_declines() {
+        // The soundness guard for BRICK 3a's strict-spine fold: the break drops every LATER binding + the
+        // body, so an EARLIER binding whose init has an OBSERVABLE side effect (a host call) cannot be
+        // dropped — folding would lose that effect. Such a shape DECLINES (a later brick handles it with the
+        // real block/br that runs the effect THEN breaks). Here an earlier `(log.emit …)` host call precedes
+        // the failing `?`; the fold must not fire. (A pure earlier binding — the T1 shape — still folds.)
+        let src = "(do (effect Log (op emit (-> Int64 Unit))) \
+                   (def (main) (host (Log) \
+                     (let ((a (Log.emit 1)) (x (try (Int64.checked-add Int64.max 1)))) (Some x)))) \
+                   (export main))";
+        // Must NOT compile to a value that dropped the `Log.emit` — declines (or keeps the call); either
+        // way it does not silently fold away the effect. Assert it does not run to a bare `(None …)` value
+        // with the emit lost — a decline is the correct conservative outcome here.
+        let out = compile_component(&crate::codec::encode(&parse(src)));
+        assert!(
+            out.is_err(),
+            "a constant-failure `?` after an effectful earlier binding must decline (the break would \
+             drop the host call), not silently fold"
         );
     }
 }

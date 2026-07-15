@@ -838,14 +838,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
-        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2). BRICK 2,
-        // the CONSTANT-SUCCESS fold: when the operand folds to a compile-time-CONSTANT success variant
-        // (`Some x` / `Ok x`), `?` unwraps it — the whole `(try e)` IS the payload, no boundary break fires
-        // (the happy path never short-circuits). This turns a constant-`Some`/`Ok` `?` into the payload
-        // exactly as `List.at` folds a constant in-range read. A constant FAILURE (`None`/`Err`) or a
-        // RUNTIME operand still needs the boundary `Core::Block` + `Core::Break` (BRICK 3), so it DECLINES
-        // here — never a miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined).
-        // The operand is walked either way so its own core faults surface.
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2/§4 v1). The
+        // enclosing FUNCTION body IS the boundary (v1): a `?`'s failure arm's value flows out as the
+        // function's value — there is no separate boundary-block node for v1 (§4). Two constant folds:
+        //   * CONSTANT SUCCESS (`Some x`/`Ok x`) → the payload; the happy path never short-circuits (BRICK 2a).
+        //   * CONSTANT FAILURE (`None`/`Err`) → `Core::Break { value }`; the failure short-circuits the
+        //     boundary, and `lower_let`/the strict-spine propagate the `Break` up to the boundary body's
+        //     value (BRICK 3a). A `Break` on the UNCONDITIONAL strict spine folds the enclosing `let`/spine
+        //     to the failure value; a conditional/runtime failure needs the real block/br (a later brick).
+        // A `?` on a RUNTIME operand still declines (never a miscompile — §An Unsupported Construct Is
+        // Declined). The operand is walked either way so its own core faults surface.
         Resolved::Try { operand } => match core_of(db, operand) {
             Core::Poison(r) => Core::Poison(r),
             // A constant success variant: `(try (Some x))` / `(try (Ok x))` folds to the payload. The
@@ -856,9 +858,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             {
                 core_of(db, payloads[0])
             }
+            // A constant FAILURE variant: `(try (None))` / `(try (Err r))` — the `?` short-circuits the
+            // enclosing boundary, so the whole `(try e)` becomes a `Core::Break` carrying the FAILURE value
+            // (the operand itself, e.g. `None`/`Err r`, which is `T_B`-typed — it IS the boundary result).
+            // `lower_let` folds a `let` whose init is this `Break` to the break value (the failure flows out
+            // as the boundary body's value); a `Break` reaching the backend un-folded declines (BRICK 3b).
+            Core::SumNew { disc, .. } if success_disc_of(db, operand) == Some(disc) => {
+                // Success disc but arity ≠ 1 — a malformed success (should not reach here); decline.
+                Core::Poison(Reject::decline(
+                    "the `?`/`try` operator lowers only a single-payload success operand yet",
+                ))
+            }
+            Core::SumNew { .. } => Core::Break { value: operand },
             _ => Core::Poison(Reject::decline(
-                "the `?`/`try` operator lowers only a constant success operand yet (the boundary \
-                 break for a failure / runtime operand is the next brick)",
+                "the `?`/`try` operator lowers only a constant operand yet (the boundary break for a \
+                 runtime operand is the next brick)",
             )),
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -2980,6 +2994,29 @@ fn lower_let(
     // its own init onward (a subset of the outer region), so its count/escape reads identically off the
     // outer map. So reuse the nearest enclosing cached region's map (`Db::let_region_uses`) instead of
     // re-collecting; only a let with NO cached enclosing region walks (once per whole nest → O(N) total).
+    // TRY SHORT-CIRCUIT (BRICK 3a): a binding whose INIT is a `?` on a constant FAILURE
+    // (`DESIGN-try-operator-rcdzc.md` §4 v1) lowers to a `Core::Break`, short-circuiting the enclosing
+    // boundary: the failure value flows out as the boundary body's value, so the whole `let` folds to that
+    // break value and the body (+ later bindings) never runs. Sound because a `let` INIT is on the
+    // UNCONDITIONAL strict spine (evaluated left-to-right before the body), so the first init that breaks is
+    // reached unconditionally; every binding BEFORE it must be pure (its value is discarded when the break
+    // fires). GATED by a `Resolved::Try` PRE-FILTER so a non-try init is never lowered early — calling
+    // `core_of(init)` before the keep-analysis populates `db.kept_bindings` would perturb a closure/multi-use
+    // binding's lowering decision (a memoization-order hazard). Only a `Resolved::Try` init is probed.
+    for (i, &(_name_occ, init)) in bindings.iter().enumerate() {
+        if matches!(resolved_of(db, init), Resolved::Try { .. })
+            && let Core::Break { value } = core_of(db, init)
+        {
+            // Every earlier init must be pure (its discarded value carries no lost effect). A perform/host
+            // call / trap in an earlier init is an effect the break would drop — leave it to a later brick.
+            if bindings[..i]
+                .iter()
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
+            {
+                return core_of(db, value);
+            }
+        }
+    }
     let uses = enclosing_or_collected_region_uses(db, node, bindings, body);
     let mut kept: Vec<(StructId, StructId)> = Vec::new();
     for &(_name_occ, init) in bindings.iter() {

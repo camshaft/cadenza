@@ -2801,7 +2801,7 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	`?` on the failure variant short-circuits the boundary (Option, None path)
+pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
