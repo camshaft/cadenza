@@ -197,6 +197,13 @@ def fold(it, acc, f: Int64 -> Int64 -> Int64) = match next(it) with
   | Option.None(_) => acc
   | Option.Some(p) => (match p with | (v, rest) => fold(rest, f(acc, v), f))
 
+/// Fold WITHOUT an initial accumulator: seed with the first element, then combine the rest with `f`.
+/// `None` for an empty iterator (there is no element to seed with). Useful for `max`/`min`/`gcd`-style
+/// reductions where the identity is the first value.
+def reduce(it, f: Int64 -> Int64 -> Int64) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => Option.Some(fold(rest, v, f)))
+
 /// Number of elements the iterator yields.
 def count(it) = fold(it, 0, fn(a, v) => a + 1)
 
@@ -278,6 +285,27 @@ def max(it) = match next(it) with
 def min(it) = match next(it) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => (match p with | (v, rest) => Option.Some(min-from(rest, v)))
+
+// keep the element whose `key` is largest so far, threading (best-elem, best-key)
+def max-by-from(it, best, best-key, key: Int64 -> Int64) = match next(it) with
+  | Option.None(_) => best
+  | Option.Some(p) => (match p with | (v, rest) =>
+      let k = key(v) in if k > best-key then max-by-from(rest, v, k, key) else max-by-from(rest, best, best-key, key))
+
+def min-by-from(it, best, best-key, key: Int64 -> Int64) = match next(it) with
+  | Option.None(_) => best
+  | Option.Some(p) => (match p with | (v, rest) =>
+      let k = key(v) in if k < best-key then min-by-from(rest, v, k, key) else min-by-from(rest, best, best-key, key))
+
+/// The element with the largest `key(elem)`, or `None` if empty. Ties keep the first seen.
+def max-by(it, key: Int64 -> Int64) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => Option.Some(max-by-from(rest, v, key(v), key)))
+
+/// The element with the smallest `key(elem)`, or `None` if empty. Ties keep the first seen.
+def min-by(it, key: Int64 -> Int64) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => Option.Some(min-by-from(rest, v, key(v), key)))
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -671,5 +699,51 @@ def range-inclusive-step-free-path-still-totals-near-max() =
     unit
   else
     trap("range-step (max-2) step 2, hi=max (half-open) = [max-2]")
+
+@test
+def reduce-sums-from-first() =
+  // reduce with + over 1..5 seeds with 1 then adds 2,3,4 -> 10
+  match reduce(range(1, 5), fn(a, b) => a + b) with
+    | Option.Some(v) => if v == 10 then unit else trap("reduce + of 1..5 is 10")
+    | Option.None(_) => trap("non-empty should reduce")
+
+@test
+def reduce-single-element() =
+  match reduce(from-list([42]), fn(a, b) => a + b) with
+    | Option.Some(v) => if v == 42 then unit else trap("single element reduces to itself")
+    | Option.None(_) => trap("one element should reduce")
+
+@test
+def reduce-empty-is-none() =
+  match reduce(empty(), fn(a, b) => a + b) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("empty has no reduction")
+
+@test
+def reduce-can-express-max() =
+  // reduce with a max-combiner reproduces `max`
+  match reduce(from-list([3, 9, 2, 9, 5]), fn(a, b) => if a > b then a else b) with
+    | Option.Some(v) => if v == 9 then unit else trap("reduce-max is 9")
+    | Option.None(_) => trap("should reduce")
+
+@test
+def max-by-picks-largest-key() =
+  // key = distance from 0 (abs via a branch); over [-5, 3, -2, 4] the max |x| is -5
+  match max-by(from-list([-5, 3, -2, 4]), fn(x) => if x < 0 then 0 - x else x) with
+    | Option.Some(v) => if v == -5 then unit else trap("max |x| element is -5")
+    | Option.None(_) => trap("should have a max-by")
+
+@test
+def min-by-picks-smallest-key() =
+  // key = x*x; the element with the smallest square in [-5, 3, -2, 4] is -2
+  match min-by(from-list([-5, 3, -2, 4]), fn(x) => x * x) with
+    | Option.Some(v) => if v == -2 then unit else trap("min x^2 element is -2")
+    | Option.None(_) => trap("should have a min-by")
+
+@test
+def max-by-empty-is-none() =
+  match max-by(empty(), fn(x) => x) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("empty has no max-by")
 
 export { Iter.* }
