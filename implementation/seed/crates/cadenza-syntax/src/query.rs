@@ -2585,7 +2585,9 @@ pub mod textedit {
     /// `tree_eq` cells PER fix, so N such fixes on one file were O(N³) (a `do` of N discarded statements:
     /// N=100/200/400 = 33/207/1639ms, ~7×/dbl). This helper makes a delete fix's edit O(1) — no parent
     /// diff, no alignment. Byte-identical to the alignment path (same `widen_deletion`, same empty text).
-    /// Returns `None` if the span is degenerate (`start > end`).
+    /// Returns `None` if the span is invalid — either degenerate (`start > end`) or out of bounds
+    /// (`end > src.len()`) — so a caller passing a stale or miscomputed span gets `None` rather than a
+    /// panic on the slice.
     pub fn delete_edit(src: &str, start: usize, end: usize, surface: Format) -> Option<Edit> {
         if start > end || end > src.len() {
             return None;
@@ -3639,6 +3641,33 @@ mod tests {
             "the delete fast path must produce the byte-identical edit the align path does (same \
              widened span, empty text) — a drift here means `cdz fix`/`check --json` would apply a \
              different edit than the alignment intended"
+        );
+    }
+
+    #[test]
+    fn delete_edit_returns_none_for_an_invalid_span() {
+        use crate::convert::Format;
+        // `delete_edit` guards BOTH invalid-span cases (its documented contract): a degenerate span
+        // (`start > end`) and an out-of-bounds span (`end > src.len()`) each yield `None` rather than a
+        // slice panic — so a caller passing a stale/miscomputed span degrades gracefully. A valid span
+        // still produces an edit (the guard doesn't reject good input).
+        let src = "(do a b)";
+        // Degenerate: start past end.
+        assert_eq!(
+            textedit::delete_edit(src, 5, 3, Format::Sexpr),
+            None,
+            "start > end is degenerate → None"
+        );
+        // Out of bounds: end past the source length.
+        assert_eq!(
+            textedit::delete_edit(src, 1, src.len() + 1, Format::Sexpr),
+            None,
+            "end > src.len() is out of bounds → None"
+        );
+        // A valid span still yields an edit — the guard rejects only invalid input.
+        assert!(
+            textedit::delete_edit(src, 4, 5, Format::Sexpr).is_some(),
+            "a valid in-bounds span produces a delete edit"
         );
     }
 
