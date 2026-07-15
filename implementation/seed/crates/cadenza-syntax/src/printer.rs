@@ -763,8 +763,13 @@ impl<'a> Printer<'a> {
             self.doc.word("(");
         }
         self.doc.word("let ");
-        // bindings
-        self.doc.ibox(INDENT);
+        // The bindings box is CONSISTENT: a multi-binding `let` that does not fit on one line drops
+        // EVERY binding to its own line, indented under `let` — not a greedy fill that packs two
+        // bindings on the first line and wraps the overflow (which reads as an accidental line break
+        // mid-list). A single-binding `let` has no inter-binding break, so this is a no-op for it (the
+        // common case); only a multi-binding `let` that overflows changes, and it changes for the
+        // better. The value of each binding still breaks within its own nested boxes independently.
+        self.doc.cbox(INDENT);
         if let Struct::List(binds) = self.a.get(args[0]) {
             let binds = binds.clone();
             for (i, &b) in binds.iter().enumerate() {
@@ -3370,6 +3375,20 @@ mod tests {
         assert_eq!(
             assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
             "let x = 1, (a, b) = p in\nx + a"
+        );
+        // A multi-binding `let` that does NOT fit breaks CONSISTENTLY: every binding drops to its own
+        // line, indented under `let` — not a greedy fill that packs two bindings per line. At width 20
+        // the three bindings overflow one line, so each gets its own; the first stays on the `let `
+        // line and the rest hang at INDENT under it.
+        assert_eq!(
+            assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 20),
+            "let aa = 1,\n  bb = 2,\n  cc = 3 in\naa + bb + cc"
+        );
+        // The same bindings that DO fit stay on one line (consistent box prints flat when it fits) —
+        // so this is a no-op for a `let` that fits, changing only the overflow layout.
+        assert_eq!(
+            assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 80),
+            "let aa = 1, bb = 2, cc = 3 in\naa + bb + cc"
         );
         // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
         assert_eq!(
