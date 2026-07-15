@@ -39,3 +39,5 @@ def cnt(s: String, i: Int64, acc: Int64) =
 def run() = cnt("aa", 0, 0)
 
 export { run }
+
+/// RESOLVED 2026-07-15 (trunk@3ba79db6b): test+check exit 0 (borrow-ownership family fixed)

@@ -91,3 +91,5 @@
             (def (main) (f (Int 42)))
             (export main)))
   (output (: 42 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@3ba79db6b): user type/module name SHADOWS prelude in construct position (operator ruling) — gate PASS

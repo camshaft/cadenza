@@ -39,3 +39,5 @@ def record-type-colon-fields-work-in-param-position() =
 def pair-sum(r: Record(a: Int64, b: Int64)) = r.a + r.b
 
 export { px, py, manhattan }
+
+/// RESOLVED 2026-07-15 (trunk@3ba79db6b): cdz check CLEAN

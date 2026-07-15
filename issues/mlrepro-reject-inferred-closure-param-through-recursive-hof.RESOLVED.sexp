@@ -34,3 +34,5 @@
       ((list h .. t) (fold-list f (f h acc) t))))
   (def (main) (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30)))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@3ba79db6b): cdz check CLEAN (v-inference recursive-HOF closure work)
