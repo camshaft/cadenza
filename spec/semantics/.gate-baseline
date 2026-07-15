@@ -772,6 +772,7 @@ pass	a list arm's constructor element that does not match the tag falls through
 pass	a list built at run time by a push-loop escapes to the host
 pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
+pass	a list captured by a closure that consumes it is unchanged for a later read of the binding
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
 pass	a list consumed by List.concat in one operand keeps its element view for a later read

@@ -1119,6 +1119,33 @@
             (export main)))
   (output (: 306 Int64)))
 
+; PERCEUS RETAIN ACROSS A CAPTURE: a heap list `xs` is CAPTURED by a closure whose body CONSUMES it
+; (`List.push xs k` — a persistent op that FBIP-mutates its operand in place when it holds the sole
+; reference), and the ORIGINAL `xs` is READ AGAIN after the closure is applied. The capture and the later
+; read share `xs`, so the consuming push inside the closure must leave `xs` unchanged — the capture stored
+; in the env cell is a live reference that must be retained, exactly as a repeated in-body use is (the
+; still-live-binding retain, extended across the closure-capture boundary). Pins that the persistence
+; guarantee holds when the shared reader is a captured free variable, not a second in-body occurrence.
+
+(case "a list captured by a closure that consumes it is unchanged for a later read of the binding"
+  (doc    "`xs = build 0 3` = `[0 1 2]`; a closure `(fn (k) (List.len (List.push xs k)))` captures `xs` and
+           pushes to it (length → 4 when applied with 99), and after the application the ORIGINAL `xs` is
+           read (`List.len xs` → 3), so 4 + 3 = 7. If the captured `xs` were not retained, the closure's
+           `List.push` would FBIP-mutate the shared backing in place and the later `List.len xs` would read
+           the grown list (→ 8). `build` makes `xs` a genuine runtime list (no const-fold). Pins that a
+           persistent op on a CAPTURED heap value leaves the still-live original binding unchanged.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (apply-it (: f (-> Int64 Int64)) (: x Int64)) (f x))
+            (def (main (: n Int64))
+              (let ((xs (build 0 n (list))))
+                (+ (apply-it (fn ((: k Int64)) (List.len (List.push xs k))) 99) (List.len xs))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 ; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
 ; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
 ; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls
