@@ -7834,3 +7834,23 @@
             (def (main) (. (f (f (record (a 0) (b 5)))) a))
             (export main)))
   (output (: 2 Int64)))
+
+(case "a nested element pattern dispatches on a NON-variant-0 list payload"
+  (doc    "A sum whose payload is a LIST, in a NON-variant-0 slot (`List` is the LAST variant of `Ast`),
+           matched by a NESTED list-element pattern `(Ast.List (list (Ast.Name n) .. rest))`. To dispatch,
+           the matcher walks `node -> sum-payload (List Ast) -> Elem(0)` and reads the element's
+           discriminant. The disc-walk resolved the `Payload` step's type via VARIANT 0 (`Int`, payload
+           `Int64` — NOT a list), so it read element 0 with `arr-get` on the RRB `vec` → garbage
+           discriminant → the arm mis-dispatched and this returned 0 though the head IS a `Name` (a SILENT
+           wrong value; `cdz check` clean). The fix records the ENTERED variant's payload type as the
+           enclosing switch descends, so the `Payload` step resolves to the actual `List Ast` and `Elem(0)`
+           reads with `vec-get`. The scrutinee is genuinely RUNTIME (threaded through the recursive `idast`
+           so it never const-folds). Head IS a Name -> 100.")
+  (input  (do
+            (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+            (def (head-of (: node Ast))
+              (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0)))
+            (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node)))
+            (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
+            (export main)))
+  (output (: 100 Int64)))

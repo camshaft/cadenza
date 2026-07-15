@@ -80,6 +80,17 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// ENTERED-VARIANT PAYLOAD TYPES for a sum decision tree — `switch_path + [Payload]` → the payload type
+    /// of the variant an ENCLOSING switch arm entered. A nested switch / literal-test / disc-walk resolves
+    /// a `Payload` step's sub-value type from here, so it descends the ACTUAL entered variant, not variant 0
+    /// (which `sum_single_payload_ty` blindly reads). Without this, a `Payload` step into a non-variant-0
+    /// variant whose payload is a `List` mis-picked `arr-get` over an RRB vec (a SILENT miscompile: reading
+    /// a list element's discriminant to dispatch a nested pattern `Ast.List([Ast.Name n, ..])`). Recorded
+    /// with SCOPED save/restore as each switch arm is emitted (like `payload_prefix_slots`), so a sibling
+    /// arm's `Payload` at the same path sees ITS own variant's type, not this arm's. This mirrors the Rust
+    /// backend's `Ctx::sum_path_types`. Empty at the root/top level (the walk falls back to variant 0 there,
+    /// which IS the root scrutinee's own type via `type_of`).
+    sum_path_types: HashMap<Vec<crate::core::PathStep>, Ty>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -2211,16 +2222,30 @@ fn collect_cont_ops(
     cont: &crate::core::SumCont,
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
+    // The entered-variant payload types, threaded exactly as the EMIT threads `Emit::sum_path_types`, so the
+    // `sub_is_enum` disc-op choice here agrees with `push_discriminant`'s (which now resolves a `Payload`
+    // step to the ACTUAL entered variant, not variant 0). Starts empty at the root.
+    let mut recorded: HashMap<Vec<crate::core::PathStep>, Ty> = HashMap::new();
+    collect_cont_ops_rec(db, scrutinee, cont, &mut recorded, out);
+}
+
+fn collect_cont_ops_rec(
+    db: &mut Db,
+    scrutinee: StructId,
+    cont: &crate::core::SumCont,
+    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
     match cont {
         crate::core::SumCont::Leaf(body) => collect_used_ops(db, *body, out),
         // A guarded arm uses the ops of its guard cond, its body, AND the fall-through continuation.
         crate::core::SumCont::Guarded { cond, body, els } => {
             collect_used_ops(db, *cond, out);
             collect_used_ops(db, *body, out);
-            collect_cont_ops(db, scrutinee, els, out);
+            collect_cont_ops_rec(db, scrutinee, els, recorded, out);
         }
-        // A literal test walks its `path` (sum-payload/arr-get) then reads the leaf scalar to compare it;
-        // an Int probe reads `get-int`, a Bool probe `get-bool`. Then both continuations' ops.
+        // A literal test walks its `path` (sum-payload/arr-get|vec-get) then reads the leaf scalar to compare
+        // it; an Int probe reads `get-int`, a Bool probe `get-bool`. Then both continuations' ops.
         crate::core::SumCont::LitTest {
             path,
             probe,
@@ -2230,7 +2255,11 @@ fn collect_cont_ops(
             for step in path {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
-                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                    // An `Elem` may read a tuple `arr` OR a list `vec` — insert both; emit picks by type.
+                    crate::core::PathStep::Elem(_) => {
+                        out.insert(OP_ARR_GET);
+                        out.insert(OP_VEC_GET)
+                    }
                     crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
                 };
             }
@@ -2255,8 +2284,8 @@ fn collect_cont_ops(
                 crate::core::Probe::MapHasKeys { .. } => false,
                 crate::core::Probe::Wild => false,
             };
-            collect_cont_ops(db, scrutinee, then_, out);
-            collect_cont_ops(db, scrutinee, els, out);
+            collect_cont_ops_rec(db, scrutinee, then_, recorded, out);
+            collect_cont_ops_rec(db, scrutinee, els, recorded, out);
         }
         crate::core::SumCont::Switch { path, arms } => {
             // Mirror `push_discriminant` EXACTLY: the switched sub-value's discriminant is read via
@@ -2264,14 +2293,19 @@ fn collect_cont_ops(
             // raw i32) and `get-int` (+ `i32.wrap_i64`, a core op) at a NESTED position. Over-reporting
             // `sum-disc` here — as the old unconditional insert did — declares a DEAD runtime import for a
             // program whose only match is on an all-nullary enum (now a bare i32), forcing a needless
-            // `heap` linkage. Compute the sub-value's type at `path` and branch as the emit does.
+            // `heap` linkage. Resolve the sub-value's type at `path` USING the recorded entered-variant
+            // types (so a non-variant-0 payload agrees with the emit) and branch as the emit does.
             let root = type_of(db, scrutinee);
-            let sub = ty_at_path(db, &root, path);
+            let sub = ty_at_path_recorded(db, &root, path, recorded);
             let sub_is_enum = ty_is_enum_disc(db, &sub);
             for step in path {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
-                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                    // An `Elem` may read a tuple `arr` OR a list `vec` — insert both; emit picks by type.
+                    crate::core::PathStep::Elem(_) => {
+                        out.insert(OP_ARR_GET);
+                        out.insert(OP_VEC_GET)
+                    }
                     crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
                 };
             }
@@ -2284,7 +2318,12 @@ fn collect_cont_ops(
                 out.insert(OP_SUM_DISC);
             }
             for arm in arms {
-                collect_cont_ops(db, scrutinee, &arm.cont, out);
+                // Thread each arm's entered-variant payload type (scoped save/restore), mirroring the emit.
+                let restore = arm
+                    .disc
+                    .and_then(|d| record_entered_payload_ty_into(db, scrutinee, path, d, recorded));
+                collect_cont_ops_rec(db, scrutinee, &arm.cont, recorded, out);
+                restore_entered_payload_ty_into(path, restore, recorded);
             }
         }
     }
@@ -4511,46 +4550,12 @@ fn ty_is_enum_disc(db: &Db, ty: &crate::ty::Ty) -> bool {
     }
 }
 
-/// The type of the sub-value reached by walking `path` from a value of type `root` — `Payload` descends a
-/// sum variant's payload (or a nominal newtype's inner), `Elem(i)` a tuple/record element. Used to decide
-/// how a match switch extracts the discriminant at `path`: a boxed sum uses `sum-disc`, an ENUM-DISC
-/// sub-value is a boxed int (`get-int`) or, at the top level, already the raw i32. Returns `Ty::Any` if the
-/// walk cannot be resolved (a defensive fallback — the caller then takes the boxed-sum path, never a
-/// miscompiled enum path).
-fn ty_at_path(db: &mut Db, root: &crate::ty::Ty, path: &[crate::core::PathStep]) -> crate::ty::Ty {
-    let mut ty = root.clone();
-    for step in path {
-        ty = match step {
-            crate::core::PathStep::Payload => match ty.strip_nominal() {
-                // A single-payload variant's payload type; a multi-payload variant's payload is a tuple
-                // (a following `Elem` selects within it). Read the sum's variant-0 payload shape.
-                crate::ty::Ty::Sum { .. } => match sum_single_payload_ty(db, &ty) {
-                    Some(p) => p,
-                    None => return crate::ty::Ty::Any,
-                },
-                // A nominal newtype: the payload step is a static unwrap to its inner.
-                inner => inner.clone(),
-            },
-            crate::core::PathStep::Elem(i) => match ty.strip_nominal() {
-                crate::ty::Ty::Tuple(elems) => match elems.get(*i) {
-                    Some(e) => e.clone(),
-                    None => return crate::ty::Ty::Any,
-                },
-                crate::ty::Ty::List(elem) => (**elem).clone(),
-                _ => return crate::ty::Ty::Any,
-            },
-            crate::core::PathStep::RestFrom(_) => match ty.strip_nominal() {
-                crate::ty::Ty::List(_) => ty.clone(),
-                _ => return crate::ty::Ty::Any,
-            },
-        };
-    }
-    ty
-}
-
 /// The payload type of a sum's variant 0 (the shape a `Payload` path step descends into) — `None` for a
-/// nullary or unresolvable variant. A helper for [`ty_at_path`]; reads the decl's first variant's payload
-/// occurrences and decodes them (a single payload IS the type, multiple box as a tuple).
+/// nullary or unresolvable variant. A helper for [`ty_at_path_recorded`]; reads the decl's first variant's
+/// payload occurrences and decodes them (a single payload IS the type, multiple box as a tuple). Used only
+/// as the FALLBACK for an unrecorded `Payload` step (the root switch, whose current type IS the scrutinee's
+/// own — so variant 0 is correct there); a nested switch resolves the ACTUAL entered variant via the
+/// recorded `sum_path_types`.
 fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::Ty> {
     let stripped = sum.strip_nominal().clone();
     let crate::ty::Ty::Sum { decl, .. } = &stripped else {
@@ -4567,6 +4572,80 @@ fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::
     // (`(Option Color)`) resolves to `Color` and `ty_is_enum_disc` sees it — without this, the payload
     // read as `?0` mis-selected `sum-disc` over the `get-int` a boxed enum-disc needs (invalid wasm).
     crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
+}
+
+/// The payload type of a sum's variant `disc` at THIS instantiation — the generalization of
+/// [`sum_single_payload_ty`] (which is `disc == 0`) to ANY discriminant. A nested switch on a variant at
+/// disc ≥ 1 (`(type Ast (Int Int64) (Name String) (List (List Ast)))` matched by `Ast.List([Ast.Name n,
+/// ..])`) must read the payload of the ACTUAL entered variant (`List` → `List Ast`), not variant 0's (`Int`
+/// → `Int64`). Recorded in `Emit::sum_path_types` as a switch descends, then read by the `Payload`-step
+/// type resolution below. `None` for a nullary/unresolvable variant. Mirrors the Rust backend's
+/// `variant_payload_ty`.
+fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
+    let stripped = sum.strip_nominal().clone();
+    let Ty::Sum { decl, .. } = &stripped else {
+        return None;
+    };
+    let ctor = {
+        let td = db.type_decl_by_occ(*decl)?;
+        td.variants.get(disc as usize)?.ctor?
+    };
+    crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
+}
+
+/// The type reached by a `Payload` step whose FULL path (from the root, INCLUDING this `Payload`) is
+/// `prefix`, given the current sub-value type `cur`. Prefer the RECORDED entered-variant payload type in
+/// `recorded` (keyed by the absolute path — written as an enclosing switch descended into a specific
+/// variant); this is authoritative because it carries WHICH variant was entered, which the flat path alone
+/// cannot. Fall back to variant 0 (`sum_single_payload_ty`) only when nothing is recorded (the root switch,
+/// whose `cur` IS the scrutinee's type). A NOMINAL newtype `Payload` is a static unwrap to its inner type.
+fn payload_step_ty(
+    db: &mut Db,
+    cur: &Ty,
+    prefix: &[crate::core::PathStep],
+    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+) -> Ty {
+    if let Some(t) = recorded.get(prefix) {
+        return t.clone();
+    }
+    match cur.strip_nominal() {
+        Ty::Sum { .. } => sum_single_payload_ty(db, cur).unwrap_or(Ty::Any),
+        inner => inner.clone(),
+    }
+}
+
+/// Walk `path` from `root` to the sub-value's type, using `recorded` (the enclosing-switch entered-variant
+/// payload types) to resolve each `Payload` step's variant — the type-only companion of the emit walk in
+/// `push_discriminant`. Used to decide the discriminant REPRESENTATION (`sum-disc` vs a raw enum-disc i32)
+/// at the sub-value. Falls back to variant 0 for an unrecorded `Payload` (the root). `Ty::Any` on a
+/// malformed/unresolvable step (the caller then takes the safe boxed-sum path).
+fn ty_at_path_recorded(
+    db: &mut Db,
+    root: &Ty,
+    path: &[crate::core::PathStep],
+    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+) -> Ty {
+    let mut cur = root.clone();
+    let mut prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
+    for step in path {
+        prefix.push(*step);
+        cur = match step {
+            crate::core::PathStep::Payload => payload_step_ty(db, &cur, &prefix, recorded),
+            crate::core::PathStep::Elem(i) => match cur.strip_nominal() {
+                Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(e) => e.clone(),
+                    None => return Ty::Any,
+                },
+                Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+            crate::core::PathStep::RestFrom(_) => match cur.strip_nominal() {
+                Ty::List(_) => cur.clone(),
+                _ => return Ty::Any,
+            },
+        };
+    }
+    cur
 }
 
 /// Emit the scrutinee at `scrutinee`, walk `path` to the sub-value, and leave its DISCRIMINANT (an i32)
@@ -4588,15 +4667,39 @@ fn push_discriminant(
     out: &mut Emit,
 ) -> Result<(), Reject> {
     let root = type_of(db, scrutinee);
-    let sub = ty_at_path(db, &root, path);
+    let sub = ty_at_path_recorded(db, &root, path, &out.sum_path_types);
     let sub_is_enum = ty_is_enum_disc(db, &sub);
     emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
+    // Track the CURRENT sub-value's type as the walk descends so an `Elem` step picks the right accessor:
+    // a tuple/record/sum-payload is a flat `arr` (`arr-get`), but a `List` is an RRB `vec` (`vec-get`). The
+    // `Payload` step's variant is resolved from `sum_path_types` (recorded as the enclosing switch descended
+    // into a specific variant) — falling back to variant 0 only at the root. A `Payload` into a non-variant-0
+    // variant whose payload is a `List` (`Ast.List(List Ast)` matched by `Ast.List([Ast.Name n, ..])`) then
+    // reads element 0 with `vec-get` (was `arr-get` on a vec — garbage disc, a silent mis-dispatch).
+    let mut cur = root.clone();
+    let mut prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
     for step in path {
+        prefix.push(*step);
         match step {
-            crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+            crate::core::PathStep::Payload => {
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                cur = payload_step_ty(db, &cur, &prefix, &out.sum_path_types);
+            }
             crate::core::PathStep::Elem(i) => {
                 out.push(Lir::ConstI32(*i as i32));
-                out.push(Lir::CallImport(OP_ARR_GET));
+                if matches!(cur.strip_nominal(), Ty::List(_)) {
+                    out.push(Lir::CallImport(OP_VEC_GET)); // list element → vec-get
+                    cur = match cur.strip_nominal() {
+                        Ty::List(e) => (**e).clone(),
+                        _ => Ty::Any,
+                    };
+                } else {
+                    out.push(Lir::CallImport(OP_ARR_GET));
+                    cur = match cur.strip_nominal() {
+                        Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                        _ => Ty::Any,
+                    };
+                }
             }
             crate::core::PathStep::RestFrom(_) => {} // never on a sum-disc path
         }
@@ -6319,26 +6422,43 @@ fn emit(
             // slices the tail with `vec-split`. Track the sub-value type as the walk descends.
             let walk_from;
             let mut cur;
+            // The absolute path PREFIX walked so far — used to consult `sum_path_types` (the enclosing
+            // switch's recorded entered-variant payload types) so a `Payload` step resolves to the ACTUAL
+            // entered variant, not variant 0. When starting from a shared-prefix slot, seed the prefix with
+            // the skipped steps so the key stays absolute-from-scrutinee.
+            let mut walked_prefix: Vec<crate::core::PathStep>;
             if let Some((k, slot)) = prefix_hit {
                 out.push(Lir::LocalGet(slot)); // [payload-handle] — the shared prefix, computed once
                 walk_from = k;
-                cur = Ty::Any; // a `Payload` step's result handle
+                walked_prefix = path[..k].to_vec();
+                // The slotted prefix ends in `Payload`; recover its recorded type so a following `Elem`
+                // picks the right accessor (else a bare payload handle, `Any`).
+                cur = out
+                    .sum_path_types
+                    .get(&path[..k])
+                    .cloned()
+                    .unwrap_or(Ty::Any);
             } else {
                 emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
                 walk_from = 0;
+                walked_prefix = Vec::new();
                 cur = type_of(db, scrutinee);
             }
             for step in &path[walk_from..] {
+                walked_prefix.push(*step);
                 match step {
                     crate::core::PathStep::Payload => {
                         out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
                         // The payload's TYPE — a variant carrying a `List` needs a following `Elem` to read
-                        // it with `vec-get`, not `arr-get`. Resolving it (rather than dropping to `Any`) is
-                        // what makes a nested list-in-payload element binder `(Some (list x .. r)) → x`
-                        // read the right accessor; a plain `[Payload]` binder ignores `cur`, so a
-                        // non-resolvable payload safely stays `Any` (a bare-binder read, no `Elem` follows).
+                        // it with `vec-get`, not `arr-get`. Resolve via the ENTERED variant recorded by the
+                        // enclosing switch (`sum_path_types`), falling back to variant 0 at the root. This
+                        // is what makes a nested list-in-payload element binder `(Ast.List (list x .. r)) →
+                        // x` — where `List` is a NON-variant-0 variant — read with `vec-get`; without the
+                        // recorded type, variant 0's payload (`Int64`) mis-picked `arr-get` on the RRB vec.
                         cur = match cur.strip_nominal() {
-                            Ty::Sum { .. } => sum_single_payload_ty(db, &cur).unwrap_or(Ty::Any),
+                            Ty::Sum { .. } => {
+                                payload_step_ty(db, &cur, &walked_prefix, &out.sum_path_types)
+                            }
                             // A nominal newtype's `Payload` step is a static unwrap to its inner type.
                             inner => inner.clone(),
                         };
@@ -9064,6 +9184,12 @@ fn try_emit_disc_br_table(
         out.push(Lir::End); // close $a_k → its br_table target lands here
         // The br_table path is only taken in NON-tail position (`emit_sum_match_arms` skips it when
         // looping — see there), so a continuation here is never a loop iteration.
+        // RECORD this arm's entered-variant payload type (like the linear switch) so a nested switch /
+        // literal-test in the continuation resolves a `Payload` step to the actual variant, not variant 0.
+        let disc = arm
+            .disc
+            .expect("a table arm carries an explicit discriminant");
+        let restore = record_entered_payload_ty(db, scrutinee, path, disc, out);
         emit_sum_cont(
             db,
             scrutinee,
@@ -9078,6 +9204,7 @@ fn try_emit_disc_br_table(
             out,
             TailPos::NonTail,
         )?;
+        restore_entered_payload_ty(path, restore, out);
         // `br` the value to $join — EXCEPT the last arm of an EXHAUSTIVE match (no $default block), whose
         // `br` depth is 0: its body is the final code inside $join, so control falls THROUGH to $join's
         // `end` anyway. A `br 0` there jumps to exactly the next instruction (the `End` below) — a dead
@@ -9110,6 +9237,75 @@ fn try_emit_disc_br_table(
     }
     out.push(Lir::End); // close $join
     Ok(Some(()))
+}
+
+/// Record the payload type of the variant `disc` (entered by a switch arm on the sub-value at `path`) into
+/// `out.sum_path_types` at `path + [Payload]`, so a nested switch / literal-test / disc-walk in the arm's
+/// continuation resolves a `Payload` step to the ACTUAL entered variant's payload (not variant 0's). Returns
+/// the PRIOR value at that key for [`restore_entered_payload_ty`] to put back (scoped save/restore, so the
+/// ELSE fall-through and sibling arms are unaffected). A no-op (`None` inserted-nothing marker via a bool)
+/// when the sub-value is not a boxed sum with a resolvable payload — mirrors the Rust backend's
+/// `sum_path_types` recording. The key is `path + [Payload]`; the returned `Option<Option<Ty>>` is
+/// `Some(prior)` when a key was inserted (prior may be `None` = was absent), `None` when nothing was
+/// inserted (a nullary/unresolvable variant — nothing to restore).
+fn record_entered_payload_ty(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+    disc: u32,
+    out: &mut Emit,
+) -> Option<Option<Ty>> {
+    record_entered_payload_ty_into(db, scrutinee, path, disc, &mut out.sum_path_types)
+}
+
+/// Undo [`record_entered_payload_ty`]: restore the prior value at `path + [Payload]` (or remove the key if
+/// it was absent). A `None` `restore` (nothing was inserted) is a no-op.
+fn restore_entered_payload_ty(
+    path: &[crate::core::PathStep],
+    restore: Option<Option<Ty>>,
+    out: &mut Emit,
+) {
+    restore_entered_payload_ty_into(path, restore, &mut out.sum_path_types);
+}
+
+/// The map-level core of [`record_entered_payload_ty`] — records the entered variant's payload type into
+/// `recorded` at `path + [Payload]`. Shared by the emit (over `Emit::sum_path_types`) and the ops collector
+/// (over its own scratch map) so both resolve a `Payload` step to the same entered-variant type.
+fn record_entered_payload_ty_into(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+    disc: u32,
+    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+) -> Option<Option<Ty>> {
+    let root = type_of(db, scrutinee);
+    let sub = ty_at_path_recorded(db, &root, path, recorded);
+    let payload = variant_payload_ty_at(db, &sub, disc)?;
+    let mut key = path.to_vec();
+    key.push(crate::core::PathStep::Payload);
+    let prior = recorded.insert(key, payload);
+    Some(prior)
+}
+
+/// The map-level core of [`restore_entered_payload_ty`].
+fn restore_entered_payload_ty_into(
+    path: &[crate::core::PathStep],
+    restore: Option<Option<Ty>>,
+    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+) {
+    let Some(prior) = restore else {
+        return;
+    };
+    let mut key = path.to_vec();
+    key.push(crate::core::PathStep::Payload);
+    match prior {
+        Some(t) => {
+            recorded.insert(key, t);
+        }
+        None => {
+            recorded.remove(&key);
+        }
+    }
 }
 
 /// Emit one SWITCH of the decision tree: for each variant arm, `sum-disc(<scrutinee walked to `path`>)
@@ -9236,10 +9432,16 @@ fn emit_sum_match_arms(
             // the tail depth so a self-loop `br` inside either targets the loop top (mirrors the scalar
             // `emit_probe_chain` / list `emit_list_arms_tailable` disc-nesting).
             let deeper = deeper_tail(tail);
+            // RECORD this entered variant's payload type at `path + [Payload]` so a NESTED switch / literal-
+            // test / disc-walk in the arm's continuation resolves a `Payload` step to the ACTUAL entered
+            // variant's payload — not variant 0. Scoped save/restore fences it to this arm (the ELSE
+            // fall-through and sibling arms must not see it). Only for a boxed sum with a real payload.
+            let restore = record_entered_payload_ty(db, scrutinee, path, disc, out);
             emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out, deeper,
             )?;
+            restore_entered_payload_ty(path, restore, out);
             // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
             // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
             // `Core::If` / guard sites. The THEN's continuation may contain a guard that stashes an i32
@@ -9354,15 +9556,19 @@ fn emit_sum_cont(
             // length), and a boxed-list `Elem` used `arr-get` on a vec handle (garbage element).
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
             let mut cur = type_of(db, scrutinee);
+            let mut lit_prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
             for step in path {
+                lit_prefix.push(*step);
                 match step {
                     crate::core::PathStep::Payload => {
                         match cur.strip_nominal() {
-                            // A boxed sum's payload is unwrapped with `sum-payload`; its type is the
-                            // variant-0 payload shape (a following `Elem` needs it to pick vec-get vs arr-get).
+                            // A boxed sum's payload is unwrapped with `sum-payload`; its type is the ENTERED
+                            // variant's payload (from `sum_path_types`, else variant 0) — a following `Elem`
+                            // needs it to pick vec-get vs arr-get, and a non-variant-0 list payload matched
+                            // by a nested element pattern reads the wrong accessor without it.
                             Ty::Sum { .. } => {
                                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-                                cur = sum_single_payload_ty(db, &cur).unwrap_or(Ty::Any);
+                                cur = payload_step_ty(db, &cur, &lit_prefix, &out.sum_path_types);
                             }
                             // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
                             // unwrap — NO `sum-payload` op, `cur` becomes the inner type.
@@ -9379,7 +9585,10 @@ fn emit_sum_cont(
                             };
                         } else {
                             out.push(Lir::CallImport(OP_ARR_GET));
-                            cur = Ty::Any;
+                            cur = match cur.strip_nominal() {
+                                Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                                _ => Ty::Any,
+                            };
                         }
                     }
                     crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
