@@ -21796,7 +21796,10 @@ mod match_engine {
             .contains("UInt4"),
         );
         // NO false positive: the width-matching typed value, a narrowed value, a bare literal (grounds to the
-        // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN.
+        // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN. Crucially a decoded
+        // field RE-ENCODES into its own-width segment with no explicit narrow — a `(u16 m)` binder feeds a
+        // `(u16 m)` construction directly (the decode/encode round-trip a transcoder is built from), because
+        // the binder types as the segment's width, exactly what the re-encoding segment requires.
         for ok in [
             "(module m (def (main (: n UInt8)) (Bytes.len (bin (u8 n)))) (export main))",
             "(module m (def (main (: n UInt16)) (Bytes.len (bin (u16 n)))) (export main))",
@@ -21804,6 +21807,9 @@ mod match_engine {
             "(module m (def (main (: n Int64)) (Bytes.len (bin (u8 (UInt8.wrap n))))) (export main))",
             "(module m (def (main) (Bytes.len (bin (u8 5)))) (export main))",
             "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export g))",
+            // decode→re-encode round-trip: a decoded (u16 m) binder feeds a (u16 m) construction, no narrow.
+            "(module m (def (g (: b Bytes)) (match b ((bin (u16 m)) (bin (u16 m))) (_ (bin)))) (export g))",
+            "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) (bin (u8 x))) (_ (bin)))) (export g))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(ok)))
