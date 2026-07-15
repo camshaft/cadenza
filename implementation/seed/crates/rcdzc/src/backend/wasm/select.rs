@@ -3485,6 +3485,28 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         Core::MapSize { map } => is_cse_shareable(db, map),
         Core::SetLen { set } => is_cse_shareable(db, set),
         Core::SumPayload { scrutinee, .. } => is_cse_shareable(db, scrutinee),
+        // A `List.at`/`Bytes.at` indexed read (`vec-get`/`bytes-get` after a bounds check) BORROWS the
+        // sequence and is DETERMINISTIC — the same (list, index) yields the same element, no rc change on
+        // the sequence, no effect. It produces an `Option` (a heap sum), so `ListAt`/`BytesAt` never
+        // qualify as a CSE candidate THEMSELVES (the caller's `is_heap_type` filter drops them); they are
+        // shareable only as the SCRUTINEE of a scalar-unwrapping `SumExpect` below. Both operands must be
+        // shareable so the read is well-formed at the hoist point.
+        Core::ListAt { list, index, .. } => {
+            is_cse_shareable(db, list) && is_cse_shareable(db, index)
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            is_cse_shareable(db, bytes) && is_cse_shareable(db, index)
+        }
+        // `Option.expect`/`Result.expect` on a runtime sum (`SumExpect`) BORROWS its scrutinee and is a
+        // deterministic unwrap-or-trap: the same present sum yields the same payload, and an absent one
+        // traps — sharing preserves both (the CSE driver only hoists a class with a DOMINATING-frontier
+        // member, so the trap fires at the same first-occurrence point whether shared or duplicated, the
+        // standard checked-op CSE rationale). When the unwrapped payload is SCALAR (the common
+        // `(Option.expect (List.at xs i))` reading an `Int64` element) the whole `SumExpect(ListAt …)` is a
+        // scalar-valued borrowing read the caller's `is_heap_type` filter admits — so two identical such
+        // reads share one bounds-check + `vec-get` + unbox instead of duplicating the ~20-instr sequence.
+        // A heap-payload `SumExpect` is filtered out by the scalar gate, so this arm needs no type guard.
+        Core::SumExpect { scrutinee, .. } => is_cse_shareable(db, scrutinee),
         Core::If {
             cond, then_, else_, ..
         } => {
@@ -10482,6 +10504,54 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 path: py,
             },
         ) => px == py && core_eq(db, sx, sy),
+        // A `List.at`/`Bytes.at` indexed read: equal iff the SAME (list/bytes, index) off equal operands,
+        // with the same Option discriminants. `vec-get`/`bytes-get` (behind a bounds check) BORROW the
+        // sequence and are deterministic (no rc change, no effect), so two reads of the same element yield
+        // the same `Option` value. Shared only as the scrutinee of a scalar-unwrapping `SumExpect` (an
+        // `Option`-typed node is filtered from candidacy by the scalar gate); both operands `core_eq`.
+        (
+            Core::ListAt {
+                list: lx,
+                index: ix,
+                disc_some: sx,
+                disc_none: nx,
+            },
+            Core::ListAt {
+                list: ly,
+                index: iy,
+                disc_some: sy,
+                disc_none: ny,
+            },
+        ) => sx == sy && nx == ny && core_eq(db, lx, ly) && core_eq(db, ix, iy),
+        (
+            Core::BytesAt {
+                bytes: bx,
+                index: ix,
+                disc_some: sx,
+                disc_none: nx,
+            },
+            Core::BytesAt {
+                bytes: by,
+                index: iy,
+                disc_some: sy,
+                disc_none: ny,
+            },
+        ) => sx == sy && nx == ny && core_eq(db, bx, by) && core_eq(db, ix, iy),
+        // An `Option.expect`/`Result.expect` (`SumExpect`) unwrap: equal iff the SAME present-discriminant
+        // off an equal scrutinee. Borrowing + deterministic (present → the payload, absent → trap); two
+        // identical unwraps yield the same value and trap identically. This is what makes a repeated
+        // `(Option.expect (List.at xs i))` — scalar-valued — compute its bounds-check + `vec-get` + unbox
+        // ONCE across `(+ (…at xs i) (…at xs i))`, the indexed-read analogue of the `List.len` CSE.
+        (
+            Core::SumExpect {
+                scrutinee: sx,
+                disc_present: dx,
+            },
+            Core::SumExpect {
+                scrutinee: sy,
+                disc_present: dy,
+            },
+        ) => dx == dy && core_eq(db, sx, sy),
         // A boolean negation: equal iff the negated operands are. `not` is `i32.eqz` — pure and total.
         (Core::Not { operand: ox }, Core::Not { operand: oy }) => core_eq(db, ox, oy),
         // A conditional `select`/`if`: equal iff the condition AND both branches are recursively equal —
@@ -13275,6 +13345,34 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
             2,
             "single-use arg inlines (2 muls: the arg + `* s 5`), got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_repeated_indexed_read_shares_one_vec_get_via_cse() {
+        // `(+ (Option.expect (List.at xs 2)) (Option.expect (List.at xs 2)))` — the SAME bounds-checked
+        // indexed read (`vec-get` behind a bounds check, then unbox via `expect`) twice. `List.at` BORROWS
+        // the list and is deterministic, and the whole `SumExpect(ListAt …)` is a SCALAR read (the element
+        // is an `Int64`), so straight-line CSE computes it ONCE — the emitted body contains exactly ONE
+        // `vec-get`, not two (the ~20-instruction bounds-check + read + unwrap sequence is shared). This is
+        // the indexed-read analogue of the `List.len` CSE (a repeated count already shares its `vec-len`).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: xs (List Int64))) \
+               (+ (Option.expect (List.at xs 2) \"v\") (Option.expect (List.at xs 2) \"v\"))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_GET))
+                .count(),
+            1,
+            "the repeated indexed read shares one vec-get (CSE), got: {:?}",
             f.code
         );
     }

@@ -1290,6 +1290,53 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
     );
 }
 
+/// A repeated bounds-checked indexed read `(Option.expect (List.at xs i))` is shared by CSE (one
+/// `vec-get` — pinned at the Lir level in `select.rs`); this is the RUNTIME companion, proving the
+/// SHARED read is refcount-correct on the value heap. `List.at` BORROWS the list, so sharing the read
+/// must leave `xs` fully live: the program reads element 2 TWICE (shared) AND `List.len xs` after — if
+/// the shared `vec-get` mishandled the borrow (a premature drop of `xs` or a double-consume of the boxed
+/// element), the later length read would see a freed/corrupted list. Built at run time via a push loop
+/// so it genuinely imports the runtime (a constant list would fold away). xs = [4,3,2,1,0] → element 2
+/// is 2; 2 + 2 + len(5) = 9.
+#[test]
+fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: acc (List Int64))) \
+                   (if (< n 0) acc (build (- n 1) (List.push acc n)))) \
+                 (def (f (: xs (List Int64)) (: k Int64)) \
+                   (if (< k 0) (f xs (+ k 1)) \
+                     (+ (+ (Option.expect (List.at xs 2) \"v\") (Option.expect (List.at xs 2) \"v\")) \
+                        (List.len xs)))) \
+                 (def (main (: n Int64)) (f (build n (list)) 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime list must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["4".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "9",
+            "shared element-2 read (2+2) plus a still-live len (5) = 9"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("CSE-shared indexed read trapped (refcount miscompile?): {t}")
+        }
+    }
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
