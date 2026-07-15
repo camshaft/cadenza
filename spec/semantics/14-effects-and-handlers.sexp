@@ -1681,6 +1681,32 @@
               (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive effectful walk accumulates into a STRING-state handler"
+  (doc    "The rope-STRING analogue of the list-state accumulator above: the handler's threaded state is a
+           heap STRING built with `String.concat` across a recursive descent, exercising the value-heap
+           runtime's rope path (canonicalized at each construction site) rather than a list. `Log` declares
+           `emit : String -> Unit` (append a piece) and `dump : Unit -> String` (read the accumulator);
+           the handler seeds `\"\"` and each `(Log.emit \"x\")` resumes `unit` and threads `(String.concat
+           s m)`, so a recursive `walk` performing three emits builds `\"xxx\"`, whose byte length is 3.
+           `String.byte-len` makes `main` a runtime-scalar so the whole program stays on the scalar path.
+           Pins that a handler's threaded state may be a heap STRING carried through the recursive-effectful
+           specialization — the String-STATE companion of the list-state accumulator and the String-RESULT
+           resume-value case, guarding the effect-mechanism × rope-runtime seam. (wasm: the rust target
+           declines — it lacks the value-heap/String emission the component-model backend has, the same
+           backend-parity gap as the list-state and String-result cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Log (op emit (-> String Unit))
+                        (op dump (-> Unit String)))
+            (def (walk (: n Int64))
+              (if (= n 0)
+                  (Log.dump)
+                  (do (Log.emit "x") (walk (- n 1)))))
+            (def (main)
+              (handle Log ""
+                ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s)))
+                (String.byte-len (walk 3)))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursive effectful walk BUILDS a list as its return value, one fresh element per step"
   (doc    "The list is the recursion's RETURN VALUE (not handler state, unlike the accumulator case above):
            a recursive `build` reads a fresh index and CONSES it onto the list the rest of the walk returns.

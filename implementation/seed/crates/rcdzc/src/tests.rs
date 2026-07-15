@@ -43332,6 +43332,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_walk_accumulates_into_a_string_state_handler() {
+        // The ROPE-STRING analogue of the list-state walk above (the v-runtime rope seam): a recursive
+        // effectful walk whose handler state is a heap STRING accumulated with `String.concat` across
+        // performs, read back at the base and measured. `walk` performs `(Log.emit "x")` at each descent
+        // and reads the accumulator with `(Log.dump)` at the base; the handler seeds `""` and threads
+        // `(String.concat s m)`, so `(walk 3)` builds `"xxx"`, whose byte length is 3. This crosses the
+        // effect MECHANISM into the runtime ROPE path (where v-runtime's construction-site canonicalization
+        // lives), so it pins that a String-valued handler STATE threads through the fold + composes under a
+        // heap string op — the String-STATE companion of the list-state case (the corpus has a String
+        // RESULT case, "a STRING-result effect op resumes with a string that folds through a concat", but
+        // NOT a String threaded as recursive handler state). Guards against a rope-canonicalization change
+        // silently regressing a String-state effect accumulator.
+        let src = "(do (effect Log (op emit (-> String Unit)) (op dump (-> Unit String))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Log.dump) (do (Log.emit \"x\") (walk (- n 1))))) \
+                   (def (main) (handle Log \"\" \
+                     ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s))) \
+                     (String.byte-len (walk 3)))) (export main))";
+        // The state lives on the value heap (rope String), so the in-process linker can't run it — assert
+        // it COMPILES to a well-formed component; a store run yields byte length 3 (verified by hand via
+        // cdz-run). Mirrors the list-state test's compile-only assertion.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "recursive effectful string-state walk must compile"
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
