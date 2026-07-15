@@ -520,6 +520,7 @@ pass	a decoded field re-encodes into the same-width segment without an explicit 
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
+pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
@@ -1129,6 +1130,9 @@ pass	a program's syntax tree is an ordinary value walked recursively across call
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected trapping element of a hoisted same-constructor if traps
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
+pass	a projection chain rooted at a parameter retains the consumed child in the callee
+pass	a projection chain through a record inside a tuple retains the consumed child
+pass	a projection chain through a tuple inside a record retains the consumed child
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a qualified construct and a bare match name the same colliding variant
@@ -1543,6 +1547,7 @@ pass	a tautology comparison against the type minimum still traps on a div-by-zer
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-arm match consumed as an operand yields into the enclosing expression
+pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant

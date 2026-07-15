@@ -8424,3 +8424,80 @@
   (call   main (: 32 Int64)) (output (: 528 Int64))
   (call   main (: 33 Int64)) (output (: 561 Int64))
   (call   main (: 100 Int64)) (output (: 5050 Int64)))
+
+; --- Projection-chain child retains: the generalization faces beyond depth 2 -----------------------
+; The single-level (e6e284f9) and doubly-nested (3d416e6c1) child-retain fixes each pinned their own
+; depth over TUPLE chains. These pin the generalization: depth 3, MIXED compound kinds along the
+; chain (record↔tuple), a sibling read beside the deep consume, and a chain rooted at a PARAM — each
+; a face where a chain walker keyed to one shape or one root kind regresses.
+
+(case "a three-deep tuple projection chain retains the innermost consumed child"
+  (doc    "`(. (. (. t 0) 0) 0)` — THREE Proj steps to the innermost list, consumed by `List.push`
+           and re-read: 2 + 1 = 3. The depth-3 face of the proj-chain child retain (the landed pins
+           cover depths 1 and 2; a walker bounded at two steps leaves the innermost child rc 1 and
+           FBIP-mutates it → 4).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((t (tuple (tuple (tuple (List.push (list) d) 1) 2) 3)))
+                (+ (List.len (List.push (. (. (. t 0) 0) 0) 9))
+                   (List.len (. (. (. t 0) 0) 0)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "a projection chain through a record inside a tuple retains the consumed child"
+  (doc    "`(. (. t 0) f)` — the chain crosses COMPOUND KINDS (a tuple projection then a record FIELD
+           projection). The consumed list child must be retained exactly as in the all-tuple chain:
+           2 + 1 = 3. A chain walker that recognized only positional Proj steps (not field
+           projections) stops at the record and misses the dup.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((t (tuple (record (f (List.push (list) d))) 5)))
+                (+ (List.len (List.push (. (. t 0) f) 9))
+                   (List.len (. (. t 0) f)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "a projection chain through a tuple inside a record retains the consumed child"
+  (doc    "The mirror kind-mix: `(. (. r a) 0)` — a record field projection then a tuple projection.
+           2 + 1 = 3. With the record-in-tuple case this pins both orders of the kind crossing.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((r (record (a (tuple (List.push (list) d) 9)))))
+                (+ (List.len (List.push (. (. r a) 0) 9))
+                   (List.len (. (. r a) 0)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "a deep consume leaves the intermediate compound and a sibling element readable"
+  (doc    "After consuming the innermost list of `((xs, 1), 2)`, BOTH the sibling scalar `(. (. t 0)
+           1)` (→ 1) and the re-projected list (→ len 1) read correctly: 2 + 1 + 1 = 4. Pins that the
+           child retain is SCOPED to the consumed child — the intermediate tuple and its other
+           elements are not disturbed (an over-broad fix that copied or dropped the intermediate
+           would corrupt the sibling read).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((t (tuple (tuple (List.push (list) d) 1) 2)))
+                (+ (+ (List.len (List.push (. (. t 0) 0) 9))
+                      (. (. t 0) 1))
+                   (List.len (. (. t 0) 0)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 4 Int64)))
+
+(case "a projection chain rooted at a parameter retains the consumed child in the callee"
+  (doc    "The chain roots at a PARAM `t`, not a let binder: the callee consumes `(. (. t 0) 0)` and
+           re-reads it — 2 + 1 = 3. The landed fix names its gate proj_chain_roots_at_binder; this
+           pins the param root (a Param is a binder for retain purposes — a gate that only recognized
+           let-bound LocalRefs would miss every callee-side consume).")
+  (input  (do
+            (def (f (: t (Tuple (Tuple (List Int64) Int64) Int64)))
+              (+ (List.len (List.push (. (. t 0) 0) 9))
+                 (List.len (. (. t 0) 0))))
+            (def (main (: d Int64))
+              (f (tuple (tuple (List.push (list) d) 1) 2)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
