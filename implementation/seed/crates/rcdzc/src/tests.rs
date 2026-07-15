@@ -13533,6 +13533,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_ctor_export_with_a_mistyped_type_name_suggests_the_declared_type() {
+        // A constructor-export `(export (. Colr *))` whose TYPE head is a near-miss of a declared sum —
+        // `Colr` for `(type Color …)` — named "not a declared type" but offered NO did-you-mean (the
+        // sibling ctor-NAME typo already did). It now suggests the declared type + carries a rename fix on
+        // the type-name occurrence, the type-name twin of the ctor-name did-you-mean.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type Color (R) (G)) (export (. Colr *)) (def (main) 5) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("to be a sum type"))
+        .expect("a mistyped ctor-export type head reports");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `Color`?"),
+            "suggests the declared type: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Color"),
+            "carries the type-name rename fix: {:?}",
+            d.fix
+        );
+        // NO false suggestion: a value def / effect with that exact name keeps its category, no type hint;
+        // a far-miss undeclared name gets no hint.
+        for (src, must_not) in [
+            (
+                "(module m (def (helper) 5) (export (. helper *)) (def (main) 5) (export main))",
+                "did you mean",
+            ),
+            (
+                "(module m (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main))",
+                "did you mean",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("to be a sum type"))
+                .unwrap_or_else(|| panic!("expected a ctor-export reject: {src}"));
+            assert!(
+                !d.message.contains(must_not),
+                "no spurious type suggestion: {src} -> {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
         // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
         // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.
@@ -13985,6 +14033,49 @@ mod match_engine {
         let fix = d.fix.expect("a wrap fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
         assert_eq!(fix.replacement, format!("(Some {})", crate::abi::WRAP_HOLE));
+    }
+
+    #[test]
+    fn an_operator_arg_structural_mismatch_names_the_delta_not_the_raw_unify_message() {
+        // Two SAME-KIND compounds compared/operated in an OPERATOR argument position — two records of a
+        // different field set (`(= (record (x 1)) (record (y 2)))`), two tuples of a different arity — fall
+        // through every coercion/wrap branch to the raw unify "type mismatch: (Record …) and (Record …)
+        // must be the same type here, but differ", which buries the actual difference. The check now
+        // rewords to the readable arg-site lead + the structural DELTA (which field/element differs), the
+        // same hint the annotation / peer-join sites carry.
+        // A record FIELD-SET difference names the missing/extra field.
+        let rec =
+            reject_full("(module m (def (main) (= (record (x 1)) (record (y 2)))) (export main))")
+                .expect("comparing two different-field records rejects");
+        assert_eq!(rec.code.as_deref(), Some("CDZ0203"), "got: {}", rec.message);
+        assert!(
+            rec.message.contains("missing field `x`")
+                && !rec.message.contains("must be the same type here"),
+            "the record delta replaces the raw unify message: {}",
+            rec.message
+        );
+        // A record FIELD-TYPE difference (same field set) names the differing field's types.
+        let field_ty = reject_full(
+            "(module m (def (main) (= (record (x 1)) (record (x true)))) (export main))",
+        )
+        .expect("comparing records with a differing field type rejects");
+        assert!(
+            field_ty
+                .message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "the field-type delta is named: {}",
+            field_ty.message
+        );
+        // A tuple ARITY difference names the element counts.
+        let tup =
+            reject_full("(module m (def (main) (= (tuple 1 2) (tuple 1 2 3))) (export main))")
+                .expect("comparing two different-arity tuples rejects");
+        assert!(
+            tup.message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "the tuple arity delta is named: {}",
+            tup.message
+        );
     }
 
     #[test]
@@ -31430,19 +31521,20 @@ mod diagnostics {
             err.message
         );
         // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
-        // different arity) keep the GENERIC path — the different-compound-kind guard fires only across
-        // distinct kinds, so a same-kind structural mismatch is NOT relabeled a "kind boundary".
+        // different arity) are NOT relabeled a "kind boundary" (that guard fires only across DISTINCT
+        // kinds). The comparison-arg check now names the readable structural DELTA (the tuple arity), not
+        // the raw "must be the same type here" unify lead nor the kind-boundary message.
         let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
         )));
         assert!(
-            same_kind
-                .iter()
-                .any(|d| d.message.contains("must be the same type here"))
+            same_kind.iter().any(|d| d
+                .message
+                .contains("expected a tuple with 1 element, but this one has 2"))
                 && !same_kind
                     .iter()
                     .any(|d| d.message.contains("across that kind boundary")),
-            "two same-kind (tuple) compounds keep the generic mismatch, not the kind-boundary message: {:?}",
+            "two same-kind (tuple) compounds name the arity delta, not the kind-boundary message: {:?}",
             same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
@@ -37383,6 +37475,48 @@ mod stage1 {
     }
 
     #[test]
+    fn an_annotated_let_binder_structural_mismatch_names_the_delta() {
+        // A `(: <pat> <Type>)` let binder whose annotation and bound value are the same structured kind but
+        // differ — two records of a different field set, two tuples of a different arity — named two whole
+        // types the reader had to diff ("a binder annotated (Record (x Int64)) is bound to a value of type
+        // (Record (y Int64))"). It now appends the structural DELTA (the shared `structural_delta_hint`),
+        // the SAME minimal-conflict hint the value-annotation / argument / peer-join sites carry.
+        let msg = |body: &str| -> String {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {body}"))
+                .message
+        };
+        // A record FIELD-SET difference.
+        let rec = msg("(let (((: r (Record (x Int64))) (record (y 2)))) r)");
+        assert!(
+            rec.contains("a binder annotated") && rec.contains("missing field `x`"),
+            "the record field-set delta is named on the binder: {rec}"
+        );
+        // A record FIELD-TYPE difference (same field set).
+        let field_ty = msg("(let (((: r (Record (x Int64))) (record (x true)))) r)");
+        assert!(
+            field_ty.contains("field `x` should be Int64, but this one is Bool"),
+            "the field-type delta is named: {field_ty}"
+        );
+        // A tuple ARITY difference.
+        let tup = msg("(let (((: t (Tuple Int64 Int64)) (tuple 1 2 3))) t)");
+        assert!(
+            tup.contains("expected a tuple with 2 elements, but this one has 3"),
+            "the tuple arity delta is named: {tup}"
+        );
+        // NO false positive: a scalar mismatch (Bool vs Int64) has no structural delta — the bare message.
+        let scalar = msg("(let (((: x Bool) 5)) x)");
+        assert!(
+            scalar.contains("a binder annotated Bool is bound to a value of type Int64")
+                && !scalar.contains(" — "),
+            "a scalar binder mismatch keeps the bare message (no delta tail): {scalar}"
+        );
+    }
+
+    #[test]
     fn a_def_parameter_may_be_a_tuple_pattern() {
         // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
         // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites
@@ -42100,6 +42234,36 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_malformed_const_parameter_names_the_annotated_binder_shape() {
+        // A `const` parameter wraps exactly ONE annotated binder — `(const (: n Int64))`. A malformed
+        // `(const n Int64)` (two operands, unannotated) survives `strip_const_params` (which only unwraps a
+        // single-operand `(const <binder>)`) and reached `check_binding_pattern` as a pattern whose head is
+        // `const` → the misleading generic "a binding pattern head is not a tuple, record, or constructor".
+        // It now names the correct `const` shape.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (rep (const n Int64) (: x Int64)) x) (export rep))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("`const`"))
+        .expect("a malformed const param reports a const-shaped message");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wraps exactly ONE annotated binder")
+                && d.message.contains("(const (: <name> <Type>))"),
+            "names the const parameter shape: {}",
+            d.message
+        );
+        // NO false change: the well-formed const param compiles clean.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (rep (const (: n Int64)) (: x Int64)) x) (def (main) (rep 3 5)) (export main))"
+            )))
+            .is_ok(),
+            "a well-formed const param is valid"
+        );
     }
 
     #[test]

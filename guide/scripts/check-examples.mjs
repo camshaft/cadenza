@@ -16,7 +16,7 @@
 /// Run: `npm run check:examples` (needs the staged wasm pkg — `npm run wasm` first, or `cargo xtask
 /// guide-wasm`). Node ≥ 20.19 for jco.
 
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -77,19 +77,52 @@ function renderToMl(snippet) {
   return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
 }
 
-// ---- run a compiled component through jco, return its rendered value text ----
-async function runComponent(componentBytes) {
+// ---- transpile a component to disk and load its `instantiate` (mirrors runWorker.ts loadComponent) ----
+async function loadComponent(componentBytes, name) {
   const { files } = await transpileBytes(new Uint8Array(componentBytes), {
-    name: "prog",
+    name,
     instantiation: "async",
     wasiShim: false,
     minify: false,
   });
   const dir = mkdtempSync(join(tmpdir(), "cdz-check-"));
-  for (const [f, b] of Object.entries(files)) writeFileSync(join(dir, f), b);
-  const mod = await import(join(dir, "prog.js"));
+  // jco emits nested files (e.g. `interfaces/cadenza-run-run.d.ts`) whenever the result is a COMPOUND
+  // value that escapes via a resource interface — so create each file's parent dir before writing, or
+  // the write ENOENTs and a tuple/map/record-returning solution looks like a run failure.
+  for (const [f, b] of Object.entries(files)) {
+    const p = join(dir, f);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, b);
+  }
+  const mod = await import(join(dir, `${name}.js`));
   const getCore = async (p) => WebAssembly.compile(readFileSync(join(dir, p)));
-  const root = await mod.instantiate(getCore, {});
+  return { instantiate: mod.instantiate, getCore };
+}
+
+// The value-heap runtime, instantiated once and reused. A COMPOUND-returning program imports
+// `cadenza:runtime/heap`; without it, instantiation throws "Cannot destructure property 'boxInt'/…".
+// The browser runner (runWorker.ts) wires this exact interface — the harness MUST too, or every
+// list/map/record/tuple-returning example looks like a run failure when it actually works in-app.
+const HEAP_IMPORT = "cadenza:runtime/heap";
+const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+let heapPromise = null;
+async function getHeap() {
+  if (!heapPromise) {
+    heapPromise = (async () => {
+      const rt = await loadComponent(readFileSync(runtimePath), "heap");
+      const root = await rt.instantiate(rt.getCore, {});
+      return root[HEAP_IMPORT] ?? root["heap"];
+    })();
+  }
+  return heapPromise;
+}
+
+// ---- run a compiled component through jco, return its rendered value text ----
+async function runComponent(componentBytes) {
+  const prog = await loadComponent(componentBytes, "prog");
+  const heap = await getHeap();
+  const imports = heap ? { [HEAP_IMPORT]: heap } : {};
+  const root = await prog.instantiate(prog.getCore, imports);
   // Compound result: the resource-escape path (make/encode). Scalar: the sole exported function.
   const iface = root["cadenza:run/run"] ?? root["run"];
   if (iface && typeof iface.make === "function") {
@@ -105,12 +138,20 @@ async function runComponent(componentBytes) {
 // `attr={`…`}` / `attr="…"` shapes, so a per-attribute regex is enough and stays simple.
 function extractExamples(tsx, file) {
   const out = [];
-  // Split into element chunks so `expected`/`expect` attach to the right snippet.
-  // Match <Runnable ...> and <Exercise ...> up to the closing `/>` or `</...>`.
-  const elementRe = /<(Runnable|Exercise)\b([\s\S]*?)(?:\/>|>[\s\S]*?<\/\1>)/g;
-  let m;
-  while ((m = elementRe.exec(tsx))) {
-    const [, kind, attrs] = m;
+  // Chunk the file by element-open positions. `<Runnable>`/`<Exercise>` are ALWAYS self-closing
+  // (`… />`) and never nest, so each element's attributes run from its opening tag up to the next
+  // element's opening tag (or EOF). A prior non-greedy `…*?(?:/>|>…</\1>)` regex truncated `attrs`
+  // at the first `/>`-or-`>` inside a JSX prompt fragment (`prompt={<>…</>}`), so every Exercise's
+  // `solution`/`expected` (which follow `prompt`) fell off the end and ALL 45 exercises were silently
+  // skipped — the suite validated runnables only. Chunking to the next open tag is robust to that.
+  const openRe = /<(Runnable|Exercise)\b/g;
+  const opens = [];
+  let om;
+  while ((om = openRe.exec(tsx))) opens.push({ kind: om[1], start: om.index });
+  for (let i = 0; i < opens.length; i++) {
+    const { kind, start } = opens[i];
+    const end = i + 1 < opens.length ? opens[i + 1].start : tsx.length;
+    const attrs = tsx.slice(start, end);
     const grab = (name) => {
       const tl = new RegExp(`${name}=\\{\`([\\s\\S]*?)\`\\}`).exec(attrs);
       if (tl) return tl[1];
@@ -171,6 +212,13 @@ async function checkProgram(program, surface, ex, where) {
   }
   // Compiles. A graded exercise must also RUN to its `expected` value (checked on the s-expr surface).
   if (ex.expected != null && surface === "sexpr") {
+    // A graded exercise MUST return a SCALAR. The browser's Check (Exercise.tsx) compares the result
+    // rendered in the reader's CURRENT surface, but this harness renders s-expr canonical — a scalar
+    // (bare number/bool) reads identically in both, a COMPOUND does NOT (`(: (map …) …)` vs ML
+    // `#{…} : Map(…)`). So a compound `expected` would pass here yet FAIL the in-browser Check in ML.
+    // Reject it at authoring time; return the compound as a Runnable (ungraded) instead.
+    if (/^\(:/.test(ex.expected.trim()))
+      return `${ex.file} [Exercise] (${where}): \`expected\` is a COMPOUND value (${JSON.stringify(ex.expected.slice(0, 40))}…) — graded exercises must return a SCALAR (it's compared in the reader's surface, and a compound renders differently in ML vs s-expr). Show the compound as a Runnable instead.\n    ${brief}`;
     try {
       const got = await runComponent(r.component);
       if (String(got).trim() !== ex.expected.trim())

@@ -41,17 +41,28 @@
 ///   - An explicit `(t: Type)` parameter does NOT help — the decline is in the recursive-generic
 ///     specialization path, not the annotation surface.
 ///
-/// ROOT (inference): a recursive USER-sum PRODUCER's `def_scheme` (`compute_def_scheme`, infer.rs ~2990)
-/// generalizes to TWO SEPARATE quantified vars — `from-list : ∀a b. List(a) -> Iter(b)` (verified:
-/// `cdz type from-list` reports `(-> _ (Iter _))` with independent vars) — instead of the connected
-/// `∀a. List(a) -> Iter(a)`. The self-call `from-list(t)`'s result element is never unified with the
-/// element `h` being consed into `Iter.Cons(h, from-list(t))` during the connected solve. With ONE
-/// instantiation the outer call's own type context happens to pin the loose result var; with TWO, the
-/// monomorphizer (`type_specialize`) has no single value to bind it to and declines at each site.
+/// ROOT (inference, pinned to the exact mechanism): `compute_def_scheme` (infer.rs ~2959) computes a
+/// def's PARAM types and its RESULT type by two INDEPENDENT `type_of` calls with NO shared substitution
+/// between them. For `from-list`, `solve_recursive_params` (~1874) assigns the generic param `xs` a
+/// FRESH canonical var (`Ty::Var(fresh.var())`, the "generic position" branch ~1877) stored in
+/// `db.param_types`; then `type_of(body)` produces the result `Iter <different-fresh-var>` — the two
+/// vars are never unified, because nothing types the body's return construction `Iter.Cons(h, …)`
+/// against the param's var. `collect_free_vars` then finds BOTH and quantifies them separately →
+/// `from-list : ∀a b. List(a) -> Iter(b)` (verified: `cdz type from-list` → `(-> _ (Iter _))`). With ONE
+/// instantiation the outer call's context pins the loose result var; with TWO, `type_specialize`
+/// (lower.rs ~8478) has no single value to bind it to and declines at each site.
 ///
-/// DESIRED: unify a recursive-generic producer's result element with the argument element it is built
-/// from, so `from-list : ∀a. List(a) -> Iter(a)` and `collect(from-list(xs))` type-checks for ANY
-/// element type — the requirement that iterators work for any type, not just `Int64`.
+/// TRIED + REVERTED (2026-07-15): mirroring `apply_scheme_to_args`' "seed the instantiation counter above
+/// the arg vars + DON'T freshen" trick inside `apply_type`'s scheme-application loop. It REGRESSED a
+/// nested-Result-pattern gate case (the freshening there is load-bearing for the `(Some (None))`
+/// occurs-check) and did NOT fix the scheme — because the disconnect is in `compute_def_scheme`/
+/// `solve_recursive_params` (the scheme is built there, independent of `apply_type`), NOT in application.
+///
+/// DESIRED FIX LOCUS: `compute_def_scheme`/`solve_recursive_params` must type the body's RETURN
+/// construction under the SAME env+subst that holds the param vars, so the result's element var IS the
+/// param's — a real fixpoint/shared-subst extension to the scheme solver (the corpus never exercises a
+/// recursive-generic PRODUCER, so this path is genuinely untested, not a regression). Then
+/// `from-list : ∀a. List(a) -> Iter(a)` and `collect(from-list(xs))` type-checks for ANY element type.
 ///
 /// WORKAROUND `src/iter.cdz` ships: a MONOMORPHIC `Iter` over `Int64` (the element type is fixed in the
 /// type declaration, so the producer's result element is concrete and nothing floats). A generic

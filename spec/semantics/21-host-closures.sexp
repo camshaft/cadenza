@@ -4516,6 +4516,27 @@
   (call   mk-r (: (Ok (tuple 8 9)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 17 Int64)))
 
+; SUM ARG + LIST RESULT — a clean DECLINE (a `todo`), NOT a miscompile. A closure that takes a sum
+; (Option/Result) argument AND returns a variable-length List/Map/Set (or byte-rope / fixed compound) crosses
+; its ARG as a flattened `(disc, payload)` — but the three list-result cores (byte-rope / value-form /
+; value-encode) thread a TUPLE-arg rebuild, not a `SumArgRebuild`. Emitting anyway produced an INVALID
+; component (the boundary `call` functype carried the sum's flattened params while the core rebuilt no sum
+; cell — "lowered parameter types [I32] do not match [I32, I32, I64]"). The compiler now DECLINES cleanly
+; rather than emit a module that fails to parse. (Threading sums through the list-result cores — mechanical,
+; the envelopes already accept the sum `ArgSlot` — is the next increment; the ARG's ABI is already proven by
+; the scalar-result sum cases above.) These cases grade `todo` today and flip to `pass` when it lands.
+
+(case "SUM ARG + LIST RESULT declines cleanly (Option arg, List result)"
+  (doc    "`(fn (o) (match o ((Some x) (list x x)) (None (list))))` : `(-> (Option Int64) (List Int64))`. The
+           Option arg flattens to `(disc, payload)`, but the List-result core threads tuple rebuilds, not sum
+           rebuilds — so the compiler DECLINES (a `todo`) rather than emit an invalid component. Was a
+           MISCOMPILE (an unparseable module); the fix makes it an honest decline. Intended value when the
+           list-cores thread sums: `Some(5)` → `(list 5 5)`.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) (list x x)) (None (list)))))
+              (export mk)))
+  (call   mk (: (Some 5) (Option Int64)))
+  (output (: (list 5 5) (List Int64))))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

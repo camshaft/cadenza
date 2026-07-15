@@ -5,6 +5,28 @@
 /// `elems` (which ALIASES `node`'s heap payload), corrupting the sibling `head-of(node)` read.
 /// `cdz check` CLEAN; `cdz compile` SUCCEEDS; runs WRONG.
 ///
+/// ⚠ STILL OPEN after the still-live-binding RETAIN fix (spec@6c1120b2, 2026-07-15) that closed the
+/// Param/LocalRef faces (`…-consuming-op-mutates-still-live-binding`, `…-selfcall-plus-consuming-op-…`,
+/// `…-concat-consumes-still-live-lhs-…`). This face is DISTINCT: the value consumed is a `sum-payload(node)`
+/// PAYLOAD binder (`elems`), a BORROW that shares `node`'s single refcount — not a `Param`/`LocalRef` the
+/// RETAIN analysis tracks. SHARPENED BISECTION (2026-07-15, all `cdz compile`+`cdz-run`):
+///   • Threshold is the SUM's VARIANT COUNT, not the tree/recursion. `Ast` with 5 variants (Int/Str/Bool/
+///     Name/List) → WRONG (returns 1); the IDENTICAL program with a 2-variant `Ast` (Name/List only) →
+///     CORRECT (101/102). So the multi-variant sum-match dispatch (br_table/if-chain over ≥3 variants)
+///     mishandles the payload's lifetime; the 2-variant if-dispatch does not.
+///   • The sibling read must read node's PAYLOAD, not just its DISCRIMINANT: `head-of(node)` (reads
+///     `sum-payload(node)` = the array `elems` aliases) → WRONG; `is-list(node)` (only `sum-disc(node)`,
+///     no payload read) alongside the same `fl(elems)` → CORRECT (101). So it is the PAYLOAD-array
+///     alias (node's payload == elems) being consumed by `fl` while `head-of` re-extracts it.
+///   • Reading the head from `elems` DIRECTLY (`head-e(elems)`) instead of re-extracting via `node`
+///     (`head-of(node)`) → CORRECT (101) — one path to the array, no alias to corrupt.
+/// So the root: `elems = sum-payload(node)` is a borrowed alias of node's payload (no rc++); passing it to
+/// the consuming mutual call `fl(elems)` while `node`'s payload is ALSO read (via `head-of(node)`) frees
+/// the shared array. FIX DIRECTION: a `SumPayload` binder used in a CONSUMING position while its SCRUTINEE
+/// is still live (read again in the same arm) must `dup` — the RETAIN analysis (`collect_dup_sites` in
+/// backend/wasm/select.rs) currently only tracks `Param`/`LocalRef` binders, not `SumPayload` aliases, and
+/// only within one function (this needs the aggregate/parent liveness, and the ≥3-variant dispatch path).
+///
 ///   fc (List [Name "a", Int 5]):
 ///     match node { List(elems) => head-of(node) [Some→100 | None→0]  +  fl(elems) }
 ///   head-of(node) should be Some("a") → 100, and fl sums the child fc's = 1, so 101.
