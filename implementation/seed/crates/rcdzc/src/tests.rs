@@ -47308,6 +47308,41 @@ mod stage1 {
     }
 
     #[test]
+    fn two_distinctly_typed_boxed_closures_in_one_sum_only_one_built() {
+        // ONE sum boxes closures of TWO DISTINCT function types — a BINARY `(-> Int64 Int64 Int64)` in
+        // `Bin` and a UNARY `(-> Int64 Int64)` in `Un`. `run` matches the sum and APPLIES the boxed
+        // closure in EACH arm (`(f 2 3)` / `(g 9)`), so both arms carry a runtime `call_indirect`. But
+        // `main` constructs ONLY `Bin`, so the sole lifted lambda is the binary one; no unary closure
+        // value is ever built. A runtime closure value arises ONLY from a lift, so the `Un` arm's
+        // dispatch — over a unary closure the program can never construct — is PROVABLY DEAD. The backend
+        // must still EMIT that dead arm (selection is total over the match); it does so as an inert
+        // `unreachable`. The BUG: `closure_type_index` demanded a matching lifted function type for the
+        // dead `Un` arm and, finding none, declined the WHOLE program ("a runtime closure application has
+        // no matching function type") — even though the reachable `Bin` path is well-formed. This is the
+        // shape lazy-iterator libraries hit when a `scan` (binary accumulator) and a `flat-map`
+        // (element→sub-iterator) combinator share one `Iter` sum: each is fine alone, but coexisting
+        // declined. `run (Bin (fn (a x) (+ a x)))` → `f 2 3` = 5.
+        let src = "(module m \
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+            (def (main) (run (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a x))))) (export main))";
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "5"); // f 2 3 = 2 + 3
+        // The MIRROR: build only `Un` and apply it — `run (Un (fn (x) (* x 3)))` → `g 9` = 27. Now the
+        // BINARY arm is the dead one, dispatched over a closure the program never lifts; it too emits an
+        // `unreachable` and the live `Un` path runs. Pins the deadness test is symmetric in WHICH variant
+        // is built (it keys off the operand's type, not a fixed arm), so either sibling can be the dead one.
+        let src_un = "(module m \
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+            (def (main) (run (Box.Un (fn ((: x Int64)) (* x 3))))) (export main))";
+        assert_eq!(run_closure_nullary(src_un).unwrap(), "27"); // g 9 = 9 * 3
+    }
+
+    #[test]
     fn a_capturing_closure_crosses_a_recursive_boundary() {
         // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
         // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
