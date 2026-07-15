@@ -1,6 +1,12 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc, iter 37). A member of the still-live-binding
-;; family (iter 34), but a DISTINCT face: `List.concat` corrupts its still-live LHS in a way `List.push`
-;; does NOT — and the corruption shows on an ELEMENT read, not the length.
+;; ✅ FIXED (2026-07-15, seed rcdzc) — now returns 8. The general Perceus retain pass
+;; (`collect_dup_sites`, backend/wasm/select.rs) dups a `LocalRef`/`Param` operand consumed while still
+;; read later, so `vec-concat` path-copies a shared operand in either position. Fixed together with the
+;; whole still-live-binding family. Migrated to the graded corpus (spec/semantics/05-compound-types.sexp).
+;; Kept as the regression witness.
+;;
+;; ORIGINAL — MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc, iter 37). A member of the still-
+;; live-binding family (iter 34), but a DISTINCT face: `List.concat` corrupts its still-live LHS in a way
+;; `List.push` does NOT — and the corruption shows on an ELEMENT read, not the length.
 ;; `cdz check` CLEAN; `cdz compile` SUCCEEDS; runs WRONG.
 ;;
 ;;   let xs = [5, 7] in (List.len (List.concat xs [9])) + (e xs 0)     where e xs i = (List.at xs i) or -1
