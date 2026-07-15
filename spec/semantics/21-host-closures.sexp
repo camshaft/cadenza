@@ -637,7 +637,7 @@
   (call   inc (: 5 Int64))
   (output (: 6 Int64)))
 
-(case "three distinct closure signatures cross as three resource types"
+(case "three closures with a SHARED signature cross as two resource types"
   (doc    "`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`, `dbl : (-> Int64 Int64)` — note `inc` and
            `dbl` SHARE a signature (one resource type, two makes), while `isz` is distinct (its own).
            Calling `dbl`(7) = 14 exercises the shared-signature group alongside the distinct one. Pins that
