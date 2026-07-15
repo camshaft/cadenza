@@ -3589,6 +3589,14 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             let a = type_of(db, args[0]);
             let b = type_of(db, args[1]);
+            // A QUANTITY operand takes the dimensional arm below, NOT the bare-numeric arms here — even
+            // when its SIBLING is a bare `Float`/`BigInt`/`Rational`. `(* (Qty Float64 meter) 3.0)` must
+            // stay `(Qty Float64 meter)` (a bare number scales, contributing `Unit.one`), not collapse to
+            // the bare `Float64` the Float arm would return by matching the bare sibling. So gate the three
+            // bare-numeric arms on `!any_qty`, mirroring `check_application`'s `is_multiplicative && any_qty`
+            // ordering (the quantity check runs first there too). Without this the unit was silently dropped
+            // and `Qty.value` of the result declined ("no machine representation").
+            let any_qty = matches!(a, Ty::Qty { .. }) || matches!(b, Ty::Qty { .. });
             // A `+`/`-`/`*`/`/` over BIGINT operands is `BigInt` — the unbounded arithmetic, NOT the
             // fixed-width int scheme (whose `∀a. (Int a) → …` would reject a `BigInt` operand). `lower`
             // routes it to the runtime `bigint-*` op (or folds a constant). A `BigInt`/fixed mix is
@@ -3601,7 +3609,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
                     | crate::resolved::Prim::Rem
-            ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
+            ) && !any_qty
+                && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
             {
                 return Ty::BigInt;
             }
@@ -3618,7 +3627,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
-            ) && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
+            ) && !any_qty
+                && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
             {
                 return Ty::Rational;
             }
@@ -3637,7 +3647,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
-            ) && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
+            ) && !any_qty
+                && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
             {
                 // Prefer whichever operand fixed the width (a concrete `Float32`/`Float64` over a deferred
                 // literal), mirroring the `join` width preference — so `(+ x 1.0)` with `x : Float32`
