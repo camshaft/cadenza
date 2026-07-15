@@ -1627,14 +1627,24 @@ fn fix_edits(
             .and_then(|id| spans.get(id))
             .map(|s| (s.start, s.end))
     };
+    // DELETE fast path: the edit is exactly the target child's (widened) span removed — we already know
+    // WHICH child vanishes, so we skip both the parent-subtree diff AND its LCS alignment. Diffing the
+    // parent (via `localized_change` → `edits_preserving` → `align`) re-runs an O(children²) alignment DP
+    // to rediscover the one deleted child; for a WIDE parent (a `do` block / match with N children) that
+    // is O(N²) per fix, so N delete fixes on one file were O(N³) (a `do` of N discarded statements:
+    // N=100/200/400 = 33/207/1639ms). `delete_edit` emits the identical edit in O(1) from the known span.
+    if kind == "delete" {
+        let span = spans.get(target)?;
+        return cadenza_syntax::query::textedit::delete_edit(source, span.start, span.end, surface)
+            .map(|ed| vec![ed]);
+    }
     // Diff only the CHANGED SUBTREE, not the whole program. A fix touches one node (`replace`/`wrap`/
-    // `insert` at the target; `delete` in the target's parent list), and `edits_preserving` reports edits
-    // only within the changed span — so diffing `(old_subtree, new_subtree)` yields the SAME edits as
-    // diffing the whole `(old, new)` tree, but walks O(subtree) instead of O(program). Computing a fix PER
-    // diagnostic over the whole tree was O(fixes × program) = O(N²) on a file with many fixable warnings (a
-    // wide match with N unused-binder arms: N `transform_target` whole-tree rebuilds, each deep-cloning the
-    // other N−1 arms). `localized_change` finds the target's subtree (O(depth) via `origins`) + builds only
-    // ITS replacement.
+    // `insert` at the target), and `edits_preserving` reports edits only within the changed span — so
+    // diffing `(old_subtree, new_subtree)` yields the SAME edits as diffing the whole `(old, new)` tree,
+    // but walks O(subtree) instead of O(program). Computing a fix PER diagnostic over the whole tree was
+    // O(fixes × program) = O(N²) on a file with many fixable warnings (a wide match with N unused-binder
+    // arms: N `transform_target` whole-tree rebuilds, each deep-cloning the other N−1 arms).
+    // `localized_change` finds the target's subtree (O(depth) via `origins`) + builds only ITS replacement.
     let (old_sub, new_sub) = localized_change(old, origins, kind, target, repl)?;
     Some(cadenza_syntax::query::textedit::edits_preserving(
         source, old_sub, &new_sub, &span_of, surface,
