@@ -32274,6 +32274,27 @@ mod match_engine {
     }
 
     #[test]
+    fn unit_in_over_a_rational_quantity_converts_exactly_and_unwraps() {
+        // `lower_unit_in` gained a runtime Rational arm: `(Unit.in meter (Qty.of (Rational.of 1 1) inch))`
+        // converts by the exact scale (inch = 127/5000 m) via a runtime `rational-mul` and UNWRAPS to a
+        // bare Rational — 127/5000, EXACT (no rounding, unlike Int/BigInt which truncate a non-whole
+        // ratio). Previously the runtime Rational case declined ("not yet emitted"). Uses the FULL runtime;
+        // skips if absent. Here the magnitude is narrowed from a runtime BigInt so it does not fold.
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) ((. Rational of-int) ((. Int64 of) ((. BigInt of) 1))) \
+                                 ((. Unit of) #\"inch\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate covers the runtime form e2e
+        };
+        assert!(
+            rendered.contains("127/5000"),
+            "1 inch (Rational) in meters unwraps to the exact bare Rational 127/5000: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`

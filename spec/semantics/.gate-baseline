@@ -152,6 +152,8 @@ pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
 pass	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
+pass	Unit.in over a runtime Rational quantity keeps a fractional scale exact
+pass	Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value

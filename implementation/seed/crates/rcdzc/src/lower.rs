@@ -12271,6 +12271,40 @@ fn convert_operand_ast_bigint(
     Some(node)
 }
 
+/// The runtime Rational analogue: synthesize `value * (Rational.of num den)` for a `Unit.in` over a
+/// Rational-magnitude quantity. The value occurrence is q's erased Rational handle; the scale is a SINGLE
+/// exact rational literal `(Rational.of num den)`, so the `*` is one runtime `rational-mul` (routed by
+/// `rational_operand`, which peels Qty) — EXACT, no rounding and no separate divide (a rational carries
+/// its own denominator). `Unit.in` UNWRAPS → a bare Rational. Scale 1/1 is the identity (value unchanged).
+/// `None` if q's value occurrence is not recoverable (a non-`Qty.of` runtime magnitude — a later increment).
+fn convert_operand_ast_rational(
+    db: &mut Db,
+    operand: StructId,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    let value = crate::eval::qty_value_occ(db, operand)?;
+    if num == 1 && den == 1 {
+        return Some(value);
+    }
+    // `(Rational.of <num> <den>)` — an exact rational scale literal. `Rational.of` is member access.
+    let dot = db.push_name(".");
+    let rational = db.push_name("Rational");
+    let of = db.push_name("of");
+    let head = db.push_list(vec![dot, rational, of]);
+    let n_lit = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i128(num),
+        radix: crate::ast::Radix::Dec,
+    });
+    let d_lit = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i128(den),
+        radix: crate::ast::Radix::Dec,
+    });
+    let scale = db.push_list(vec![head, n_lit, d_lit]);
+    let mul_head = db.push_name("*");
+    Some(db.push_list(vec![mul_head, value, scale]))
+}
+
 /// A synthesized numeric literal node for a machine integer `v` — a float decimal `v.0` when `is_float`,
 /// else an integer literal. Used for the constant scale factors a runtime conversion multiplies by.
 fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
@@ -12389,9 +12423,19 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
             let scaled_den = vd.mul(&IntValue::from_i128(den));
             return normalized_rational(scaled_num, scaled_den);
         }
-        return Core::Poison(Reject::decline(
-            "Unit.in over a runtime Rational magnitude (not yet emitted)",
-        ));
+        // RUNTIME Rational — synthesize `value * (Rational.of num den)` and re-lower; the `*` sees a
+        // Rational operand and routes to the runtime `rational-*` op (`quantity_inner_is_rational` /
+        // `rational_operand` dispatch, both peel Qty). EXACT (rational multiply, no rounding); `Unit.in`
+        // UNWRAPS → a bare Rational. Scale 1/1 is the identity (the value unchanged). Mirrors the BigInt
+        // runtime arm.
+        match convert_operand_ast_rational(db, q, num, den) {
+            Some(node) => return core_of(db, node),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "Unit.in over a runtime non-Qty.of Rational magnitude (not yet emitted)",
+                ));
+            }
+        }
     }
     // A BIGINT magnitude converts as `value * num / den` in UNBOUNDED bigint arithmetic — the value is a
     // heap handle, so the scale factors are materialized as `BigInt.of` and the `*`/`/` route to the

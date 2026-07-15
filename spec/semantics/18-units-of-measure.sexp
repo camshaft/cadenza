@@ -944,6 +944,30 @@
             (export main)))
   (call   main (: 2500 Int64)) (output (: 2 BigInt)))
 
+(case "Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps"
+  (doc    "`(Unit.in meter (Qty.of (Rational.of v 1) kilometer))` with a RUNTIME `v`: converts the
+           Rational magnitude to meters by the exact scale (×1000) and UNWRAPS to a bare Rational. v=3 →
+           3000/1. Runs the runtime `rational-mul` on the erased handle (the value × `(Rational.of 1000
+           1)`), NOT a fold. Pins the runtime Rational arm of `lower_unit_in` — it previously declined
+           ('runtime Rational magnitude not yet emitted'), having only a constant-fold path. The Rational
+           companion of the runtime BigInt Unit.in.")
+  (input  (do
+            (def (main (: v Int64))
+              (Unit.in (Unit.of #"meter") (Qty.of (Rational.of v 1) (Unit.of #"kilometer"))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3000/1 Rational)))
+
+(case "Unit.in over a runtime Rational quantity keeps a fractional scale exact"
+  (doc    "`(Unit.in meter (Qty.of (Rational.of v 1) inch))` with a runtime `v`: inch = 127/5000 m, so
+           v=1 → 127/5000 EXACTLY — the rational multiply keeps the fractional scale with no rounding
+           (unlike the Int/BigInt arms, which truncate a non-whole ratio). Pins that a runtime Rational
+           conversion is exact even when the scale is fractional, the whole point of a Rational magnitude.")
+  (input  (do
+            (def (main (: v Int64))
+              (Unit.in (Unit.of #"meter") (Qty.of (Rational.of v 1) (Unit.of #"inch"))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 127/5000 Rational)))
+
 ; ============================================================================================
 ; DERIVED-dimension families — a named unit can name a DERIVED dimension (a rate = information/time, a
 ; frequency = 1/time), not only an atomic one. `mbps` is a unit of `byte/second`; `hertz` of `1/second`.
