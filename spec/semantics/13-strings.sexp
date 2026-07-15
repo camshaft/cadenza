@@ -91,6 +91,42 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a mixed-ownership inlined-match operand leaves the source map intact across repeated compares"
+  (doc    "The DROP-CORRUPTION guard for the match-operand ownership JOIN above: the join classifies the
+           mixed Some/None operand as BORROWED, so NO post-compare drop is emitted. Had it mis-joined to
+           OWNED, the drop after the first compare would free the "z" payload the map still owns — and
+           this case would see it: the SAME let-bound map is consulted TWICE through the inlined match
+           (each compare true → 1 + 1) and then read structurally (`Map.size` → 1), so 3. A use-after-free
+           on the payload flips the second compare (→ 2) or corrupts the size read. Pins the leak-safe
+           side of the join with the source value still live.")
+  (input  (do
+            (def (f (: m (Map String String)) (: k String))
+              (match (Map.lookup m k) ((Some s) s) ((None) "?")))
+            (def (main)
+              (let ((m (Map.insert (Map.empty) "y" "z")))
+                (+ (+ (if (= (f m "y") "z") 1 0)
+                      (if (= (f m "y") "z") 1 0))
+                   (Map.size m))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "an all-owned-arms match operand compares correctly through the ownership join"
+  (doc    "The OWNED side of the match-operand join: BOTH arms build a fresh `String.concat` result, so
+           the join is Owned (every arm owned) and the post-compare drop is correct — each arm's rope is
+           a temporary nothing else holds. k = 0 → \"zx\" = \"zx\" → 1; k = 1 → \"zy\" ≠ \"zx\" → 0 (a
+           genuine value test, both directions). With the mixed-arm case above this pins both join
+           outcomes: all-owned → owned (dropped), mixed → borrowed (left to the owner).")
+  (input  (do
+            (def (pick (: k Int64))
+              (match k (0 (String.concat "z" "x")) (_ (String.concat "z" "y"))))
+            (def (main (: k Int64))
+              (if (= (pick k) "zx") 1 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 0 Int64)))
+
 (case "a runtime string rope map key is found by its flat twin"
   (doc    "The MAP-KEY companion of the rope-eq cases above: a map keyed by a runtime String ROPE
            `(rep \"hi\" 3)` = \"hixxx\" looked up with the flat literal \"hixxx\" MUST find 42. The map-key

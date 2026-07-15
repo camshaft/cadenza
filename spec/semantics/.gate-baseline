@@ -793,6 +793,7 @@ pass	a magic header and a length-prefixed chunk parse together
 pass	a many-arm match consumed in non-tail position yields into the enclosing expression
 pass	a many-arm match let-bound then consumed yields into the enclosing expression
 pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee
+pass	a many-arm string match consumed by concat beside a recursive call keeps both operands
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
@@ -855,6 +856,7 @@ pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
+pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
 pass	a module function is recursive
@@ -1635,6 +1637,7 @@ pass	an all-constant Set.of still folds membership with a constant query (contro
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
+pass	an all-owned-arms match operand compares correctly through the ownership join
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
