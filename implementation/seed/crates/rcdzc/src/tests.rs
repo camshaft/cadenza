@@ -49609,15 +49609,51 @@ mod stage1 {
     }
 
     #[test]
-    fn a_well_formed_try_declines_until_the_boundary_desugar_lands() {
-        // T0a carries `(try e)` through resolve/infer but does NOT lower it yet (the boundary `Mir::Block`
-        // + `Mir::Break` desugar is T1). A well-formed `(try (Ok 1))` therefore DECLINES — a Todo, never a
-        // miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined). This test
-        // FLIPS to an executing-value test when T1 lands.
-        let msg = expect_decline("(try (Ok 1))");
+    fn a_try_with_no_fallible_enclosing_function_is_cdz0230() {
+        // T0b boundary check (DESIGN-try-operator-rcdzc.md §6): a `?` short-circuits the enclosing
+        // function's fallible result type. `(def (main) (try (Ok 1)))` — main's body IS the `?`, whose
+        // type is the unwrapped `Int64`, so main returns `Int64`, NOT a `Result`/`Option`. There is no
+        // boundary the `?` can exit to → CDZ0230.
+        let d = expect_error("(try (Ok 1))");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0230"),
+            "a `?` in a non-fallible function is CDZ0230, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("boundary"),
+            "message names the missing fallible boundary: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
+        // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
+        // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result
+        // `Option`, but the `?`'s operand `(Ok 1)` is a `Result` → CDZ0203.
+        let src = "(module m (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0203"),
+            "a Result-`?` under an Option boundary is CDZ0203, got: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_well_formed_try_under_a_matching_boundary_declines_until_t1() {
+        // A `?` whose operand kind MATCHES the enclosing function's fallible result type is well-formed at
+        // the type level (no CDZ0230, no CDZ0203). It does NOT lower yet — the boundary `Mir::Block` +
+        // `Mir::Break` desugar is T1 — so it DECLINES, a Todo (self-hosting-and-bootstrap.md §An
+        // Unsupported Construct Is Declined), never a miscompile. The body's tail `(Some …)` makes the
+        // boundary `Option`, matching the `?`'s Option operand. FLIPS to an executing-value test in T1.
+        let msg = expect_decline("(let ((x (try (Int64.checked-add 20 22)))) (Some x))");
         assert!(
             msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
-            "a well-formed `(try …)` declines pending the desugar: {msg}"
+            "a well-formed `(try …)` under a matching boundary declines pending the desugar: {msg}"
         );
     }
 }

@@ -3981,6 +3981,36 @@ pub(crate) fn fallible_shape(db: &Db, ty: &Ty) -> Option<(FallibleKind, Ty, Opti
     }
 }
 
+/// The FALLIBLE BOUNDARY a `?`/`try` at `try_node` short-circuits to (`DESIGN-try-operator-rcdzc.md` §4
+/// v1: the enclosing FUNCTION). Walks up the ancestor chain from `try_node` to the nearest enclosing
+/// function BODY — a top-level/module/do-local def body (`def_index_by_body`) or a `(fn params body)`
+/// lambda body (the ancestor that is child position 1 of a `fn` form) — and returns THAT BODY's type,
+/// which is the boundary type `T_B` (Cadenza declares a return type by ASCRIBING the body `(: body T)`,
+/// so the body's type IS the function's result type). `None` if the `?` is not inside any function body.
+///
+/// No circularity: `type_of(Try)` reads only its OPERAND's type (never the boundary), so demanding the
+/// body's type from inside a `?` under it does not re-enter this `?`'s own type. The walk stops at the
+/// FIRST enclosing function so a `?` in a helper targets the helper (Rust-identical), not an outer caller.
+pub(crate) fn enclosing_boundary_ty(db: &mut Db, try_node: StructId) -> Option<Ty> {
+    let mut cur = try_node;
+    while let Some(parent) = db.parent_of(cur) {
+        // `cur` is a def body (top-level, module-member, or do-local) — its type is the boundary.
+        if db.def_index_by_body(cur).is_some() {
+            return Some(type_of(db, cur));
+        }
+        // `cur` is a `(fn params body)` lambda's BODY — position 1 of a `fn` form. Its type is the
+        // lambda's result, the boundary for a `?` in the lambda body.
+        if db.ast.head_name(parent) == Some("fn")
+            && let crate::ast::Struct::List(kids) = db.ast.get(parent)
+            && kids.get(1) == Some(&cur)
+        {
+            return Some(type_of(db, cur));
+        }
+        cur = parent;
+    }
+    None
+}
+
 /// The PAYLOAD type of a variant `variant_head` at the scrutinee's instantiation `scrut_ty` — the type
 /// a match-arm payload binder takes. The ctor's scheme is `∀params. payload… → Sum params`;
 /// instantiate it, unify its RESULT (`Sum ?params`) against `scrut_ty` (a `Ty::Sum{args}` — the solved
@@ -8746,17 +8776,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect(db, operand, out);
         }
-        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The OPERAND
-        // must be a fallible sum (`Option`/`Result`) — a `?` on anything else has nothing to unwrap. Fault
-        // (CDZ0203, the ordinary type mismatch) ONLY when the operand's type is a DEFINITE concrete
-        // non-fallible type: an unsolved var / `Any` / a poison operand is left alone (no over-rejection —
-        // its own fault surfaces via the descent), exactly as the `Not`/`And` operand checks do. The
-        // BOUNDARY check (a `?` whose enclosing function is not itself `Result`/`Option` → CDZ0230) and the
-        // operand-vs-boundary agreement land in the next slice; this pins the operand-shape half.
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). Two checks,
+        // each firing only on a DEFINITE type (an unsolved `Any`/`Var` is left alone — no over-rejection,
+        // exactly as the `Not`/`And` operand checks do; its own fault surfaces via the descent):
+        //   (a) OPERAND shape — `?` on a DEFINITE non-fallible type has nothing to unwrap → CDZ0203 (§5).
+        //   (b) BOUNDARY (§4 v1 / §6) — `?` short-circuits the enclosing function's fallible result type.
+        //       No enclosing function, or a DEFINITE non-fallible enclosing result type, → CDZ0230 (no
+        //       boundary admits the `?`). When BOTH operand and boundary are definite fallible sums of
+        //       DIFFERENT kinds (a `Result`-`?` under an `Option` boundary, or vice-versa) → CDZ0203 (§5:
+        //       no coercion). Exact error-type unification across sites is deferred (HM handles it once
+        //       the desugar wires the arms in T1); this pins the kind-agreement half.
         Resolved::Try { operand } => {
             let t = type_of(db, operand);
-            let concrete = !matches!(t, Ty::Any | Ty::Var(_));
-            if concrete && fallible_shape(db, &t).is_none() {
+            let operand_fallible = fallible_shape(db, &t);
+            let operand_definite = !matches!(t, Ty::Any | Ty::Var(_));
+            if operand_definite && operand_fallible.is_none() {
                 trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: try operand not Option/Result (CDZ0203)");
                 out.push(
                     Reject::coded(
@@ -8768,6 +8802,72 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     )
                     .at(operand),
                 );
+            } else {
+                // The operand is (or may be) fallible — check the enclosing boundary admits it.
+                match enclosing_boundary_ty(db, id) {
+                    None => {
+                        trace!(target: "rcdzc::infer", node = id.0, "fault: `?` has no enclosing function boundary (CDZ0230)");
+                        out.push(
+                            Reject::coded(
+                                Code::TryNoBoundary,
+                                "`?` has no fallible boundary — it is not inside a function whose \
+                                 result type is `Result`/`Option`. Annotate the enclosing function's \
+                                 return type as `(Result _ e)` / `(Option _)`."
+                                    .to_string(),
+                            )
+                            .at(id),
+                        );
+                    }
+                    Some(bt) => {
+                        let boundary_fallible = fallible_shape(db, &bt);
+                        let boundary_definite = !matches!(bt, Ty::Any | Ty::Var(_));
+                        match boundary_fallible {
+                            None if boundary_definite => {
+                                trace!(target: "rcdzc::infer", node = id.0, ty = %bt.render_name(), "fault: `?` boundary not fallible (CDZ0230)");
+                                out.push(
+                                    Reject::coded(
+                                        Code::TryNoBoundary,
+                                        format!(
+                                            "`?` has no fallible boundary — the enclosing function's \
+                                             result type is `{}`, neither `Result` nor `Option`. \
+                                             Annotate it as `(Result _ e)` / `(Option _)`.",
+                                            bt.render_name()
+                                        ),
+                                    )
+                                    .at(id),
+                                );
+                            }
+                            // Boundary unsolved — cannot yet judge; leave it (no over-rejection).
+                            None => {}
+                            Some((bkind, _, _)) => {
+                                // Both definite fallible: a `Result`-`?` under an `Option` boundary (or
+                                // vice-versa) cannot short-circuit — the kinds disagree (§5, no coercion).
+                                if let Some((okind, _, _)) = operand_fallible
+                                    && okind != bkind
+                                {
+                                    trace!(target: "rcdzc::infer", node = id.0, "fault: `?` operand kind disagrees with the boundary (CDZ0203)");
+                                    let (o, b) = match okind {
+                                        FallibleKind::Option => ("Option", "Result"),
+                                        FallibleKind::Result => ("Result", "Option"),
+                                    };
+                                    out.push(
+                                        Reject::coded(
+                                            Code::TypeMismatch,
+                                            format!(
+                                                "a `{o}`-valued `?` cannot short-circuit a `{b}` \
+                                                 boundary — the enclosing function returns `{}`. \
+                                                 Convert with `Result.map-err` / `Option.ok-or`, or \
+                                                 change the boundary's result type.",
+                                                bt.render_name()
+                                            ),
+                                        )
+                                        .at(operand),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
             collect(db, operand, out);
         }
