@@ -103,9 +103,19 @@ slice a little better every tick.
    <noreply@anthropic.com>` trailer), then `cargo xtask fleet send --to pr-sync --kind merge-request
    --subject "<branch>" --ref $(git rev-parse HEAD) --body "<slice + gate summary>"`. Idle for the
    reply; on `reject`, fix and resend; on `merged`, pick the next slice next tick.
-6. Record a one-line landing note (sha + gate count + slice) wherever your vertical's log lives.
+6. **Feed the guide.** When a slice lands something USER-VISIBLE (a new construct, surface syntax,
+   builtin, behavior, or capability — not a pure internal refactor), send `v-guide` a `note` with
+   DOCUMENTATION SUGGESTIONS: what the feature is, why it's useful, the exact current surface, and
+   2–3 small runnable examples (that actually compile+run) plus any edge/gotcha worth showing. You
+   know your feature best — hand the guide the raw material rather than making it reverse-engineer it.
+   `cargo xtask fleet send --to v-guide --kind note --subject "docs: <feature>" --body "<what/why +
+   runnable examples + where it fits>"`. Skip this only for changes with no user-facing surface.
+7. Record a one-line landing note (sha + gate count + slice) wherever your vertical's log lives.
 
 ## Coordination
+- **Feed `v-guide` documentation suggestions for every user-visible feature you land** (tick step 6):
+  you are the authority on your feature, so proactively hand the guide what/why + runnable examples
+  rather than leaving your work undocumented. The guide owner turns your note into a chapter/section.
 - Where your slice touches a seam a sibling vertical also edits (maps/match→select/sum-payload-CSE
   are the classic shared seams), `note` that agent to split territory rather than racing the file.
 - If your slice already landed on `trunk` by another driver → STOP, `fleet remove` yourself, don't
