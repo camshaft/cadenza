@@ -22011,6 +22011,30 @@ mod match_engine {
             )
             .contains("UInt4"),
         );
+        // The SUGGESTED CONVERSION must name a spelling that actually RESOLVES (PR #377 review). An ALIASED
+        // width ({8,16,32,64}) has a bound module carrying BOTH `wrap` and `of` — `UInt8.wrap`/`UInt8.of`.
+        let aliased_msg =
+            msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main))");
+        assert!(
+            aliased_msg.contains("UInt8.wrap to truncate")
+                && aliased_msg.contains("UInt8.of to check"),
+            "an aliased width suggests both the bound-name wrap + of: {aliased_msg}"
+        );
+        // A NON-aliased width (`(UInt 4)`, a bit-field's own type) has NO bound name — `UInt4.wrap` would be
+        // an UNBOUND identifier — so the suggestion is the type-constructor member form `(. (UInt 4) wrap)`,
+        // and ONLY `wrap` (the on-demand `(UInt k)` module has no `of`). Never the unbound `UInt4.wrap` nor a
+        // `(. (UInt 4) of)` that does not resolve.
+        let bits_msg = msg_0203(
+            "(module m (def (main (: n Int64)) (Bytes.len (bin (bits n 4) (bits 5 4)))) (export main))",
+        );
+        assert!(
+            bits_msg.contains("(. (UInt 4) wrap) to truncate"),
+            "a non-aliased width suggests the resolvable member-form wrap: {bits_msg}"
+        );
+        assert!(
+            !bits_msg.contains("UInt4.wrap") && !bits_msg.contains("(. (UInt 4) of)"),
+            "a non-aliased width suggests neither the unbound `UInt4.wrap` nor a non-existent `of`: {bits_msg}"
+        );
         // NO false positive: the width-matching typed value, a narrowed value, a bare literal (grounds to the
         // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN. Crucially a decoded
         // field RE-ENCODES into its own-width segment with no explicit narrow — a `(u16 m)` binder feeds a

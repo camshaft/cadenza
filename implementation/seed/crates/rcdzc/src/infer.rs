@@ -4990,6 +4990,41 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
 /// handles generically, not a hard-coded name. Heuristic: which value to convert is the author's intent —
 /// and the int `.of` is CHECKED (traps out of range) while the float `.of` is TOTAL (widen exact, narrow
 /// rounds), reflected in the verb. `None` unless both types are the same numeric kind at an aliased width.
+/// The SPELLING of an integer width type's MODULE — the thing a `.wrap`/`.of` conversion is a member of —
+/// that actually RESOLVES for `it`'s width. An ALIASED width ({8,16,32,64}) has a pre-installed BOUND
+/// module NAME (`UInt8`, `Int64`, `prelude::install`), so a bare `UInt8` resolves; a NON-aliased width
+/// (`(UInt 4)` — a bit-field's own type) has NO bound name (`render_name` produces `UInt4`, an UNBOUND
+/// identifier), so the only spelling that resolves is the type-CONSTRUCTOR applied form `(UInt 4)`. Returns
+/// the resolvable spelling either way — a bound name for an aliased width, the `(UInt N)` / `(Int N)` form
+/// otherwise — so a diagnostic that suggests `<module>.wrap` never names an identifier that is not in scope
+/// (PR #377 review: the raw `render_name()` suggested `UInt4.wrap`, an unbound name). `signed`/`width` are
+/// read via the grounding accessors (a fixed segment width type is always concrete here).
+fn width_module_spelling(it: &crate::ty::IntTy) -> String {
+    let signed = it.ground_signed();
+    let width = it.ground_width();
+    let stem = if signed { "Int" } else { "UInt" };
+    if crate::ty::ALIASED_INT_WIDTHS.contains(&width) {
+        // An aliased width has a bound module name — `Int8`, `UInt64`.
+        format!("{stem}{width}")
+    } else {
+        // A non-aliased width has no bound name; the type-constructor form is the resolvable spelling.
+        format!("({stem} {width})")
+    }
+}
+
+/// A `.wrap`/`.of` conversion spelled off a width MODULE spelling. A BOUND module name takes the ordinary
+/// dotted member `UInt8.wrap`; the type-CONSTRUCTOR form `(UInt 4)` cannot take a trailing `.op` token
+/// (`(UInt 4).wrap` does not lex as one member access), so it uses the explicit member form `(. (UInt 4)
+/// wrap)` — both of which the resolver accepts (verified: `((. (UInt 4) wrap) n)` type-checks). Keyed off
+/// the leading `(` of the constructor form.
+fn width_conversion_spelling(module: &str, op: &str) -> String {
+    if module.starts_with('(') {
+        format!("(. {module} {op})")
+    } else {
+        format!("{module}.{op}")
+    }
+}
+
 fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
     let (kind_matches, aliased, checked) = match (expected, actual) {
         (Ty::Int(exp), Ty::Int(_)) => (
@@ -8830,18 +8865,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             && (got_it.ground_signed() != want_it.ground_signed()
                                 || got_it.ground_width() != want_it.ground_width())
                         {
+                            // The narrowing conversion is a MEMBER of the width type's module, and BOTH the
+                            // module spelling AND which conversions it offers depend on whether the width is
+                            // ALIASED. An aliased width ({8,16,32,64}) has a BOUND module name (`UInt8`) that
+                            // carries BOTH `wrap` (truncate) and `of` (checked) — so `UInt8.wrap`/`UInt8.of`.
+                            // A NON-aliased width (`(UInt 4)`, a bit-field's own type) has NO bound name
+                            // (`render_name` produces `UInt4`, an UNBOUND identifier); its on-demand module,
+                            // reached via the type-constructor member form `(. (UInt 4) wrap)`, offers only
+                            // `wrap` (no `of`). So suggest BOTH conversions only for an aliased width, and
+                            // only `wrap` (in the member spelling) otherwise — never the unbound `UInt4.wrap`
+                            // nor a `(. (UInt 4) of)` that does not resolve (PR #377 review).
+                            let module = width_module_spelling(want_it);
+                            let aliased =
+                                crate::ty::ALIASED_INT_WIDTHS.contains(&want_it.ground_width());
+                            let how = if aliased {
+                                format!(
+                                    "{} to truncate, or {} to check",
+                                    width_conversion_spelling(&module, "wrap"),
+                                    width_conversion_spelling(&module, "of"),
+                                )
+                            } else {
+                                format!(
+                                    "{} to truncate",
+                                    width_conversion_spelling(&module, "wrap"),
+                                )
+                            };
                             out.push(
                                 Reject::coded(
                                     Code::TypeMismatch,
                                     format!(
                                         "a bin {} segment takes a {} value, but this value is {} — \
-                                         convert it explicitly (e.g. {}.wrap to truncate, or {}.of to \
-                                         check) before placing it in the segment",
+                                         convert it explicitly (e.g. {how}) before placing it in the \
+                                         segment",
                                         seg_kind_name(&seg.kind),
                                         want.render_name(),
                                         got.render_name(),
-                                        want.render_name(),
-                                        want.render_name(),
                                     ),
                                 )
                                 .at(seg.slot),
