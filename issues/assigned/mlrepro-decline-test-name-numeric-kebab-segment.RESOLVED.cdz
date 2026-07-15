@@ -32,3 +32,5 @@ def step-by-2() =
 def an-unrelated-passing-test() =
   // correct + independent, yet it ALSO reports FAIL — collateral damage from the invalid component
   if double(10) == 20 then unit else trap("double 10 is 20")
+
+/// RESOLVED 2026-07-15 (trunk@dd77ccc1b): a digit-led kebab segment in an export/@test name now REJECTS with CDZ0201 + a fix-it (rename to letter-led segments) instead of silently failing the whole component.
