@@ -3684,6 +3684,30 @@ fn pattern_shape_key(db: &mut Db, pat: StructId) -> Option<String> {
     None
 }
 
+/// The TOP-LEVEL constructor discriminant of a ctor-headed pattern — a bare nullary-variant name (`None`),
+/// an applied ctor `(Some …)` / `(C.V …)`, or a bare member `(. Sum V)` used whole — else `None` (a tuple,
+/// list, literal, or plain binder). Used by [`collect_redundant_arm_warnings`] to test whether a REFINING
+/// ctor arm (`(Some (Some x))`, an `ArmCover::Shape`) is shadowed by an EARLIER FULL-variant cover of the
+/// same variant (`(Some _)`): the full cover matched every value of that variant, so the later refinement
+/// is unreachable. Mirrors `arm_cover`'s ctor-head extraction, but yields only the discriminant.
+fn ctor_pattern_variant(db: &mut Db, pat: StructId) -> Option<u32> {
+    // A bare NAME that is a nullary variant (`None`) — its discriminant; a plain binder yields `None`.
+    if db.ast.as_name(pat).is_some() {
+        return crate::eval::variant_disc_of(db, pat);
+    }
+    // A constructor-headed list `(Some x)` / `((. Sum V) x)` / a whole bare member `(. Sum V)`.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let head = match children.first().copied() {
+            // A whole bare member `(. Sum V)` is the pattern itself; else the first child is the ctor head.
+            Some(first) if db.ast.as_name(first) == Some(".") => pat,
+            Some(first) => first,
+            None => return None,
+        };
+        return crate::eval::variant_disc_of(db, head);
+    }
+    None
+}
+
 /// The number of DISTINCT full-variant / bool covers that EXHAUST the scrutinee's type — `Some(n)` for a
 /// FINITE type (a `Ty::Sum` with `n` variants, or `Bool` with 2), `None` for an OPEN type (Int/String/…,
 /// which no finite literal set exhausts). Used by [`collect_redundant_arm_warnings`] to flag a catch-all /
@@ -3746,6 +3770,12 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         // `(list …n…)` with n ≥ k, or a later rest of lead ≥ k). `None` until a rest arm appears. Tracked
         // alongside `covered` (which only catches EXACT-key duplicates) to add list-length subsumption.
         let mut min_list_from: Option<usize> = None;
+        // The discriminants of variants an earlier arm covered in FULL (an `ArmCover::Variant(disc)` — a
+        // ctor whose payload is all-irrefutable, `(Some _)`). A later REFINING arm of that same variant (a
+        // `Shape` whose top ctor is `disc`, `(Some (Some x))`) is unreachable — the full cover already
+        // matched every value of the variant. This is variant-refinement subsumption (a BROADER earlier arm
+        // shadowing a narrower same-variant later one), beyond the exact-duplicate `Shape` check.
+        let mut full_variants: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
@@ -3754,6 +3784,14 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 // A later list arm whose every length is ≥ an earlier rest arm's lead is shadowed by it.
                 Some(ArmCover::ListExact(n)) if min_list_from.is_some_and(|k| k <= *n) => true,
                 Some(ArmCover::ListFrom(j)) if min_list_from.is_some_and(|k| k <= *j) => true,
+                // A REFINING ctor arm (`ArmCover::Shape` from a ctor payload, `(Some (Some x))`) whose top
+                // variant an EARLIER arm already covered in full (`(Some _)`) is shadowed by that full cover.
+                Some(ArmCover::Shape(_))
+                    if ctor_pattern_variant(db, *pat)
+                        .is_some_and(|d| full_variants.contains(&d)) =>
+                {
+                    true
+                }
                 // A repeat of an already-covered literal / full-variant / exact-length / rest cover.
                 Some(c) => covered.contains(c),
                 // Unclassifiable — not provably redundant.
@@ -3803,6 +3841,11 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                     // and counting the Shapes would wrongly saturate the 2-variant type and flag `(None)`.
                     if matches!(c, ArmCover::Variant(_) | ArmCover::Lit(_)) {
                         finite_covers.insert(c.clone());
+                    }
+                    // Record a FULL-variant cover's discriminant so a later REFINING arm of the SAME variant
+                    // (a `Shape` — `(Some (Some x))` after `(Some _)`) is flagged as shadowed above.
+                    if let ArmCover::Variant(disc) = c {
+                        full_variants.insert(disc);
                     }
                     covered.insert(c);
                     // If the distinct FULL covers now saturate a FINITE type, coverage is closed: any later
