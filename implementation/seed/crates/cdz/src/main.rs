@@ -370,7 +370,9 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     if let Some(iface) = args.component_name() {
         inputs.push(compiler_cli::component_name_artifact(iface));
     }
-    compiler_cli::run_prepared(inputs, &targets, args.out_path(), PROG)
+    // Thread the requested `--opt-level` (default `O1`) through to the compile — `cdz compile
+    // --opt-level O2 foo.cdz` selects the release pass tier, same as the artifacts-in `rcdzc` path.
+    compiler_cli::run_prepared(inputs, &targets, args.out_path(), args.opt_level(), PROG)
 }
 
 // ── cdz test ─────────────────────────────────────────────────────────────────────────────────────

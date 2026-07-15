@@ -1917,6 +1917,64 @@
   (input  (^ 5 -1))
   (output (: -6 Int64)))
 
+; ── RUNTIME bitwise SIMPLIFICATIONS in arith_identity (lower.rs) — Core rewrites both backends inherit ─
+; Beyond the zero/identity laws, `arith_identity` recognizes several structural bitwise simplifications on
+; RUNTIME operands (a constant folds through the const path, so these emitted-code rewrites need a runtime
+; witness). Each is value-exact on both backends, and each that DISCARDS an operand is guarded by
+; `is_trap_free` so a defined trap in the discarded operand is still raised:
+;  - FULL-MASK elision: `(& b M)` → b when M covers all of unsigned b's value bits (a redundant mask).
+;  - OR-SATURATION: `(| b M)` → M when M covers all of b's bits (b adds nothing; DISCARDS b).
+;  - OR-THEN-MASK absorption: `(& (| v C1) C2)` → C2 when C2 ⊆ C1 (the inner OR sets every bit the outer
+;    mask keeps, so the result is exactly C2, independent of v; DISCARDS v — hence the trap-free guard).
+;  - NESTED-OR collapse: `(| (| x C) C)` → `(| x C)` (ORing by the same constant twice is once).
+
+(case "a redundant full-width mask on an unsigned runtime value is elided"
+  (doc    "`(& b 255)` where `b : UInt8` lives in [0,255] — the mask 255 covers every bit b can set, so
+           the AND is a no-op and `arith_identity` returns b. A runtime b exercises the emitted code:
+           b = 200 → 200. Pins the full-mask elision keeps the operand (an unsigned value whose width the
+           mask covers), not a constant, on both backends.")
+  (input  (do (def (main (: b UInt8)) (& b 255)) (export main)))
+  (call   main (: 200 UInt8))
+  (output (: 200 UInt8)))
+
+(case "OR-saturation to a full-width mask on an unsigned runtime value"
+  (doc    "The OR dual: `(| b 255)` where `b : UInt8` saturates to 255 — 255 already has every bit b
+           could set, so the OR adds nothing and the result is exactly the mask (DISCARDING b). b = 200 →
+           255. Pins OR-saturation to the full mask on a runtime operand, both backends.")
+  (input  (do (def (main (: b UInt8)) (| b 255)) (export main)))
+  (call   main (: 200 UInt8))
+  (output (: 255 UInt8)))
+
+(case "OR-then-mask absorption folds to the mask constant on a runtime operand"
+  (doc    "`(& (| v 15) 15)` → 15 for ANY v: the inner `(| v 15)` sets the low 4 bits, the outer `& 15`
+           keeps exactly those 4 bits — all now 1 — so the result is the constant 15 independent of v.
+           A runtime v (which the fold DISCARDS) exercises the rewrite: v = 42 → 15, v = 0 → 15. Pins the
+           OR-then-mask absorption (C2 ⊆ C1) on a runtime operand, both backends.")
+  (input  (do (def (main (: v Int64)) (& (| v 15) 15)) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 15 Int64))
+  (call   main (: 0 Int64))
+  (output (: 15 Int64)))
+
+(case "OR-then-mask absorption does not discard a trapping runtime operand"
+  (doc    "The trap-preservation face: `(& (| (/ 10 z) 15) 15)` still folds to 15 for the VALUE, but the
+           discarded operand `(/ 10 z)` with z = 0 divides by zero and MUST trap — the absorption may drop
+           v's value, not its evaluation (the `is_trap_free` guard on the fold). A runtime divisor keeps
+           the div out of the const fold. The OR-then-mask companion of the annihilator trap-preservation
+           cases, both backends.")
+  (input  (do (def (main (: z Int64)) (& (| (/ 10 z) 15) 15)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a nested OR by the same constant collapses to a single OR"
+  (doc    "`(| (| x 8) 8)` → `(| x 8)`: ORing by the same constant twice is idempotent, so the inner and
+           outer ORs collapse to one. Unlike the absorption above this KEEPS x (x's bits still flow), so a
+           runtime x threads through: x = 1 → 9 (0b0001 | 0b1000). Pins the nested-OR collapse preserves
+           the value on a runtime operand, both backends.")
+  (input  (do (def (main (: x Int64)) (| (| x 8) 8)) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 9 Int64)))
+
 ; --- The bitwise/shift/truncation primitives COMPOSE into the LEB128 encoding step ----------
 ; The cases above exercise `&`, `|`, `>>`, and `UInt8.wrap` INDIVIDUALLY on constant operands. The
 ; compiler's actual use is to COMPOSE them: one LEB128 byte is `(| (& n 127) 128)` when a continuation

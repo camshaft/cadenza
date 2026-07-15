@@ -903,7 +903,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
         // only ever holds a host-call statement today, so the Rust backend declines it too.
         | Core::HostCall { .. }
-        | Core::Seq { .. } => Err(Reject::decline(
+        | Core::Seq { .. }
+        // The `?`/try boundary block + break are the wasm backend's `block`/`br` shape (BRICK 3); the
+        // Rust backend renders them in a later brick, so it declines for now.
+        | Core::Block { .. }
+        | Core::Break { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
         // Runtime structural equality over a COMPOUND value. On the wasm backend this is a value-heap

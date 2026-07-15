@@ -1460,7 +1460,9 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // scope). This is the missed face of the privacy landing (0c008299) — a private member participating in
     // a mutual-recursion cycle rejected CDZ0101 at its co-member call site.
     //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
-    //# The explicit visibility rule MUST govern only a definition's reachability from outside its module; a definition MUST remain visible to the other definitions in its own module regardless of whether it is made visible outside, so that a module's members are mutually visible and a private helper stays reachable by its siblings.
+    //# The explicit visibility rule MUST govern only a definition's reachability from outside its module, not its reachability from within.
+    //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+    //# A definition MUST remain visible to the other definitions in its own module regardless of whether it is made visible outside, so that a module's members are mutually visible and a private helper stays reachable by its siblings.
     if let Some(binder) = module_form_sibling_binds(db, form, name) {
         return Some(binder);
     }

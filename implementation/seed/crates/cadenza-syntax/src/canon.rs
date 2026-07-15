@@ -275,4 +275,101 @@ mod tests {
             codec::encode(&canonicalize(&from_ml)),
         );
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible property sweeps without a dependency
+    /// (mirrors the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random s-expr program string (bounded by `depth`) — a mix of atoms, infix, calls,
+    /// `let`, `if`, and list/tuple literals, enough to exercise repeated leaves (interning), shared leaf
+    /// names across subtrees (the case that stresses first-encounter numbering), and nesting.
+    fn gen_prog(rng: &mut Rng, depth: usize) -> String {
+        let names = ["a", "b", "x", "y", "f", "+", "g"];
+        if depth == 0 || rng.below(3) == 0 {
+            return match rng.below(4) {
+                0 => names[rng.below(names.len())].to_string(),
+                1 => rng.below(50).to_string(),
+                2 => "true".to_string(),
+                _ => "x".to_string(), // bias a repeated name so interning is exercised
+            };
+        }
+        let sub = |rng: &mut Rng| gen_prog(rng, depth - 1);
+        match rng.below(6) {
+            0 => format!("(+ {} {})", sub(rng), sub(rng)),
+            1 => format!("(f {} {})", sub(rng), sub(rng)),
+            2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
+            3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
+            4 => format!("(\"list\" {} {})", sub(rng), sub(rng)),
+            _ => format!("(\"tuple\" {} {})", sub(rng), sub(rng)),
+        }
+    }
+
+    #[test]
+    fn canonicalize_invariants_hold_over_generated_programs() {
+        // The load-bearing canon properties, swept over random programs (the existing tests use only a
+        // few hand-picked inputs). For each generated arena:
+        //   (1) STRUCTURE-PRESERVING — canonicalize does not change what the tree denotes.
+        //   (2) IDEMPOTENT — canonicalizing the canonical form reproduces identical bytes.
+        //   (3) `is_canonical` AGREES WITH THE REBUILD — the fast-path (which returns `Borrowed`,
+        //       skipping the rebuild) must be true EXACTLY when the arena already equals its canonical
+        //       rebuild. A false POSITIVE there would emit non-canonical bytes in place (a silent
+        //       byte-identity bug — two structurally-equal programs encoding differently); a false
+        //       NEGATIVE only costs a redundant rebuild. This is the subtle invariant no hand-picked
+        //       test pins, and it is exactly what byte-identity across the two surfaces rests on.
+        let mut rng = Rng(0x0bad_c0de_dead_beef);
+        let mut count = 0usize;
+        for _ in 0..4000 {
+            let depth = 1 + rng.below(4);
+            let src = format!("(def (main) {})", gen_prog(&mut rng, depth));
+            let a = sexpr::read(&src).expect("generated s-expr reads");
+
+            // (1) structure preserved.
+            let canon = canonicalize(&a);
+            assert!(
+                canon.structurally_eq(&a),
+                "canonicalize changed the tree for {src}"
+            );
+            // (2) idempotent (byte-identical re-canonicalization).
+            let bytes = codec::encode(&canon);
+            assert_eq!(
+                bytes,
+                codec::encode(&canonicalize(&canon)),
+                "canonicalize is not idempotent for {src}"
+            );
+            // (3) is_canonical agrees with the rebuild: the rebuilt (always-Owned) form via
+            // `canonicalize_with_map` is THE canonical arena; `is_canonical(a)` must be true iff `a`
+            // already equals it structurally AND with identical ids (i.e. re-encoding matches).
+            let (rebuilt, _) = super::canonicalize_with_map(&a);
+            let a_is_canon = super::is_canonical(&a);
+            let a_equals_rebuilt = a.structure == rebuilt.structure && a.leaves == rebuilt.leaves;
+            assert_eq!(
+                a_is_canon, a_equals_rebuilt,
+                "is_canonical disagrees with the rebuild for {src}: is_canonical={a_is_canon}, \
+                 equals_rebuilt={a_equals_rebuilt}"
+            );
+            // And when is_canonical says true, encoding `a` in place must equal encoding the rebuild
+            // (the byte-identity the Borrowed fast-path relies on).
+            if a_is_canon {
+                assert_eq!(
+                    codec::encode(&a),
+                    codec::encode(&rebuilt),
+                    "is_canonical=true but in-place bytes differ from the rebuild for {src}"
+                );
+            }
+            count += 1;
+        }
+        assert!(count >= 4000, "swept a meaningful space, got {count}");
+    }
 }

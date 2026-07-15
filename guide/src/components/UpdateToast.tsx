@@ -4,7 +4,7 @@
 /// PROACTIVE half of stale-deployment handling; RouteError is the reactive half (recovers a 404 that
 /// already happened). The toast never force-reloads — the reader keeps their place until they choose to.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isNewerVersion, parseVersion } from "./versionCheck.ts";
 
 /// How often to poll while the tab is open, as a backstop to the focus-triggered check. Deploys are
@@ -28,15 +28,24 @@ async function fetchDeployedVersion(): Promise<string | null> {
 
 export function UpdateToast() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  // A REF, not `updateAvailable`, gates the poll: the effect is mount-only, so a state value read
+  // inside its closure is frozen at the initial `false` (the bug PR #396 caught — polling never
+  // stopped and, worse, the next poll re-set `updateAvailable` after the reader dismissed the toast,
+  // making it reappear). The ref holds the LIVE decision: once we've shown the toast OR the reader
+  // dismissed it, `settled` is true and `check()` stops — Dismiss sticks for the tab session.
+  const settled = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     const running = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "";
 
     async function check() {
-      if (cancelled || updateAvailable) return; // stop polling once we've decided to show the toast
+      if (cancelled || settled.current) return; // stop once the toast is shown or has been dismissed
       const polled = await fetchDeployedVersion();
-      if (!cancelled && isNewerVersion(running, polled)) setUpdateAvailable(true);
+      if (!cancelled && !settled.current && isNewerVersion(running, polled)) {
+        settled.current = true;
+        setUpdateAvailable(true);
+      }
     }
 
     // Check on focus (the reader returning to a long-open tab is the prime moment a deploy happened)
@@ -51,8 +60,9 @@ export function UpdateToast() {
       window.removeEventListener("focus", onFocus);
       clearInterval(timer);
     };
-    // Intentionally mount-only; `updateAvailable` is read via the guard above (a stale closure just
-    // means one extra fetch that no-ops), and re-subscribing on every change would thrash the listeners.
+    // Intentionally mount-only — re-subscribing on every state change would thrash the focus listener
+    // and interval. The live decision is read through the `settled` REF (not a captured state value),
+    // so the mount-only closure never goes stale on it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -69,7 +79,10 @@ export function UpdateToast() {
           Refresh
         </button>
         <button
-          onClick={() => setUpdateAvailable(false)}
+          onClick={() => {
+            settled.current = true; // keep it dismissed — don't let the next poll re-show it
+            setUpdateAvailable(false);
+          }}
           aria-label="Dismiss"
           className="rounded p-1 text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-200"
         >

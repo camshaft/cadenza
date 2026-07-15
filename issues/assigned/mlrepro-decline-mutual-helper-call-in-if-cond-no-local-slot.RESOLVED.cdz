@@ -62,3 +62,5 @@ def main() = match check(Exp.If(Exp.Num(1), Exp.Num(2))) with
   | Result.Err(_) => 0
 
 export { main }
+
+/// RESOLVED 2026-07-15 (trunk@9ae29c12a, fix f15414e7 — recovered from a silent drop by pr-sync): the backend "parameter reference has no local slot" decline for a mutual-recursive helper gating an if cond is fixed; repro compiles + checks clean.

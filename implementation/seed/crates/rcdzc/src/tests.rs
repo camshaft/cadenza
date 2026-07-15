@@ -1452,6 +1452,78 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
     );
 }
 
+/// The build-once hoists COMPOSE through the differing positions they synthesize: when a hoist pushes a
+/// differing field into a fresh `(if c pᵢ qᵢ)` and THAT field is itself a common constructor across the
+/// arms, the synthesized `if` is re-run through the hoist (via `synth_if_hoisted`) so the nested
+/// constructor is hoisted too. `(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))`
+/// hoists the outer tuple ONCE, and its differing field-0 — a nested-if of `Some` — hoists to one `Some`:
+/// the emitted body has exactly ONE `sum-new` (not three) and ONE `arr-alloc`. Value parity confirms the
+/// deep composition preserves the arm dispatch (c1 → a, else-c2 → b, else → a) and its Perceus
+/// consumption (only the selected payload materializes).
+#[test]
+fn the_build_once_hoists_compose_through_synthesized_differing_positions() {
+    use crate::testkit::parse;
+    // `f` is recursive so it is not inlined — the tuple/Some stay runtime heap values observed via `main`.
+    let src = "(module m \
+                 (def (f (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64) (: n Int64)) \
+                   (if (< n 0) (f c1 c2 a b (+ n 1)) \
+                     (if c1 (tuple (Option.Some a) 1) \
+                       (if c2 (tuple (Option.Some b) 1) (tuple (Option.Some a) 1))))) \
+                 (def (main (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64)) \
+                   (match (. (f c1 c2 a b 0) 0) \
+                     ((Option.Some v) (+ v (. (f c1 c2 a b 0) 1))) \
+                     (_ -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly ONE sum-new (the nested Some hoisted) — a select present witnesses the composed hoist.
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the composed hoist must lower the deepest differing operand to a branchless select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "runtime tuple/Option must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |c1: bool, c2: bool, a: i64, b: i64| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![c1.to_string(), c2.to_string(), a.to_string(), b.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => panic!("composed hoist trapped (miscompile?): {t}"),
+        }
+    };
+    assert_eq!(
+        run(true, false, 10, 20),
+        "11",
+        "c1 → Some a=10, +field1=1 → 11"
+    );
+    assert_eq!(
+        run(false, true, 10, 20),
+        "21",
+        "else-c2 → Some b=20, +1 → 21"
+    );
+    assert_eq!(
+        run(false, false, 10, 20),
+        "11",
+        "else-else → Some a=10, +1 → 11"
+    );
+}
+
 /// A repeated bounds-checked indexed read `(Option.expect (List.at xs i))` is shared by CSE (one
 /// `vec-get` — pinned at the Lir level in `select.rs`); this is the RUNTIME companion, proving the
 /// SHARED read is refcount-correct on the value heap. `List.at` BORROWS the list, so sharing the read
@@ -1502,7 +1574,7 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
 /// A repeated keyed lookup `(Option.expect (Map.lookup m k))` is shared by CSE (one `map-lookup` — an
 /// O(log n) CHAMP walk — pinned at the Lir level in `select.rs`); this is the RUNTIME companion proving
 /// the SHARED lookup is refcount-correct. `Map.lookup` BORROWS the map, so sharing must leave `m` fully
-/// live: the program reads key 2 TWICE (shared) AND `Map.size m` after. If the shared lookup mishandled
+/// live: the program reads key 2 TWICE (shared) AND `Map.len m` after. If the shared lookup mishandled
 /// the borrow (a premature drop of `m` or a double-consume of the boxed value), the later size read
 /// would see a freed/corrupted map. Built at run time via an insert loop so it imports the runtime.
 /// m = {0:0,1:10,2:20,3:30,4:40} → lookup 2 = 20; 20 + 20 + size(5) = 45.
@@ -1515,7 +1587,7 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
                  (def (f (: mp (Map Int64 Int64)) (: k Int64)) \
                    (if (< k 0) (f mp (+ k 1)) \
                      (+ (+ (Option.expect (Map.lookup mp 2) \"v\") (Option.expect (Map.lookup mp 2) \"v\")) \
-                        (Map.size mp)))) \
+                        (Map.len mp)))) \
                  (def (main (: n Int64)) (f (build n Map.empty) 0)) \
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
@@ -3451,7 +3523,7 @@ fn map_remove_owned_key_leaves_no_extra_leak() {
     // borrowing `map-remove` must NOT reclaim, so the emit drops it. `main` returns a scalar so nothing
     // else survives beyond the (identical, cancelled) champ shell.
     let big_src = "(module m (def (main) \
-                    (Map.size (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000))) \
+                    (Map.len (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000))) \
                     (export main))";
     let big = compile_component(&crate::codec::encode(&parse(big_src))).expect("compile");
     let mut rt = ComposedRuntime::new(&big, &runtime_bytes);
@@ -3464,7 +3536,7 @@ fn map_remove_owned_key_leaves_no_extra_leak() {
 
     // SMALL-int (fixnum) key baseline: `5` boxes INLINE (no heap key), so no owned key temporary exists.
     let small_src = "(module m (def (main) \
-                    (Map.size (Map.remove (Map.insert (Map.empty) 5 1) 5))) (export main))";
+                    (Map.len (Map.remove (Map.insert (Map.empty) 5 1) 5))) (export main))";
     let small = compile_component(&crate::codec::encode(&parse(small_src))).expect("compile");
     let mut rt_small = ComposedRuntime::new(&small, &runtime_bytes);
     assert_eq!(rt_small.call("main", &[]), Val::S64(0));
@@ -4701,7 +4773,7 @@ fn a_perform_in_a_map_entry_value_threads() {
     use crate::testkit::parse;
     let src = "(do (effect Fresh (op next (-> Int64))) \
                (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
-                 (let ((m (\"map\" (10 (Fresh.next)) (20 (Fresh.next))))) (Map.size m)))) (export main))";
+                 (let ((m (\"map\" (10 (Fresh.next)) (20 (Fresh.next))))) (Map.len m)))) (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(src))).is_ok(),
         "a perform in a string-headed map ctor entry value must thread, not decline"
@@ -16396,7 +16468,7 @@ mod match_engine {
                 crate::abi::Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(
-                    "(module m (def (main) ((. Map size) (map (1 2)) 99)) (export main))",
+                    "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -16415,7 +16487,7 @@ mod match_engine {
         assert!(
             errs[0]
                 .message
-                .contains("`Map.size` takes 1 argument, but 2 were given"),
+                .contains("`Map.len` takes 1 argument, but 2 were given"),
             "singular 'argument' for an arity-1 op: {}",
             errs[0].message
         );
@@ -19221,8 +19293,8 @@ mod match_engine {
 
     #[test]
     fn a_tuple_row_op_over_a_non_tuple_names_the_kind() {
-        // The tuple twin of the record-row-op kind check: `Tuple.cat`/`split-at`/`pop` over a definite
-        // non-tuple operand (`(Tuple.pop n)` for `n : Int64`) was check-invisible and compiled to a
+        // The tuple twin of the record-row-op kind check: `Tuple.concat`/`split-at`/`pop` over a definite
+        // non-tuple operand (`(Tuple.remove n)` for `n : Int64`) was check-invisible and compiled to a
         // misleading "Tuple.<op> over a runtime tuple is not yet built" (the operand is not a tuple at
         // all). Now CDZ0201 names the op + the non-tuple type.
         let msg = |src: &str| -> String {
@@ -19232,7 +19304,7 @@ mod match_engine {
                 .unwrap_or_else(|| panic!("no non-tuple-operand fault for {src}"))
                 .message
         };
-        for (op, rest) in [("cat", "n"), ("pop", ""), ("split-at", "1")] {
+        for (op, rest) in [("concat", "n"), ("remove", ""), ("split-at", "1")] {
             let src = format!("(module m (def (g (: n Int64)) (Tuple.{op} n {rest})) (export g))");
             let m = msg(&src);
             assert!(
@@ -19242,8 +19314,8 @@ mod match_engine {
         }
         // NO false positive: a real tuple operand, and a bare (unconstrained `Any`) parameter, are clean.
         for ok in [
-            "(module m (def (g (: t (Tuple Int64 Int64))) (Tuple.pop t)) (export g))",
-            "(module m (def (f t) (Tuple.pop t)) (def (main) 1) (export main))",
+            "(module m (def (g (: t (Tuple Int64 Int64))) (Tuple.remove t)) (export g))",
+            "(module m (def (f t) (Tuple.remove t)) (def (main) 1) (export main))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
@@ -19460,15 +19532,15 @@ mod match_engine {
 
     #[test]
     fn tuple_cat_split_at_pop_reshape_tuples_positionally() {
-        // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.cat a b`
+        // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.concat a b`
         // concatenates (arity = sum, each element keeps its position's type); `Tuple.split-at t k` splits
         // at compile-time `k` into a `(prefix suffix)` pair (k=0 → prefix is unit, k out of 0..=arity →
-        // CDZ0201); `Tuple.pop t` takes element 0 off. cat/split-at/pop all compile over constant tuples.
+        // CDZ0201); `Tuple.remove t` takes element 0 off. cat/split-at/pop all compile over constant tuples.
         for src in [
-            "(module m (def (main) (Tuple.cat (tuple 1 2) (tuple 3 4))) (export main))",
+            "(module m (def (main) (Tuple.concat (tuple 1 2) (tuple 3 4))) (export main))",
             "(module m (def (main) (Tuple.split-at (tuple 1 2 3) 1)) (export main))",
             "(module m (def (main) (Tuple.split-at (tuple 1 2) 0)) (export main))",
-            "(module m (def (main) (Tuple.pop (tuple 1 2 3))) (export main))",
+            "(module m (def (main) (Tuple.remove (tuple 1 2 3))) (export main))",
         ] {
             assert_eq!(
                 reject_code(src),
@@ -19733,7 +19805,7 @@ mod match_engine {
         // inserted key's type differs from the map's"), and offers the int-literal→float retype where it
         // bridges the clash.
         let key = reject_full(
-            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
         )
         .expect("a Map.insert key-type clash must reject");
         assert_eq!(key.code.as_deref(), Some("CDZ0201"), "got: {}", key.message);
@@ -19743,7 +19815,7 @@ mod match_engine {
             key.message
         );
         let val = reject_full(
-            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
         )
         .expect("a Map.insert value-type clash must reject");
         assert!(
@@ -19753,7 +19825,7 @@ mod match_engine {
         );
         // Inserting an int VALUE into a map whose values are Float → the `n.0` retype fix (int-lit→float).
         let f = reject_full(
-            "(module m (def (main) (Map.size ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
         )
         .expect("reject");
         assert_eq!(
@@ -20452,6 +20524,40 @@ mod match_engine {
             !two_types_eq.message.contains("kind boundary"),
             "bare = on two identical types is not relabeled a kind boundary: {}",
             two_types_eq.message
+        );
+        // ONE primary error, no cascade: `(+ Color 1)` used to report the CDZ0201 kind-boundary AND a
+        // SPANLESS uncoded "a type value has no runtime form" decline (lowering the type-valued operand) —
+        // two `error:` lines for ONE root cause. `dedup_faults` now drops the spanless decline whenever the
+        // Type-kind-boundary CDZ0201 is present, so an arithmetic op on a type value is a single error.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (type Color (Red)) (def (main) (+ Color 1)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an arithmetic op on a type value = ONE error, not the CDZ0201 + a spanless \
+             no-runtime-form decline: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("type value has no runtime form")),
+            "the spanless no-runtime-form decline is suppressed: {:?}",
+            out.diagnostics
         );
     }
 
@@ -21541,8 +21647,8 @@ mod match_engine {
 
     #[test]
     fn over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix() {
-        // A BUILT-IN operation over-applied (`(Map.size m x)` — size takes one operand) is the built-in
-        // analogue of the user-function case above: `lower` emits the uncoded "`Map.size` is applied at
+        // A BUILT-IN operation over-applied (`(Map.len m x)` — size takes one operand) is the built-in
+        // analogue of the user-function case above: `lower` emits the uncoded "`Map.len` is applied at
         // the wrong arity — a built-in operation must be applied to exactly its arguments" decline AND
         // `infer` the coded CDZ0203 over-application (with its delete-surplus fix). They are the same
         // defect — `dedup_faults` now drops the weaker decline WHEN the coded reject is present, so the
@@ -21553,7 +21659,7 @@ mod match_engine {
                 crate::abi::Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(
-                    "(module m (def (main) ((. Map size) (map (1 2)) 99)) (export main))",
+                    "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -21787,7 +21893,7 @@ mod match_engine {
 
     #[test]
     fn a_collection_length_is_known_nonnegative_and_folds_range_comparisons() {
-        // A `List.len`/`Bytes.len`/`Map.size`/`Set.len` is a NON-NEGATIVE `Int64` (the backend zero-extends
+        // A `List.len`/`Bytes.len`/`Map.len`/`Set.len` is a NON-NEGATIVE `Int64` (the backend zero-extends
         // an i32 count), so `value_range` bounds it to `[0, 2^32-1]`. That lets the range folds fire on a
         // length: `(>= (List.len xs) 0)` is a tautology (→ the taken branch, NO compare, NO vec-len call),
         // `(< (List.len xs) 0)` is impossible, and a `(match (List.len xs) (-1 …) …)` drops the impossible
@@ -25712,14 +25818,14 @@ mod match_engine {
             "-1",
             "a two-key arm falls through when one key is missing"
         );
-        // The REST binder reads the map MINUS the named keys — `Map.size rest` over a 3-entry runtime map
+        // The REST binder reads the map MINUS the named keys — `Map.len rest` over a 3-entry runtime map
         // matching one key ("a") is 2. {"a":1,"b":2,"c":3} → v(1) + size(rest={"b","c"})(2) = 3.
         assert_eq!(
             run_heap_value(
                 "(module m \
                    (def (pick (: b Bool)) \
                      (if b (Map.insert (Map.insert (Map.insert (Map.empty) \"a\" 1) \"b\" 2) \"c\" 3) (Map.empty))) \
-                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" v) .. rest) (+ v ((. Map size) rest))) (_ -1))) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" v) .. rest) (+ v ((. Map len) rest))) (_ -1))) \
                    (def (main (: b Bool)) (look (pick b))) (export main))",
                 vec!["true".to_string()],
             )
@@ -32877,7 +32983,7 @@ mod diagnostics {
             op.fix
         );
         let map = find(
-            "(module m (def (f) (Map.size (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main))",
+            "(module m (def (f) (Map.len (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main))",
             "map contains each key",
         );
         assert_eq!(
@@ -37239,7 +37345,7 @@ mod stage1 {
         // entry at run time, keys compared BY VALUE), NOT a compile-time duplicate reject. Reading the
         // key THROUGH its binding — as a pairwise `const_compound_eq` on the folded values would —
         // conflates the two; the direct-literal gate keeps them apart, so the program COMPILES (the
-        // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.size`).
+        // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.len`).
         assert!(compiles_ok("(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))"));
     }
 
@@ -37878,6 +37984,103 @@ mod stage1 {
             rec.message.contains("record has no field `fooo`"),
             "a user record keeps 'record has no field': {}",
             rec.message
+        );
+    }
+
+    #[test]
+    fn a_retired_collection_op_name_is_rejected_with_a_rename_fix() {
+        // The consistent-naming cutover (2026-07-15) renamed three prelude collection ops:
+        // `Map.size`→`Map.len`, `Tuple.cat`→`Tuple.concat`, `Tuple.pop`→`Tuple.remove`. There is NO
+        // transitional alias (one place a name resolves — `no-keys-outside-the-prelude`), so the retired
+        // name genuinely fails to resolve — but instead of the generic "no member" it gets a targeted
+        // CDZ0603 naming the new spelling AND carrying a VERIFIED fix rewriting the key token in place.
+        for (body, module, old, new) in [
+            ("(Map.size (map (1 2)))", "Map", "size", "len"),
+            (
+                "(Tuple.cat (tuple 1 2) (tuple 3 4))",
+                "Tuple",
+                "cat",
+                "concat",
+            ),
+            ("(Tuple.pop (tuple 1 2 3))", "Tuple", "pop", "remove"),
+        ] {
+            let d = expect_error(body);
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0603"),
+                "got: {} — {}",
+                d.code.as_deref().unwrap_or("?"),
+                d.message
+            );
+            assert!(
+                d.message
+                    .contains(&format!("`{module}.{old}` was renamed to `{module}.{new}`")),
+                "names the retired op and its replacement: {}",
+                d.message
+            );
+            assert!(
+                d.message.contains(&format!("write `(. {module} {new})`")),
+                "shows the canonical spelling: {}",
+                d.message
+            );
+            let fix = d.fix.expect("a rename fix is carried");
+            assert_eq!(
+                fix.replacement, new,
+                "the fix rewrites the key to the new name"
+            );
+            assert!(
+                fix.verified,
+                "a mechanical rename to a known canonical name is VERIFIED, not a guess"
+            );
+        }
+    }
+
+    #[test]
+    fn a_genuine_member_typo_still_gets_the_ordinary_unknown_member_error() {
+        // CDZ0603 fires ONLY on the fixed retired set — a name that was never a member (`Map.siz`, a plain
+        // typo) still takes the ordinary CDZ0201 unknown-member did-you-mean, so the rename hint never
+        // shadows a normal typo. (Guards the "diagnostic-only, tight retired set" invariant.)
+        let d = expect_error("(Map.siz (map (1 2)))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("the `Map` module has no member `siz`"),
+            "an unrecognized member is the ordinary unknown-member error: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("was renamed"),
+            "the rename hint does not fire on a plain typo: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn the_renamed_collection_ops_resolve_under_their_new_names() {
+        // The canonical spellings COMPILE — a pure surface rename, no eval/backend change (the intrinsics
+        // `map-size`/`tuple-cat`/`tuple-pop` stay wired; only the surface key moved). Same shape as the
+        // pre-rename `tuple_cat_split_at_pop_reshape_tuples_positionally` compile check.
+        for src in [
+            "(module m (def (main) (Map.len (Map.insert (Map.insert (Map.empty) 1 10) 2 20))) (export main))",
+            "(module m (def (main) (Tuple.concat (tuple 1 2) (tuple 3 4))) (export main))",
+            "(module m (def (main) (Tuple.remove (tuple 1 2 3))) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+                "the canonical collection-op name must resolve + compile: {src}"
+            );
+        }
+        // …and a value EXECUTES under the new name: `(Tuple.remove (tuple 7 8 9))` drops the last element
+        // (leaving `(7 8)`), so reading element 0 folds to the constant `7` the component returns — no
+        // runtime store needed (the positional reshape is compile-time known). Exercises the renamed
+        // `Tuple.remove` end-to-end through wasmtime.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) (. (Tuple.remove (tuple 7 8 9)) 0)) (export main))",
+        )))
+        .expect("Tuple.remove compiles");
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            7,
+            "Tuple.remove drops the last element, so element 0 of the result stays 7"
         );
     }
 
@@ -43841,7 +44044,7 @@ mod stage1 {
         // VALID component (wasmtime parses it). Running it end-to-end also needs cdz-run to link both the
         // host responses and the runtime — a separate increment; component validity is the structural gate.
         let src = "(do (effect ask (op ask (-> Unit Int64))) \
-                   (def (main) (host (ask) (Map.size (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
+                   (def (main) (host (ask) (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a host op composed with the value-heap runtime now emits");
         let engine = wasmtime::Engine::default();
@@ -44592,7 +44795,7 @@ mod stage1 {
     #[test]
     fn a_handler_threads_a_map_as_its_state_across_multiple_performs() {
         // The MAP analogue of the Set-state seen-set (corpus "a handler threads a SET as its state") — a
-        // handler state that is a MAP (key→value store) mutated with `Map.insert` and read with `Map.size`
+        // handler state that is a MAP (key→value store) mutated with `Map.insert` and read with `Map.len`
         // across MULTIPLE performs, exercising the CHAMP key→value path through the effect fold (distinct
         // from the key-only Set case). `(do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count))` seeds
         // an empty map, inserts keys 1, 2, then re-inserts 1 (deduped by key) → two keys → size 2. Guards
@@ -44600,7 +44803,7 @@ mod stage1 {
         // Map.lookup/insert CSE change (actively churned by sibling verticals) cannot regress it.
         let src = "(do (effect Store (op put (-> Int64 Unit)) (op count (-> Unit Int64))) \
                    (def (main) (handle Store (Map.empty) \
-                     ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.size m) m))) \
+                     ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.len m) m))) \
                      (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main))";
         // Map state lives on the value heap, so the in-process linker can't run it — assert it COMPILES;
         // a store run yields 2 (verified by hand via cdz-run). Mirrors the list/String-state assertions.

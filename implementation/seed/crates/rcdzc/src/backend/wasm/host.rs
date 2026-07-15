@@ -229,6 +229,15 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 // nothing but a reached host op can vary it, and this walk proves those are exactly the manifest's ops.
 //= spec/capabilities/core-semantics.md#a-program-that-terminates-ends-in-one-of-two-terminal-conditions
 //# The terminal condition of a program run that terminates MUST be a deterministic function of its input and its declared capabilities' responses, so that whether a run terminates is a property of the environment that hosts it while the terminal condition of one that does is fixed by the program.
+// This walk SURFACES the reached capabilities into the manifest and stops there: it applies NO
+// permissibility judgement — every reached host op is enumerated regardless of whether some runtime's
+// policy would allow it, and the compiler never refuses a program on such a policy ground (there is no
+// allow/deny list here). Deciding which capabilities are permissible is the RUNTIME's concern, not the
+// compiler's:
+//= spec/contracts/host-interface-binding.md#policy-over-the-manifest-belongs-to-the-runtime
+//# The compiler MUST surface a program's declared capabilities in its manifest without deciding which capabilities are permissible.
+//= spec/contracts/host-interface-binding.md#policy-over-the-manifest-belongs-to-the-runtime
+//# The compiler MUST NOT refuse a program solely because a capability it declares would be disallowed by a particular runtime's policy.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
     // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing
@@ -371,6 +380,9 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             }
             collect_host_imports(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value to reach any host op inside.
+        Core::Block { body, .. } => collect_host_imports(db, body, out),
+        Core::Break { value } => collect_host_imports(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }

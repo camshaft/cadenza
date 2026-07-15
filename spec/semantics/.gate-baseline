@@ -96,6 +96,9 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	OR-saturation to a full-width mask on an unsigned runtime value
+pass	OR-then-mask absorption does not discard a trapping runtime operand
+pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
@@ -772,6 +775,7 @@ pass	a list arm's constructor element that does not match the tag falls through
 pass	a list built at run time by a push-loop escapes to the host
 pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
+pass	a list captured by a closure that consumes it is unchanged for a later read of the binding
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
 pass	a list consumed by List.concat in one operand keeps its element view for a later read
@@ -994,6 +998,7 @@ pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested OR by the same constant collapses to a single OR
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
@@ -1247,6 +1252,7 @@ pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
+pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension

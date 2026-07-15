@@ -549,6 +549,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn byte_escape_round_trips_every_byte_value() {
+        // `escape_bytes` then `unescape_byte_string_token` is the identity for EVERY byte value — the
+        // b"…" surface is a lossless byte encoding (named escapes for `\n\t\r\\"`, `\xNN` for the rest,
+        // printable ASCII verbatim). A regression in either direction (e.g. an off-by-one on a trailing
+        // `\xNN`) would flip some byte, so sweeping all 256 pins the inverse-pair contract.
+        for b in 0u8..=255 {
+            let tok = format!("b\"{}\"", escape_bytes(&[b]));
+            assert_eq!(
+                unescape_byte_string_token(&tok),
+                vec![b],
+                "byte {b} did not round-trip via {tok:?}"
+            );
+        }
+        // Multi-byte sequences, including a non-printable at the END (the position most likely to trip
+        // a boundary bug) and the two chars that have both a named escape and are ASCII (`\\`, `"`).
+        for seq in [
+            vec![0x41u8, 0x00],
+            vec![0x00, 0x41],
+            vec![0xff, 0xfe, 0x00],
+            vec![10, 0xff],
+            vec![b'\\', b'"', b'\n'],
+            vec![],
+        ] {
+            let tok = format!("b\"{}\"", escape_bytes(&seq));
+            assert_eq!(
+                unescape_byte_string_token(&tok),
+                seq,
+                "seq {seq:?} via {tok:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_byte_escapes_never_panic() {
+        // Untrusted `b"…"` content: a bare/short/non-hex `\x`, a trailing backslash, an unknown escape,
+        // and an empty body must all decode to SOME bytes without panicking (the lexer can hand these
+        // through on odd input). The exact bytes are not the contract here — no-crash is.
+        for t in [
+            "b\"\\x\"",    // \x with no digits
+            "b\"\\x4\"",   // \x with one digit
+            "b\"\\xzz\"",  // \x with non-hex
+            "b\"\\x4g\"",  // \x with one hex + one non-hex
+            "b\"\\\"",     // trailing backslash
+            "b\"\\q\"",    // unknown escape
+            "b\"\"",       // empty
+            "not-a-token", // not b"…"-shaped
+        ] {
+            let _ = unescape_byte_string_token(t); // must not panic
+        }
+    }
+
+    #[test]
+    fn string_escape_round_trips() {
+        // `escape_string` then `unescape_string` is the identity for the closed escape set + arbitrary
+        // text (the named escapes and any other char). Covers the chars that MUST escape and some that
+        // must not, including unicode.
+        for s in [
+            "",
+            "plain",
+            "a\nb\tc\rd",
+            "quote\"here",
+            "back\\slash",
+            "λ中🎉",
+            "\"\\\n\t\r",
+        ] {
+            let round = unescape_string(&escape_string(s)).expect("escaped text re-unescapes");
+            assert_eq!(round, s, "string {s:?} did not round-trip");
+        }
+        // An unrecognized escape is reported (closed set): `\q` → Err('q').
+        assert_eq!(unescape_string("\\q"), Err('q'));
+        // A trailing backslash is dropped (documented).
+        assert_eq!(unescape_string("ab\\"), Ok("ab".to_string()));
+    }
+
+    #[test]
+    fn int_render_parse_round_trips_across_radices_and_signs() {
+        // `render_int` then `parse_int` preserves value AND radix (the radix is part of a leaf's
+        // identity — see the codec). `-0` normalizes to `0` (no signed-zero int).
+        for tok in ["42", "-42", "0x2a", "0b101", "-0xff", "0", "255", "-1"] {
+            let (v, radix) = parse_int(tok).unwrap_or_else(|| panic!("parse {tok:?}"));
+            let rendered = render_int(&v, radix);
+            let (v2, radix2) =
+                parse_int(&rendered).unwrap_or_else(|| panic!("reparse {rendered:?}"));
+            assert_eq!(
+                (v.clone(), radix),
+                (v2, radix2),
+                "int {tok:?} → {rendered:?}"
+            );
+        }
+        // `-0` in any radix renders as an unsigned zero.
+        let (z, r) = parse_int("-0").unwrap();
+        assert_eq!(render_int(&z, r), "0");
+    }
+
+    #[test]
     fn ints_with_base() {
         assert_eq!(parse_int("42"), Some((BigInt::from(42), Radix::Dec)));
         assert_eq!(parse_int("0x2A"), Some((BigInt::from(42), Radix::Hex)));
