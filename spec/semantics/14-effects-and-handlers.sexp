@@ -147,6 +147,27 @@
   (output (: 105 Int64))
   (host-calls))
 
+(case "a bound effect performed with neither a handler nor a host delegation has no home"
+  (doc    "The companion to the override case above, pinning the ROUTING MODEL: `(bind Math
+           \"cadenza:math/api\")` is a routing TABLE — it names WHERE the effect goes once it is delegated —
+           NOT itself a delegation. What DELEGATES an effect to the boundary (and declares the capability in
+           the program's manifest) is a `(host (Math) …)` clause, exactly as for a plain host effect
+           (capabilities-and-effects.md #A Host Import Is A Boundary Effect And The Manifest Is Its Row;
+           cross-component-interop.md #A Cross-Component Import Grants No Host Authority — a component that
+           reaches a boundary operation MUST declare that capability in its OWN manifest rather than acquire
+           it implicitly). So a bare `(Math.add 2 3)` performed with NO enclosing handler AND no `(host
+           Math …)` is an effect reached with no home — rejected CDZ0401 — even though `Math` is bound to a
+           peer: the binding says where a delegation WOULD route, but nothing here delegates. This guards
+           that a `(bind …)` does not silently grant an implicit peer capability; a peer call is still an
+           explicit `(host (Math) (Math.add …))` [the working peer-call path] or an in-program `(handle Math
+           …)` override [the case above]. (If the routing model is ever revised so a binding itself
+           delegates, this pinned rejection is the case that must be knowingly flipped.)")
+  (input  (do
+            (effect Math (op add (-> Int64 Int64 Int64)))
+            (bind Math "cadenza:math/api")
+            (def (main) (Math.add 2 3)) (export main)))
+  (error  CDZ0401))
+
 (case "an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary"
   (doc    "Witnesses capabilities-and-effects.md #A Handler May Interpose On An Effect An Entrypoint Would
            Delegate: the entrypoint delegates `ask` to the host (outermost router), but an inner handler
