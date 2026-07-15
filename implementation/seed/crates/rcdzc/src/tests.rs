@@ -32258,6 +32258,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_bigint_quantity_combine_converts_to_the_reference() {
+        // `lower_quantity_combine` gained a BigInt arm: a MIXED-SCALE combine (km + m) over a BigInt inner
+        // converts each operand to the reference in unbounded bigint arithmetic (v km → v*1000 m) then
+        // combines. Previously it fell to the fixnum runtime path (bare-int scale factors) and declined
+        // ("ownership cannot prove"). Nullary (both operands narrowed from runtime BigInts so no fold):
+        // (2 km + 500 m) = 2500. Uses the FULL runtime; skips if absent (corpus gate covers it e2e).
+        let src = "(do \
+                   (def (rt) ((. Int64 of) ((. BigInt of) 2))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) ((. BigInt of) (rt)) \
+                                          ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                       ((. Qty of) ((. BigInt of) 500) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("2500"),
+            "2 km + 500 m (BigInt, mixed scale) converts to the reference → 2500: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
