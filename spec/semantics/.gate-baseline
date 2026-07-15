@@ -2401,6 +2401,7 @@ pass	same-key-set record match arms share an equal field and sink the differing 
 pass	same-length list match arms share an equal element and sink the differing one
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
+pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)

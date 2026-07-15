@@ -279,6 +279,16 @@
   (input  (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 Unit.one)))
   (output (: (Qty.of 6.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+(case "scaling a Float64 quantity by a bare integer is a numeric-type mismatch"
+  (doc    "`(* (Qty.of 5.0 meter) 1)` scales a `(Qty Float64 meter)` by a bare `Int64` `1` — the SAME
+           no-silent-promotion error a bare `(* 5.0 1)` gets (CDZ0301, numeric-model.md), NOT a silent
+           success: a quantity's inner numeric type and a bare scaling factor must agree, exactly as two
+           bare numbers must. Pins the fix for a miscompile where this was accepted and lowered the `1` as
+           an i64 into an f64 multiply (invalid wasm); it must be a compile-time rejection with the `1` →
+           `1.0` coercion the bare mismatch offers.")
+  (input  (* (Qty.of 5.0 (Unit.base #"meter")) 1))
+  (error  CDZ0301))
+
 (case "a unit multiplied by its own inverse cancels to the dimensionless unit"
   (doc    "`(/ (Qty.of 6.0 meter) (Qty.of 2.0 meter))` derives meter/meter = Unit.one — the base cancels
            its inverse (the free-abelian-group law) — leaving a dimensionless `(Qty Float64 Unit.one)`

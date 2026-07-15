@@ -30872,6 +30872,47 @@ mod match_engine {
     }
 
     #[test]
+    fn scaling_a_float_quantity_by_a_bare_integer_is_a_numeric_mismatch_not_a_miscompile() {
+        // MISCOMPILE FIX: `(* (Qty.of 5.0 meter) 1)` scales a `(Qty Float64 meter)` by a bare `Int64` `1`.
+        // `*`/`/` on a quantity is dimensionally always well-formed, so `check_application` SKIPPED the
+        // fault check entirely — but the inner numeric types (Float64 vs Int64) must still agree (the same
+        // no-silent-promotion rule a bare `(* 5.0 1)` enforces). Without the check the mismatch reached
+        // `lower`, which emitted the `1` as an i64 into an f64 multiply → INVALID wasm (`cdz check` passed,
+        // wasm-tools rejected it). Now it is CDZ0301 with the `1` → `1.0` widening fix, exactly as the bare
+        // mismatch offers. Pins the rejection + the coercion direction (widen the int operand to float).
+        let d = reject_full(
+            "(module m (def (g) (* (Qty.of 5.0 (Unit.base #\"meter\")) 1)) (export g))",
+        )
+        .expect("a Float64 quantity scaled by a bare Int64 rejects");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0301"),
+            "must be a numeric mismatch, not a silent miscompile: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "offers the widening `1` → `1.0` (match the quantity's Float inner): {:?}",
+            d.fix
+        );
+        // The well-typed companion — a Float64 quantity scaled by a bare Float64 — is accepted (no CDZ0301).
+        assert!(
+            reject_full(
+                "(module m (def (g) (* (Qty.of 5.0 (Unit.base #\"meter\")) 2.0)) (export g))"
+            )
+            .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "a Float64 quantity scaled by a bare Float64 is well-formed"
+        );
+        // And an Int64 quantity scaled by a bare Int64 is accepted (both integer — no mismatch).
+        assert!(
+            reject_full("(module m (def (g) (* (Qty.of 5 (Unit.base #\"meter\")) 2)) (export g))")
+                .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
+            "an Int64 quantity scaled by a bare Int64 is well-formed"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
