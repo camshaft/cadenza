@@ -19853,6 +19853,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_op_homogeneity_reject_anchors_at_the_offending_argument() {
+        // The `List.push`/`List.update`/`List.concat` homogeneity reject (CDZ0201) must anchor at the
+        // OFFENDING ARGUMENT — the pushed/updated element, or the second list in concat — not the whole
+        // `(List.push …)` application node, so the squiggle points at the culprit (PR #399 review). Without
+        // the anchor, `collect`'s `set_origin_if_absent(id)` stamped the whole call.
+        // push: the pushed element `"x"` (a String into a List Int64) is the locus, not the call.
+        let push = reject_full(
+            "(module m (def (f (: xs (List Int64))) ((. List push) xs \"x\")) (export f))",
+        )
+        .expect("a wrong-element List.push rejects");
+        assert_eq!(
+            push.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            push.message
+        );
+        let src_push =
+            "(module m (def (f (: xs (List Int64))) ((. List push) xs \"x\")) (export f))";
+        let db_push = crate::db::Db::load(parse(src_push));
+        assert_eq!(
+            db_push.ast.as_str(crate::ast::StructId(
+                push.node.expect("push reject carries an anchor")
+            )),
+            Some("x"),
+            "the List.push homogeneity reject anchors at the pushed element `\"x\"`, not the call: {}",
+            push.message
+        );
+        // update: the updated element (arg 3) is the locus.
+        let update = reject_full(
+            "(module m (def (f (: xs (List Int64))) ((. List update) xs 0 \"y\")) (export f))",
+        )
+        .expect("a wrong-element List.update rejects");
+        let src_up =
+            "(module m (def (f (: xs (List Int64))) ((. List update) xs 0 \"y\")) (export f))";
+        let db_up = crate::db::Db::load(parse(src_up));
+        assert_eq!(
+            db_up.ast.as_str(crate::ast::StructId(
+                update.node.expect("update reject carries an anchor")
+            )),
+            Some("y"),
+            "the List.update homogeneity reject anchors at the updated element `\"y\"`: {}",
+            update.message
+        );
+    }
+
+    #[test]
     fn a_list_int_literal_vs_float_offers_a_float_literal_retype_fix() {
         // A list-homogeneity clash between an INTEGER LITERAL and a FLOAT type has the SAME one-shot repair
         // the annotation site's `(: 3 Float64)` gives: rewrite the integer literal `n` as a float literal
