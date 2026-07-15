@@ -66,3 +66,5 @@
             (def (main) (if (Set.contains (Set.of (list (rep "hi" 3))) "hixxx") 1 0))
             (export main)))
   (output (: 1 Int64)))
+
+;; ASSIGNED 2026-07-15: claimed by v-runtime (rope-canonicalization design). NOT a fix-agent job.

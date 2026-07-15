@@ -674,7 +674,8 @@ mod tests {
     /// Is A Bijection) checked on the canonical form. We do NOT compare against the accepted arena
     /// itself: `decode` is LENIENT (it accepts non-canonical layouts — forward references, unreferenced
     /// "dead" leaves), while `encode` canonicalizes, so the raw arena need not be reproduced. Returns
-    /// the accepted count so callers can guard against a vacuous (never-accepts) sweep.
+    /// `true` iff `bytes` was accepted (decoded), so a caller can count acceptances and guard against a
+    /// vacuous (never-accepts) sweep.
     fn assert_canonical_fixed_point(bytes: &[u8]) -> bool {
         let Some(back) = decode(bytes) else {
             return false;

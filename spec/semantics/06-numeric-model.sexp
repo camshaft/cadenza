@@ -2720,3 +2720,81 @@
   (output (: 5 Int64))
   (call   main (: -9223372036854775808 Int64))
   (trap   "integer overflow"))
+
+; --- Runtime checked arithmetic guards AT the narrow width (adversarial boundary pairs) -----------
+; The constant-fold cases above PROVE a narrow overflow and reject (CDZ0304); their doc notes the
+; runtime path "still traps at run time" — these grade that promise. A UInt8 rides in a wide slot, so
+; the checked op must range-check at width 8, not 64: computing 256 in the wide slot and keeping it
+; would be a value outside the type. Each case pairs the largest passing operands with the smallest
+; trapping ones, pinning the guard boundary exactly (off-by-one either way fails one call).
+
+(case "a runtime unsigned-byte addition traps exactly past its width maximum"
+  (doc    "`(+ x 1)` over a runtime `x : UInt8`: at x = 254 the sum 255 = UInt8.max FITS → 255; at
+           x = 255 the sum 256 exceeds the 8-bit range and the checked add TRAPS — at the NARROW width,
+           though the carrying i64 slot holds 256 comfortably (numeric-model.md #Overflow Is Defined at
+           each width). The runtime companion the constant `(+ (: 255 UInt8) (: 1 UInt8))` → CDZ0304
+           case promises in prose.")
+  (input  (do (def (main (: x UInt8)) (+ x (: 1 UInt8))) (export main)))
+  (call   main (: 254 UInt8))
+  (output (: 255 UInt8))
+  (call   main (: 255 UInt8))
+  (trap   "integer overflow"))
+
+(case "a runtime unsigned-byte multiplication traps exactly past its width maximum"
+  (doc    "`(* x y)` over runtime UInt8 operands: 15 × 17 = 255 = UInt8.max FITS; 16 × 16 = 256 TRAPS.
+           The multiply companion — a lowering that checked the product against the i64 (or even i32)
+           range instead of the 8-bit range would let 256 through as a UInt8-typed value.")
+  (input  (do (def (main (: x UInt8) (: y UInt8)) (* x y)) (export main)))
+  (call   main (: 15 UInt8) (: 17 UInt8))
+  (output (: 255 UInt8))
+  (call   main (: 16 UInt8) (: 16 UInt8))
+  (trap   "integer overflow"))
+
+(case "a runtime unsigned-byte subtraction traps below zero"
+  (doc    "`(- x y)` over runtime UInt8 operands: 1 - 1 = 0 FITS (the range floor); 0 - 1 = -1 has no
+           unsigned representation and TRAPS. An unsigned checked subtract implemented as the signed
+           i64 subtract (where -1 is representable) with only an upper-bound check would return a
+           negative value reinterpreted as a huge UInt8. The floor companion of the two ceiling cases.")
+  (input  (do (def (main (: x UInt8) (: y UInt8)) (- x y)) (export main)))
+  (call   main (: 1 UInt8) (: 1 UInt8))
+  (output (: 0 UInt8))
+  (call   main (: 0 UInt8) (: 1 UInt8))
+  (trap   "integer overflow"))
+
+(case "a checked addition of two runtime-wrapped bytes still guards at the narrow width"
+  (doc    "`(+ (UInt8.wrap a) (UInt8.wrap b))` — wrap is TOTAL (truncates to the low byte), but the
+           checked `+` over the wrapped results must STILL range-check at width 8: a = 511 wraps to 255,
+           so +1 overflows → trap, while +0 is 255 → passes. Pins that a totalizing wrap feeding a
+           checked op does not launder the width guard away (the wrapped value is a genuine UInt8, its
+           arithmetic checked like any other), and that the guard reads the MASKED value, not the wide
+           pre-wrap slot (511 + 0 in the wide slot is 511 — a guard on the raw slot would wrongly trap
+           the passing call).")
+  (input  (do (def (main (: a Int64) (: b Int64)) (+ (UInt8.wrap a) (UInt8.wrap b))) (export main)))
+  (call   main (: 511 Int64) (: 1 Int64))
+  (trap   "integer overflow")
+  (call   main (: 511 Int64) (: 0 Int64))
+  (output (: 255 UInt8)))
+
+(case "a runtime byte truncation of the sign extremes keeps exactly the low byte"
+  (doc    "`(UInt8.wrap n)` at the i64 sign extremes: n = -256 (low byte 0x00) → 0 and n = Int64.min
+           (= -2^63, low byte 0x00) → 0. The -1 → 255 case above pins the all-ones low byte; these pin
+           the all-zeros low byte reached from a NEGATIVE wide value — a wrap emitted as a signed
+           modulo/remainder (rather than a bit mask) yields 0 for -256 but a sign-flipped remainder for
+           other negatives, and Int64.min is the operand where signed-magnitude tricks (negate-then-mask)
+           themselves overflow. Total, no trap, exactly the low 8 bits.")
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
+  (call   main (: -256 Int64))
+  (output (: 0 UInt8))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: 0 UInt8)))
+
+(case "a runtime nibble truncation keeps the low four bits"
+  (doc    "`((UInt 4).wrap n)` — wrap at a NON-BYTE width (the width the bin bit-field segments take):
+           n = 17 = 0b10001 keeps the low nibble 0b0001 → 1; n = 15 = 0b1111 fits whole → 15. Pins that
+           the truncation masks at the type's OWN width (a byte-mask reused for every narrow width would
+           keep 17). The (UInt 4) companion of the UInt8 wrap cases.")
+  (input  (do (def (main (: n Int64)) ((. (UInt 4) wrap) n)) (export main)))
+  (call   main (: 17 Int64))
+  (output (: 1 (UInt 4)))
+  (call   main (: 15 Int64))
+  (output (: 15 (UInt 4))))

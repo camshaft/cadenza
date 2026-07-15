@@ -341,6 +341,7 @@ pass	a capturing unannotated closure in a payload is typed from the declared arr
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
+pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
@@ -466,6 +467,7 @@ pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
+pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -880,6 +882,7 @@ pass	a mutually-recursive group performs in its entry def while its partner only
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
+pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -1204,6 +1207,7 @@ pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
+pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
@@ -1245,6 +1249,7 @@ pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
+pass	a runtime nibble truncation keeps the low four bits
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
@@ -1293,7 +1298,10 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
+pass	a runtime unsigned-byte addition traps exactly past its width maximum
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
+pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime wider integer is truncated into a byte by wrap
@@ -1351,6 +1359,7 @@ pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
+pass	a shared and a differing element hoist across same-length list arms
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -1444,7 +1453,9 @@ pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
+pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
+pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
@@ -1679,6 +1690,7 @@ pass	an exported closure with an annotation-mismatched body is rejected, not emi
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
+pass	an if over different-length list arms keeps each branch's own list
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
@@ -1980,6 +1992,7 @@ pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
+pass	heap string elements of a hoisted list if select by branch
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal

@@ -13,7 +13,7 @@
 //! [`has_canonicalizing_head`].
 
 use cadenza_syntax::ast::{Arenas, Struct, StructId};
-use cadenza_syntax::{parser, printer, sexpr, token};
+use cadenza_syntax::{codec, parser, printer, sexpr, token};
 use std::collections::BTreeMap;
 
 const WIDTH: usize = 100;
@@ -150,5 +150,155 @@ fn ml_surface_round_trips_the_corpus() {
     assert_eq!(
         passed, total,
         "not all corpus inputs round-trip through the ML surface"
+    );
+}
+
+#[test]
+fn binary_surface_round_trips_the_corpus() {
+    // The BINARY codec's round-trip over the whole real program corpus — the counterpart to the ML
+    // test above, whose oracle is the same independent s-expr reader. `codec::decode(encode(x))` must
+    // be structurally equal to `x` (the bijection guarantee, ast-encoding.md), and `encode` must be a
+    // deterministic canonical fixed point (`encode(decode(encode(x))) == encode(x)`). Before this,
+    // the codec's only round-trip coverage was a handful of hand-built arenas in `codec.rs` — the
+    // corpus (every construct the language actually emits) never exercised the binary surface.
+    let dir = corpus_dir();
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut fail_buckets: BTreeMap<String, (usize, String)> = BTreeMap::new();
+
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read corpus dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("sexp"))
+        .collect();
+    entries.sort();
+
+    for path in entries {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let file = sexpr::read_all(&text)
+            .unwrap_or_else(|e| panic!("oracle parse {}: {}", path.display(), e.0));
+        for input in inputs_of(&file) {
+            total += 1;
+            let bucket = input.head_name(input.root).unwrap_or("<leaf>").to_string();
+
+            let bytes = codec::encode(&input);
+            let ok = match codec::decode(&bytes) {
+                None => false,
+                Some(back) => {
+                    // Structural equality (the raw arena fields differ after a canonicalizing encode)
+                    // AND encode is a deterministic fixed point on the decoded canonical form.
+                    back.structurally_eq(&input) && codec::encode(&back) == bytes
+                }
+            };
+
+            if ok {
+                passed += 1;
+            } else {
+                let entry = fail_buckets.entry(bucket).or_insert((0, String::new()));
+                entry.0 += 1;
+                if entry.1.is_empty() {
+                    let reason = match codec::decode(&bytes) {
+                        None => "decode returned None on a valid encoding".to_string(),
+                        Some(back) if !back.structurally_eq(&input) => "AST mismatch".to_string(),
+                        _ => "encode not a fixed point".to_string(),
+                    };
+                    entry.1 = format!("{reason}\n    s-expr: {}", sexpr::print(&input));
+                }
+            }
+        }
+    }
+
+    eprintln!("binary round-trip: {passed}/{total} corpus inputs");
+    if passed != total {
+        eprintln!("\nfailure buckets (head symbol -> count):");
+        for (head, (count, sample)) in &fail_buckets {
+            eprintln!("  {head}: {count}\n    {sample}");
+        }
+    }
+    assert_eq!(
+        passed, total,
+        "not all corpus inputs round-trip through the binary codec"
+    );
+}
+
+#[test]
+fn all_surface_paths_round_trip_the_corpus() {
+    // The full surface matrix: every corpus program must survive ml→sexpr, sexpr→binary→sexpr, and
+    // ml→binary→ml — the three text/binary projections of one arena are lossless in every direction.
+    // The ml and binary single-surface tests above pin the two hard paths; this pins the CROSS-surface
+    // compositions (the ones a real tool chains: read ML → serialize binary → later print ML) so a
+    // regression in any conversion seam is caught against the whole corpus, not a hand-picked sample.
+    let dir = corpus_dir();
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut fail_buckets: BTreeMap<String, (usize, String)> = BTreeMap::new();
+
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read corpus dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("sexp"))
+        .collect();
+    entries.sort();
+
+    for path in entries {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let file = sexpr::read_all(&text)
+            .unwrap_or_else(|e| panic!("oracle parse {}: {}", path.display(), e.0));
+        for input in inputs_of(&file) {
+            total += 1;
+            let bucket = input.head_name(input.root).unwrap_or("<leaf>").to_string();
+
+            // A canonicalizing head (`Unit.^` → `^`) collapses under the ML surface, so ml→binary→ml
+            // is held to the idempotence contract (same as the ML-only test), not structural equality.
+            let structural = !has_canonicalizing_head(&input);
+
+            // Path A: ml → binary → ml. Print ML, read it back to an arena, encode, decode, print ML
+            // again — the two ML renderings must be byte-identical (and structurally equal to the
+            // input when the head is not canonicalized away).
+            let ml = printer::print(&input, WIDTH);
+            let via_bin = codec::decode(&codec::encode(&parser::read_ml(&ml).arenas));
+            let path_a = match &via_bin {
+                Some(a) => {
+                    printer::print(a, WIDTH) == ml && (!structural || a.structurally_eq(&input))
+                }
+                None => false,
+            };
+
+            // Path B: sexpr → binary → sexpr. The s-expr text is the input's own surface here; encode
+            // then decode then re-print s-expr must reproduce the canonical s-expr text.
+            let sx = sexpr::print(&input);
+            let sx_arena = sexpr::read(&sx).expect("oracle re-reads its own print");
+            let path_b = match codec::decode(&codec::encode(&sx_arena)) {
+                Some(a) => sexpr::print(&a) == sx && a.structurally_eq(&input),
+                None => false,
+            };
+
+            if path_a && path_b {
+                passed += 1;
+            } else {
+                let entry = fail_buckets.entry(bucket).or_insert((0, String::new()));
+                entry.0 += 1;
+                if entry.1.is_empty() {
+                    let which = if !path_a {
+                        "ml→binary→ml"
+                    } else {
+                        "sexpr→binary→sexpr"
+                    };
+                    entry.1 = format!("{which} failed\n    s-expr: {sx}\n    ml:     {ml}");
+                }
+            }
+        }
+    }
+
+    eprintln!("all-surface round-trip: {passed}/{total} corpus inputs");
+    if passed != total {
+        eprintln!("\nfailure buckets (head symbol -> count):");
+        for (head, (count, sample)) in &fail_buckets {
+            eprintln!("  {head}: {count}\n    {sample}");
+        }
+    }
+    assert_eq!(
+        passed, total,
+        "not all corpus inputs round-trip through every surface path"
     );
 }

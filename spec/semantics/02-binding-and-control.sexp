@@ -2392,6 +2392,44 @@
             (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64)))
 
+; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
+; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser
+; instead PROJECTS the returned tuple by member access (`(. inner 0)`/`(. inner 1)`) and REBUILDS a fresh
+; tuple that pairs a boxed-sum node built from the value slot with the threaded cursor slot — `(tuple (Neg
+; (. inner 0)) (. inner 1))`. So a boxed-sum payload is projected out of one recursive-return tuple, wrapped
+; in a NEW sum ctor, and returned in a new tuple ACROSS the mutual `pa↔pb` edge while the cursor from the
+; other projection is threaded on. This is the slot-alias-prone shape (a boxed sum projected from a tuple
+; and re-threaded through a self/mutual loop — the compiler-ml decode/parser stress, self-hosting-surface.md
+; #The Reader Is Written In Cadenza); pinning it green guards the tuple-projection slot allocator against a
+; refcount/slot change that would alias the projected-sum handle with the cursor arith temp.
+
+(case "a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge"
+  (doc    "`pa`/`pb` mutually recurse over a token list, each returning `(Expr, next-index)`. `pa` at index
+           i reads the token: on `0` it recurses via `pb(i+1)`, PROJECTS that return with `(. inner 0)` /
+           `(. inner 1)`, and rebuilds `(tuple (Expr.Neg (. inner 0)) (. inner 1))` — a boxed sum built from
+           the projected value slot paired with the threaded cursor slot; otherwise it returns `(tuple
+           (Expr.Lit t) (+ i 1))`. `run` parses two factors in sequence, threading the cursor `(. a 1)` into
+           the second parse, and sums their evaluated values. toks `[0,7,0,7]`: `pa(0)` sees 0 → `Neg(pb(1))`
+           = `Neg(Lit 7)` at cursor 2, `pa(2)` sees 0 → `Neg(Lit 7)` at cursor 4, so `ev` gives -7 + -7 =
+           -14. Pins that a boxed-sum payload projected from a recursive-return tuple, re-wrapped in a new
+           ctor, and re-threaded across the mutual-recursion edge stays correct — the recursive-descent
+           parser shape the self-hosted compiler takes, and a slot-allocator guard for the projected-sum /
+           cursor-temp seam.")
+  (input  (do
+            (type Expr (Lit Int64) (Neg Expr))
+            (def (toks) (list 0 7 0 7))
+            (def (pa (: i Int64))
+              (let ((t (match (List.at (toks) i) ((Some x) x) ((None _) -1))))
+                (if (= t 0)
+                    (let ((inner (pb (+ i 1)))) (tuple (Expr.Neg (. inner 0)) (. inner 1)))
+                    (tuple (Expr.Lit t) (+ i 1)))))
+            (def (pb (: i Int64)) (pa i))
+            (def (ev (: e Expr)) (match e ((Expr.Lit n) n) ((Expr.Neg x) (- 0 (ev x)))))
+            (def (run)
+              (let ((a (pa 0))) (let ((b (pa (. a 1)))) (+ (ev (. a 0)) (ev (. b 0))))))
+            (export run)))
+  (output (: -14 Int64)))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
@@ -2839,3 +2877,96 @@
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
+; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
+; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces
+; the other shapes don't have: a LENGTH mismatch must decline the hoist (length is part of a list's
+; value), and the vec-push element chain must respect Perceus retains inside a hoisted element.
+
+(case "a trapping element in the untaken arm of a same-length list if does not trap"
+  (doc    "`(if (> d 0) (list (/ 100 d) 1) (list 7 2))` at d = 0: both arms build a 2-list (the hoist's
+           target), the else arm is taken → element 0 is 7; the then-element `(/ 100 0)` stays behind the
+           condition. The list-shape guard pin, completing the sum/tuple/record set above.")
+  (input  (do
+            (def (main (: d Int64))
+              (Option.expect (List.at (if (> d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "a trapping element in the taken arm of a same-length list if still traps"
+  (doc    "The complement: `(if (= d 0) (list (/ 100 d) 1) (list 7 2))` at d = 0 takes the THEN arm, so
+           its element `(/ 100 0)` IS evaluated and must trap. With the untaken-arm case this pins the
+           per-element selections are guarded by exactly the condition.")
+  (input  (do
+            (def (main (: d Int64))
+              (Option.expect (List.at (if (= d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an if over different-length list arms keeps each branch's own list"
+  (doc    "`(if (> d 0) (list 1 2 3) (list 9))` — the arms build lists of DIFFERENT lengths (3 vs 1), so
+           the hoist must DECLINE (a list's length is part of its value; there is no per-element
+           alignment) and keep the `if`: d = 0 → the 1-list (len 1), d = 1 → the 3-list (len 3). A hoist
+           that force-aligned the shorter arm (padding or truncating) would corrupt one branch's value.
+           The decline pin for the list hoist's same-length guard.")
+  (input  (do
+            (def (main (: d Int64))
+              (List.len (if (> d 0) (list 1 2 3) (list 9))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64)))
+
+(case "a shared and a differing element hoist across same-length list arms"
+  (doc    "`(if (> d 0) (list x 5) (list y 5))` — element 1 is IDENTICAL across the arms (shared
+           directly, no select), element 0 differs (selected by the condition). d = 1 → (x, 5) = 3 + 5 =
+           8; d = 0 → (y, 5) = 9 + 5 = 14. Pins the aligned per-position rewrite: the differing slot
+           genuinely selects (both branch directions verified) and the shared slot is not disturbed.")
+  (input  (do
+            (def (main (: d Int64) (: x Int64) (: y Int64))
+              (let ((t (if (> d 0) (list x 5) (list y 5))))
+                (+ (Option.expect (List.at t 0) "v") (Option.expect (List.at t 1) "v"))))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64) (: 9 Int64))
+  (output (: 8 Int64))
+  (call   main (: 0 Int64) (: 3 Int64) (: 9 Int64))
+  (output (: 14 Int64)))
+
+(case "heap string elements of a hoisted list if select by branch"
+  (doc    "`(if (> d 0) (list (rep \"a\" d)) (list \"bb\"))` — singleton lists whose element is a HEAP
+           value (a runtime String rope vs a flat literal). d = 0 → \"bb\" (byte-len 2); d = 3 →
+           \"axxx\" (byte-len 4). The per-element select carries a heap HANDLE, not a scalar — pins the
+           hoist is sound when the selected element is a reference-counted value (the select must move
+           exactly one arm's handle into the list; duplicating or dropping either corrupts refcounts).")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: d Int64))
+              (String.byte-len (Option.expect (List.at (if (> d 0) (list (rep "a" d)) (list "bb")) 0) "v")))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64))
+  (call   main (: 3 Int64))
+  (output (: 4 Int64)))
+
+(case "a consuming op inside a hoisted list element respects a still-live binding"
+  (doc    "The Perceus interaction: `xs = [7]` is a multi-use binding; ONE hoisted element consumes it
+           (`(List.len (List.push xs 9))`) while `xs` is read again after the `if`. d = 1 → the consuming
+           element is selected: push path-copies (retain), so element 0 = 2 and `(List.len xs)` = 1 → 3;
+           d = 0 → the constant arm: 0 + 1 = 1. Pins that moving the consuming expression from an if arm
+           into a hoisted per-element selection preserves its dup site (the retain analysis must see the
+           consume-under-condition the same either way).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) 7)))
+                (let ((t (if (> d 0) (list (List.len (List.push xs 9)) 0) (list 0 0))))
+                  (+ (Option.expect (List.at t 0) "v") (List.len xs)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))

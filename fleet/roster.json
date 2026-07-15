@@ -22,6 +22,8 @@
     { "name": "v-syntax", "role": "vertical", "vertical": "syntax", "area": "cadenza-syntax", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "reviewer", "role": "reviewer", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-quantity", "role": "vertical", "vertical": "quantity", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "v-metaprogramming", "role": "vertical", "vertical": "metaprogramming", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "v-metaprogramming", "role": "vertical", "vertical": "metaprogramming", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-inference", "role": "vertical", "vertical": "inference", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-memory-safety", "role": "vertical", "vertical": "memory-safety", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }
