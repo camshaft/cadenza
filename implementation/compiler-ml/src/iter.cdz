@@ -40,6 +40,8 @@
 ///                              each `x` from `src`.
 ///   - `IterateI((f, cur))`   — the INFINITE iterator `cur, f(cur), f(f(cur)), …`; bound it with
 ///                              `take`/`take-while` to make it finite.
+///   - `StepRangeI((lo, hi, step))` — yield `lo, lo+step, lo+2·step, …` while `< hi` (half-open); the
+///                              step is assumed positive (a non-positive step yields nothing).
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -52,6 +54,7 @@ type Iter =
   | ZipWithI(Tuple((Int64 -> Int64 -> Int64), Tuple(Iter, Iter)))
   | ScanI(Tuple((Int64 -> Int64 -> Int64), Tuple(Int64, Iter)))
   | IterateI(Tuple((Int64 -> Int64), Int64))
+  | StepRangeI(Tuple(Int64, Tuple(Int64, Int64)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -100,6 +103,11 @@ def next(it) = match it with
   | Iter.IterateI(itf) => (match itf with | (f, cur) =>
     // never exhausts: yield `cur`, and the rest resumes from `f(cur)`
     Option.Some((cur, Iter.IterateI((f, f(cur))))))
+  | Iter.StepRangeI(sr) => (match sr with | (lo, hi-step) => (match hi-step with | (hi, step) =>
+    // yield `lo` while below `hi`, advancing by `step`; a non-positive step never advances, so it
+    // yields nothing (guards against a non-terminating pull)
+    if step <= 0 then Option.None(unit)
+    else if lo < hi then Option.Some((lo, Iter.StepRangeI((lo + step, (hi, step))))) else Option.None(unit)))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -114,6 +122,14 @@ def range(lo, hi) = Iter.RangeI((lo, hi))
 
 /// The INFINITE iterator `seed, f(seed), f(f(seed)), …`. Bound it with `take`/`take-while`.
 def iterate(seed, f: Int64 -> Int64) = Iter.IterateI((f, seed))
+
+/// Yield `lo, lo+1, …, hi` — the INCLUSIVE interval `[lo, hi]` (Rust's `lo..=hi`). Empty when
+/// `lo > hi`. This is the semantic target of the future `lo..=hi` surface sugar.
+def range-inclusive(lo, hi) = Iter.RangeI((lo, hi + 1))
+
+/// Yield `lo, lo+step, lo+2·step, …` while `< hi` (half-open), for a positive `step`. A non-positive
+/// step yields nothing. This is the semantic target of a future stepped-range surface.
+def range-step(lo, hi, step) = Iter.StepRangeI((lo, (hi, step)))
 
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
@@ -445,5 +461,50 @@ def min-finds-smallest() = match min(from-list([3, 1, 4, 1, 5, 9, 2, 6])) with
 def max-of-empty() = match max(empty()) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("empty has no max")
+
+@test
+def range-inclusive-includes-hi() =
+  // 1..=5 -> 1,2,3,4,5 (the endpoint is INCLUDED, unlike the half-open range)
+  if int-list-eq(collect-list(range-inclusive(1, 5)), [1, 2, 3, 4, 5]) then
+    unit
+  else
+    trap("range-inclusive 1..=5 = [1,2,3,4,5]")
+
+@test
+def range-inclusive-single() =
+  // lo == hi is a single-element inclusive range
+  if int-list-eq(collect-list(range-inclusive(3, 3)), [3]) then unit else trap("3..=3 = [3]")
+
+@test
+def range-inclusive-empty-when-lo-gt-hi() =
+  if count(range-inclusive(5, 4)) == 0 then unit else trap("5..=4 is empty")
+
+@test
+def range-step-by-two() =
+  // 0, 2, 4, 6, 8 — step 2 over [0, 10)   (NB: the test name avoids a numeric kebab segment like
+  // `-2`; a segment starting with a digit is not a valid WIT label and silently breaks the whole
+  // test component — see repros/decline-test-name-numeric-kebab-segment.cdz)
+  if int-list-eq(collect-list(range-step(0, 10, 2)), [0, 2, 4, 6, 8]) then
+    unit
+  else
+    trap("range-step 0..10 by 2")
+
+@test
+def range-step-overshoots-hi() =
+  // step lands past hi: 1, 4, 7 (10 would be >= 10, excluded)
+  if int-list-eq(collect-list(range-step(1, 10, 3)), [1, 4, 7]) then unit else trap("range-step 1..10 by 3")
+
+@test
+def range-step-nonpositive-yields-nothing() =
+  // a zero/negative step never advances — yields nothing rather than looping forever
+  if count(range-step(0, 10, 0)) == 0 then unit else trap("step 0 yields nothing")
+
+@test
+def range-step-composes-with-map() =
+  // the stepped range drops into the existing iterator ops
+  if int-list-eq(collect-list(map(range-step(0, 6, 2), fn(x) => x * x)), [0, 4, 16]) then
+    unit
+  else
+    trap("squares of 0,2,4")
 
 export { Iter.* }
