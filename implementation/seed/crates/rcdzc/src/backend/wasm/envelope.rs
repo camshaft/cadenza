@@ -7149,14 +7149,16 @@ fn make_functype_slots(
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 Some(idx),
             ) => param_items.extend_from_slice(&owned_valtype(*idx)),
             (
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 None,
             ) => {
                 unreachable!("a Tuple/Option make param must carry a minted defined-type index")
@@ -7845,6 +7847,23 @@ pub enum ArgSlot {
     /// Some over it via `serialize::SumArgRebuild` (a `SumArmPayload::Compound` arm). Carries the payload's
     /// (possibly nested) `TupleFieldShape` tree, exactly like [`ArgSlot::Tuple`].
     OptionCompound(Vec<TupleFieldShape>),
+    /// A `(Result ok err)` arg where AT LEAST ONE side's payload is a fixed-shape TUPLE/record (a compound) —
+    /// crosses as a native `result<ok, err>` DEFINED type whose ok/err valtypes are each a primitive byte
+    /// (scalar side) OR a minted `tuple<…>` (compound side). The canonical ABI flattens it to `(disc: i32,
+    /// <joined payload leaves…>)`, the two arms' payloads joined position-by-position (the wider arm sets each
+    /// slot's width). The guest rebuilds the selected arm's cell over a PREFIX of the joined slots via
+    /// `serialize::SumArgRebuild`. Each side carries its [`ResultSide`] (scalar byte or tuple shape).
+    ResultCompound(ResultSide, ResultSide),
+}
+
+/// One side (ok or err) of a [`ArgSlot::ResultCompound`]: a scalar leaf (its component primitive byte) OR a
+/// fixed-shape TUPLE/record payload (its own, possibly nested, `TupleFieldShape` tree — minted as a `tuple<…>`
+/// the `result` former references by index). A nullary side (`Result … ()`) is not modeled here (both sides of
+/// a Cadenza `(Result a b)` carry a payload).
+#[derive(Clone)]
+pub enum ResultSide {
+    Scalar(u8),
+    Compound(Vec<TupleFieldShape>),
 }
 
 /// The number of component TYPES [`mint_call_arg_tuple_types`] emits for `slots`: the sum of
@@ -7859,8 +7878,21 @@ fn call_arg_tuple_type_count(slots: &[ArgSlot]) -> u32 {
             ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _) => 1,
             // the payload tuple's types (possibly nested) + the outer `option<…>` referencing it.
             ArgSlot::OptionCompound(shape) => nested_tuple_type_count(shape) + 1,
+            // each compound side's tuple types + the outer `result<…>` referencing them (a scalar side = 0).
+            ArgSlot::ResultCompound(ok, err) => {
+                result_side_type_count(ok) + result_side_type_count(err) + 1
+            }
         })
         .sum()
+}
+
+/// The number of component types a [`ResultSide`] mints: 0 for a scalar (an inline primitive byte), the nested
+/// tuple type count for a compound.
+fn result_side_type_count(side: &ResultSide) -> u32 {
+    match side {
+        ResultSide::Scalar(_) => 0,
+        ResultSide::Compound(shape) => nested_tuple_type_count(shape),
+    }
 }
 
 /// Mint the aggregate DEFINED TYPES for every non-scalar slot into `items`, in arg order, advancing
@@ -7902,8 +7934,43 @@ fn mint_call_arg_tuple_types(
                 *next_type += 1;
                 Some(idx)
             }
+            ArgSlot::ResultCompound(ok, err) => {
+                // Mint each COMPOUND side's `tuple<…>` FIRST (in order ok, err), then the `result<…>` (former
+                // `0x6a <ok-valtype-opt> <err-valtype-opt>`, each `0x01 <valtype>`) referencing them. A scalar
+                // side's valtype is its inline primitive byte; a compound side's is its minted tuple index
+                // (SIGNED LEB128). `mint_result_side_valtype` mints the tuple (if any) + returns the encoding.
+                let ok_vt = mint_result_side_valtype(ok, next_type, items);
+                let err_vt = mint_result_side_valtype(err, next_type, items);
+                let mut res = vec![0x6a, 0x01];
+                res.extend_from_slice(&ok_vt);
+                res.push(0x01);
+                res.extend_from_slice(&err_vt);
+                items.extend_from_slice(&res);
+                let idx = *next_type;
+                *next_type += 1;
+                Some(idx)
+            }
         })
         .collect()
+}
+
+/// Mint a [`ResultSide`]'s tuple type (if compound) into `items`, advancing `next_type`, and return the side's
+/// component valtype ENCODING for the enclosing `result<…>` former: an inline primitive byte for a scalar, or
+/// the minted tuple type index as a SIGNED LEB128 for a compound.
+fn mint_result_side_valtype(
+    side: &ResultSide,
+    next_type: &mut u32,
+    items: &mut Vec<u8>,
+) -> Vec<u8> {
+    match side {
+        ResultSide::Scalar(byte) => vec![*byte],
+        ResultSide::Compound(shape) => {
+            let tup_idx = mint_tuple_type_nested(shape, next_type, items);
+            let mut enc = Vec::new();
+            crate::backend::wasm::encode::sleb128(tup_idx as i64, &mut enc);
+            enc
+        }
+    }
 }
 
 /// A `call` functype for a closure whose args are the given ordered `slots` (scalars + fixed-shape tuples
@@ -7934,14 +8001,16 @@ fn closure_call_functype_slots(
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 Some(idx),
             ) => param_items.extend_from_slice(&owned_valtype(*idx)),
             (
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 None,
             ) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")
@@ -7980,14 +8049,16 @@ fn closure_call_list_functype_slots(
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 Some(idx),
             ) => param_items.extend_from_slice(&owned_valtype(*idx)),
             (
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
-                | ArgSlot::OptionCompound(_),
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
                 None,
             ) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")

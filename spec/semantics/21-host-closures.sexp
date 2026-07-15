@@ -4448,6 +4448,74 @@
   (call   mk-o (: (Some (tuple 8 9)) (Option (Tuple Int64 Int64))))
   (output (: 17 Int64)))
 
+; COMPOUND RESULT PAYLOAD: a `(Result ok err)` closure arg where AT LEAST ONE side's payload is a fixed-shape
+; TUPLE/record (not a bare scalar) now crosses — the Result counterpart to the compound Option payload. It
+; crosses as a native `result<ok, err>` whose ok/err valtypes are each a primitive (scalar side) or a minted
+; `tuple<…>` (compound side); both `result` and `tuple` are anonymous-allowed (no `variant` naming wall). The
+; canonical ABI flattens it to `(disc: i32, <joined leaves…>)`: each arm's payload flattens to a leaf list and
+; the two are JOINED position-by-position (the join length = the LONGER arm; each position's width = the wider
+; arm). The guest rebuilds the SELECTED arm's cell over a PREFIX of the joined slots — `SumArmPayload::Compound`
+; for a compound arm, `Scalar` for a scalar arm. `ArgSlot::ResultCompound(ResultSide, ResultSide)` mints the
+; boundary type. Scope this increment: each shared position has the SAME core width across both arms (a differing
+; per-position width would need per-leaf `wrap` inside the compound rebuild — declines cleanly, a later widening).
+; Proven runnable by the `a_result_tuple_payload_closure_arg_crosses_by_native_flattening` oracle. Composes with
+; multi-export + distinct-sig for free. Bodies return the summed fields (no runtime `T.of`).
+
+(case "COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)"
+  (doc    "`mk : (-> (Result (Tuple Int64 Int64) Int64) Int64)`. The ok payload is a 2-field tuple, the err a
+           bare scalar; the arg crosses as `result<tuple<s64,s64>, s64>` flattening to `(disc, j0, j1)` where
+           the ok tuple's fields are the joined slots j0,j1 and the err scalar joins into j0. Driving `Ok((3,4))`:
+           the guest rebuilds the ok tuple cell, matches `(Ok p)`, folds `p.0 + p.1` → 7.")
+  (input  (do (def (mk) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
+              (export mk)))
+  (call   mk (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) Int64)))
+  (output (: 7 Int64)))
+
+(case "COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)"
+  (doc    "The SAME closure driving `Err(5)` — the scalar err joins into slot j0; the guest reads j0 for the
+           `(Err e)` arm (j1 unused) and folds `0 - e` → -5. Pins that the scalar arm reads only its PREFIX of
+           the joined slots.")
+  (input  (do (def (mk) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
+              (export mk)))
+  (call   mk (: (Err 5) (Result (Tuple Int64 Int64) Int64)))
+  (output (: -5 Int64)))
+
+(case "COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound"
+  (doc    "Both arms carry a 2-field tuple; the join is `(disc, j0, j1)` and each arm rebuilds its own tuple
+           cell from both slots. Driving `Err((6,7))`: `q.0 * q.1` → 42.")
+  (input  (do (def (mk) (fn ((: r (Result (Tuple Int64 Int64) (Tuple Int64 Int64)))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err q) (* (. q 0) (. q 1))))))
+              (export mk)))
+  (call   mk (: (Err (tuple 6 7)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (output (: 42 Int64)))
+
+(case "COMPOUND RESULT PAYLOAD: (Result Int64 (Tuple Int64 Int64)) — the ERR side is compound"
+  (doc    "The mirror shape: the OK side is a bare scalar, the ERR side a tuple. The join length is the longer
+           (err) arm = 2 slots; the ok scalar reads j0. Driving `Err((10,20))`: `q.0 + q.1` → 30. Confirms the
+           compound side may be either arm.")
+  (input  (do (def (mk) (fn ((: r (Result Int64 (Tuple Int64 Int64)))) (match r ((Ok x) x) ((Err q) (+ (. q 0) (. q 1))))))
+              (export mk)))
+  (call   mk (: (Err (tuple 10 20)) (Result Int64 (Tuple Int64 Int64))))
+  (output (: 30 Int64)))
+
+(case "COMPOUND RESULT PAYLOAD: two same-sig closures share one call (multi-export)"
+  (doc    "Compound Result payload composes with the MULTI-EXPORT shape: `mk-a`/`mk-b` both take `(Result (Tuple
+           Int64 Int64) Int64)` and share one `call`. Driving `mk-b` with `Ok((6,7))`: `p.0 * p.1` → 42.")
+  (input  (do (def (mk-a) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) e))))
+              (def (mk-b) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (* (. p 0) (. p 1))) ((Err e) e))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (Ok (tuple 6 7)) (Result (Tuple Int64 Int64) Int64)))
+  (output (: 42 Int64)))
+
+(case "COMPOUND RESULT PAYLOAD: a compound-Result closure beside a scalar closure (distinct-sig)"
+  (doc    "Compound Result payload composes with the DISTINCT-SIG shape: a `(Result (Tuple Int64 Int64) Int64)`-arg
+           closure crosses as its own resource type beside a plain scalar-arg closure. Driving the compound-Result
+           group with `Ok((8,9))`: `p.0 + p.1` → 17.")
+  (input  (do (def (mk-r) (fn ((: r (Result (Tuple Int64 Int64) Int64))) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
+              (def (mk-s) (fn ((: n Int64)) (* n 3)))
+              (export mk-r) (export mk-s)))
+  (call   mk-r (: (Ok (tuple 8 9)) (Result (Tuple Int64 Int64) Int64)))
+  (output (: 17 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
