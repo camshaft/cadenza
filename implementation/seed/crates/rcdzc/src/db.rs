@@ -467,6 +467,17 @@ pub struct TypeDecl {
     pub params: Vec<String>,
     /// The variants in declaration order — each position's index is its discriminant.
     pub variants: Vec<Variant>,
+    /// The OPEN-TAIL row variable, if this sum is declared OPEN — `(type T (Known Int64) .. r)` carries
+    /// `Some("r")`. `None` = a CLOSED sum (the mandatory default, `type-system.md §208`: "a sum declared
+    /// without a row variable is closed"). An OPEN sum's variant set is not fixed — the row variable `r`
+    /// stands for variants the module does not name (arriving across a boundary), so a match over it MUST
+    /// carry an open-tail (`_`) arm to be exhaustive (§206), and that `_` is never CDZ0213-redundant. The
+    /// runtime representation is unchanged (a tagged value like any sum); open-ness is purely a
+    /// compile-time typing/exhaustiveness property. `resolve.rs` still rejects an undeclared bare ctor
+    /// CDZ0101 — the row variable does NOT sanction undeclared local ctor names.
+    //= spec/capabilities/type-system.md#a-sum-type-may-be-open-with-a-mandatory-open-tail-arm
+    //# A program MUST be able to declare an open sum — a variant set that MAY carry a row variable standing for variants not named — and a closed sum (one declared without a row variable) MUST remain the default.
+    pub open_tail: Option<String>,
     /// The SYNTHESIZED record occurrence — the record (`crate::sums`) whose `(meta t)` is this sum's
     /// type-value and whose fields are its variant constructors. `None` until `sums::synthesize` runs
     /// during `Db::load`; ALWAYS `Some` once the `Db` exists. This is what the type NAME resolves to (a
@@ -4181,8 +4192,31 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         .and_then(|&s| ast.as_name(s))
         .unwrap_or("")
         .to_string();
+    // An OPEN sum ends in a trailing `.. r` row-variable marker (`type-system.md §204/§208`): `(type T
+    // (Known Int64) .. r)`. The `..` token already lexes (list-rest); here it marks the sum OPEN and `r`
+    // (a lowercase name) is the row variable. Detect it as the two FINAL elements of the `(type …)` tail
+    // and STRIP them so they are not mistaken for two nullary variants. Closed stays the default — a tail
+    // with no trailing `.. name` yields `open_tail: None` (every existing corpus sum is unchanged). The
+    // row variable's name is NOT registered as a type parameter (it stands for the open variant set, not a
+    // payload-position generic), so `collect_type_params` below never sees it (it scans only payloads).
+    let mut items: Vec<StructId> = tail.iter().skip(1).copied().collect();
+    let open_tail = {
+        let n = items.len();
+        if n >= 2
+            && ast.as_name(items[n - 2]) == Some("..")
+            && ast
+                .as_name(items[n - 1])
+                .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_lowercase()))
+        {
+            let rowvar = ast.as_name(items[n - 1]).unwrap().to_string();
+            items.truncate(n - 2);
+            Some(rowvar)
+        } else {
+            None
+        }
+    };
     let mut variants = Vec::new();
-    for &v in tail.iter().skip(1) {
+    for &v in &items {
         // A leading `(doc "…")` metadata form (the ML reader attaches a `///` doc comment on a type as a
         // `(doc …)` form after the type NAME — `parser.rs` `type_expr`) is NOT a variant: skip it, exactly
         // as `strip_def_docs` drops a leading doc on a `(def …)`. Without this, `///`-documented type
@@ -4223,6 +4257,7 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         occ: item,
         params,
         variants,
+        open_tail,
         synth: None,
     })
 }

@@ -34959,6 +34959,99 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_open_sum_match_requires_an_open_tail_wildcard_arm() {
+        // OS1 — an OPEN sum `(type T … .. r)` is exhaustive ONLY WITH an open-tail `_` arm
+        // (`type-system.md §A Sum Type May Be Open, With A Mandatory Open-Tail Arm`, §206). Its row
+        // variable `r` stands for variants the module does not name, so a match covering EVERY NAMED
+        // variant but omitting `_` still cannot be exhaustive → CDZ0210. The CONTRAST: the SAME arm set
+        // over a CLOSED sum (no `.. r`) IS exhaustive (every variant covered, no `_` needed).
+
+        // (a) Open sum, both named variants covered, NO `_` → non-exhaustive (CDZ0210), even though a
+        // closed sum with the same arms would be complete.
+        let open_missing_tail = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_missing_tail
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "an open sum match without a `_` arm is non-exhaustive: {open_missing_tail:?}"
+        );
+
+        // (b) The SAME sum declared CLOSED (no `.. r`) with the same two arms is exhaustive — no `_`
+        // required. This isolates the open-tail marker as the sole cause of (a)'s rejection.
+        let closed_ok = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64)) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            !closed_ok
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a CLOSED sum covering every variant needs no `_` arm: {closed_ok:?}"
+        );
+
+        // (c) Open sum WITH the `_` arm compiles clean — the open-tail arm satisfies exhaustiveness.
+        let open_with_tail = all_errors(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_with_tail.is_empty(),
+            "an open sum match WITH a `_` arm is exhaustive and compiles clean: {open_with_tail:?}"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_arm_over_an_open_sum_is_never_redundant() {
+        // OS1 — the redundant-arm dual: over a CLOSED sum, a `_` after every variant is covered is
+        // CDZ0213 (the finite type is saturated). Over an OPEN sum the `_` is the ONLY cover for the
+        // row-variable tail, so it is NEVER redundant — `finite_cover_size` returns `None` for an open
+        // sum, so its `_` never closes finite coverage. No CDZ0213 even with every named variant covered.
+        let open_wildcard = redundant_arms_of(
+            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert!(
+            open_wildcard.is_empty(),
+            "a `_` over an open sum is never redundant (it covers the open tail): {open_wildcard:?}"
+        );
+
+        // CONTRAST — the SAME arms over a CLOSED sum DO saturate it, so the trailing `_` is CDZ0213.
+        let closed_wildcard = redundant_arms_of(
+            "(module m (type V (Known Int64) (Unknown Int64)) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+        );
+        assert_eq!(
+            closed_wildcard.len(),
+            1,
+            "a `_` after a CLOSED sum is fully covered IS redundant (CDZ0213): {closed_wildcard:?}"
+        );
+    }
+
+    #[test]
+    fn an_undeclared_capitalized_ctor_still_rejects_cdz0101() {
+        // OS1 LOAD-BEARING constraint — the open-sum row variable does NOT sanction undeclared local
+        // constructor names. A bare capitalized head that names no declared variant STILL rejects
+        // CDZ0101 (`07-type-system.sexp:47` pins the type-position twin). Open-ness is declared via the
+        // explicit `.. r` marker on `(type …)`, NOT by any-undeclared-ctor-is-open (option 1a, which
+        // §208 forbids). This pins that the marker did not open a hole for typo'd ctor names.
+        let d = first_error("(module m (def (main) (Nope 5)) (export main))");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0101"),
+            "an undeclared capitalized ctor is still unbound (CDZ0101): {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_duplicate_or_shadowed_list_length_arm_is_redundant() {
         // LIST-match redundancy — the list-length analogue of the variant/literal duplicate & shadowing
         // checks. A list arm covers a length (exact `(list a)` = len 1, or a `≥ k` ray `(list a .. r)`); a

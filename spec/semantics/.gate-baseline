@@ -2694,8 +2694,8 @@ todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
-todo	a match on an open sum omitting the open-tail arm is rejected
-todo	a match on an open sum with an open-tail arm is exhaustive
+pass	a match on an open sum omitting the open-tail arm is rejected
+pass	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result

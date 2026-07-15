@@ -7308,6 +7308,28 @@ fn non_exhaustive_sum_reject(
     let Some(t) = db.type_decl_by_occ(decl) else {
         return Reject::coded(Code::NonExhaustive, generic);
     };
+    // An OPEN sum (`(type T … .. r)`) is exhaustive ONLY WITH an open-tail `_` arm — its variant set is
+    // not closed, so however many NAMED variants a match covers, the row variable stands for variants it
+    // cannot enumerate (`type-system.md §206`). When every named variant IS covered but the match lacks a
+    // `_` arm, name the open-tail requirement + carry the "add a `_` arm" fix (the open-sum analogue of
+    // the missing-variant fix below). The `_` body is a diverging `(trap "TODO")` placeholder.
+    let is_open = t.open_tail.is_some();
+    let missing_named = t
+        .variants
+        .iter()
+        .enumerate()
+        .any(|(i, _)| !tested.contains(&(i as u32)));
+    if is_open && !missing_named {
+        let message =
+            "non-exhaustive match: an open sum requires an open-tail `_` arm covering its unnamed variants"
+                .to_string();
+        return match db.parent_of(scrutinee) {
+            Some(match_form) => Reject::coded(Code::NonExhaustive, message).with_fix(
+                Fix::insert_arms_heuristic(match_form, vec!["(_ (trap \"TODO\"))".to_string()]),
+            ),
+            None => Reject::coded(Code::NonExhaustive, message),
+        };
+    }
     // The variants whose discriminant no arm tested, in declaration order (a deterministic list).
     let missing: Vec<&crate::db::Variant> = t
         .variants
@@ -7722,10 +7744,20 @@ fn build_tree(
         Some(Core::SumNew { disc, .. }) => Some(disc),
         _ => None,
     };
+    // Whether the switched sum is declared OPEN (`(type T … .. r)`). An open sum's variant set is not
+    // closed — the row variable stands for variants this match cannot enumerate — so it is exhaustive
+    // ONLY WITH an open-tail (`_`/binder default) arm, regardless of how many NAMED variants are covered
+    // (`type-system.md §206`). A match over an open sum WITHOUT a default is non-exhaustive even when every
+    // named variant is covered (there may always be an unnamed one). A CLOSED sum keeps the classic rule
+    // (every variant covered OR a default). Read off the declaration's `open_tail`.
+    let is_open = db
+        .type_decl_by_occ(decl)
+        .is_some_and(|t| t.open_tail.is_some());
     // Exhaustiveness: every variant tested, or a default (wildcard/binder) present — else CDZ0210. Against
-    // the TYPE's variant set, independent of `known_disc` (see above).
+    // the TYPE's variant set, independent of `known_disc` (see above). An OPEN sum ALWAYS needs a default,
+    // even when every named variant is covered.
     let has_default = !default_rows.is_empty();
-    if !has_default && tested.len() < variant_count {
+    if !has_default && (is_open || tested.len() < variant_count) {
         // Name the missing variants + carry an "add the missing arms" fix — but ONLY at the ROOT switch
         // (`switch_path` empty): there the missing-variant arms append directly to the `(match …)` form
         // and are well-formed top-level patterns. A NESTED non-exhaustive (a gap inside a payload

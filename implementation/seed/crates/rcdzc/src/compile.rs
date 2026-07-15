@@ -3795,9 +3795,19 @@ fn finite_cover_size(db: &mut Db, scrutinee: StructId) -> Option<usize> {
     // newtype over a scalar) has no variant set → not finite here.
     match crate::infer::type_of(db, scrutinee) {
         crate::ty::Ty::Bool => Some(2),
-        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => db
-            .type_decl_by_occ(decl)
-            .and_then(|d| (!d.variants.is_empty()).then_some(d.variants.len())),
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => {
+            db.type_decl_by_occ(decl).and_then(|d| {
+                // An OPEN sum (`(type T … .. r)`) has NO finite cover size — the row variable stands for
+                // variants not named, so its value set is not closed and a `_` arm over it is NEVER
+                // redundant (it is the only cover for the open tail, `type-system.md §206`). Returning
+                // `None` here keeps the redundant-arm pass from ever flagging that `_` (an open sum's `_`
+                // never closes finite coverage). A CLOSED sum keeps its variant count as the finite size.
+                if d.open_tail.is_some() {
+                    return None;
+                }
+                (!d.variants.is_empty()).then_some(d.variants.len())
+            })
+        }
         _ => None,
     }
 }

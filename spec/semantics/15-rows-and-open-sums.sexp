@@ -376,10 +376,13 @@
 
 (case "a match on an open sum with an open-tail arm is exhaustive"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm: an open sum
-           carries variants the module does not close; a match covering the known variant plus an
-           open-tail arm is exhaustive and handles an unknown variant as data.")
+           is DECLARED with a trailing `.. r` row-variable marker (`(type Vocab (Known Unit) (Unknown
+           Unit) .. r)`), which stands for variants the module does not name. A match covering a named
+           variant plus an open-tail `_` arm is exhaustive and handles every unnamed variant as data, so
+           it yields \"known\" for the `Known` value.")
   (input  (do
-            (def (name-of e)
+            (type Vocab (Known Unit) (Unknown Unit) .. r)
+            (def (name-of (: e Vocab))
               (match e
                 ((Known _) "known")
                 (_         "other")))
@@ -388,12 +391,17 @@
 
 (case "a match on an open sum omitting the open-tail arm is rejected"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open (a match that omits the open-tail arm is a
-           compile-time rejection): because an open sum's variant set is not closed, a match without an
-           open-tail arm cannot be exhaustive and is rejected (CDZ0210) rather than run.")
+           compile-time rejection): because an open sum's variant set is not closed, a match covering
+           every NAMED variant but omitting the open-tail `_` arm still cannot be exhaustive — the row
+           variable stands for variants it cannot enumerate — so it is rejected (CDZ0210) rather than
+           run. A closed sum with the same two arms WOULD be exhaustive; the open declaration is what
+           mandates the `_`.")
   (input  (do
-            (def (name-of e)
+            (type Vocab (Known Unit) (Unknown Unit) .. r)
+            (def (name-of (: e Vocab))
               (match e
-                ((Known _) "known")))
+                ((Known _)   "known")
+                ((Unknown _) "unknown")))
             (def (main) (name-of (Unknown unit))) (export main)))
   (error  CDZ0210))
 
