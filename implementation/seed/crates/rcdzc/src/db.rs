@@ -3207,8 +3207,15 @@ fn is_binding_candidate(
     // pattern's binder in scope for the guard COND (`binder_in`'s Case 5g / `guard_cond_binds`). Without
     // the guard as a candidate the scope-skip index would hop PAST it and Case 5g would never fire, so a
     // guard reference to its binder would be spuriously unbound.
+    //
+    // A `(module …)` DECLARATION form is a candidate too (`binder_in`'s Case R2 / `module_form_sibling_binds`):
+    // its members are mutually visible in each other's bodies. An EXPORTED member's body is reparented under
+    // its synth field lambda beneath the record (Case R lands there), but a PRIVATE member — no field built —
+    // keeps its source parent, so its body's scope walk ascends through the `(module …)` form; without it as a
+    // candidate the skip index would hop PAST it and a private member's sibling reference would spuriously
+    // unbind (the `is_binding_candidate` trap: every binding form MUST be listed here).
     if let Some(h) = ast.head_name(form)
-        && matches!(h, "let" | "fn" | "def" | "guard")
+        && matches!(h, "let" | "fn" | "def" | "guard" | "module")
     {
         return true;
     }
@@ -3491,9 +3498,14 @@ fn build_do_binder_index(
     > = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
         let form = StructId(i as u32);
-        // The root do binds nothing lexically (`binder_in` returns early for it — a merged multi-file
-        // root is not a do-scope), so it needs no index; skip it to match that early return.
-        if form == ast.root {
+        // The root DO binds nothing lexically (`binder_in` returns early for it — a merged multi-file
+        // root is not a do-scope), so it needs no index; skip it to match that early return. But a root
+        // that is itself a `(module …)` (a bare `(module m … (export main))` program) IS a scope — its
+        // members are mutually visible, resolved by `module_form_sibling_binds` (Case R2 / a PRIVATE
+        // member's body, which never reaches the synth record). It must be indexed like any nested module,
+        // else `do_forms_declaring` returns `None` for it and the resolver falls to an O(members) live scan
+        // PER REFERENCE — O(N²) on a wide root module. So skip the root ONLY when it is a `do`.
+        if form == ast.root && ast.as_form(form, "module").is_none() {
             continue;
         }
         // Index the members of a `(do …)` block AND a `(module …)` — both hold a sequence of `def`/`module`

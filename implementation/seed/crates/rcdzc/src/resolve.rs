@@ -1389,6 +1389,20 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = module_sibling_binds(db, form, name) {
         return Some(binder);
     }
+    // Case R2: `form` is a `(module …)` DECLARATION form, ascended from a member's body. A PRIVATE member
+    // (its name withheld from the module's `(export …)` clause) has NO synth field lambda built for it
+    // (`modules::module_record` skips it), so — unlike an exported member, whose body is reparented under
+    // its field lambda beneath the synth record — its body's parent chain leads up through THIS `(module …)`
+    // form, never reaching the record where Case R fires. Resolving siblings here too makes a private
+    // member's body see its siblings exactly as an exported member's does: the module's members are mutually
+    // visible regardless of export status (the export clause governs OUTWARD reachability, not sibling
+    // scope). This is the missed face of the privacy landing (0c008299) — a private member participating in
+    // a mutual-recursion cycle rejected CDZ0101 at its co-member call site.
+    //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+    //# A private definition MUST remain visible to the other definitions in its own module.
+    if let Some(binder) = module_form_sibling_binds(db, form, name) {
+        return Some(binder);
+    }
     // Case B: `form` is a MATCH ARM `(pattern body)` whose pattern is a `(bin <seg>…)` binary pattern that
     // binds `name` at one of its segments — `(match b ((bin (u16 n)) n) …)`, the `n` in the body. The
     // binder decodes that segment from the scrutinee; it resolves to a `BinField` (the binary analogue of
@@ -1676,8 +1690,33 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
 /// call itself (recursion) or a forward sibling.
 fn module_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved> {
     // Recognize `form` as a module synth record and recover its `(module …)` declaration occurrence (the
-    // reverse of `modules::synthesize`); its members are the module form's tail after NAME.
+    // reverse of `modules::synthesize`), then scan its members.
     let module_form = db.module_by_synth_record(form)?;
+    module_members_bind(db, module_form, name)
+}
+
+/// If `form` is a `(module …)` DECLARATION form, resolve `name` against its members — the twin of
+/// `module_sibling_binds` for a body that ascends through the module FORM itself, not its synth record.
+/// A member whose field is WITHHELD from the export record (a PRIVATE member — its name is absent from
+/// the module's `(export …)` clause) is NOT reparented under a synth field lambda, so its body's parent
+/// chain leads up through the `(module …)` form and NEVER reaches the synth record where
+/// `module_sibling_binds` (Case R) fires. Without this case a private member could not see ANY sibling
+/// (exported or private) — the false-CDZ0101 the privacy landing (0c008299) left for a private member
+/// participating in a cycle, since `modules::module_record` builds no field for it. A module's members
+/// are mutually visible regardless of export status (`modules-and-namespaces.md` §Visibility Is Explicit:
+/// the export clause governs OUTWARD reachability through the record, not sibling visibility), so this
+/// scans ALL members exactly as the record path does. `None` if `form` is not a module form or no member
+/// is named `name`.
+fn module_form_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved> {
+    db.ast.as_form(form, "module")?;
+    module_members_bind(db, form, name)
+}
+
+/// The shared member scan behind `module_sibling_binds` (from the synth record) and
+/// `module_form_sibling_binds` (from the `(module …)` form): resolve `name` against the module's members,
+/// mutually-visible with no stop-before. `module_form` is the `(module NAME member…)` declaration
+/// occurrence; its members are the tail after NAME.
+fn module_members_bind(db: &Db, module_form: StructId, name: &str) -> Option<Resolved> {
     let members = db.ast.as_form(module_form, "module")?.get(1..)?;
     // O(1) via the per-module member index (`Db::do_binder_index` also indexes `(module …)` forms) — the
     // members declaring `name`, ascending. A name no member declares is absent → an O(1) negative; before,
@@ -4916,5 +4955,46 @@ mod tests {
         let fields = module_record_fields(&mut db, "m");
         assert!(fields.contains(&"a".to_string()), "a present: {fields:?}");
         assert!(fields.contains(&"b".to_string()), "b present: {fields:?}");
+    }
+
+    #[test]
+    fn a_private_module_member_body_sees_an_exported_sibling() {
+        // The false-CDZ0101 the privacy landing left: `even` is exported, `odd` is private (no synth field
+        // built for it), and the two are mutually recursive. `odd`'s body's `(even …)` call must resolve —
+        // `odd`'s body ascends through the `(module …)` FORM (never reparented under a synth record), so the
+        // form itself must resolve siblings (`module_form_sibling_binds` / `binder_in` Case R2). Before the
+        // fix this reference was `Resolved::Poison` (unbound name), the reported bug.
+        let ast = parse(
+            "(do (module m (export even) \
+             (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1)))) \
+             (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1))))) \
+             (def (main) ((. m even) 4)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // The `even` reference INSIDE `odd`'s body: an `even` name occurrence that HEADS an application
+        // `(even (- n 1))` (parent is a list with `even` at child index 0) whose nearest enclosing `(def
+        // (odd …) …)` is `odd`'s. There are two such call heads (`odd`'s call to `even`, and `even`'s own
+        // if-body); the one under `odd` is the one at issue — but BOTH must resolve, so assert every
+        // application-head `even` reference resolves (a private-body ref and an exported-body ref alike).
+        let heads: Vec<StructId> = (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .filter(|&id| db.ast.as_name(id) == Some("even"))
+            .filter(|&id| {
+                db.parent_of(id).and_then(|p| match db.ast.get(p) {
+                    Struct::List(children) => children.first().copied(),
+                    _ => None,
+                }) == Some(id)
+            })
+            .collect();
+        assert!(
+            !heads.is_empty(),
+            "expected at least one `even` application head"
+        );
+        for head in heads {
+            assert!(
+                !matches!(resolved_of(&mut db, head), Resolved::Poison(_)),
+                "an `even` reference (including from private `odd`'s body) must resolve, not poison"
+            );
+        }
     }
 }
