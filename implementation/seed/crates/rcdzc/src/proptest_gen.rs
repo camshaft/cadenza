@@ -25,7 +25,7 @@
 //! ```
 //!
 //! The wrapper builds the argument by a recursive `<gen:T>` derivation over the parameter type: a scalar
-//! consumes one `Test.gen` int (`Bool` = `(= gen 0)`), a `(List ELEM)` builds a fixed-length list of
+//! consumes one `Test.gen` int (`Bool` = `(= (% gen 2) 0)`, the parity), a `(List ELEM)` builds a fixed-length list of
 //! recursively-generated elements, a `(Tuple T…)` builds `(tuple <gen:T> …)`. Every `Test.gen` is hoisted
 //! into a `let` (an inlined one under a constructor is not seen within the `host` scope). The existing
 //! gen-driven runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks
@@ -144,7 +144,7 @@ struct TestPlan {
 enum GenTy {
     /// An integer type (`Int8`…`UInt64`): `<gen>` = `((. Test gen))` (the int at the element width).
     Int,
-    /// `Bool`: `<gen>` = `(= ((. Test gen)) 0)` (a gen int read as a boolean).
+    /// `Bool`: `<gen>` = `(= (% ((. Test gen)) 2) 0)` (the gen int's parity → a ~50/50 boolean).
     Bool,
     /// `(List ELEM)`: `<gen>` = a fixed-length `(list <gen:ELEM> …)` of `G1_LIST_LEN` elements.
     List(Box<GenTy>),
@@ -349,10 +349,20 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
     match ty {
         // A scalar: hoist `gk = ((. Test gen))` (or the Bool form) and return the bound `gk`.
         GenTy::Int => hoist_scalar(ast, binds, gen_call),
-        // `(= ((. Test gen)) 0)` — a gen int read as a boolean. Any total int→Bool map works; equality
-        // with zero is the simplest and covers both values across the generated ints.
+        // `(= (% ((. Test gen)) 2) 0)` — the gen int's PARITY as a boolean (true iff even). Uses the low
+        // bit, so it splits ~50/50 across the generated int stream — the earlier `(= gen 0)` was true only
+        // for the exact int 0 (overwhelmingly false → near-zero coverage of the `true` case, PR #408).
         GenTy::Bool => hoist_scalar(ast, binds, |ast| {
             let g = gen_call(ast);
+            let two = push_atom(
+                ast,
+                Leaf::Int {
+                    value: crate::ast::IntValue::from_i64(2),
+                    radix: crate::ast::Radix::Dec,
+                },
+            );
+            let rem = name(ast, "%");
+            let parity = push_list(ast, vec![rem, g, two]);
             let eq = name(ast, "=");
             let zero = push_atom(
                 ast,
@@ -361,7 +371,7 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
                     radix: crate::ast::Radix::Dec,
                 },
             );
-            push_list(ast, vec![eq, g, zero])
+            push_list(ast, vec![eq, parity, zero])
         }),
         // `(list <gen:ELEM> …)` — a fixed-length list (G1_LIST_LEN elements), each recursively generated.
         GenTy::List(elem) => {
@@ -458,7 +468,7 @@ mod tests {
         );
     }
 
-    /// G2: a `(List Bool)` element is also generatable (the wrapper builds each element as `= gen 0`), so
+    /// G2: a `(List Bool)` element is also generatable (the wrapper builds each element as `= (% gen 2) 0`), so
     /// a `@test` over `List Bool` gains a wrapper just like `List Int`.
     #[test]
     fn synthesizes_a_generator_wrapper_for_a_list_bool_test() {
