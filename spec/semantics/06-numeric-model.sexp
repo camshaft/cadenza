@@ -2206,6 +2206,41 @@
   (call   main (: 3 Int64)) (output (: 24 Int64))
   (call   main (: 1 Int64)) (output (: 8 Int64)))
 
+; ── STRAIGHT-LINE checked arithmetic is NOT reassociated — the inner overflow trap is preserved ──────
+; A nested checked `(- (+ x 1) 1)` is value-equal to `x` for a non-overflowing x, but the compiler MUST
+; NOT fold it to `x`: at x = Int64.max the INNER `(+ x 1)` overflows, and that trap is observable (the
+; overflowing `+`'s value flows into the outer `-`). Reassociating/cancelling would ELIDE the trap — a
+; miscompile. Straight-line checked +/* is emitted as WRITTEN, each op keeping its own overflow check
+; (numeric-model.md §Overflow Is Defined). This is DISTINCT from the loop-accumulator reassociation
+; (accum.rs), which deliberately accepts a trap-TIMING change on an already-overflowing input while
+; preserving the final value — a loop-tail transform, not a straight-line cancellation. These pin that a
+; non-overflowing input computes the value AND an overflowing inner op still traps, on both backends.
+
+(case "straight-line add-then-subtract keeps the value but is not cancelled to the operand"
+  (doc    "`(- (+ x 1) 1)` = x for a non-overflowing x (x = 7 → 7), but it is NOT folded to `x`: at
+           x = Int64.max the inner `(+ x 1)` overflows and MUST trap — cancelling the +1/-1 would elide
+           that defined trap. Pins both faces: the value at 7, and the inner-overflow trap at Int64.max.
+           A runtime x keeps this out of the constant fold; straight-line checked `+` is emitted as
+           written, each op range-checked, so the reassociation is never applied (unlike the loop
+           accumulator, which accepts a trap-timing change).")
+  (input  (do (def (main (: x Int64)) (- (+ x 1) 1)) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64))
+  (call   main (: 9223372036854775807 Int64))
+  (trap   "integer overflow"))
+
+(case "a nested constant multiply preserves the inner overflow rather than combining the factors"
+  (doc    "`(* (* x 2) 3)` = 6x for a small x (x = 5 → 30), but the factors are NOT combined to `* 6`:
+           at x = 5e18 the inner `(* x 2)` = 1e19 already overflows Int64 (max ≈ 9.22e18) and MUST trap —
+           combining to `(* x 6)` would compute 3e19 in one step and, more to the point, a fold that
+           skipped the inner check would change WHERE (or whether) the overflow is observed. Pins the
+           value at 5 and the inner-overflow trap at 5e18, both backends.")
+  (input  (do (def (main (: x Int64)) (* (* x 2) 3)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 30 Int64))
+  (call   main (: 5000000000000000000 Int64))
+  (trap   "integer overflow"))
+
 (case "a runtime arithmetic right shift preserves the sign"
   (doc    "`(>> a b)` on a signed runtime operand emits `i64.shr_s` (arithmetic, sign-extending);
            `(-256, 7)` = -2, matching the folded `(>> -256 7)`. A logical shift would answer a large

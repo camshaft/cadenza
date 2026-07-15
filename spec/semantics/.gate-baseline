@@ -1058,6 +1058,7 @@ pass	a nested chain of function calls compiles in linear time and folds to a con
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
+pass	a nested constant multiply preserves the inner overflow rather than combining the factors
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
 pass	a nested constructor pattern dispatches a RUNTIME two-sum value
@@ -2585,6 +2586,7 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	stacked line comments on a top-level form are all seen through
+pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string concatenation
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
