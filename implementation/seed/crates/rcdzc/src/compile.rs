@@ -3552,14 +3552,19 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
             ArmCover::ListExact(lead) // `(list p…)` covers exactly length lead
         });
     }
+    // A TUPLE pattern `(tuple p0 p1 …)`. An ALL-IRREFUTABLE tuple (`(tuple x y)` / `(tuple _ (tuple a b))`)
+    // matches EVERY value of its tuple type — it is a whole-type CatchAll, so it shadows every later arm
+    // (the product-subsumption whole-tuple case). Otherwise it is a STRUCTURAL-KEY candidate: two identical
+    // tuple arms (`(tuple true a)`/`(tuple true b)`) are exact duplicates. `is_irrefutable_cover` decides.
+    if db.ast.as_form(pat, "tuple").is_some() || db.ast.as_ctor_form(pat, "tuple").is_some() {
+        if is_irrefutable_cover(db, pat) {
+            return Some(ArmCover::CatchAll);
+        }
+        return pattern_shape_key(db, pat).map(ArmCover::Shape);
+    }
     // A constructor-headed pattern `(C.Red)`, `(Some x)`, `((. Sum V) x)`. It covers the WHOLE variant
     // only when every payload sub-pattern is a bare binder/wildcard; a refining sub-pattern (a nested
     // literal/constructor) covers only part, so it is not classified.
-    // A TUPLE pattern `(tuple p0 p1 …)` — never a full cover of any finite type, but a STRUCTURAL-KEY
-    // candidate: two identical tuple arms (`(tuple true a)`/`(tuple true b)`) are exact duplicates. Key it.
-    if db.ast.as_form(pat, "tuple").is_some() || db.ast.as_ctor_form(pat, "tuple").is_some() {
-        return pattern_shape_key(db, pat).map(ArmCover::Shape);
-    }
     if let crate::ast::Struct::List(children) = db.ast.get(pat) {
         let children = children.to_vec();
         // The ctor head: a bare member `(. Sum V)` used whole is the pattern itself; else the first child.
@@ -3569,18 +3574,50 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
             None => return None,
         };
         let disc = crate::eval::variant_disc_of(db, head)?;
-        // Every payload sub-pattern a bare binder/wildcard → a FULL-variant cover. A REFINING sub-pattern (a
-        // nested literal/ctor, `(Some (Some x))`) covers only PART of the variant, so it is not a full cover
-        // — but it IS a structural-key candidate (an identical refining arm later is an exact duplicate).
+        // Every payload sub-pattern an IRREFUTABLE COVER (a bare binder/wildcard, OR an all-wildcard tuple
+        // `(Some (tuple _ _))`) → a FULL-variant cover: the arm matches every value of that variant, so it
+        // shadows any later same-variant arm. A REFINING sub-pattern (a nested literal/ctor, `(Some (Some
+        // x))`) covers only PART of the variant — not a full cover, but a structural-key candidate (an
+        // identical refining arm later is an exact duplicate).
         if children[payload_start.min(children.len())..]
             .iter()
-            .all(|&sub| db.ast.as_name(sub).is_some())
+            .all(|&sub| is_irrefutable_cover(db, sub))
         {
             return Some(ArmCover::Variant(disc));
         }
         return pattern_shape_key(db, pat).map(ArmCover::Shape);
     }
     None
+}
+
+/// Whether `pat` matches EVERY value of its type — a whole-type cover, so an arm with this pattern is a
+/// CatchAll that shadows every later arm. TRUE for a bare binder / `_` (matches anything), or a TUPLE whose
+/// every element is itself an irrefutable cover (`(tuple x y)`, `(tuple _ (tuple a b))` — a tuple has one
+/// shape, so covering every element covers the whole tuple). FALSE for a GUARDED pattern (conditional), a
+/// literal (one value), a CONSTRUCTOR (one variant of a multi-variant sum — `(Some _)` misses `None`; a
+/// bare nullary-variant NAME like `None` likewise covers one variant), or any map/list/record pattern. A
+/// bare NAME that is a nullary-variant ctor is NOT a cover — checked via `variant_disc_of`.
+fn is_irrefutable_cover(db: &mut Db, pat: StructId) -> bool {
+    // A guard makes the arm conditional — never an unconditional cover.
+    if db.ast.as_form(pat, "guard").is_some() {
+        return false;
+    }
+    // A bare binder / `_` covers everything — UNLESS it is a nullary-variant name (`None`), which covers
+    // only its own variant.
+    if db.ast.as_name(pat).is_some() {
+        return crate::eval::variant_disc_of(db, pat).is_none();
+    }
+    // A tuple covers its whole type iff every element is itself a whole-type cover.
+    if let Some(elems) = db
+        .ast
+        .as_form(pat, "tuple")
+        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .map(<[_]>::to_vec)
+    {
+        return elems.iter().all(|&e| is_irrefutable_cover(db, e));
+    }
+    // A literal / constructor / map / list / record pattern is refutable — not a whole-type cover.
+    false
 }
 
 /// A CANONICAL STRUCTURAL KEY of a pattern, for EXACT-DUPLICATE redundant-arm detection — two patterns

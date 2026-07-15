@@ -33117,6 +33117,51 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms() {
+        // An ALL-IRREFUTABLE tuple `(tuple x y)` / `(tuple _ _)` matches EVERY value of its tuple type — it
+        // is a whole-type CatchAll (`is_irrefutable_cover`), so any arm after it is unreachable. The
+        // product-subsumption whole-tuple case; before, only a BARE `_`/binder was a catch-all and a broader
+        // tuple arm silently shadowed with no warning. Composes through nesting (`(tuple _ (tuple a b))`) and
+        // a ctor payload (`(Some (tuple _ _))` covers the whole `Some` variant). Each emits exactly one CDZ0213.
+        for src in [
+            // A binder-only tuple arm shadows a later refining tuple arm.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple x y) y) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // `(tuple _ _)` before a literal arm.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple _ _) 0) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // NESTED all-wildcard tuple is still a whole cover.
+            "(module m (def (f (: t (Tuple Bool (Tuple Int64 Int64)))) \
+               (match t ((tuple x (tuple a b)) a) ((tuple true (tuple c d)) c))) \
+             (def (main) (f (tuple true (tuple 1 2)))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "an all-wildcard tuple catch-all shadows the later arm (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+        // FALSE-POSITIVE guard: an all-wildcard tuple as the SOLE arm is exhaustive, not self-redundant; and
+        // a REFINING tuple arm BEFORE a wildcard tuple arm does not shadow it (the refinement covers less).
+        for src in [
+            "(module m (def (f (: t (Tuple Bool Int64))) (match t ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "an exhaustive / refining-before-wildcard tuple match must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
         // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
         // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
