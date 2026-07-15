@@ -49,9 +49,12 @@ Every firing of your `/loop`, in order:
 1. **Re-read your charter.** RE-READ this contract (`<your-worktree>/fleet/AGENTS-fleet.md`) AND your
    role body (`<your-worktree>/fleet/loops/<role>.md`) at the START of EVERY tick — not just at
    launch. These files are git-tracked and change as the fleet evolves (the concierge / operator edit
-   role bodies and land them on `trunk`); step 3's rebase pulls the updates into your worktree, and
-   re-reading is how you pick up a changed charter, a new tick-step, or a scope change without being
-   relaunched. If your role body materially changed since last tick, act on the NEW instructions.
+   role bodies and land them on `trunk`); the "Sync your base" step below (step 4) rebases those
+   updates into your worktree, and re-reading is how you pick up a changed charter, a new tick-step,
+   or a scope change without being relaunched. Because this re-read is step 1 and the rebase is step
+   4, a given tick re-reads whatever the PREVIOUS tick's rebase pulled — a charter change lands in
+   your worktree at step 4 and you act on it on the next tick's re-read. If your role body materially
+   changed since last tick, act on the NEW instructions.
 2. **Refresh presence.** `cargo xtask fleet heartbeat <you>` (stamps `lastTick` in the registry).
    If a stop-file exists for you (`cargo xtask fleet remove` sets it), STOP cleanly and do nothing.
 3. **Drain your inbox FIRST.** Read every JSON file in `.claude/fleet/inbox/<you>/` oldest-first;
