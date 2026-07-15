@@ -368,6 +368,20 @@ interface heap {
   //    bytes as a Bytes leaf (`bytes-alloc`/`bytes-set`, like a constant string) then re-tagging them as a
   //    BigInt. CONSUMES `buf` (the transient byte leaf is dropped). APPENDED last (frozen-contract rule).
   bigint-of-bytes: func(buf: u32) -> u32;              // 82 — BigInt leaf from canonical sign-magnitude bytes
+
+  // ── Map/Set enumeration (indices 83-84) — yield a collection's elements/entries as a runtime `List` in
+  //    CANONICAL order (collections-and-text.md §149: program iteration order == the canonical byte form,
+  //    which is SORTED — NOT the CHAMP hash order the raw cursor walks). `set-to-list(s, desc)` → a
+  //    `List a` of the set's elements in canonical element-value order; `map-to-list(m, desc)` → a
+  //    `List (Tuple k v)` of the entries as 2-element tuples in canonical KEY order. `desc` is the
+  //    compiler-baked shape descriptor (a Bytes handle, read exactly as `value-encode` reads it) naming the
+  //    element/key shape to order by; both ops REUSE the same sorted walk `value-encode` renders the
+  //    `(Set.of …)`/`(map …)` value form from, so the observable list order is IDENTICAL to the value form.
+  //    Both BORROW their collection + `desc` and return a fresh owned `List` handle; a malformed descriptor
+  //    or a non-scalar (unorderable) key/element yields the empty list (the never-trap total). APPENDED last
+  //    (frozen-contract rule — a new op goes at the end so no existing op's index shifts).
+  set-to-list: func(s: u32, desc: u32) -> u32;         // 83 — set elements as a List a, canonical order
+  map-to-list: func(m: u32, desc: u32) -> u32;         // 84 — map entries as a List (Tuple k v), canonical key order
 }
 
 world runtime {

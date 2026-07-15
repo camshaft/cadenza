@@ -552,6 +552,7 @@ pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a doubly-nested strength-reduced multiply chains shift into shift
+pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
 pass	a duplicate TUPLE-shaped arm is dead code but the program still runs
 pass	a duplicate export clause for the same name is rejected
@@ -1238,7 +1239,9 @@ pass	a returned runtime string with a non-printable scalar renders it verbatim, 
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a rope in a record field equals its flat-twin field
+pass	a rope in a sum payload inside a record field equals its flat twin
 pass	a rope in an Option payload equals its flat-twin payload
+pass	a rope two levels deep (tuple in a tuple) equals its flat twin
 pass	a round-trip alongside a parameterized plain export applies its argument
 pass	a round-trip alongside a plain export — the plain export runs
 pass	a round-trip alongside a plain export — the round-trip still works

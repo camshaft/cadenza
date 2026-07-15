@@ -767,6 +767,26 @@ pub mod exports {
                     let result0 = T::bigint_of_bytes(arg0 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_set_to_list_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::set_to_list(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_map_to_list_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::map_to_list(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1161,6 +1181,21 @@ pub mod exports {
                     ///    bytes as a Bytes leaf (`bytes-alloc`/`bytes-set`, like a constant string) then re-tagging them as a
                     ///    BigInt. CONSUMES `buf` (the transient byte leaf is dropped). APPENDED last (frozen-contract rule).
                     fn bigint_of_bytes(buf: u32) -> u32;
+                    /// 82 — BigInt leaf from canonical sign-magnitude bytes
+                    /// ── Map/Set enumeration (indices 83-84) — yield a collection's elements/entries as a runtime `List` in
+                    ///    CANONICAL order (collections-and-text.md §149: program iteration order == the canonical byte form,
+                    ///    which is SORTED — NOT the CHAMP hash order the raw cursor walks). `set-to-list(s, desc)` → a
+                    ///    `List a` of the set's elements in canonical element-value order; `map-to-list(m, desc)` → a
+                    ///    `List (Tuple k v)` of the entries as 2-element tuples in canonical KEY order. `desc` is the
+                    ///    compiler-baked shape descriptor (a Bytes handle, read exactly as `value-encode` reads it) naming the
+                    ///    element/key shape to order by; both ops REUSE the same sorted walk `value-encode` renders the
+                    ///    `(Set.of …)`/`(map …)` value form from, so the observable list order is IDENTICAL to the value form.
+                    ///    Both BORROW their collection + `desc` and return a fresh owned `List` handle; a malformed descriptor
+                    ///    or a non-scalar (unorderable) key/element yields the empty list (the never-trap total). APPENDED last
+                    ///    (frozen-contract rule — a new op goes at the end so no existing op's index shifts).
+                    fn set_to_list(s: u32, desc: u32) -> u32;
+                    /// 83 — set elements as a List a, canonical order
+                    fn map_to_list(m: u32, desc: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1461,7 +1496,14 @@ pub mod exports {
                         "cadenza:runtime/heap#bigint-of-bytes")] unsafe extern "C" fn
                         export_bigint_of_bytes(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_bigint_of_bytes_cabi::<$ty > (arg0)
-                        } } };
+                        } } #[unsafe (export_name = "cadenza:runtime/heap#set-to-list")]
+                        unsafe extern "C" fn export_set_to_list(arg0 : i32, arg1 : i32,)
+                        -> i32 { unsafe { $($path_to_types)*::
+                        _export_set_to_list_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#map-to-list")] unsafe extern
+                        "C" fn export_map_to_list(arg0 : i32, arg1 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_map_to_list_cabi::<$ty >
+                        (arg0, arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1670,9 +1712,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2042] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfc\x0e\x01A\x02\x01\
-A\x02\x01B\x81\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2102] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb8\x0f\x01A\x02\x01\
+A\x02\x01B\x85\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
 x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
 \x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
 \x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
@@ -1714,10 +1756,11 @@ nt-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x0abigint-rem\x01\x1d\x01@\x02\x03nu
 my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\x01\
 -\x04\0\x0crational-den\x01-\x04\0\x0crational-add\x01\x1d\x04\0\x0crational-sub\
 \x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
-tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x04\0\x14cadenza:runtime/heap\x05\
-\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09\
-producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
-t\x060.41.0";
+tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
+\x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x14\
+cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07\
+runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.22\
+7.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -1286,3 +1286,49 @@
             (def (main) (if (= (tuple (rep "hi" 3) 1) (tuple (rep "hi" 3) 1)) 1 0))
             (export main)))
   (output (: 1 Int64)))
+
+; The nested-rope construction-site compaction (above) RECURSES: a rope nested TWO levels deep is
+; canonicalized because each construction site compacts its String children AND the inner compound is
+; built before the outer, so no compound at any depth ever holds a rope. These pin depth-2 (tuple-in-
+; tuple, sum-in-record, doubly-nested map key) — the shapes a real value tree (a compiler AST node's
+; fields) reaches; they held once the leaf-level fix landed, so they guard that the recursion isn't
+; later narrowed to depth 1.
+(case "a rope two levels deep (tuple in a tuple) equals its flat twin"
+  (doc    "`(= (tuple (tuple (rep \"hi\" 3) 1) 2) (tuple (tuple \"hixxx\" 1) 2))` — the rope is the string
+           element of the INNER tuple, itself an element of the outer tuple. Both tuples' string leaves are
+           compacted at their construction sites (inner built first), so the structural walk compares by
+           content at depth 2 → 1. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (tuple (tuple (rep "hi" 3) 1) 2) (tuple (tuple "hixxx" 1) 2)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a rope in a sum payload inside a record field equals its flat twin"
+  (doc    "`(= (record (f (Option.Some (rep \"hi\" 3))) (g 1)) (record (f (Option.Some \"hixxx\")) (g 1)))` —
+           the rope sits in an `Option.Some` payload that is itself a record field. The sum payload compacts
+           at its construction, the record stores the (already-canonical) sum handle → content-equal → 1.
+           Mixes the sum-payload and record-field faces at depth 2. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (if (= (record (f (Option.Some (rep "hi" 3))) (g 1)) (record (f (Option.Some "hixxx")) (g 1))) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a doubly-nested tuple map key containing a rope is found by its flat twin"
+  (doc    "The depth-2 compound-KEY face: a map keyed by `(tuple (tuple (rep \"hi\" 3) 1) 2)` (a rope nested
+           two levels deep in the key) is looked up with the flat-twin key → 42. Every construction site on
+           the key path compacts its string leaf, so the whole key hashes canonically → the flat-twin query
+           lands in the same CHAMP slot. Expected: 42.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (rep "hi" 3) 1) 2) 42) (tuple (tuple "hixxx" 1) 2))
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))

@@ -2226,6 +2226,75 @@ fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<
     Some(entries)
 }
 
+/// `set-to-list(s, desc)` — enumerate a SET's elements as a runtime `List` (a persistent vec) in CANONICAL
+/// element-value order (collections-and-text.md §A Set's canonical form: program iteration order == the
+/// canonical byte-form order, NOT the CHAMP hash order the raw cursor walks). Reuses `set_elements_canonical`
+/// (the same sorted collection value-encode uses to render `(Set.of (list …))`), so the observable order is
+/// IDENTICAL to the value form — one source of truth for canonical order. BORROWS `s` and `desc` (an
+/// inspector — the caller owns `s`'s release; `desc` is a compiler-baked constant): each element handle the
+/// sorted walk returns is BORROWED (the set still owns it), so it is `dup`'d before being stored in the fresh
+/// OWNED result vec (the vec now co-owns a reference; the set keeps its own). A malformed descriptor or a
+/// non-scalar (unorderable) element shape yields the EMPTY vec — the defensive total matching value-encode's
+/// never-trap contract (the compiler only bakes a well-formed `Set` descriptor here). The result is a normal
+/// `List a` handle the front-end consumes exactly like any list.
+fn op_set_to_list(set: Handle, desc: &[u8]) -> Handle {
+    let Some(descriptor) = decode_descriptor(desc) else {
+        return op_vec_empty();
+    };
+    // The root shape must resolve to a `Set(elem_ix)`; anything else is a malformed/mismatched descriptor.
+    let elem_ix = match resolve_shape(&descriptor, descriptor.root) {
+        Some(Shape::Set(e)) => *e,
+        _ => return op_vec_empty(),
+    };
+    let Some(elems) = set_elements_canonical(&descriptor, set, elem_ix) else {
+        return op_vec_empty(); // a non-scalar element shape is unorderable — decline to the empty list
+    };
+    // Build the arr of (dup'd) element handles in canonical order, then fold it into a persistent vec. The
+    // CHAMP stores each element ALREADY BOXED (a scalar's box-* leaf / a compound's handle), so the element
+    // handle is stored as-is — no re-box — exactly the representation a `List a` element carries.
+    let arr = op_arr_alloc(elems.len() as u32);
+    for (i, &e) in elems.iter().enumerate() {
+        op_dup(e); // the set still owns `e`; the vec takes an independent reference
+        op_arr_set(arr, i as u32, e);
+    }
+    op_vec_of_arr(arr) // consumes the arr, yields the List handle
+}
+
+/// `map-to-list(m, desc)` — enumerate a MAP's entries as a runtime `List (Tuple k v)` (a persistent vec of
+/// 2-element tuple handles) in CANONICAL KEY order (collections-and-text.md §A Map Renders As Its Entries In
+/// Canonical Key Order). Reuses `map_entries_canonical` (the sorted walk value-encode renders from), so the
+/// observable order matches the value form exactly. BORROWS `m` and `desc`; each `(key, value)` handle the
+/// walk returns is BORROWED (the map owns them), so both are `dup`'d before being stored into the fresh owned
+/// entry tuple (an `arr-alloc(2)` — the runtime representation of `(Tuple k v)`, key at slot 0, value at slot
+/// 1), and the tuple handles are collected into the result vec. A malformed descriptor or a non-scalar
+/// (unorderable) KEY shape yields the EMPTY vec (the never-trap total). The result is a `List (Tuple k v)` the
+/// front-end consumes like any list of pairs.
+fn op_map_to_list(map: Handle, desc: &[u8]) -> Handle {
+    let Some(descriptor) = decode_descriptor(desc) else {
+        return op_vec_empty();
+    };
+    let key_ix = match resolve_shape(&descriptor, descriptor.root) {
+        Some(Shape::Map(k, _v)) => *k,
+        _ => return op_vec_empty(),
+    };
+    let Some(entries) = map_entries_canonical(&descriptor, map, key_ix) else {
+        return op_vec_empty(); // a non-scalar key shape is unorderable — decline to the empty list
+    };
+    let arr = op_arr_alloc(entries.len() as u32);
+    for (i, &(k, v)) in entries.iter().enumerate() {
+        // A fresh 2-element tuple `[key, value]` — the `(Tuple k v)` representation. Each component is
+        // BORROWED from the map, so `dup` it: the entry tuple co-owns a reference alongside the map. Both
+        // components are stored ALREADY BOXED (the CHAMP holds boxed handles), matching a tuple's slots.
+        let entry = op_arr_alloc(2);
+        op_dup(k);
+        op_arr_set(entry, 0, k);
+        op_dup(v);
+        op_arr_set(entry, 1, v);
+        op_arr_set(arr, i as u32, entry); // the tuple handle is owned by `arr` (moved in, no dup)
+    }
+    op_vec_of_arr(arr) // consumes the arr, yields the List (Tuple k v) handle
+}
+
 /// The NON-PROGRESS cap on the value walk — bounds a MALFORMED descriptor whose `Ref`/`Named` chain
 /// cycles WITHOUT ever consuming a heap node (e.g. `Ref → Ref`, or `Named → Ref → Named …`), which would
 /// otherwise spin the iterative walk forever building nothing. It counts only CONSECUTIVE non-consuming
@@ -5088,6 +5157,30 @@ impl Guest for Component {
         let doc = op_value_encode_form(Handle::from_u32(v), &bytes).unwrap_or_default();
         alloc(Vec::new(), doc).to_u32()
     }
+    // `set-to-list(s, desc)` (index 83) — a SET's elements as a `List a` in canonical element-value order,
+    // and `map-to-list(m, desc)` (index 84) — a MAP's entries as a `List (Tuple k v)` in canonical KEY
+    // order. Both BORROW their collection + the compiler-baked shape `desc` (a Bytes handle read the same
+    // way `value-encode` reads it), reuse the sorted canonical walk value-encode renders from (so program
+    // iteration order == the canonical byte form, collections-and-text.md:149), and return a fresh owned
+    // `List` handle. A malformed descriptor / non-scalar unorderable key/element yields the empty list.
+    fn set_to_list(s: u32, desc: u32) -> u32 {
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        op_set_to_list(Handle::from_u32(s), &bytes).to_u32()
+    }
+    fn map_to_list(m: u32, desc: u32) -> u32 {
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        op_map_to_list(Handle::from_u32(m), &bytes).to_u32()
+    }
     fn bytes_concat(a: u32, b: u32) -> u32 {
         op_bytes_concat(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
     }
@@ -7534,6 +7627,146 @@ mod tests {
         leb(&mut d, 1);
         leb(&mut d, 4); // root = 4
         d
+    }
+
+    /// A minimal `(Set Int64)` descriptor: table [0]=Int, [1]=Set(→0); root=1. Set tag = 12.
+    fn set_int_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 2); // table_len = 2
+        d.push(0); // [0] Int
+        d.push(12); // [1] Set(→0)
+        leb(&mut d, 0);
+        leb(&mut d, 1); // root = 1
+        d
+    }
+
+    /// A minimal `(Map Int64 Int64)` descriptor: table [0]=Int, [1]=Map(key→0, val→0); root=1. Map tag = 13.
+    fn map_int_int_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 2); // table_len = 2
+        d.push(0); // [0] Int
+        d.push(13); // [1] Map(key→0, val→0)
+        leb(&mut d, 0);
+        leb(&mut d, 0);
+        leb(&mut d, 1); // root = 1
+        d
+    }
+
+    /// `set-to-list` enumerates a set's elements as a `List` in CANONICAL element-value order — NOT the
+    /// CHAMP hash/insertion order — reusing the SAME sorted walk value-encode renders `(Set.of …)` from.
+    /// Insert ints in a deliberately non-sorted order; the result list must be `[1, 2, 3, 10]`, and the
+    /// heap must balance (each element is `dup`'d into the owned result vec; dropping the set + the list
+    /// nets to zero live objects).
+    #[test]
+    fn set_to_list_yields_canonical_order() {
+        reset();
+        let desc = set_int_descriptor();
+        // Insert 10, 2, 1, 3 (hash order ≠ value order); canonical order is 1, 2, 3, 10.
+        let mut s = op_set_empty();
+        for &e in &[10i64, 2, 1, 3] {
+            s = op_set_insert(s, op_box_int(e));
+        }
+        let list = op_set_to_list(s, &desc);
+        let got: Vec<i64> = (0..op_vec_len(list))
+            .map(|i| op_get_int(op_vec_get(list, i)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![1, 2, 3, 10],
+            "set-to-list must yield elements in canonical value order (sorted), not hash/insertion order"
+        );
+        op_drop(s);
+        op_drop(list);
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_eq!(
+            live_object_count(),
+            0,
+            "set-to-list leak: the set + the result list (each element dup'd in) must net to 0 live cells"
+        );
+    }
+
+    /// `map-to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order, each entry
+    /// a 2-element tuple `[key, value]`. Insert keys out of order; the result must be the entries sorted by
+    /// key, with values intact, and the heap must balance.
+    #[test]
+    fn map_to_list_yields_canonical_key_order() {
+        reset();
+        let desc = map_int_int_descriptor();
+        // Insert (30→300),(10→100),(20→200); canonical KEY order is 10,20,30.
+        let mut m = op_map_empty();
+        for &(k, v) in &[(30i64, 300i64), (10, 100), (20, 200)] {
+            m = op_map_insert(m, op_box_int(k), op_box_int(v));
+        }
+        let list = op_map_to_list(m, &desc);
+        let got: Vec<(i64, i64)> = (0..op_vec_len(list))
+            .map(|i| {
+                let entry = op_vec_get(list, i);
+                (
+                    op_get_int(op_arr_get(entry, 0)),
+                    op_get_int(op_arr_get(entry, 1)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(10, 100), (20, 200), (30, 300)],
+            "map-to-list must yield entries as (key,value) tuples in canonical key order"
+        );
+        op_drop(m);
+        op_drop(list);
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_eq!(
+            live_object_count(),
+            0,
+            "map-to-list leak: the map + the result list of entry tuples (each k,v dup'd in) must net to 0"
+        );
+    }
+
+    /// A non-scalar (unorderable) element/key shape, or a descriptor whose root is not a Set/Map, DECLINES
+    /// to the EMPTY list — the never-trap totality contract (the compiler bakes only a well-formed
+    /// descriptor, but the op must be total on any input). Here a `(Set Int64)` value handed a MISMATCHED
+    /// descriptor whose root is a bare `Int` (not a Set) yields the empty list, not a trap.
+    #[test]
+    fn set_to_list_declines_a_non_set_descriptor_to_empty() {
+        reset();
+        // A descriptor whose root is a bare Int (table [0]=Int, root=0) — not a Set.
+        let desc = vec![1u8, 0u8, 0u8]; // table_len=1, [0]=Int, root=0
+        let mut s = op_set_empty();
+        s = op_set_insert(s, op_box_int(7));
+        let list = op_set_to_list(s, &desc);
+        assert_eq!(
+            op_vec_len(list),
+            0,
+            "a non-Set root descriptor must decline to the empty list (never-trap total)"
+        );
+        op_drop(s);
+        op_drop(list);
     }
 
     #[test]

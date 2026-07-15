@@ -62498,6 +62498,82 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
+    // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
+    // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND
+    // the source provider's `--component-name` export — or the two components fail to link (the
+    // [[rcdzc-kebab-extern-name-gotcha]] failure mode: an invalid extern name, or a silent name
+    // mismatch, with no diagnostic). `a_non_kebab_effect_and_op_name_emit_a_valid_component` pins the
+    // consumer-side VALIDITY; this pins the CROSS-SIDE AGREEMENT e2e — both sides derive the boundary
+    // name from the same deterministic `kebab_extern_name`, so a divergent change to either side's
+    // normalization makes this run fail to compose rather than silently mis-link.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_non_kebab_peer_op_name_agrees_across_both_sides_and_runs() {
+        use crate::testkit::parse;
+        // PROVIDER (source): a camelCase export `addTwo`, published as `cadenza:math/api`. Its interface
+        // member extern name kebab-normalizes to `add-two`.
+        let provider = compile_provider(
+            "(do (def (addTwo (: x Int64)) (+ x x)) (export addTwo))",
+            "cadenza:math/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("camelCase-op source provider validates");
+        }
+        // CONSUMER (source): binds the same interface, performs the camelCase op via a `host` delegation.
+        let src = "(do \
+            (effect Math (op addTwo (-> Int64 Int64))) \
+            (bind Math \"cadenza:math/api\") \
+            (def (main (: x Int64)) (host (Math) (Math.addTwo x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("camelCase-op consumer validates");
+        }
+        // Both sides carry the KEBAB extern name `add-two`, and NEITHER leaks the verbatim `addTwo` into a
+        // component-boundary position (the interface member name) — the deterministic agreement that lets
+        // them link. (The verbatim `addTwo` still appears as the CORE-module func name, which is fine — a
+        // core name is not a component extern name; the interface-member and its alias are what must be
+        // kebab.) We check the boundary name is present on both.
+        for (who, bytes) in [("provider", &provider), ("consumer", &consumer)] {
+            assert!(
+                bytes.windows(7).any(|w| w == b"add-two"),
+                "the {who} must carry the kebab interface member name `add-two`"
+            );
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL4] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a non-kebab peer op composes + runs across both source sides")
+        {
+            // The provider's `addTwo(5)` = 10, reached through the kebab-agreed `add-two` boundary name.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "a camelCase peer op crosses end-to-end (both sides kebabize to `add-two`)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("non-kebab peer-op run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U9 — a consumer binds TWO DISTINCT PEER INTERFACES. The multi-interface extern envelope: each bound
     // interface becomes its own imported component instance, and each op aliases out of ITS instance; the
     // one `"peer"` core instance exports every op flat by name (so op names are globally unique). Consumer
