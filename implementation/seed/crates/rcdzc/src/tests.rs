@@ -48038,6 +48038,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_producer_result_is_consumed_by_an_element_typed_consumer() {
+        // INFERENCE FIX (issue mlrepro-decline-recursive-generic-map-result-element-untied): a recursive-
+        // generic PRODUCER — `mapl : (a -> b) -> List a -> List b`, building a generic result list — whose
+        // result is then CONSUMED at a concrete element type (`suml` sums it) was DECLINED at emit: the
+        // producer's list-pattern parameter got NO shape (`pattern_implied_ty` returned `None` for a
+        // `(list …)` pattern), so `xs` grounded to `Any` and the scheme declined entirely. FIX (two parts):
+        // (A) `pattern_implied_ty` shapes a `(list …)` pattern to `List <elem>`; (B) `solve_recursive_params`
+        // preserves that body-solved shape for a generic position (instead of a bare `Var`). Now `mapl`'s
+        // param + result carry their `List` structure and the consumer pins the element. `mapl (fn (x) (+ x
+        // 1)) [n,n,n]` = `[n+1,n+1,n+1]`, `suml` of that = `3·(n+1)`; runtime boundary `n` → real
+        // call_indirect + fold, no const-fold. (The ≥2-element-type producer instantiation is a separate
+        // not-yet-built monomorphization tie — see the issue's PART C.)
+        let src = "(module m \
+            (def (mapl f xs) \
+              (match xs ((list) (list)) ((list h .. t) (List.push (mapl f t) (f h))))) \
+            (def (suml xs) \
+              (match xs ((list) 0) ((list h .. t) (+ h (suml t))))) \
+            (def (main (: n Int64)) (suml (mapl (fn (x) (+ x 1)) (list n n n)))) (export main))";
+        let Some(r) = run_closure(src, 1) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "6"); // 3·(1+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "15"); // 3·(4+1)
+    }
+
+    #[test]
     fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
         // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
         // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`

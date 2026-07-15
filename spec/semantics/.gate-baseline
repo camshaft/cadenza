@@ -1206,6 +1206,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
