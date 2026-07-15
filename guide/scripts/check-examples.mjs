@@ -59,9 +59,25 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
 // fix to `wrapModule` would have left the harness testing the OLD wrapping). Import the real module so
 // the harness wraps snippets EXACTLY as the app does, by construction. `wrapModule.ts` is React-free
-// (its only import is a type), so node loads it directly (type-stripping). Snippets are authored in
-// s-expr (the guide default `authoredIn`); the reader also TOGGLES to ML, so we check that surface too.
-const { wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts"));
+// (its only import is a type), so node loads it directly VIA TYPE-STRIPPING — which needs Node ≥ 22.6
+// (on by default) or ≥ 20.19 with --experimental-strip-types. On an older Node the import fails with a
+// cryptic "Unknown file extension .ts" loader error; catch it and say exactly what's wrong + how to fix.
+let wrapModule, stripModule;
+try {
+  ({ wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts")));
+} catch (e) {
+  const msg = String(e && e.message ? e.message : e);
+  if (/Unknown file extension|strip.?types|\.ts/i.test(msg)) {
+    console.error(
+      `\ncheck-examples: cannot load src/components/wrapModule.ts — this Node (${process.version}) doesn't\n` +
+        `strip TypeScript types. Use Node ≥ 22.6 (type-stripping on by default), or run with\n` +
+        `\`node --experimental-strip-types scripts/check-examples.mjs\` on Node ≥ 20.19.\n` +
+        `(underlying error: ${msg})`,
+    );
+    process.exit(1);
+  }
+  throw e;
+}
 /// The ML the reader sees after toggling: wrap the s-expr snippet, render to ML, strip the scaffolding.
 function renderToMl(snippet) {
   return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
