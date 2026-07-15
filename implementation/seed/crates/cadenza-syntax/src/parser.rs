@@ -745,6 +745,29 @@ impl<'a> Parser<'a> {
                 let word = self.text(t).strip_prefix("#\\").unwrap_or("");
                 self.atom(literal::char_leaf(word), span)
             }
+            // A TAGGED TEMPLATE `tag"…"` → `(tagged-template <tag> (chunks <str>…) (holes <expr>…))` —
+            // a binding-dispatched compile-time macro over literal chunks + `{expr}` holes. The token
+            // text is `<tag>"<body>"`; split at the first `"` into the tag name and the string body.
+            // (B1: hole-free — the body is one chunk and there are no holes; `{expr}` interpolation is
+            // the next brick.) The head is the reserved name `tagged-template`, the child-list shape the
+            // expander (rcdzc) dispatches on — the invariant is chunks.len() == holes.len() + 1.
+            Kind::TaggedTemplate => {
+                let t = self.bump().unwrap();
+                let raw = self.text(t);
+                let q = raw.find('"').unwrap_or(raw.len());
+                let tag_name = &raw[..q];
+                let body_tok = &raw[q..]; // `"<body>"` — a full string token for `unescape_string_token`
+                let head = self.name("tagged-template", span);
+                let tag = self.name(tag_name, span);
+                // chunks: the single literal chunk (the whole body, B1 has no holes to split on).
+                let chunks_head = self.name("chunks", span);
+                let chunk = self.atom(literal::unescape_string_token(body_tok), span);
+                let chunks = self.list(vec![chunks_head, chunk], span);
+                // holes: empty (B1).
+                let holes_head = self.name("holes", span);
+                let holes = self.list(vec![holes_head], span);
+                self.list(vec![head, tag, chunks, holes], span)
+            }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)

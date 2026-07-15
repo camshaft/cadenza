@@ -25,6 +25,11 @@ pub enum Kind {
     ByteStr, // `b"…"` — a byte-string literal (arbitrary bytes), the surface form of a `Bytes` value
     CharLit, // `#\a` / `#\newline` / `#\u+00E9` — a char literal (one Unicode scalar)
     SymLit,  // `#"meter"` — a symbol literal (an interned name value); reuses string lexing
+    // `tag"…"` — a TAGGED TEMPLATE: an identifier GLUED to a string (`jsx"…"`, `id"…"`), the surface for
+    // a binding-dispatched compile-time macro over literal chunks + `{expr}` holes (tagged-template
+    // macros design). Glued like `b"`/`#"`; the tag ident and the string body are one token, split by
+    // the parser into `(tagged-template <tag> (chunks …) (holes …))`. (B1: hole-free body; holes follow.)
+    TaggedTemplate,
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
     Ident, // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
