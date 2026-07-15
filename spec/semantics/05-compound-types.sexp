@@ -7978,3 +7978,69 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 3 Int64)))
+
+; --- CSE of a repeated bounds-checked indexed read must key on VALUE identity ---------------------
+; fd1207657 CSE-shares a repeated `(Option.expect (List.at xs i) …)` (one vec-get). The sharing is
+; sound only for the SAME list value and SAME index along one straight line — these pin the
+; must-NOT-share discriminators (each returns a wrong doubled/stale value if over-shared) and the
+; guard boundary (a shared read must not hoist above the branch that guards it).
+
+(case "indexed reads at different indices of one list are not shared"
+  (doc    "`(+ (expect (List.at xs i)) (expect (List.at xs j)))` with i = 0, j = 1 over xs = [7, 8] —
+           two reads differing ONLY in the index parameter → 7 + 8 = 15. A CSE keyed on the
+           collection operand alone (ignoring the index) returns 14 or 16. The index-discrimination
+           pin for the shared indexed read.")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (Option.expect (List.at xs i) "a") (Option.expect (List.at xs j) "b"))))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (output (: 15 Int64)))
+
+(case "an indexed read is not shared across a shadowing rebinding"
+  (doc    "The first read targets the outer `xs` = [7]; a nested let SHADOWS `xs` with `(List.push xs
+           9)` and reads index 1 → 9, so 7 + 9 = 16. The two `(List.at xs …)` expressions are
+           syntactically similar but name DIFFERENT bindings — a CSE keyed on the spelled name (rather
+           than the resolved binding) shares the first read's list and misses the pushed element. The
+           binding-identity pin.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (Option.expect (List.at xs 0) "a")
+                   (let ((xs (List.push xs 9)))
+                     (Option.expect (List.at xs 1) "b")))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 16 Int64)))
+
+(case "an indexed read of an updated list is not shared with the original's"
+  (doc    "`(expect (List.at xs 0))` = 7 and `(expect (List.at (List.update xs 0 99) 0))` = 99 — the
+           same index, but the second read targets a DIFFERENT list value (the persistent update's
+           result): 7 + 99 = 106. A CSE that treated `List.at` as pure over the ORIGINAL operand
+           spelling (not the updated value) returns 14; one that shared backward returns 198. The
+           value-identity pin, composing the persistence guarantee with the read sharing.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (Option.expect (List.at xs 0) "a")
+                   (Option.expect (List.at (List.update xs 0 99) 0) "b"))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 106 Int64)))
+
+(case "a guarded out-of-bounds indexed read is not hoisted by the sharing"
+  (doc    "`(if (> k 1) (expect (List.at xs k)) 0)` + an UNguarded in-bounds read at index 0, over
+           xs = [7, 8] with k = 0: the guard is false, so the k-indexed read (out of bounds for k > 1
+           inputs, and here never demanded) stays unevaluated → 0 + 7 = 7. A CSE/hoist that evaluates
+           the guarded read speculatively (to share the bounds-check machinery with the unguarded one)
+           traps 'zero'-side programs that must return 7. The trap-freedom boundary of the read
+           sharing, the indexed-read analogue of the LICM zero-iteration pin.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (if (> k 1) (Option.expect (List.at xs k) "big") 0)
+                   (Option.expect (List.at xs 0) "zero"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
