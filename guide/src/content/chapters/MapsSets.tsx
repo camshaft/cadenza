@@ -155,17 +155,17 @@ export default function MapsSets() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (. (Map.take (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1) 0)
+  (match (. (Map.take (map (1 10) (2 20)) 1) 0)
     ((Some v) v)
     ((None _) (- 0 1))))`}
       />
       <P>
-        The other half of the tuple, <C>.1</C>, is the smaller map — one entry now, so <C>Map.size</C> of it
-        is <C>1</C>:
+        The other half of the tuple, <C>.1</C>, is the smaller map — one entry left. Return it and you can
+        see the removal: <C>{`{2 = 20}`}</C>, with key <C>1</C> gone:
       </P>
       <Runnable
         source={`(def (main)
-  (Map.size (. (Map.take (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1) 1)))`}
+  (. (Map.take (map (1 10) (2 20)) 1) 1))`}
       />
       <P>
         Take a key that isn't there and <C>.0</C> is <C>(None unit)</C> while <C>.1</C> equals the original —
@@ -179,7 +179,7 @@ export default function MapsSets() {
       </P>
       <Runnable
         source={`(def (main)
-  (match (. (Map.swap (Map.insert (Map.empty) 1 10) 1 99) 0)
+  (match (. (Map.swap (map (1 10)) 1 99) 0)
     ((Some old) old)
     ((None _) (- 0 1))))`}
       />
@@ -216,17 +216,17 @@ export default function MapsSets() {
         id="maps-sets:2"
         prompt={
           <>
-            This map holds two keys, <C>1</C> and <C>2</C>. Every "update" is a new map, so removing a key
-            builds one without it — <C>Map.remove</C> does that. Take one key away, then ask{" "}
+            This map literal holds two keys, <C>1</C> and <C>2</C>. Every "update" is a new map, so
+            removing a key builds one without it — <C>Map.remove</C> does that. Take one key away, then ask{" "}
             <C>Map.size</C> how many remain: the answer should be <C>1</C>. Fill in the operation.
           </>
         }
         starter={`(def (main)
   (Map.size
-    (Map.? (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1)))`}
+    (Map.? (map (1 10) (2 20)) 1)))`}
         solution={`(def (main)
   (Map.size
-    (Map.remove (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1)))`}
+    (Map.remove (map (1 10) (2 20)) 1)))`}
         expected="1"
         hint={
           <>

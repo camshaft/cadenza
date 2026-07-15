@@ -92,9 +92,9 @@ export default function Floats() {
       <H2>Two widths, never mixed silently</H2>
       <P>
         There's a 32-bit float too — <C>Float32</C> — with its own <C>Float32.of-int</C>. It's a real,
-        runnable value:
+        runnable value; divide two of them and you get a <C>Float32</C> back, <C>7 ÷ 2 = 3.5</C>:
       </P>
-      <Runnable source={`(Float32.of-int 5)`} />
+      <Runnable source={`(/ (Float32.of-int 7) (Float32.of-int 2))`} />
       <P>
         And the two widths follow the same rule as everything else: they don't blend on their own. Add a{" "}
         <C>Float32</C> to a <C>Float64</C> and the compiler stops you — a <C>Float32</C> and a{" "}
@@ -125,14 +125,14 @@ export default function Floats() {
         id="floats:2"
         prompt={
           <>
-            The two floats here must be the <em>same width</em> to add. One operand is already a{" "}
-            <C>Float32</C> — convert the <C>2</C> at the matching width so <C>+</C> is happy and the sum is{" "}
-            <C>5.0</C>. Which of <C>Float32</C> / <C>Float64</C> goes in the blank?
+            The two floats here must be the <em>same width</em> to divide. One operand is already a{" "}
+            <C>Float32</C> — convert the <C>5</C> at the matching width so <C>/</C> is happy and{" "}
+            <C>5 ÷ 2</C> is <C>2.5</C>. Which of <C>Float32</C> / <C>Float64</C> goes in the blank?
           </>
         }
-        starter={`(+ (Float?.of-int 2) (Float32.of-int 3))`}
-        solution={`(+ (Float32.of-int 2) (Float32.of-int 3))`}
-        expected="5.0"
+        starter={`(/ (Float?.of-int 5) (Float32.of-int 2))`}
+        solution={`(/ (Float32.of-int 5) (Float32.of-int 2))`}
+        expected="2.5"
         hint={
           <>
             The other operand is a <C>Float32</C>, and widths don't mix — so convert at <C>Float32</C> too.
