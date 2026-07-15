@@ -514,9 +514,9 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
     let apply_field = meta_field(ast, "apply", builder);
     let mut children = vec![head, apply_field];
     for (name, prim) in [
-        ("concat", "tuple-cat"),
+        ("cat", "tuple-cat"),
         ("split-at", "tuple-split-at"),
-        ("remove", "tuple-pop"),
+        ("pop", "tuple-pop"),
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
@@ -636,7 +636,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
         ("insert", "map-insert", insert_lambda),
         ("lookup", "map-lookup", lookup_lambda),
         ("remove", "map-remove", remove_lambda),
-        ("len", "map-size", size_lambda),
+        ("size", "map-size", size_lambda),
         ("swap", "map-swap", swap_lambda),
         ("take", "map-take", take_lambda),
     ] {

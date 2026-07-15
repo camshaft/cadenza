@@ -427,33 +427,6 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access folds to the DECLARED slot (annotated-binder mismatch already reported)");
                     return Core::Proj { operand, index };
                 }
-                // RENAMED-OP (CDZ0603): mirror `infer::no_field_reject`'s retired-collection-op arm so
-                // this emit copy carries the SAME code + node + fix as the infer copy — `dedup_faults`
-                // then collapses the two by (code, node). Without this the emit copy would be a bare
-                // CDZ0201 and the two codes wouldn't collapse (double report).
-                if let Some(module) = db.ast.as_name(operand)
-                    && let Some(new_name) = crate::infer::retired_collection_op(module, &key.name)
-                {
-                    let key_occ = db.ast.as_form(id, ".").and_then(|t| t.get(1).copied());
-                    let reject = Reject::coded(
-                        Code::RenamedOp,
-                        format!(
-                            "`{module}.{}` was renamed to `{module}.{new_name}`; write `(. {module} {new_name})`",
-                            key.name
-                        ),
-                    )
-                    .at(id);
-                    return match key_occ {
-                        Some(occ) => {
-                            Core::Poison(reject.with_fix(crate::diag::Fix::replace_verified(
-                                occ,
-                                new_name,
-                                format!("rename to `{new_name}`"),
-                            )))
-                        }
-                        None => Core::Poison(reject),
-                    };
-                }
                 // Match `infer::no_field_reject`'s category-aware subject/word (effect/module/type/record)
                 // so the two copies share the `has no <word> \`key\`` dedup core and `dedup_faults`
                 // collapses them (keeping the infer copy's did-you-mean fix).
@@ -17441,7 +17414,7 @@ fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core 
             Core::Tuple { elems }
         }
         _ => Core::Poison(Reject::decline(
-            "Tuple.concat over a runtime tuple is not yet built",
+            "Tuple.cat over a runtime tuple is not yet built",
         )),
     }
 }
@@ -17501,12 +17474,12 @@ fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
         return match core_of(db, tuple) {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Poison(Reject::decline(
-                "Tuple.remove over a runtime tuple is not yet built",
+                "Tuple.pop over a runtime tuple is not yet built",
             )),
         };
     };
     let Some((&first, rest)) = elems.split_first() else {
-        return Core::Poison(Reject::decline("Tuple.remove of an empty tuple"));
+        return Core::Poison(Reject::decline("Tuple.pop of an empty tuple"));
     };
     let rest_tuple = synth_tuple(db, rest.to_vec());
     trace!(target: "rcdzc::fold", node = id.0, "Tuple.pop folds to a (element0, rest) tuple");

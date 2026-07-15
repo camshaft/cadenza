@@ -64,12 +64,12 @@ export default function MapsSets() {
 
       <H2>Maps: values under keys</H2>
       <P>
-        A map starts empty with <C>Map.empty</C> and grows with <C>Map.insert</C>. <C>Map.len</C> reports
+        A map starts empty with <C>Map.empty</C> and grows with <C>Map.insert</C>. <C>Map.size</C> reports
         how many keys it holds:
       </P>
       <Runnable
         source={`(def (main)
-  (Map.len (Map.insert (Map.insert (Map.empty) 1 10) 2 20)))`}
+  (Map.size (Map.insert (Map.insert (Map.empty) 1 10) 2 20)))`}
       />
       <P>
         <C>Map.lookup</C> is the payoff — and, like reaching into a list, it can miss. So it returns an{" "}
@@ -100,9 +100,9 @@ export default function MapsSets() {
         Toggle to the conventional surface and that reads <C>Set.len(#(1, 2, 2, 3))</C> — and, in fact,
         every <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the
         toggle was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two
-        entries, so <C>Map.len</C> is <C>2</C>:
+        entries, so <C>Map.size</C> is <C>2</C>:
       </P>
-      <Runnable source={`(Map.len (map (1 10) (2 20)))`} />
+      <Runnable source={`(Map.size (map (1 10) (2 20)))`} />
       <P>
         And it's an ordinary map, so <C>Map.lookup</C> works on it just the same — the value under key{" "}
         <C>2</C> is <C>20</C>:
@@ -219,14 +219,14 @@ export default function MapsSets() {
           <>
             This map literal holds two keys, <C>1</C> and <C>2</C>. Every "update" is a new map, so
             removing a key builds one without it — <C>Map.remove</C> does that. Take one key away, then ask{" "}
-            <C>Map.len</C> how many remain: the answer should be <C>1</C>. Fill in the operation.
+            <C>Map.size</C> how many remain: the answer should be <C>1</C>. Fill in the operation.
           </>
         }
         starter={`(def (main)
-  (Map.len
+  (Map.size
     (Map.? (map (1 10) (2 20)) 1)))`}
         solution={`(def (main)
-  (Map.len
+  (Map.size
     (Map.remove (map (1 10) (2 20)) 1)))`}
         expected="1"
         hint={

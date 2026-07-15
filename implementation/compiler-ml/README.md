@@ -123,8 +123,8 @@ issues this port finds are filed in the shared queue — see "Language issues fo
   scope-respecting complement to `free-vars.cdz`'s flat collector): a `Var` is a singleton `Set`, an
   `App` UNIONS, and a `Lam x` REMOVES its bound var. Stresses `Set String` union + remove threaded
   through recursion. 10 `@test`s incl. shadowing (`λx.λx.x` closed) and a name free-and-bound at once
-  (`(x (λx.x))` — outer x free). Confirmed WORKING (no new bug). (The former `Set.len`/`Map.size` count
-  inconsistency is RESOLVED: `Map.size`→`Map.len` in the collection-op naming cutover, so both are `len`.)
+  (`(x (λx.x))` — outer x free). Confirmed WORKING (no new bug). ⚠ minor API inconsistency: a `Set`'s
+  count is `Set.len` but a `Map`'s is `Map.size` (same "count" concept, two names).
 - `src/compare.cdz` — a TOTAL ORDER over `Ast`: a three-way `cmp` returning -1/0/1, ordering by node tag
   then by payload (Nums by value, Nodes lexicographically by children — a proper prefix is smaller). The
   canonical ordering a compiler uses to sort / dedup / hash-cons terms. Fully recursive; returns scalars

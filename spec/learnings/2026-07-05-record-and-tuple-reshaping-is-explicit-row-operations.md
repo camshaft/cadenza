@@ -17,7 +17,7 @@ The design settled on **three record primitives** — `Record.project` (restrict
 algebra, from which the ergonomic operations reduce by a meaning-preserving rewrite: `Record.extend`
 = merge-with-a-singleton (add an **absent** field), `Record.with` = without-then-merge (update a
 **present** field, possibly retyping it), `Record.pop` = `(tuple (. r z) (Record.without r (z)))`.
-Tuples mirror this positionally with `Tuple.concat` / `Tuple.split-at` / `Tuple.remove`. The operations are
+Tuples mirror this positionally with `Tuple.cat` / `Tuple.split-at` / `Tuple.pop`. The operations are
 reached through the `Record`/`Tuple` prelude records (like `Set.insert`/`List.at`) but remain
 **special forms**, because a field name and a position are static operands the compiler resolves, not
 runtime values a function receives.

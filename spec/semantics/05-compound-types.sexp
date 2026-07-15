@@ -1796,11 +1796,11 @@
 ; cases pin the working boundary the fix must keep green.)
 
 (case "a map chosen by a runtime if is size-measured with valid wasm"
-  (doc    "`(Map.len (if (> b 0) {1↦10} {1↦10,2↦20}))` selects one of two maps by the runtime Bool and reads
+  (doc    "`(Map.size (if (> b 0) {1↦10} {1↦10,2↦20}))` selects one of two maps by the runtime Bool and reads
            its size — b=5 → the one-entry map → 1, b=0 → the two-entry map → 2. The `if` unifies two
-           `(Map Int64 Int64)` branches into one heap handle that `Map.len` reads; pins that the join emits
+           `(Map Int64 Int64)` branches into one heap handle that `Map.size` reads; pins that the join emits
            valid wasm for a MAP handle, the map analogue of the runtime-if list.")
-  (input  (do (def (main (: b Int64)) (Map.len (if (> b 0) (Map.insert Map.empty 1 10) (Map.insert (Map.insert Map.empty 1 10) 2 20)))) (export main)))
+  (input  (do (def (main (: b Int64)) (Map.size (if (> b 0) (Map.insert Map.empty 1 10) (Map.insert (Map.insert Map.empty 1 10) 2 20)))) (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
 
@@ -4540,7 +4540,7 @@
            overwrites `(a 1)`), size 1 — keys are compared by value (collections-and-text.md #Keys Are
            Compared By Value), and 5 = 5. If the key were the literal name, `a` and `b` would be distinct
            string keys and the map would have size 2. MUST be 1.")
-  (input      (let ((a 5)) (let ((b 5)) (Map.len (map (a 1) (b 2))))))
+  (input      (let ((a 5)) (let ((b 5)) (Map.size (map (a 1) (b 2))))))
   (output     (: 1 Int64)))
 
 ; The value-not-literal rule holds when the bound value is itself a STRING, ruling out a type-driven
@@ -4567,7 +4567,7 @@
            both bound to `\"k\"`, so `(map (a 1) (b 2))` has ONE entry at key `\"k\"` (size 1) — keys
            compared by value, and `\"k\"` = `\"k\"`. If the key were the literal name, they would be
            distinct string keys `\"a\"`/`\"b\"` and size would be 2. MUST be 1.")
-  (input      (let ((a "k")) (let ((b "k")) (Map.len (map (a 1) (b 2))))))
+  (input      (let ((a "k")) (let ((b "k")) (Map.size (map (a 1) (b 2))))))
   (output     (: 1 Int64)))
 
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
@@ -4648,7 +4648,7 @@
            map is built and RETURNED as the result — exactly as the VALUE-homogeneity check does (a bare
            `(map (a 1) (b true))` returned as the result is rejected 'map values do not share one type').
            The keys are BOUND names, so this is independent of the unbound-name→string coercion. A seed
-           that checks key homogeneity only when the map flows into an OPERATION (`Map.len`, `=`) but not
+           that checks key homogeneity only when the map flows into an OPERATION (`Map.size`, `=`) but not
            when it is merely constructed/returned still builds a heterogeneous-key map `(map (5 1) (true
            2))` here — the construction-path half the value check already covers. A generation that does
            not yet check a map literal's key homogeneity on construction declines rather than building a
@@ -6158,7 +6158,7 @@
            sum-specific — so this is a wasm-oracle witness.)")
   (input  (do
             (type Cache (Empty) (Full (Map Int64 Int64)))
-            (def (sz (: c Cache)) (match c ((Cache.Empty) 0) ((Cache.Full m) (Map.len m))))
+            (def (sz (: c Cache)) (match c ((Cache.Empty) 0) ((Cache.Full m) (Map.size m))))
             (def (main (: k Int64)) (sz (Cache.Full (Map.insert (Map.insert (Map.empty) k 1) 2 2))))
             (export main)))
   (call   main (: 5 Int64))
@@ -7243,9 +7243,9 @@
 (case "inserting a key already present replaces its value, not the size"
   (doc    "Adding a key that is already present REPLACES its value rather than adding a second entry
            (collections-and-text.md §A Map Is Built By Functional Construction, preserving each key at
-           most once). After inserting `1↦10` then `1↦99`, `Map.len` is 1 and the key holds 99.")
+           most once). After inserting `1↦10` then `1↦99`, `Map.size` is 1 and the key holds 99.")
   (input  (do
-            (def (main) (Map.len (Map.insert (Map.insert Map.empty 1 10) 1 99))) (export main)))
+            (def (main) (Map.size (Map.insert (Map.insert Map.empty 1 10) 1 99))) (export main)))
   (output (: 1 Int64)))
 
 (case "removing a key drops its association and the size"
@@ -7253,14 +7253,14 @@
            key the map holds lowers the size by one. Two keys inserted, one removed → size 1.")
   (input  (do
             (def (main)
-              (Map.len (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1))) (export main)))
+              (Map.size (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1))) (export main)))
   (output (: 1 Int64)))
 
 (case "removing an absent key leaves the map unchanged"
   (doc    "Removing a key the map does not contain yields a map equal to the operand rather than
            trapping (collections-and-text.md §A Map Is Built By Functional Construction — removal is
            total). Size is unchanged at 1.")
-  (input  (do (def (main) (Map.len (Map.remove (Map.insert Map.empty 1 10) 2))) (export main)))
+  (input  (do (def (main) (Map.size (Map.remove (Map.insert Map.empty 1 10) 2))) (export main)))
   (output (: 1 Int64)))
 
 (case "the value-yielding insert reports the value it replaced"
@@ -7297,7 +7297,7 @@
            `Map.insert` of a new key. Pins that the None-prior swap still produces the updated map — the
            value-yielding insert adds when the key is new, exactly as it replaces when the key is present.")
   (input  (do
-            (def (main) (Map.len (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 1))) (export main)))
+            (def (main) (Map.size (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 1))) (export main)))
   (output (: 2 Int64)))
 
 (case "the value-yielding remove reports None when the key is absent"
@@ -7315,7 +7315,7 @@
            None-dropped take still produces a usable map handle equal to the input, the take companion of
            the new-key-swap-adds case.")
   (input  (do
-            (def (main) (Map.len (. (Map.take (Map.insert Map.empty 1 10) 2) 1))) (export main)))
+            (def (main) (Map.size (. (Map.take (Map.insert Map.empty 1 10) 2) 1))) (export main)))
   (output (: 1 Int64)))
 
 ; --- Map operations at a RUNTIME key: lookup / swap / take / insert / remove on the value heap ----------
@@ -7357,21 +7357,21 @@
   (call   main (: 5 Int64)) (output (: -1 Int64)))
 
 (case "size after a runtime-key insert reflects replace-vs-add"
-  (doc    "`(Map.len (Map.insert {1↦10} k 20))` is 1 when `k`=1 (an existing key — its value is REPLACED,
+  (doc    "`(Map.size (Map.insert {1↦10} k 20))` is 1 when `k`=1 (an existing key — its value is REPLACED,
            each key held once, collections-and-text.md §A Map Is Built By Functional Construction) and 2
            when `k`=5 (a new key — a second entry added). Pins that whether an insert replaces or adds is
            decided by the RUNTIME key, observed through the resulting size.")
   (input  (do (def (main (: k Int64))
-                (Map.len (Map.insert (Map.insert Map.empty 1 10) k 20))) (export main)))
+                (Map.size (Map.insert (Map.insert Map.empty 1 10) k 20))) (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
 
 (case "size after a runtime-key remove reflects whether the key was present"
-  (doc    "`(Map.len (Map.remove {1↦10, 2↦20} k))` is 1 when `k` ∈ {1,2} (a present key dropped) and 2 when
+  (doc    "`(Map.size (Map.remove {1↦10, 2↦20} k))` is 1 when `k` ∈ {1,2} (a present key dropped) and 2 when
            `k`=9 (an absent key — removal is total, the map is unchanged). The remove companion of the
            insert-size case, over a runtime key.")
   (input  (do (def (main (: k Int64))
-                (Map.len (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) k))) (export main)))
+                (Map.size (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) k))) (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 2 Int64)))
 
@@ -7393,7 +7393,7 @@
            map handle (agreeing with the plain `Map.remove`), not only a reported dropped value — the
            value-yielding remove's `.1` is re-queryable, driven by the runtime key.")
   (input  (do (def (main (: k Int64))
-                (Map.len (. (Map.take (Map.insert (Map.insert Map.empty 1 10) 2 20) k) 1))) (export main)))
+                (Map.size (. (Map.take (Map.insert (Map.insert Map.empty 1 10) 2 20) k) 1))) (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 2 Int64)))
 
@@ -7402,8 +7402,8 @@
 ; xs))`, `(def (f b) (Bytes.len b))`, and `(def (f s) (String.byte-len s))` all compile and run when the
 ; collection is a parameter — so a map, an ordinary heap value (collections-and-text.md #A Map Is Built By
 ; Functional Construction; memory-and-resource-model.md — a map is a heap value like a list), must too:
-; `(def (f mp) (Map.len mp))` applied to a map is a well-typed program. The seed lowers `Map.*` for a map
-; built inline (`(Map.len (Map.insert Map.empty 1 10))` works) but declines a `Map.*` operation whose map
+; `(def (f mp) (Map.size mp))` applied to a map is a well-typed program. The seed lowers `Map.*` for a map
+; built inline (`(Map.size (Map.insert Map.empty 1 10))` works) but declines a `Map.*` operation whose map
 ; operand is a parameter ("unsupported dotted-application") — the map is the ONLY heap collection whose
 ; operations do not yet accept a parameter operand, blocking the ordinary idiom of threading a map (an
 ; environment, a symbol table) through a function or a recursive accumulator, which a self-hosted compiler
@@ -7412,7 +7412,7 @@
 ; parameter operand declines rather than miscompiling.
 
 (case "a map operation applies to a map passed as a function parameter"
-  (doc    "`(def (count mp) (Map.len mp))` takes a map as a PARAMETER and reads its size; applied to a
+  (doc    "`(def (count mp) (Map.size mp))` takes a map as a PARAMETER and reads its size; applied to a
            two-entry map it yields 2. Pins that a `Map.*` operation accepts a map operand that arrives
            through a function boundary, not only one constructed inline — every other heap collection
            already does (`List.len`/`Bytes.len`/`String.byte-len` on a parameter all compile), and a map is
@@ -7423,7 +7423,7 @@
            parameter operand. A generation that does not yet lower a `Map.*` on a parameter operand declines
            rather than miscompiling.")
   (input  (do
-            (def (count mp) (Map.len mp))
+            (def (count mp) (Map.size mp))
             (def (main) (count (Map.insert (Map.insert Map.empty 1 10) 2 20))) (export main)))
   (output (: 2 Int64)))
 
@@ -7436,14 +7436,14 @@
 
 (case "a map threaded as a recursive accumulator is grown then measured"
   (doc    "`build` inserts `n ↦ n*10` for n, n-1, …, 1 into a map that is THREADED as its own parameter from
-           each call to the next, then `Map.len` measures the result. The count is decided at run time —
+           each call to the next, then `Map.size` measures the result. The count is decided at run time —
            `build 0 = Map.empty` → size 0 (the degenerate accumulator), `build 5` → 5 distinct keys → size
            5. Pins that a map carried as a recursive-loop accumulator (a `Map.*` on a parameter map, per
            step) accumulates correctly and is measurable — the map companion of the runtime-length list
            builder.")
   (input  (do
             (def (build (: n Int64) (: m (Map Int64 Int64))) (if (= n 0) m (build (- n 1) (Map.insert m n (* n 10)))))
-            (def (main (: n Int64)) (Map.len (build n Map.empty))) (export main)))
+            (def (main (: n Int64)) (Map.size (build n Map.empty))) (export main)))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 5 Int64)))
 
@@ -7504,17 +7504,17 @@
 ; Associates Keys With Values: values of ONE type, and that type may be any type, including `Map`). So a
 ; `Map Int64 (Map Int64 Int64)` — a map whose values are maps — is well-typed, built and queried like any
 ; map. `Map.lookup 1` on `(Map.insert Map.empty 1 (map (2 20)))` yields `(Some <the inner map>)`, whose
-; `Map.len` is 1. Pins that a map nests as a VALUE: the inner map is stored as an ordinary heap-handle
+; `Map.size` is 1. Pins that a map nests as a VALUE: the inner map is stored as an ordinary heap-handle
 ; value (no boxing distinct from any other compound value), and reading it back gives the same map.
 
 (case "a map can hold a map as a value"
   (doc    "A map's value type may be another `Map`: `(Map.insert Map.empty 1 (map (2 20)))` is a `Map Int64
            (Map Int64 Int64)`, and `Map.lookup 1` yields `(Some (map (2 20)))` — the inner map, whose size
            is 1. Pins that a map value nests (a map is an ordinary heap value, stored/read like any
-           compound), so `Map.len` of the looked-up inner map is 1.")
+           compound), so `Map.size` of the looked-up inner map is 1.")
   (input  (do (def (main)
                 (match (Map.lookup (Map.insert Map.empty 1 (map (2 20))) 1)
-                  ((Some inner) (Map.len inner))
+                  ((Some inner) (Map.size inner))
                   ((None _) 0))) (export main)))
   (output (: 1 Int64)))
 
@@ -7532,7 +7532,7 @@
            map-keys are EQUAL maps collapse to one. `(map ((map (1 10)) 1) ((map (1 10)) 2))` names the key
            `(map (1 10))` twice → ONE entry, size 1 (the same each-key-at-most-once rule as any key type). A
            key compared by handle identity would keep both. MUST be 1.")
-  (input  (do (def (main) (Map.len (map ((map (1 10)) 1) ((map (1 10)) 2)))) (export main)))
+  (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (1 10)) 2)))) (export main)))
   (output (: 1 Int64)))
 
 (case "two distinct map-keys are distinct entries"
@@ -7540,7 +7540,7 @@
            has TWO entries (size 2) — the map-keys `(map (1 10))` and `(map (2 20))` are unequal values, so
            they do not collapse. Pins that a map key is discriminated by its canonical VALUE (contrast the
            equal-map-keys case above, size 1).")
-  (input  (do (def (main) (Map.len (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
+  (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
@@ -7580,7 +7580,7 @@
   (input  (do
             (def (main)
               (match (Map.insert (Map.insert Map.empty 1 10) 2 20)
-                ((map (1 v) .. rest) (Map.len rest))
+                ((map (1 v) .. rest) (Map.size rest))
                 (_                   0))) (export main)))
   (output (: 1 Int64)))
 
@@ -7597,7 +7597,7 @@
               (if b (Map.insert (Map.empty) "a" 5) (Map.insert (Map.empty) "b" 9)))
             (def (look (: m (Map String Int64)))
               (match m
-                ((map ("a" v) .. rest) (+ v (Map.len rest)))
+                ((map ("a" v) .. rest) (+ v (Map.size rest)))
                 (_                     -1)))
             (def (main) (look (pick true))) (export main)))
   (output (: 5 Int64)))

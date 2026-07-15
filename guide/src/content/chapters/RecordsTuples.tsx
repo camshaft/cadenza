@@ -99,12 +99,12 @@ export default function RecordsTuples() {
         you could pass along or reach into further.
       </P>
       <P>
-        And just as <C>Record.merge</C> combined two records, <C>Tuple.concat</C> joins two tuples end to end
+        And just as <C>Record.merge</C> combined two records, <C>Tuple.cat</C> joins two tuples end to end
         into one wider tuple. It's the positional version, so there's no disjointness rule — the second
         tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and
         index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:
       </P>
-      <Runnable source={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) 3)`} />
+      <Runnable source={`(. (Tuple.cat (tuple 1 2) (tuple 3 4 5)) 3)`} />
 
       <Why tenet="Records are named, tuples are positional">
         Why have both? A tuple is a fixed <em>positional</em> product — reach in by index — and reads
@@ -149,8 +149,8 @@ export default function RecordsTuples() {
             its index in the joined tuple. Which index is it?
           </>
         }
-        starter={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) ?)`}
-        solution={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) 4)`}
+        starter={`(. (Tuple.cat (tuple 1 2) (tuple 3 4 5)) ?)`}
+        solution={`(. (Tuple.cat (tuple 1 2) (tuple 3 4 5)) 4)`}
         expected="5"
         hint={
           <>

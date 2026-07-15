@@ -96,7 +96,7 @@
            mixed Some/None operand as BORROWED, so NO post-compare drop is emitted. Had it mis-joined to
            OWNED, the drop after the first compare would free the "z" payload the map still owns — and
            this case would see it: the SAME let-bound map is consulted TWICE through the inlined match
-           (each compare true → 1 + 1) and then read structurally (`Map.len` → 1), so 3. A use-after-free
+           (each compare true → 1 + 1) and then read structurally (`Map.size` → 1), so 3. A use-after-free
            on the payload flips the second compare (→ 2) or corrupts the size read. Pins the leak-safe
            side of the join with the source value still live.")
   (input  (do
@@ -106,7 +106,7 @@
               (let ((m (Map.insert (Map.empty) "y" "z")))
                 (+ (+ (if (= (f m "y") "z") 1 0)
                       (if (= (f m "y") "z") 1 0))
-                   (Map.len m))))
+                   (Map.size m))))
             (export main)))
   (output (: 3 Int64)))
 
