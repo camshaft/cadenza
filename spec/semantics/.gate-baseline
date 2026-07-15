@@ -96,6 +96,9 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	OR-saturation to a full-width mask on an unsigned runtime value
+pass	OR-then-mask absorption does not discard a trapping runtime operand
+pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
@@ -995,6 +998,7 @@ pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested OR by the same constant collapses to a single OR
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
@@ -1248,6 +1252,7 @@ pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
+pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension
