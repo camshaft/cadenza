@@ -20,6 +20,13 @@ publish = false
 name = "cadenza_slack_bridge"
 path = "src/lib.rs"
 
+# The daemon binary. The pure core (lib) is what's unit-tested; this bin is the thin async transport that
+# wires it to slack-morphism + tokio. It's the ONLY thing pulling the heavy async tree, which is why the
+# crate is a standalone workspace (keeps tokio/hyper/rustls out of the seed lockfile + `xtask check`).
+[[bin]]
+name = "cadenza-slack-bridge"
+path = "src/main.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,3 +34,8 @@ serde_json = "1"
 # workspace/lockfile, so the seed workspace's toml_datetime pin conflict (why cdz-smith is excluded) does
 # not apply here.
 toml = "0.8"
+# The Slack transport. `hyper` feature bundles Socket Mode (via tokio-tungstenite) + the Hyper client.
+slack-morphism = { version = "2.23", features = ["hyper"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
