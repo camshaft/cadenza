@@ -50358,8 +50358,7 @@ mod stage1 {
         // 20 22)` folds to `(Some 42)`, so `(try …)` folds to `42`; the body's tail `(Some x)` makes the
         // boundary `Option`, matching. It COMPILES (a value, not a decline) — the corpus case "`?` on the
         // success variant unwraps the payload" runs it to `(Some 84)` against the real heap.
-        let src =
-            "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) (export main))";
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a constant-`Some` `?` under a matching Option boundary folds to the payload, not declines"
@@ -50375,7 +50374,10 @@ mod stage1 {
         // fold (which would drop the short-circuit and miscompile).
         let msg = expect_decline("(let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))");
         assert!(
-            msg.contains("try") || msg.contains('?') || msg.contains("break") || msg.contains("brick"),
+            msg.contains("try")
+                || msg.contains('?')
+                || msg.contains("break")
+                || msg.contains("brick"),
             "a constant-failure `?` declines pending the boundary break (BRICK 3): {msg}"
         );
     }
