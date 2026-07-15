@@ -889,6 +889,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::MapSize { .. }
         | Core::SetOf { .. }
         | Core::SetContains { .. }
+        | Core::SetToList { .. }
+        | Core::MapToList { .. }
         | Core::SetInsert { .. }
         | Core::SetRemove { .. }
         | Core::SetLen { .. }

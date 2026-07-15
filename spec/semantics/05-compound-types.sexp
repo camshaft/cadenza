@@ -8629,3 +8629,27 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 43 Int64)))
+
+(case "Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order"
+  (doc    "`(match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0)
+           ((Some p) (match p ((tuple k v) k))) ((None u) -1))` — Map.to-list yields the entries as a
+           `List (Tuple k v)` in CANONICAL KEY order (sorted by key: 2,5,8), NOT hash/insertion order,
+           realizing collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order. The
+           first entry's key is the smallest, 2. Expected: 2.")
+  (input  (do
+            (def (main)
+              (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0)
+                ((Some p) (match p ((tuple k v) k)))
+                ((None u) -1)))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "Map.to-list length is the map's entry count"
+  (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
+           the enumerated list has one (k,v) tuple per DISTINCT key ({1,2} → 2, the second insert at key 1
+           overwrites), so its length equals Map.size. Expected: 2.")
+  (input  (do
+            (def (main)
+              (List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99))))
+            (export main)))
+  (output (: 2 Int64)))

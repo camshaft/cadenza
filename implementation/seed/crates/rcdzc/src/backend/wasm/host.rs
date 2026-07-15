@@ -441,6 +441,8 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, elem, out);
         }
         Core::SetLen { set } => collect_host_imports(db, set, out),
+        Core::SetToList { set, .. } => collect_host_imports(db, set, out),
+        Core::MapToList { map, .. } => collect_host_imports(db, map, out),
         Core::SetAlgebra { lhs, rhs, .. } => {
             collect_host_imports(db, lhs, out);
             collect_host_imports(db, rhs, out);

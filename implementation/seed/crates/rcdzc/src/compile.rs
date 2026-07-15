@@ -3509,6 +3509,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         // `Set.len` unconditionally evaluates the set operand — descend.
         Core::SetLen { set } => collect_reached_poisons(db, set, out),
+        Core::SetToList { set, .. } => collect_reached_poisons(db, set, out),
+        Core::MapToList { map, .. } => collect_reached_poisons(db, map, out),
         // A set-algebra op unconditionally evaluates both operand sets — descend into each.
         Core::SetAlgebra { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);

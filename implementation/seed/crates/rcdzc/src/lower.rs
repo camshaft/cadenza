@@ -1895,6 +1895,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::MapSize { map },
                     }
                 }
+                Some(Prim::MapToList) if args.len() == 1 => lower_map_to_list(db, args[0]),
                 // `Set.of` — construct a set from a LIST of elements (dedup). Emit `Core::SetOf` carrying
                 // the element occurrences + the solved element type; a constant list folds to a canonical
                 // set. `Set.contains`/`len`/`insert`/`remove` + the algebra ops each lower to their runtime
@@ -1904,6 +1905,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::SetContains) if args.len() == 2 => {
                     lower_set_contains(db, args[0], args[1])
                 }
+                Some(Prim::SetToList) if args.len() == 1 => lower_set_to_list(db, args[0]),
                 Some(Prim::SetLen) if args.len() == 1 => {
                     let set = args[0];
                     match core_of(db, set) {
@@ -10300,6 +10302,32 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 /// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
 /// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
 /// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
+/// Build a `Set`-ROOTED shape descriptor for `set-to-list`: the runtime `op_set_to_list` resolves the
+/// descriptor's ROOT and requires `Shape::Set(elem)` DIRECTLY (to order by the element shape), NOT the
+/// `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces. So encode the bare
+/// `shape_of(Set elem)` root. Returns `None` if the element shape has no descriptor (unorderable).
+pub fn set_shape_descriptor(db: &mut Db, elem_ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let set_ty = crate::ty::Ty::Set(Box::new(elem_ty.clone()));
+    let root = builder.shape_of(db, &set_ty)?;
+    Some(builder.encode(root))
+}
+
+/// Build a `Map`-ROOTED shape descriptor for `map-to-list`: `op_map_to_list` resolves the root and
+/// requires `Shape::Map(key, val)` DIRECTLY (to order by the KEY shape), NOT the `Framed` value-form
+/// wrapper. Encode the bare `shape_of(Map key val)` root. `None` if the key/value shape has no
+/// descriptor (unorderable). The map companion of [`set_shape_descriptor`].
+pub fn map_shape_descriptor(
+    db: &mut Db,
+    key_ty: &crate::ty::Ty,
+    val_ty: &crate::ty::Ty,
+) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let map_ty = crate::ty::Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone()));
+    let root = builder.shape_of(db, &map_ty)?;
+    Some(builder.encode(root))
+}
+
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
@@ -14703,6 +14731,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapTake
         | Prim::SetCtor
         | Prim::SetOf
+                | Prim::MapToList
+| Prim::SetToList
         | Prim::SetContains
         | Prim::SetLen
         | Prim::SetInsert
@@ -16692,6 +16722,41 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
         ));
     };
     Core::SetContains { set, elem, elem_ty }
+}
+
+/// Lower `(Set.to-list set)` → `Core::SetToList`. Always emits the runtime op (no const-fold): the
+/// canonical element ORDER is the runtime's sorted walk, so even a constant set must go through the
+/// runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
+/// comes from the operand set's solved `Ty::Set`, and bakes the shape descriptor the runtime orders by.
+fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, set) {
+        return Core::Poison(r);
+    }
+    let Some(elem_ty) = set_elem_type(db, set) else {
+        return Core::Poison(Reject::decline(
+            "Set.to-list operand is not a solved set type",
+        ));
+    };
+    Core::SetToList { set, elem_ty }
+}
+
+/// Lower `(Map.to-list map)` → `Core::MapToList`. Like `Set.to-list`, no const-fold (canonical KEY
+/// order is the runtime sorted walk). The key/value types come from the operand map's solved `Ty::Map`
+/// and bake the map-shape descriptor the runtime orders by.
+fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, map) {
+        return Core::Poison(r);
+    }
+    let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
+        return Core::Poison(Reject::decline(
+            "Map.to-list operand is not a solved map type",
+        ));
+    };
+    Core::MapToList {
+        map,
+        key_ty,
+        val_ty,
+    }
 }
 
 /// Lower `(Set.insert set elem)` / `(Set.remove set elem)`. FOLD onto a constant set (`Core::SetOf`) when
@@ -19317,6 +19382,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::TypeEq => "type-eq",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
+        Prim::MapToList => "map-to-list",
+        Prim::SetToList => "set-to-list",
         Prim::SetContains => "set-contains",
         Prim::SetLen => "set-len",
         Prim::SetInsert => "set-insert",

@@ -3786,6 +3786,88 @@ fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
     );
 }
 
+/// `Set.to-list` enumerates a set's elements as a `List` in CANONICAL element-value order (sorted,
+/// deduped) — the inverse of `Set.of`, realizing collections-and-text.md §Map/Set iteration is
+/// deterministic. Runs under wasmtime: `(List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)` is the
+/// SMALLEST element (2), NOT the insertion/hash-order first, and `(List.len (Set.to-list …))` is the
+/// deduped cardinality (3). `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn set_to_list_enumerates_in_canonical_order() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-to-list] runtime not in the store; skipping");
+        return;
+    };
+    // First (index 0) of the canonical list of {2,5,8} is the smallest, 2 — not hash/insertion order.
+    let first_src = "(module m (def (main) \
+                     (match (List.at (Set.to-list (Set.of (list 5 2 8 2))) 0) ((Some v) v) ((None u) -1))) \
+                     (export main))";
+    let first =
+        compile_component(&crate::codec::encode(&parse(first_src))).expect("Set.to-list compiles");
+    let mut rt = ComposedRuntime::new(&first, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(2),
+        "Set.to-list yields elements in canonical (sorted) order — index 0 is the min, 2"
+    );
+
+    // The enumerated list length is the DEDUPED cardinality ({1,2,3} → 3).
+    let len_src = "(module m (def (main) \
+                   (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main))";
+    let len = compile_component(&crate::codec::encode(&parse(len_src))).expect("compiles");
+    let mut rt_len = ComposedRuntime::new(&len, &runtime_bytes);
+    assert_eq!(
+        rt_len.call("main", &[]),
+        Val::S64(3),
+        "Set.to-list length is the set's distinct-element count"
+    );
+}
+
+/// `Map.to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order — the map
+/// companion of `Set.to-list`, realizing collections-and-text.md §A Map Renders As Its Entries In
+/// Canonical Key Order. Runs under wasmtime: the first entry's KEY is the smallest (canonical, not
+/// hash/insertion order), and the list length is the distinct-key count (a re-insert at an existing key
+/// overwrites, not appends). `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn map_to_list_enumerates_entries_in_canonical_key_order() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[map-to-list] runtime not in the store; skipping");
+        return;
+    };
+    // First (index 0) entry's key of {5:50, 2:20, 8:80} is the smallest, 2 — canonical key order.
+    let key_src = "(module m (def (main) \
+                   (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0) \
+                     ((Some p) (match p ((tuple k v) k))) ((None u) -1))) \
+                   (export main))";
+    let key =
+        compile_component(&crate::codec::encode(&parse(key_src))).expect("Map.to-list compiles");
+    let mut rt = ComposedRuntime::new(&key, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(2),
+        "Map.to-list yields entries in canonical KEY order — index 0's key is the min, 2"
+    );
+
+    // Length is the distinct-key count ({1,2} → 2; the re-insert at key 1 overwrites).
+    let len_src = "(module m (def (main) \
+                   (List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))) \
+                   (export main))";
+    let len = compile_component(&crate::codec::encode(&parse(len_src))).expect("compiles");
+    let mut rt_len = ComposedRuntime::new(&len, &runtime_bytes);
+    assert_eq!(
+        rt_len.call("main", &[]),
+        Val::S64(2),
+        "Map.to-list length is the distinct-key count"
+    );
+}
+
 /// `Set.contains`/`Set.remove`/`Set.insert` must NOT fold against a `Set.of` that holds a RUNTIME element.
 /// `Set.of (list …)` folds a constant list to a canonical constant `Core::SetOf`, and these ops fold
 /// against a constant set by comparing elements at COMPILE TIME (`const_compound_eq`). But a `SetOf` can

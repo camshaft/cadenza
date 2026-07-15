@@ -1171,6 +1171,8 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, elem, out);
         }
         Core::SetLen { set } => collect_host_arg_strings(db, set, out),
+        Core::SetToList { set, .. } => collect_host_arg_strings(db, set, out),
+        Core::MapToList { map, .. } => collect_host_arg_strings(db, map, out),
         Core::SetAlgebra { lhs, rhs, .. } => {
             collect_host_arg_strings(db, lhs, out);
             collect_host_arg_strings(db, rhs, out);

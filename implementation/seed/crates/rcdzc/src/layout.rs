@@ -772,6 +772,8 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             collect_closure_codes(db, elem, out);
         }
         Core::SetLen { set } => collect_closure_codes(db, set, out),
+        Core::SetToList { set, .. } => collect_closure_codes(db, set, out),
+        Core::MapToList { map, .. } => collect_closure_codes(db, map, out),
         Core::SetAlgebra { lhs, rhs, .. } => {
             collect_closure_codes(db, lhs, out);
             collect_closure_codes(db, rhs, out);
@@ -1003,6 +1005,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, elem, out);
         }
         crate::core::Core::SetLen { set } => collect_call_callees(db, set, out),
+        crate::core::Core::SetToList { set, .. } => collect_call_callees(db, set, out),
+        crate::core::Core::MapToList { map, .. } => collect_call_callees(db, map, out),
         crate::core::Core::SetAlgebra { lhs, rhs, .. } => {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);

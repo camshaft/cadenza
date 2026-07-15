@@ -281,6 +281,7 @@ const OP_MAP_INSERT: &str = "map-insert";
 const OP_MAP_LOOKUP: &str = "map-lookup";
 const OP_MAP_REMOVE: &str = "map-remove";
 const OP_MAP_SIZE: &str = "map-size";
+const OP_MAP_TO_LIST: &str = "map-to-list";
 /// Persistent CHAMP set ops (CHAMP-minus-value-column). `set-empty() -> handle`; `set-insert(s, elem) ->
 /// handle` (consumes s, elem); `set-contains(s, elem) -> bool` (BORROWS both); `set-remove(s, elem) ->
 /// handle` (consumes s; borrows elem); `set-size(s) -> u32` (borrows, O(1)); `set-union`/`set-intersection`/
@@ -290,6 +291,7 @@ const OP_SET_INSERT: &str = "set-insert";
 const OP_SET_CONTAINS: &str = "set-contains";
 const OP_SET_REMOVE: &str = "set-remove";
 const OP_SET_SIZE: &str = "set-size";
+const OP_SET_TO_LIST: &str = "set-to-list";
 const OP_SET_UNION: &str = "set-union";
 const OP_SET_INTERSECTION: &str = "set-intersection";
 const OP_SET_DIFFERENCE: &str = "set-difference";
@@ -510,6 +512,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // `Set.len` BORROWS its set operand (`set-size` reads the root without consuming) — like `Map.size`.
         Core::SetLen { set } => binding_escapes(db, set, binder, true),
+        Core::SetToList { set, .. } => binding_escapes(db, set, binder, true),
+        Core::MapToList { map, .. } => binding_escapes(db, map, binder, true),
         // A set-algebra op CONSUMES both operand sets into the result — either escapes if used here.
         Core::SetAlgebra { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
@@ -704,6 +708,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BytesCompact { operand }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
+        | Core::SetToList { set: operand, .. }
+        | Core::MapToList { map: operand, .. }
         | Core::Proj { operand, .. }
         | Core::SumPayload {
             scrutinee: operand, ..
@@ -1002,6 +1008,8 @@ fn mark_binder_dups_inner(
         }
         Core::MapSize { map } => borrow(db, map, live_after, sites),
         Core::SetLen { set } => borrow(db, set, live_after, sites),
+        Core::SetToList { set, .. } => borrow(db, set, live_after, sites),
+        Core::MapToList { map, .. } => borrow(db, map, live_after, sites),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             borrow(db, scrutinee, live_after, sites)
         }
@@ -1902,6 +1910,20 @@ fn collect_used_ops_into(
             }
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
+        }
+        // `Set.to-list` = `set-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
+        Core::SetToList { set, .. } => {
+            out.insert(OP_SET_TO_LIST);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, set, out);
+        }
+        // `Map.to-list` = `map-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
+        Core::MapToList { map, .. } => {
+            out.insert(OP_MAP_TO_LIST);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, map, out);
         }
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
         Core::SetLen { set } => {
@@ -5907,6 +5929,52 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_SIZE)); // → [size:i32]
             out.push(Lir::I64ExtendI32U); // → [size:i64]
             Ok(())
+        }
+        // `Set.to-list(s)` — enumerate the set's elements as a `List` in canonical element order. Emit the
+        // set handle, then build the compiler-baked element-shape descriptor as a constant `Bytes` handle
+        // inline (`bytes-alloc(n)` then a `bytes-set` per descriptor byte — `bytes-set` returns the buffer,
+        // so the desc handle threads on the stack), then `set-to-list(s, desc)` (BORROWS both; the runtime
+        // reads the desc to order by element value and returns a fresh owned `List`). The descriptor is a
+        // `Set`-rooted shape (NOT the value-form `Framed` wrapper), which is what `op_set_to_list` resolves.
+        Core::SetToList { set, elem_ty } => {
+            let Some(desc) = crate::lower::set_shape_descriptor(db, &elem_ty) else {
+                return Err(Reject::decline(
+                    "Set.to-list element shape has no orderable descriptor",
+                ));
+            };
+            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            out.push(Lir::ConstI32(desc.len() as i32)); // [set, len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [set, desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32)); // [set, buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [set, buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [set, buf] (bytes-set returns the buffer)
+            }
+            out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list]
+            Ok(()) // leaves [list]
+        }
+        // `Map.to-list(m)` — the map companion: emit the map, bake a MAP-rooted key/value shape descriptor
+        // inline, then `map-to-list(m, desc)` → a `List (Tuple k v)` in canonical KEY order.
+        Core::MapToList {
+            map,
+            key_ty,
+            val_ty,
+        } => {
+            let Some(desc) = crate::lower::map_shape_descriptor(db, &key_ty, &val_ty) else {
+                return Err(Reject::decline(
+                    "Map.to-list key/value shape has no orderable descriptor",
+                ));
+            };
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            out.push(Lir::ConstI32(desc.len() as i32)); // [map, len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [map, desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32)); // [map, buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [map, buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [map, buf]
+            }
+            out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list]
+            Ok(()) // leaves [list]
         }
         // A runtime `Set.contains(s, e)` — the TOTAL membership predicate. Box the element, `set-contains(s,
         // key)` (BORROWS both; returns a `bool` directly — UNLIKE `Map.lookup`'s NULL-or-handle → Option).
