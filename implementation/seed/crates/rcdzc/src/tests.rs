@@ -28124,6 +28124,29 @@ mod match_engine {
             Some("CDZ0302"),
             "a checked conversion of a negative constant into an unsigned type is rejected"
         );
+        // The message is ACTIONABLE (like the annotation-position CDZ0302, not the terse "(unsigned
+        // 8-bit)"): it names the offending VALUE, the target width TYPE, and the VALID RANGE, plus the
+        // `.wrap`-vs-`.of` hint. `(UInt8.of 300)` → "the value 300 does not fit … UInt8 (the valid range is
+        // 0..=255) — `.of` traps out of range; use `.wrap` to truncate …".
+        let d = reject_full("(module m (def (main) ((. UInt8 of) (: 300 Int32))) (export main))")
+            .expect("an out-of-range checked conversion rejects");
+        assert!(
+            d.message.contains("300")
+                && d.message.contains("UInt8")
+                && d.message.contains("0..=255")
+                && d.message.contains("`.wrap`"),
+            "the checked-conversion over-range message names the value, target type, range, and wrap \
+             hint: {}",
+            d.message
+        );
+        // A signed target names its negative-inclusive range.
+        let s = reject_full("(module m (def (main) ((. Int8 of) (: 200 Int32))) (export main))")
+            .expect("Int8.of 200 rejects");
+        assert!(
+            s.message.contains("Int8") && s.message.contains("-128..=127"),
+            "a signed checked conversion names the signed range: {}",
+            s.message
+        );
     }
 
     #[test]
