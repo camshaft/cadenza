@@ -500,6 +500,7 @@ pass	a decimal literal annotated Rational is exact for a value no float rounds c
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
+pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeper nested call chain still folds in linear time near the inliner limit
