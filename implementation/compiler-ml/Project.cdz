@@ -15,7 +15,7 @@ def name = "compiler-ml"
 def modules = ["src/*.cdz"]
 
 // The modules whose `@test` definitions form the suite. Same-file with their code for now (a cross-file
-// test cannot yet construct a type whose variant shadows a prelude name — see repros/).
+// test cannot yet construct a type whose variant shadows a prelude name — see the shared issue queue).
 def tests = ["src/*.cdz"]
 
 // Files removed from the globs above (a demo/fixture a wildcard would otherwise sweep up). Empty here —

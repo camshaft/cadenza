@@ -52,7 +52,7 @@ def teq(a: Ty, b: Ty) = tag(a) == tag(b)
 /// than factored into `check-bin`/`check-if` helpers. Factoring them into a MUTUALLY-recursive helper
 /// whose `if` condition is a CALL (`if teq(ct, TBool) then …`) gating a nested recursive `match check(…)`
 /// declines "parameter reference has no local slot" at emit (a backend slot-allocation bug — `cdz check`
-/// clean, `cdz compile` declines; see `repros/decline-mutual-helper-call-in-if-cond-no-local-slot.cdz`).
+/// clean, `cdz compile` declines; see `mlrepro-decline-mutual-helper-call-in-if-cond-no-local-slot.cdz` (queue)).
 /// Inlining (self-recursion) sidesteps it. The `if teq(...)` guards here compile because `check` is
 /// self-recursive, not mutually-recursive with the guard's caller.
 def check(e: Exp) = match e with
@@ -80,7 +80,7 @@ def check(e: Exp) = match e with
 
 /// Both operands must have `want`; result `res`, error `code`. Compares types via `tag` (a top-level
 /// nullary match) rather than a NESTED nullary match — the latter runs correctly but draws spurious
-/// CDZ0306/CDZ0213 warnings (see `repros/false-warning-nested-nullary-match-unused-binding.cdz`).
+/// CDZ0306/CDZ0213 warnings (see `mlrepro-false-warning-nested-nullary-match-unused-binding.cdz` (queue)).
 def check-both(l: Exp, r: Exp, want: Ty, res: Ty, code: Int64) = match check(l) with
   | Result.Ok(lt) => (match check(r) with
     | Result.Ok(rt) => (if teq(lt, want) and teq(rt, want) then Result.Ok(res) else Result.Err(TypeError.Mismatch(code)))

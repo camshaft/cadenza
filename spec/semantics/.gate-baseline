@@ -317,6 +317,7 @@ pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 pass	a bound name in a map key is used by its value, not the literal name
+pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
@@ -877,6 +878,7 @@ pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow sp
 pass	a multi-argument closure round-trips through a consumer
 pass	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
 pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
+pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
@@ -902,6 +904,7 @@ pass	a mutually-recursive group performs in its entry def while its partner only
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
+pass	a mutually-recursive pair fully named by the export clause resolves
 pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
@@ -982,6 +985,7 @@ pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nominal record compared to a plain record of the same shape is a type error
+pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
@@ -1066,6 +1070,7 @@ pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
 pass	a private module member is still visible to a sibling
+pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
@@ -1534,6 +1539,7 @@ pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
+pass	a two-step seed sequence advances (successive draws differ)
 pass	a two-variant enum match with constant arms dispatches branchlessly — first variant
 pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
 pass	a type annotation consistent with the value is transparent
@@ -1583,6 +1589,7 @@ pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+pass	a wrong-width value in a multi-byte bit-field is a compile-time type error
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
@@ -1933,6 +1940,7 @@ pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
+pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
 pass	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closure alongside a plain export — the plain
@@ -2157,6 +2165,7 @@ pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic sum instantiated at two different types in one program
+pass	one module's export clause does not affect a same-named member of another module
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
@@ -2183,6 +2192,8 @@ pass	performing an operation with an argument of the wrong type is a type error
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
 pass	performs in the VALUES of a MAP constructor thread and the entry reads back correctly
+pass	permutation invariance of a commutative fold holds for generated runtime inputs
+pass	permutation invariance of a commutative fold holds — the property oracle passes
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
@@ -2289,6 +2300,7 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	set equality is independent of the order elements are written
+pass	shrinking reports the minimal failing input
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
@@ -2364,6 +2376,8 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the exponent marker is case-insensitive
+pass	the generator is a deterministic function of its seed (same seed, same value) — folds
+pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
 pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
@@ -2395,6 +2409,7 @@ pass	the new map from a runtime-key take has the key removed
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
+pass	the permutation-invariance property has discriminating power — an order-dependent fold fails it
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
 pass	the power form cubes an integer-magnitude quantity exactly
@@ -2413,6 +2428,7 @@ pass	the same program with a different response gives a different deterministic 
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
+pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true

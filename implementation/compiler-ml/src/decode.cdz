@@ -3,7 +3,7 @@
 /// (a) a sibling fixed that bug's invalid-wasm face, and (b) this decoder threads its cursor SEPARATELY
 /// — a node's byte size is recomputed by `nsize` so `buildc` advances via `pos + nsize(…)`, never by
 /// projecting a `(tuple ast pos)` through a self-tail loop (the shape that still miscompiles to a wrong
-/// value: `repros/miscompile-tail-loop-projected-sum-wrong-value.sexp`).
+/// value: `mlrepro-miscompile-tail-loop-projected-sum-wrong-value.sexp` (queue)).
 ///
 /// FORMAT (a compact self-describing wire form for the STRUCTURE + scalar leaves — this is the port's
 /// own decode target, not yet the full `rcdzc/src/codec.rs` container). A node is a tag byte then its

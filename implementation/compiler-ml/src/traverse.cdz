@@ -6,7 +6,7 @@
 /// Int64`, `p: Ast -> Bool`). That is not decoration — it is REQUIRED here: an unannotated closure
 /// passed to a SELF-RECURSIVE HOF fails to infer its parameter types (they are left unsolved →
 /// "a closure's parameter type has no machine representation"). See
-/// `repros/reject-inferred-closure-param-through-recursive-hof.sexp`. Annotating the HOF's function
+/// `mlrepro-reject-inferred-closure-param-through-recursive-hof.sexp` (queue). Annotating the HOF's function
 /// parameter (or the closure's params) gives inference the anchor it can't derive through the
 /// recursion; the arrow annotation is the idiomatic fix and reads well.
 import { Ast } from "ast"

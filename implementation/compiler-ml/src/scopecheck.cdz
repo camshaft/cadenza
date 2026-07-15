@@ -5,8 +5,9 @@
 /// `(fn (p…) <body>)` binds every parameter for the body. Everything else is a generic form whose
 /// children are all checked under the same scope.
 ///
-/// 🎉 UNBLOCKED (iter 48): this pass was WITHHELD (iter 42, `repros/blocked-scopecheck-mutual-recursion-
-/// scope-loss.cdz`) because the still-live-binding family corrupted the extended `Set` scope threaded
+/// 🎉 UNBLOCKED (iter 48): this pass was WITHHELD (iter 42, queue item
+/// `mlrepro-blocked-scopecheck-mutual-recursion-scope-loss`) because the still-live-binding family
+/// corrupted the extended `Set` scope threaded
 /// through the recursion — `free-vars (let ((x 5)) (+ x x))` returned 3 not 1 (the bound `x`s read as
 /// free). The sibling compiler-side dup fix (iter 48) resolved it, so a `Set`-scope threaded through a
 /// recursive `Ast` walk now survives — and this real resolver runs. It walks each list by INDEX

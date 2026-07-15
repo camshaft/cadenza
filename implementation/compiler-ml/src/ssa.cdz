@@ -7,7 +7,7 @@
 /// triple), NOT via a `Fresh` effect handler. That is deliberate: the natural effect-based gensym over a
 /// two-child tree needs TWO sibling recursive calls under a state-threading handler, which the tail-
 /// resumptive fold does not yet thread (an honest decline — see
-/// `repros/decline-effect-state-across-sibling-recursive-calls.cdz`). Pure counter-threading is the
+/// `mlrepro-decline-effect-state-across-sibling-recursive-calls.cdz` (queue)). Pure counter-threading is the
 /// correct, portable design and is exactly what the seed's own passes do.
 ///
 /// An instruction is `(dst, op, a, b)` as an `Instr` record-free tuple sum: `Lit(dst, value)` loads a

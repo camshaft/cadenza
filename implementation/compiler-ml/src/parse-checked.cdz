@@ -33,7 +33,7 @@ def pfactor(toks: List(Tok), i: Int64) = match tok(toks, i) with
   | TLP =>
     // '(' expr ')' — parse the inner expr, then require ')'. NULLARY variant patterns use the BARE name
     // (`TLP`/`TRP`), not `Tok.TLP` — a dotted nullary arm whose body nests a same-type match mis-resolves
-    // as member access (see `repros/reject-dotted-nullary-arm-with-nested-sametype-match.cdz`).
+    // as member access (see `mlrepro-reject-dotted-nullary-arm-with-nested-sametype-match.cdz` (queue)).
     (match pexpr(toks, i + 1) with
       | Result.Ok(inner) => (match tok(toks, inner.1) with
         | TRP => Result.Ok((inner.0, inner.1 + 1))

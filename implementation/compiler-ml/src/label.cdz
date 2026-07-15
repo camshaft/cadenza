@@ -7,7 +7,7 @@
 /// correctly: a straight `Fresh.next() + <self-call>` loop over a FLAT node count, NOT a two-sibling
 /// tree walk (a self-recursive effectful fn with TWO sibling recursive calls in a match arm miscompiles —
 /// the handler state is not threaded between the siblings; see
-/// `repros/miscompile-effect-state-not-threaded-across-sibling-recursive-calls`). So this pass first
+/// `mlrepro-miscompile-effect-state-not-threaded-across-sibling-recursive-calls` (queue)). So this pass first
 /// counts the nodes PURELY (`count-nodes`), then draws that many ids in one linear effectful loop
 /// (`draw-sum`) — the standard "flatten, then gensym" structure that keeps the effect on one spine.
 ///

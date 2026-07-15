@@ -4518,6 +4518,46 @@ fn an_escaping_captured_continuation_is_refused_not_miscompiled() {
         .expect_err("an escaping captured continuation must be refused, not miscompiled");
 }
 
+/// A handler arm that DESTRUCTURES its state with a `match` and resumes inside EACH branch — e.g.
+/// `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))` — folds when the body performs
+/// the op ONCE (corpus "a handler whose STATE is a sum destructures it in the arm" → 6), because there
+/// is then no threaded state AFTER the perform. But when the body performs the op MORE THAN ONCE (here a
+/// `(do (St.get) (+ 1 (St.get)))`), the first perform's next-state is BRANCH-DEPENDENT (a `match`-valued
+/// state), and threading that match-valued next-state forward into the SECOND perform is not yet served
+/// by the tail-resumptive fold — so it DECLINES cleanly. This must stay a clean decline, never a
+/// miscompile: threading a branch-dependent state is exactly the shape the state-threading miscompile
+/// ledger warns about (a naive fold would thread against the wrong branch's state). The equivalent
+/// program with the `match` in the resume VALUE — `(resume (match s …) s)` — folds fine (it keeps the
+/// next-state branch-independent), so this is an ergonomic gap, not a capability gap. Pins the boundary.
+#[test]
+fn a_state_destructuring_arm_under_a_multi_perform_body_declines_not_miscompiles() {
+    use crate::testkit::parse;
+    // Two performs of `get` under a state-matching arm → the match-valued next-state must thread into
+    // the second perform, which the tail-resumptive fold does not yet do: a clean decline.
+    let src = "(do (effect St (op get (-> Unit Int64))) \
+               (def (main) \
+                 (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))) \
+                   (do (St.get) (+ 1 (St.get))))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "a state-destructuring arm under a multi-perform body must decline, not miscompile",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+    // The SINGLE-perform companion still FOLDS (the corpus case): a match-state arm is fine when the
+    // body performs once — pin that this decline is specific to the multi-perform / threaded-state shape.
+    let ok = "(do (effect St (op get (-> Unit Int64))) \
+              (def (main) \
+                (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))) \
+                  (+ 1 (St.get)))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+        "a single-perform body over a state-destructuring arm must still fold"
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
