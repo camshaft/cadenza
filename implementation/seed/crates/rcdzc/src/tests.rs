@@ -13962,6 +13962,32 @@ mod match_engine {
     }
 
     #[test]
+    fn an_operator_arg_wrap_in_variant_uses_the_readable_lead_not_the_raw_unify_message() {
+        // In an OPERATOR argument position — `(= o 5)` for `o : (Option Int64)` — the `=` scheme grounds
+        // its first operand, so the second (`5 : Int64`) is checked against `(Option Int64)`. The value is
+        // the sum's PAYLOAD where the SUM is expected, so a "wrap in `(Some …)`" fix applies. The fix was
+        // attached, but the MESSAGE stayed the raw "type mismatch: (Option Int64) and Int64 must be the same
+        // type here, but differ" (a naive-HM leak) — unlike the coercion / option-payload sibling branches,
+        // which reword to the readable arg-site phrasing. Now it does too.
+        let d = reject_full(
+            "(module m (def (f (: o (Option Int64))) (= o 5)) (def (main) (f (Some 1))) (export main))",
+        )
+        .expect("comparing an Option to its payload rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains(
+                "this argument is an Int64, but a value of type (Option Int64) is expected here"
+            ) && !d.message.contains("must be the same type here"),
+            "the readable arg-site lead replaces the raw unify message: {}",
+            d.message
+        );
+        // The wrap fix rides along, unchanged.
+        let fix = d.fix.expect("a wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(fix.replacement, format!("(Some {})", crate::abi::WRAP_HOLE));
+    }
+
+    #[test]
     fn the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded() {
         // The ctor name comes from the DECLARATION, not a built-in `Some`/`Ok` — a user sum `Box` with a
         // single `Int64`-payload variant `Wrap` yields "wrap in `Wrap`" (no-keys-outside-the-prelude).
