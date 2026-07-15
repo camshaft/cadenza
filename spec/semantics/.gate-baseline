@@ -95,6 +95,8 @@ pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
+pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
+pass	Map.to-list length is the map's entry count
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
@@ -111,6 +113,8 @@ pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
+pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
+pass	Set.to-list length is the set's cardinality (deduped)
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
@@ -2246,6 +2250,7 @@ pass	inserting a runtime element yields a set that contains it
 pass	inserting a value of a different type into a map is a type error
 pass	inserting an element yields a set containing it
 pass	inserting into the empty map then looking a key up yields the value
+pass	int8 wrap truncates and sign-extends the low 8 bits of a runtime value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
@@ -2748,6 +2753,8 @@ pass	two sum types whose names differ only by punctuation stay DISTINCT types
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
+pass	uint16 wrap truncates a wide runtime value to the low 16 bits
+pass	uint8 wrap truncates a wide runtime value to the low 8 bits
 pass	unary negation binds tighter than binary addition
 pass	unary negation in a lambda body negates the argument
 pass	unary negation of a bound integer name yields its opposite
