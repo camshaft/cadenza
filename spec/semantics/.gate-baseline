@@ -698,6 +698,7 @@ pass	a host effect with a non-kebab OPERATION name crosses under a normalized fu
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
+pass	a keyed lookup of an updated map is not shared with the original's
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent
@@ -2134,6 +2135,7 @@ pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection with the empty set is the empty set
+pass	keyed lookups at different keys are not shared
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order

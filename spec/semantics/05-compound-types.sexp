@@ -8131,3 +8131,39 @@
                 (_ (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
+
+; --- CSE of a repeated KEYED read (Map.lookup) must key on VALUE identity ------------------------
+; The `Map.lookup` CSE (the keyed-read companion of the `List.at` cases above) shares a repeated
+; `(Option.expect (Map.lookup m k) …)` to one `map-lookup` (an O(log n) CHAMP walk). The sharing is
+; sound only for the SAME map value and SAME key along one straight line — these pin the must-NOT-share
+; discriminators, the map analogue of the indexed-read `List.at` pins above (a CSE keyed on the map
+; operand alone, ignoring the key or the persistent update, returns a doubled/stale value).
+
+(case "keyed lookups at different keys are not shared"
+  (doc    "`(+ (expect (Map.lookup m i)) (expect (Map.lookup m j)))` with i = 1, j = 2 over m =
+           {1:10, 2:20} — two lookups differing ONLY in the key parameter → 10 + 20 = 30. A CSE keyed on
+           the map operand alone (ignoring the key) returns 20 or 40. The key-discrimination pin for the
+           shared keyed read, mirroring the `List.at` index-discrimination case above.")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (+ (Option.expect (Map.lookup m i) "a") (Option.expect (Map.lookup m j) "b"))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 30 Int64)))
+
+(case "a keyed lookup of an updated map is not shared with the original's"
+  (doc    "`(expect (Map.lookup m 1))` = 10 and `(expect (Map.lookup (Map.insert m 1 99) 1))` = 99 — the
+           SAME key, but the second lookup targets a DIFFERENT map value (the persistent update's result):
+           10 + 99 = 109. A CSE that treated `Map.lookup` as pure over the ORIGINAL map operand spelling
+           (not the updated value) returns 20; one that shared backward returns 198. The value-identity
+           pin, composing the persistence guarantee with the keyed-read sharing (the map analogue of the
+           `List.update` case above).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((m (Map.insert Map.empty 1 d)))
+                (+ (Option.expect (Map.lookup m 1) "a")
+                   (Option.expect (Map.lookup (Map.insert m 1 99) 1) "b"))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 109 Int64)))
