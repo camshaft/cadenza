@@ -726,16 +726,20 @@
 ; (realized when Rational lands); these pin the same conversions over Float/Int.
 
 (case "Unit.in converts a quantity to a chosen larger unit (Float)"
-  (doc    "`(Unit.in meter (Qty.of 3.0 kilometer))` converts 3 km to meters: 3 * 1000 = 3000 m. The
-           magnitude is multiplied by the source-to-target scale ratio (km's 1000 over meter's 1) in the
-           inner Float64 type; the result is `(Qty Float64 meter)`.")
+  (doc    "`(Unit.in meter (Qty.of 3.0 kilometer))` converts 3 km to meters and UNWRAPS: `Unit.in`/`as`
+           yields the bare dimensionless number of the chosen unit, not a quantity
+           (units-of-measure.md #An Explicit Conversion Unwraps To A Bare Number). 3 km is stored at the
+           reference `meter` as 3000.0 (eager normalization), and converting it to `meter` is an identity
+           that unwraps to the bare `3000.0 : Float64` — an ordinary number, no longer dimension-checked.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"kilometer"))))
   (output (: 3000.0 Float64)))
 
 (case "Unit.in converts a quantity to a chosen smaller unit exactly (Int)"
-  (doc    "`(Unit.in kilometer (Qty.of 2000 meter))` converts 2000 m to kilometers: 2000 / 1000 = 2 km,
-           exact integer arithmetic (the ratio divides). Pins that Unit.in over Int64 is exact when the
-           conversion is whole; a non-dividing ratio truncates (opting into integer math).")
+  (doc    "`(Unit.in kilometer (Qty.of 2000 meter))` converts 2000 m to kilometers and UNWRAPS to the
+           bare number `2 : Int64`: 2000 / 1000 = 2 km, exact integer arithmetic (the ratio divides).
+           `Unit.in`/`as` strips the quantity wrapper, so the result is a plain Int64, not a
+           `(Qty Int64 kilometer)`. Pins that Unit.in over Int64 is exact when the conversion is whole;
+           a non-dividing ratio truncates (opting into integer math).")
   (input  (Unit.in (Unit.of #"kilometer") (Qty.of 2000 (Unit.of #"meter"))))
   (output (: 2 Int64)))
 
