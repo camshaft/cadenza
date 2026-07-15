@@ -667,6 +667,7 @@ pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
+pass	a handler threads a MAP as its state — a key-value store deduping keys across performs
 pass	a handler threads a SET as its state — the seen-set idiom, deduping across performs
 pass	a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field
 pass	a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance

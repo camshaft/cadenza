@@ -44001,6 +44001,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handler_threads_a_map_as_its_state_across_multiple_performs() {
+        // The MAP analogue of the Set-state seen-set (corpus "a handler threads a SET as its state") — a
+        // handler state that is a MAP (key→value store) mutated with `Map.insert` and read with `Map.size`
+        // across MULTIPLE performs, exercising the CHAMP key→value path through the effect fold (distinct
+        // from the key-only Set case). `(do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count))` seeds
+        // an empty map, inserts keys 1, 2, then re-inserts 1 (deduped by key) → two keys → size 2. Guards
+        // that a Map threaded as effect state survives the fold across several performs — a pin so a
+        // Map.lookup/insert CSE change (actively churned by sibling verticals) cannot regress it.
+        let src = "(do (effect Store (op put (-> Int64 Unit)) (op count (-> Unit Int64))) \
+                   (def (main) (handle Store (Map.empty) \
+                     ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.size m) m))) \
+                     (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main))";
+        // Map state lives on the value heap, so the in-process linker can't run it — assert it COMPILES;
+        // a store run yields 2 (verified by hand via cdz-run). Mirrors the list/String-state assertions.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a map-state handler mutated across multiple performs must compile"
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
