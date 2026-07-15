@@ -1419,6 +1419,7 @@ pass	a three-arm match consumed as an operand yields into the enclosing expressi
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
+pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
 pass	a top-level value definition binds a name usable by the program's functions

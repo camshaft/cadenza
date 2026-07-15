@@ -2937,6 +2937,23 @@ impl Db {
             .and_then(|m| m.synth)
     }
 
+    /// The SYNTHESIZED record a TOP-LEVEL module NAME resolves to — the module analogue of
+    /// [`effect_decl_by_name`]/[`type_decl_by_name`]. A `(module m …)` that is a DIRECT child of the
+    /// program root (a sibling of the top-level defs, `(do (module m …) (def (main) …) (export main))`)
+    /// binds `m` PROGRAM-WIDE, exactly as a top-level def/type/effect does — so a reference from any
+    /// top-level def's body resolves it and `(. m field)` is ordinary member access. A do-LOCAL module
+    /// (nested inside a def body's `(do …)`) is DELIBERATELY excluded: it is lexically scoped and resolved
+    /// by `resolve::do_local_binds`'s parent walk, so surfacing it here would leak it program-wide and
+    /// break its shadowing. `None` if no top-level module of that name is declared. First-declared wins (a
+    /// duplicate top-level module name is a separate well-formedness concern).
+    pub fn top_level_module_by_name(&self, name: &str) -> Option<StructId> {
+        self.modules.iter().find_map(|m| {
+            (m.name == name && self.parent_of(m.occ) == Some(self.ast.root))
+                .then_some(m.synth)
+                .flatten()
+        })
+    }
+
     /// The DECLARATION occurrence (`(module …)` form) whose synthesized record IS `record`, if any — the
     /// reverse of [`module_synth_by_occ`]. A module's members are mutually visible in each other's bodies,
     /// and the synthesized record is the join point every member body's parent chain ascends through (a
@@ -4237,7 +4254,12 @@ fn collect_module_decl(
     let modeled = |member: StructId| {
         matches!(
             ast.head_name(member),
-            Some("def" | "effect" | "op" | "type" | "module" | "doc")
+            // `export` is modeled: a `(module m … (export a b))` member NAMES the module's visible fields
+            // (`modules-and-namespaces.md` §Visibility Is Explicit; the ML surface `export { a, b }` emits
+            // it). `modules::module_record` reads it to filter the record; here it just must not block
+            // registration. Its VALIDATION (a duplicate export, an export of an undefined name) rides the
+            // ordinary well-formedness pass, exactly as a top-level `(export …)`'s does.
+            Some("def" | "effect" | "op" | "type" | "module" | "doc" | "export")
         ) || is_modeled_pragma(member)
     };
     let all_modeled = members.iter().all(|&m| modeled(m));

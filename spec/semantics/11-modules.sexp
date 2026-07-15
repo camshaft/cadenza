@@ -80,6 +80,26 @@
             (export main)))
   (error  CDZ0301))
 
+(case "a top-level module is named by a top-level def's body"
+  (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope from a NEW position:
+           a `(module Temp …)` that is a top-level `(do …)` SEQUENCE ELEMENT — a sibling of the top-level
+           defs — binds `Temp` PROGRAM-WIDE, so a reference from another top-level def's BODY (`main`
+           calling `(. Temp c-to-f)`) resolves and reaches the export. This shape was rejected CDZ0101
+           `unbound name Temp`: a top-level module is registered in `db.modules`, but `resolve_name` walked
+           lexical scope (which stops at the root `do`, binding nothing) then defs/types/effects/prelude —
+           NONE consulting the module set — so a member-access head naming a top-level module fell off the
+           end as unbound, even though the same module referenced DIRECTLY from the root `do` (not through a
+           def body) resolved. `resolve_name` now consults top-level modules (a `Ref` to the synth record,
+           after defs/types/effects, before the prelude — like a top-level def/type/effect), so `Temp` is
+           in scope in every top-level body. The `(export c-to-f)` member — emitted by the ML surface
+           `export { c-to-f }` — must not block the module's registration (it is a modeled member). 100°C
+           → 212°F.")
+  (input  (do
+            (module Temp (def (c-to-f c) (+ (/ (* c 9) 5) 32)) (export c-to-f))
+            (def (main) ((. Temp c-to-f) 100))
+            (export main)))
+  (output (: 212 Int64)))
+
 (case "each definition in a module registers a reachable export field"
   (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports (2nd sentence:
            each definition registers its name and value as a field of the module's record): a module
