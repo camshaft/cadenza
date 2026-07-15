@@ -572,6 +572,7 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
+pass	a double-negated condition unwinds to the original selection
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -1269,6 +1270,7 @@ pass	a referenced let binding whose init overflows IS observed, so its trap occu
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
+pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
@@ -1865,6 +1867,8 @@ pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if with identical branches folds to the branch when the condition is trap-free
+pass	an if with identical branches still evaluates a TRAPPING condition
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang

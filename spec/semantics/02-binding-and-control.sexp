@@ -939,6 +939,61 @@
   (call   main (: false Bool) (: 0 Int64))
   (output (: 7 Int64)))
 
+; ── More `if`-simplification Core rewrites (lower.rs Resolved::If) — backend-independent, both inherit ─
+; Beyond the negated-condition branch swap above, the `if` lowering does three more pure rewrites on a
+; RUNTIME condition, each behavior-preserving and inherited by both backends:
+;  - DOUBLE-NEGATION unwind: `(if (not (not c)) T E)` → `(if c T E)` — each swap cancels a `not` layer.
+;  - CONDITIONAL CONSTANT PROPAGATION on a repeated condition: within the then-branch `c` is known TRUE,
+;    within the else-branch FALSE, so a branch that is ITSELF `(if c A B)` collapses to its `A`/`B` arm
+;    (`(if c (if c A B) E)` → `(if c A E)`). The inner condition must be the SAME pure `c`.
+;  - IDENTICAL-BRANCHES collapse: `(if c V V)` → `V` when the branches are core-equivalent — BUT only when
+;    `c` is TRAP-FREE, since dropping the `if` drops the condition's evaluation (a trapping `c` must still
+;    trap). These pin each on a runtime condition (a constant `c` takes the dead-branch-elimination path).
+
+(case "a double-negated condition unwinds to the original selection"
+  (doc    "`(if (not (not (> b 0))) 10 20)` — two negations cancel (each branch-swap drops one `not`
+           layer), so it selects exactly as `(if (> b 0) 10 20)`: b=5 → 10, b=-5 → 20. Pins the
+           double-negation unwind on a runtime condition, both backends (the iterated companion of the
+           single negated-condition swap above).")
+  (input  (do (def (main (: b Int64)) (if (not (not (> b 0))) 10 20)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64))
+  (call   main (: -5 Int64))
+  (output (: 20 Int64)))
+
+(case "a repeated condition inside a branch propagates the known truth value"
+  (doc    "Within the then-branch of `(if c …)` the condition `c` is known TRUE; within the else-branch,
+           FALSE. So a nested `(if c …)` with the SAME condition collapses to the appropriate arm. Both
+           faces in one program: `(if (> b 0) (if (> b 0) 1 2) (if (> b 0) 8 3))` — the then-side inner
+           takes its true arm (1), the else-side inner takes its false arm (3), so the redundant inner
+           tests are never re-evaluated. b=5 → 1, b=-5 → 3. Pins conditional constant propagation on a
+           repeated pure condition, both backends (an inner arm that survived would give 2 or 8).")
+  (input  (do (def (main (: b Int64)) (if (> b 0) (if (> b 0) 1 2) (if (> b 0) 8 3))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: -5 Int64))
+  (output (: 3 Int64)))
+
+(case "an if with identical branches folds to the branch when the condition is trap-free"
+  (doc    "`(if (> b 0) 42 42)` — both branches are the same value, so the `if` collapses to `42`
+           regardless of `b` (the condition `(> b 0)` is trap-free, so eliding it drops nothing). b=1 →
+           42, b=-5 → 42. Pins the identical-branches collapse on a runtime, trap-free condition.")
+  (input  (do (def (main (: b Int64)) (if (> b 0) 42 42)) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: -5 Int64))
+  (output (: 42 Int64)))
+
+(case "an if with identical branches still evaluates a TRAPPING condition"
+  (doc    "The trap-preservation anchor: `(if (> (/ 10 z) 0) 42 42)` has identical branches, but the
+           condition `(> (/ 10 z) 0)` divides by zero at z=0 — so the collapse to `42` MUST NOT drop the
+           condition's evaluation. The `if` folds its branches only when the condition is trap-free; a
+           trapping condition keeps being evaluated → z=0 traps. Pins that the identical-branches fold is
+           guarded on a trap-free condition, both backends.")
+  (input  (do (def (main (: z Int64)) (if (> (/ 10 z) 0) 42 42)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "a conjunction guards a let over a runtime value inside a conditional"
   (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
            parameter, the way a real program (not an isolated feature test) uses the language.
