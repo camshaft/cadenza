@@ -61,6 +61,24 @@ export default function SizedIntegers() {
         a thing that happens to you.
       </P>
 
+      <H2>Arithmetic stays inside the width</H2>
+      <P>
+        The width isn't just checked at conversion — it's enforced in arithmetic too. Two <C>UInt8</C>s add
+        as a <C>UInt8</C>, and a sum that would exceed <C>255</C> is caught, exactly like <C>Int64</C>
+        overflow. <C>200 + 100</C> can't fit a byte, so it's refused:
+      </P>
+      <Note>
+        This one is <strong>meant to be refused</strong>: the <C>UInt8</C> sum overflows its width, so the
+        compiler declines rather than wrapping — the same no-silent-wrap discipline, at 8 bits.
+      </Note>
+      <Runnable source={`(+ (UInt8.of 200) (UInt8.of 100))`} expect="error" />
+      <P>
+        When you <em>do</em> want a wider result, widen first: <C>Int64.of</C> lifts a sized value back to
+        the everyday integer, where the sum has room. The <C>UInt8</C> <C>200</C> becomes the <C>Int64</C>{" "}
+        <C>200</C>, and adding <C>100</C> is fine:
+      </P>
+      <Runnable source={`(+ (Int64.of (UInt8.of 200)) 100)`} />
+
       <Why tenet="A width is part of the type, and never crossed silently">
         Bugs love implicit integer conversion: a value that fit in the source width but not the
         destination, a sign that flipped on the way, a truncation nobody wrote. Cadenza makes the width

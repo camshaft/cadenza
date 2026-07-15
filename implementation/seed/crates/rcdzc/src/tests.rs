@@ -1654,6 +1654,142 @@ fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
     }
 }
 
+/// `String.from-bytes` on a RUNTIME `Bytes` (one the compiler cannot fold to a constant) lowers to the
+/// runtime `str-from-bytes` op: strict UTF-8 validation of the buffer, returning it AS a String on success
+/// (a String IS a UTF-8 Bytes leaf — a zero-copy re-tag) or NULL on failure, which the backend wraps into
+/// the `(Option String)` sum. The bytes are built through a tail-recursive appender so they stay opaque to
+/// the fold (`(rep b"h" 3)` = "hiii"), genuinely emitting the op + composing the runtime. `Option.expect`
+/// on the `Some` unwraps to the decoded string. Companion to the constant-fold `from-bytes` corpus cases.
+#[test]
+fn a_runtime_string_from_bytes_decodes_a_recursively_built_buffer() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (main) (Option.expect (String.from-bytes (rep b\"\\x68\" 3)) \"utf8\")) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.from-bytes must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: \"hiii\" String)",
+            "'h' then three 'i's decode to \"hiii\""
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime String.from-bytes trapped (a total decode must never trap): {t}")
+        }
+    }
+}
+
+/// The ill-formed companion: `String.from-bytes` of a RUNTIME `Bytes` that is not well-formed UTF-8 (a
+/// recursive appender of the invalid lead byte `0xFF`) yields `(None …)` — the runtime `str-from-bytes`
+/// op returns NULL and the backend builds the None variant, so the `None` arm returns -1. A TOTAL decode,
+/// never a trap, on the runtime path exactly as on the constant path. Pins the strict runtime validator.
+#[test]
+fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\xff\") (- n 1)))) \
+                 (def (main) (match (String.from-bytes (rep b\"\" 2)) \
+                    ((Some s) (String.byte-len s)) ((None _) (- 0 1)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "-1", "two 0xFF bytes are invalid UTF-8 → None → -1")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            panic!(
+                "runtime String.from-bytes on ill-formed bytes trapped (must be None, not a trap): {t}"
+            )
+        }
+    }
+}
+
+/// `String.from-bytes` adds NO leak beyond the established runtime Option-builder pattern. `str-from-bytes`
+/// emits the SAME shape as `Bytes.at`/`Map.lookup`: call the runtime op → a handle-or-NULL, then build
+/// `Some(handle)` / `None`. Differential probe against `Bytes.at` (the twin Option-builder over the SAME
+/// runtime rope): both build a fresh runtime rope, run an Option-returning runtime op on it, and sum the
+/// `Some` payload in a `k`-iteration loop. Any per-iteration residue is a PRE-EXISTING loop-reclaim gap
+/// shared by every such op (measured: `Bytes.at` and `String.from-bytes` both leave the identical
+/// per-iteration residue); the invariant this pins is that the decode's own consume/re-tag/wrap introduces
+/// NOTHING on top of that baseline — the two ops' live-cell residues match at every iteration count.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[from-bytes] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `loop k`: k times, build a fresh runtime rope "hiii", run the Option op, sum the `Some` payload.
+    // DECODE program — `String.from-bytes` → Some(String), sum its byte-len (4). The two programs are
+    // byte-for-byte identical except the Option-returning op, isolating the decode's own reclamation.
+    let decode_src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (loop (: k Int64) (: sum Int64)) \
+                    (if (= k 0) sum \
+                       (loop (- k 1) (+ sum (match (String.from-bytes (rep b\"\\x68\" 3)) \
+                                              ((Some s) (String.byte-len s)) ((None _) 0)))))) \
+                 (def (main (: n Int64)) (loop n 0)) (export main))";
+    // TWIN program — `Bytes.at` → Some(Int64), the established runtime Option-builder over the same rope.
+    let twin_src = "(module m \
+                 (def (rep (: acc Bytes) (: n Int64)) \
+                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
+                 (def (loop (: k Int64) (: sum Int64)) \
+                    (if (= k 0) sum \
+                       (loop (- k 1) (+ sum (match (Bytes.at (rep b\"\\x68\" 3) 0) \
+                                              ((Some v) v) ((None _) 0)))))) \
+                 (def (main (: n Int64)) (loop n 0)) (export main))";
+    let decode = compile_component(&crate::codec::encode(&parse(decode_src))).expect("compile");
+    let twin = compile_component(&crate::codec::encode(&parse(twin_src))).expect("compile");
+    for k in [5i64, 50] {
+        let mut rd = ComposedRuntime::new(&decode, &runtime_bytes);
+        rd.call("main", &[Val::S64(k)]);
+        let decode_live = rd.live_objects();
+        let mut rt = ComposedRuntime::new(&twin, &runtime_bytes);
+        rt.call("main", &[Val::S64(k)]);
+        let twin_live = rt.live_objects();
+        assert_eq!(
+            decode_live, twin_live,
+            "from-bytes leak: at k={k} the decode leaves {decode_live} live cells vs the twin Bytes.at \
+             Option-builder's {twin_live} — String.from-bytes must reclaim exactly as the established \
+             runtime Option-builder does (consume the buffer, transfer it out as the String, drop it in \
+             the arm), adding no residue of its own"
+        );
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
@@ -10637,15 +10773,13 @@ mod runtime_ops {
         // FIX: skip the tail append when the matched row is a leaf; only a fall-through-capable matched row
         // (a further lit-test — e.g. `(tuple 0 0)` before `(tuple 0 a)` — or a guard) needs the tail.
         //
-        // The NOISE-FREE signal is `BUILD_TREE_LITTEST_ROWS_CLONED` — the `MatchRow`s cloned into the
-        // matched sub-matrix, a pure function of the program. For N single-lit-test leaf arms it must stay
-        // O(N) (zero, in fact — every matched row is a leaf), NOT O(N²). Correctness (the dispatch selects
-        // the right arm, and a multi-lit-test arm's fall-through still reaches the same-prefix binding arm)
-        // is pinned by the run-value + fall-through match tests.
+        // The NOISE-FREE signal is `BUILD_TREE_CALLS` — the decision-tree recursion count, a pure function
+        // of the program. For N single-column leaf arms it must stay O(N), NOT O(N²). Correctness (the
+        // dispatch selects the right arm, and a multi-lit-test arm's fall-through still reaches the
+        // same-prefix binding arm) is pinned by the run-value + fall-through match tests.
         fn wide_tuple_lit_match_src(n: usize) -> String {
             // `(def (f (: t (Tuple Int64 Int64))) (match t ((tuple 0 a) 0) … ((tuple {n-1} a) {n-1}) (_ -1)))`
-            // — N arms each testing the FIRST element against a distinct literal, binding the second. Every
-            // arm is a single-lit-test unconditional leaf (the case the wasted-tail-clone bit).
+            // — N arms each testing the FIRST element against a distinct literal, binding the second.
             let mut arms = String::new();
             for i in 0..n {
                 arms.push_str(&format!("((tuple {i} a) {i}) "));
@@ -10665,25 +10799,82 @@ mod runtime_ops {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "a wide literal match compiles with no error diagnostics: {diags:?}"
         );
-        fn rows_cloned(src: &str) -> u64 {
+        fn build_tree_calls(src: &str) -> u64 {
             crate::host::run_with_compiler_stack(|| {
-                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.set(0));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
                 let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.get())
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
             })
         }
-        // Width 200→400 is a 2× match; O(N) tail clones ⇒ ≤ ~2×, the O(N²) per-level tail append was ~4×.
-        // For a pure leaf-arm match the count is 0 either doubling (no matched row is a fall-through), so
-        // guard the ratio only when the base is non-zero — else assert the absolute count stays bounded
-        // (well under the O(N²) figure a revert produces: N=400 would clone ~400² / 2 ≈ 80k rows).
-        let n200 = rows_cloned(&wide_tuple_lit_match_src(200));
-        let n400 = rows_cloned(&wide_tuple_lit_match_src(400));
+        // Width 200→400 is a 2× match; O(N) recursion ⇒ ~2×, an O(N²) blow-up was ~4×. Require < 3×.
+        let n200 = build_tree_calls(&wide_tuple_lit_match_src(200));
+        let n400 = build_tree_calls(&wide_tuple_lit_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
         assert!(
-            n400 < 4 * 400,
-            "a wide literal match must build its decision tree without cloning the O(N) remaining-rows \
-             tail at each leaf level (`build_tree`'s lit-test arm must skip the append when the matched \
-             row is an unconditional leaf): width-400 cloned {n400} rows (n200={n200}); O(N) is ≤ ~N, the \
-             per-level tail append was ~N²/2 (~80000 at N=400)"
+            n200 > 0 && ratio < 3.0,
+            "a wide single-column literal match must build its decision tree in O(N) `build_tree` \
+             recursions, not O(N²): width 200→400 grew {ratio:.1}× (n200={n200}, n400={n400})"
+        );
+    }
+
+    #[test]
+    fn a_multi_column_literal_match_compiles_in_linear_time() {
+        // REGRESSION (perf/correctness): a match whose arms each test ≥2 LITERAL COLUMNS
+        // (`(tuple 0 0 a)` — a transition-table / parser `(tuple state token payload)` dispatch) compiled
+        // `lower::build_tree` in O(2^arms). `build_lit_test` lowers such an arm to `LitTest{then_, els}`
+        // where the arm's SECOND-column test (`then_`) itself falls through to the SAME remaining-arms
+        // matrix that this test's `els` compiles — so without sharing, the fall-through is re-compiled in
+        // BOTH branches at every column, T(N)=2·T(N-1) (a 20-arm 2-column match: ~5s to `cdz check`, 25
+        // arms hangs). FIX: for a NON-REFINING probe (Int/Str — its else is the remaining arms verbatim),
+        // compile that fall-through ONCE into a shared `Rc<SumCont>` and thread it into `then_`'s recursion
+        // as its `fallthrough`, so the arm's further column-tests reuse the same `Rc` (a refcount bump)
+        // instead of re-compiling → build O(arms). A REFINING probe (Bool/ListLen) still re-checks its
+        // matched arm against the real tail (no sharing — a finite fan-out has no exponential to dedup), so
+        // exhaustiveness is unaffected.
+        //
+        // The NOISE-FREE signal is `BUILD_TREE_CALLS` (the recursion count). A 2-column match with N arms
+        // must recurse O(N), not O(2^N). Correctness (dispatch + exhaustiveness) is pinned by the 438
+        // match_engine tests, which stay byte-identical.
+        fn two_col_match_src(n: usize) -> String {
+            // `(def (f (: t (Tuple Int64 Int64 Int64))) (match t ((tuple 0 0 a) 0) … (_ -1)))` — each arm
+            // tests TWO literal columns (the exponential shape), binding the third.
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main) (f (tuple 1 1 5))) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid multi-column literal match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&two_col_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a multi-column literal match compiles with no error diagnostics: {diags:?}"
+        );
+        fn build_tree_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 12→16 is +4 arms. LINEAR ⇒ the recursion count grows by a small ADDITIVE amount (a bounded
+        // per-arm constant); the O(2^arms) blow-up MULTIPLIED by 2^4 = 16× over +4 arms. Require the ratio
+        // stay well under 4× (linear is ~1.3×; the exponential was ~16×). VERIFIED: reverting the shared
+        // fall-through (append the tail into `then_`) fails here with a ~16× explosion.
+        let n12 = build_tree_calls(&two_col_match_src(12));
+        let n16 = build_tree_calls(&two_col_match_src(16));
+        let ratio = n16 as f64 / (n12.max(1)) as f64;
+        assert!(
+            n12 > 0 && ratio < 4.0,
+            "a multi-column literal match must compile in O(arms) `build_tree` recursions, not O(2^arms) \
+             (the non-refining fall-through must be compiled once into a shared `Rc<SumCont>` and threaded \
+             into the matched arm's further-column recursion): arms 12→16 grew {ratio:.1}× (n12={n12}, \
+             n16={n16}); linear is ~1.3×, the exponential was ~16×"
         );
     }
 
@@ -35498,6 +35689,55 @@ mod diagnostics {
             Some("CDZ0101"),
             "an undeclared capitalized ctor is still unbound (CDZ0101): {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
+        // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
+        // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
+        // declared OPEN `(type Box (Wrap Int64) .. r)` is NOT a newtype: the row variable means a value's
+        // discriminant is not statically `Wrap`, so `(Wrap n)` does NOT cover it and a `_` arm is
+        // required (`type-system.md §206`). Without suppressing the erasure, the open sum wrongly compiled
+        // (the newtype pattern was irrefutable → the exhaustiveness check never ran).
+
+        // (a) The OPEN single-variant sum, sole-ctor arm only, NO `_` → non-exhaustive (CDZ0210).
+        let open_missing = all_errors(
+            "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            open_missing
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "an open single-variant sum without a `_` arm is non-exhaustive: {open_missing:?}"
+        );
+
+        // (b) The CLOSED single-variant sum (no `.. r`) with the SAME sole-ctor arm is exhaustive — its
+        // newtype erasure makes the ctor irrefutable, no `_` required. Isolates open-ness as the cause.
+        let closed_ok = all_errors(
+            "(module m (type Box (Wrap Int64)) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            !closed_ok
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a CLOSED single-variant sum's sole-ctor pattern is irrefutable (no `_` needed): {closed_ok:?}"
+        );
+
+        // (c) The OPEN single-variant sum WITH the `_` arm compiles clean AND still reads the named
+        // variant's payload (the erasure suppression must not break the `Wrap` payload binder).
+        let open_ok = all_errors(
+            "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n) (_ 0))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            open_ok.is_empty(),
+            "an open single-variant sum with a `_` arm compiles clean: {open_ok:?}"
         );
     }
 
@@ -63480,6 +63720,132 @@ mod cross_component_oracle {
                 && msg.contains("S64")
                 && msg.contains("Float64"),
             "the compose error must name the op, position, and both types: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL7 — a peer MISSING an op the consumer binds is rejected at compose time naming the op. The
+    // consumer imports `M.add` AND `M.sub`, but the peer exports only `add`. wasmtime otherwise fails
+    // the whole interface import with an opaque instance-level "a matching implementation was not found
+    // in the linker" that never names `sub`; the compose-time check reports the missing op + what the
+    // peer DOES offer. Completes the peer-signature triad (missing / arity / type).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_missing_a_bound_op_is_rejected_naming_the_op() {
+        use crate::testkit::parse;
+        // PROVIDER: exports only `add` (2-arg).
+        let provider = compile_provider(
+            "(do (def (add (: x Int64) (: y Int64)) (+ x y)) (export add))",
+            "cadenza:m/api",
+        );
+        // CONSUMER: binds BOTH `add` and `sub` on the interface — the peer is missing `sub`.
+        let src = "(do \
+            (effect M (op add (-> Int64 Int64 Int64)) (op sub (-> Int64 Int64 Int64))) \
+            (bind M \"cadenza:m/api\") \
+            (def (main (: x Int64)) (host (M) (+ (M.add x x) (M.sub x x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:m/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect_err("a peer missing a bound op must be REJECTED naming the op");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("does not export op `sub`") && msg.contains("add"),
+            "the compose error must name the missing op + what the peer offers, not an opaque \
+             linker error: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL8 — the peer signature check spans MULTIPLE bound peers (the U9 multi-interface shape). A
+    // consumer binds TWO distinct interfaces (M → cadenza:math/api, P → cadenza:p/api); the check must
+    // (a) NOT false-positive when BOTH peers match (the whole thing runs), and (b) pin the mismatch to
+    // the RIGHT interface when one peer (P) disagrees while the other (M) is fine. Guards that
+    // `check_peer_iface_signatures` iterates all peers and attributes the error to the offending one.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_peer_signature_check_spans_multiple_bound_peers() {
+        use crate::testkit::parse;
+        // A consumer binding TWO peers: M.add (2-arg Int64) + P.neg (1-arg Int64).
+        let src = "(do \
+            (effect M (op add (-> Int64 Int64 Int64))) \
+            (effect P (op neg (-> Int64 Int64))) \
+            (bind M \"cadenza:math/api\") \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) (host (M P) (+ (M.add x x) (P.neg x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let m_ok = compile_provider(
+            "(do (def (add (: x Int64) (: y Int64)) (+ x y)) (export add))",
+            "cadenza:math/api",
+        );
+        let opts = |()| cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        // (a) BOTH peers correct → runs: add(5,5) + neg(5) = 10 + 10 = 20. No false positive.
+        let p_ok = compile_provider(
+            "(do (def (neg (: x Int64)) (+ x x)) (export neg))",
+            "cadenza:p/api",
+        );
+        let peers_ok = vec![
+            cdz_run::Peer {
+                bytes: m_ok.clone(),
+                interface: "cadenza:math/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: p_ok,
+                interface: "cadenza:p/api".to_string(),
+            },
+        ];
+        match cdz_run::run_with_peers(&consumer, &peers_ok, &opts(()))
+            .expect("two matching peers compose")
+        {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "20", "add(5,5)+neg(5) across two matching peers")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("two-peer run trapped: {t}"),
+        }
+        // (b) P mismatches (neg over Float64, arity ok) while M is fine → the error names P, not M.
+        let p_bad = compile_provider(
+            "(do (def (neg (: x Float64)) (+ x x)) (export neg))",
+            "cadenza:p/api",
+        );
+        let peers_bad = vec![
+            cdz_run::Peer {
+                bytes: m_ok,
+                interface: "cadenza:math/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: p_bad,
+                interface: "cadenza:p/api".to_string(),
+            },
+        ];
+        let err = cdz_run::run_with_peers(&consumer, &peers_bad, &opts(()))
+            .expect_err("a mismatch in ONE of several peers must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("cadenza:p/api") && msg.contains("type mismatch") && msg.contains("neg"),
+            "the error must attribute the mismatch to the offending peer P, not M: {msg}"
+        );
+        assert!(
+            !msg.contains("cadenza:math/api"),
+            "the well-matched peer M must NOT be implicated: {msg}"
         );
     }
 

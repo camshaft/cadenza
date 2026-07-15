@@ -339,6 +339,16 @@
   (input  (Qty.value (* (Qty.of 5 (Unit.base #"meter")) 2)))
   (output (: 10 Int64)))
 
+(case "multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled"
+  (doc    "`(* (Qty.of 5 (Unit.prefix kilo meter)) 1)` — the calc `5 kilometer * 1` case: multiplying by
+           the bare integer `1` keeps the dimension (the `* 1` does NOT drop the unit) and the result
+           DISPLAYS at the reference `meter` with the magnitude scaled — `(Qty.of 5000 (Unit.base
+           #\"meter\"))`. Pins both fixes together: the apply_type reorder (a `(Qty T u) * <bare T>` stays
+           a quantity, not a bare number) and the reference-normalized display (5 km renders 5000 m). This
+           closes the calc relabel bug's last item (`5 kilometer * 1` used to drop the unit entirely).")
+  (input  (* (Qty.of 5 (Unit.prefix kilo (Unit.base #"meter"))) 1))
+  (output (: (Qty.of 5000 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
 (case "a unit multiplied by its own inverse cancels to the dimensionless unit"
   (doc    "`(/ (Qty.of 6.0 meter) (Qty.of 2.0 meter))` derives meter/meter = Unit.one — the base cancels
            its inverse (the free-abelian-group law) — leaving a dimensionless `(Qty Float64 Unit.one)`
@@ -1022,3 +1032,43 @@
             (Qty.of (Unit.in (Unit.of #"meter") (Qty.of 3 (Unit.of #"kilometer")))
                     (Unit.of #"foot"))))
   (output (: 3000 Int64)))
+
+; --- Bare-number scaling neighbors: operand side, division, and the squared-dimension guard --------
+; The apply_type-reorder cases above pin `qty × bare` keeping its dimension for both magnitude
+; types. These pin the neighbors of the same arm-ordering hazard: the bare number on the LEFT (the
+; commuted form goes through the same operand-type arms in the other order), DIVISION by a bare
+; number (the other multiplicative op the `is_multiplicative && any_qty` gate covers), and the
+; dimension-COMPOSITION guard (qty × qty is a new dimension that must not flow into a linear add).
+
+(case "a bare number on the left scales the quantity and keeps its dimension"
+  (doc    "`(* 3 (Qty.of 2 kilometer))` — the commuted form: the BARE operand is examined first, so an
+           operand-type arm keyed on 'left is a bare Int' fires before any quantity check unless gated
+           on any_qty. The product is 6 km; `(Unit.in meter …)` unwraps → 6000. The left-operand
+           companion of the landed qty-on-the-left cases.")
+  (input  (Unit.in (Unit.of #"meter") (* 3 (Qty.of 2 (Unit.of #"kilometer")))))
+  (output (: 6000 Int64)))
+
+(case "dividing a quantity by a bare number keeps its dimension"
+  (doc    "`(/ (Qty.of 6 kilometer) 3)` = 2 km — division is the other multiplicative op the
+           quantity path covers (a qty ÷ bare scales the magnitude down, dimension unchanged).
+           `(Unit.in meter …)` → 2000. A reorder regression on the divide arm would drop the unit
+           exactly as the multiply arm did.")
+  (input  (Unit.in (Unit.of #"meter") (/ (Qty.of 6 (Unit.of #"kilometer")) 3)))
+  (output (: 2000 Int64)))
+
+(case "the magnitude of a bare-scaled quantity reads back"
+  (doc    "`(Qty.value (* (Qty.of 2 kilometer) 3))` = 6 — the exact expression shape the apply_type
+           bug DECLINED ('function return type has no machine representation': the product mis-typed
+           as bare Float/Int, so Qty.value had no quantity to unwrap). Pins the observation op over a
+           scaled quantity end to end.")
+  (input  (Qty.value (* (Qty.of 2 (Unit.of #"kilometer")) 3)))
+  (output (: 6 Int64)))
+
+(case "a squared quantity does not add to a linear quantity"
+  (doc    "`(* (Qty.of 2 meter) (Qty.of 3 meter))` composes dimensions (m²) — the qty×qty arm, NOT
+           the bare-scaling arm. Adding the m² product to a linear `(Qty.of 1 meter)` is a
+           cross-dimension add → CDZ0501. Pins the two multiplicative paths stay distinct: a reorder
+           that sent qty×qty through the bare-operand arm would type the product linear and wrongly
+           ACCEPT this add.")
+  (input  (+ (* (Qty.of 2 (Unit.of #"meter")) (Qty.of 3 (Unit.of #"meter"))) (Qty.of 1 (Unit.of #"meter"))))
+  (error  CDZ0501))

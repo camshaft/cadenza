@@ -787,6 +787,13 @@ pub mod exports {
                     let result0 = T::map_to_list(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_str_from_bytes_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::str_from_bytes(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1196,6 +1203,20 @@ pub mod exports {
                     fn set_to_list(s: u32, desc: u32) -> u32;
                     /// 83 — set elements as a List a, canonical order
                     fn map_to_list(m: u32, desc: u32) -> u32;
+                    /// 84 — map entries as a List (Tuple k v), canonical key order
+                    /// ── String-from-bytes (index 85) — `str-from-bytes(buf)` is the TOTAL UTF-8 decode
+                    ///    `Bytes -> (Option String)` on a RUNTIME byte buffer: STRICTLY validate `buf` as well-formed UTF-8
+                    ///    (rejecting invalid bytes, overlong encodings, AND surrogate code points — the three spec failure
+                    ///    modes, matching `str::from_utf8`) and return the buffer AS a String on success or `NULL` on failure.
+                    ///    A String IS a UTF-8 Bytes leaf (byte-identical representation — see the string-bytes learning), so a
+                    ///    VALID buffer needs no conversion or copy: the op is a VALIDATION + zero-cost re-tag, and
+                    ///    `str-to-bytes` is its exact inverse on well-formed input. CONSUMES `buf`: on success `buf`'s
+                    ///    ownership transfers out as the String; on failure the runtime drops it and returns `NULL`. FLATTENS
+                    ///    `buf` first (it may be a `bytes-concat`/`bytes-slice` rope whose node `raw` holds header bytes, not
+                    ///    content — strict validation must see the actual bytes), unobservably (content-preserving). NEVER
+                    ///    traps — ill-formed bytes are DATA (`None`), the point of a total decode; the compiler builds the
+                    ///    `(Option String)` sum from the handle-or-NULL. APPENDED last (frozen-contract rule).
+                    fn str_from_bytes(buf: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1503,7 +1524,11 @@ pub mod exports {
                         (export_name = "cadenza:runtime/heap#map-to-list")] unsafe extern
                         "C" fn export_map_to_list(arg0 : i32, arg1 : i32,) -> i32 {
                         unsafe { $($path_to_types)*:: _export_map_to_list_cabi::<$ty >
-                        (arg0, arg1) } } };
+                        (arg0, arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#str-from-bytes")] unsafe extern "C" fn
+                        export_str_from_bytes(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_str_from_bytes_cabi::<$ty > (arg0) }
+                        } };
                     };
                 }
                 #[doc(hidden)]
@@ -1712,9 +1737,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2102] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb8\x0f\x01A\x02\x01\
-A\x02\x01B\x85\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2121] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xcb\x0f\x01A\x02\x01\
+A\x02\x01B\x86\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
 x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
 \x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
 \x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
@@ -1757,10 +1782,10 @@ my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\
 -\x04\0\x0crational-den\x01-\x04\0\x0crational-add\x01\x1d\x04\0\x0crational-sub\
 \x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
 tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
-\x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x14\
-cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07\
-runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.22\
-7.1\x10wit-bindgen-rust\x060.41.0";
+\x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x0e\
+str-from-bytes\x01\x0e\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runt\
+ime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproces\
+sed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -461,6 +461,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, len, out);
         }
         Core::BytesCompact { operand }
+        | Core::StrFromBytes { bytes: operand, .. }
         | Core::Convert { operand, .. }
         | Core::Not { operand }
         | Core::ListLen { operand }

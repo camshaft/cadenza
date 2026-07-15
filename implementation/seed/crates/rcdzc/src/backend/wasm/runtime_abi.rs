@@ -92,14 +92,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "72ad7c0ca5bb55bc79ec9cdd9d25a128125f85c8cc8b45433b6b00b003100d10";
+    "def9d173ffd3a074a87d625701be88e8a96719dc4cfba52b531e66809a3251ac";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "c809873928196bad7e482d433f933abbbb299c708eb55da3ee47cb0cb57f2650";
+    "076448b580d87f514466d33593a21dbc1a283cca8b8f32cca9b6a6797c86d214";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
@@ -522,6 +522,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "str-from-bytes",
+        params: &[AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "str-get",
         params: &[AbiValType::U32],
         result: None,
@@ -696,6 +702,7 @@ pub struct RuntimeOps {
     pub set_size: &'static RtOp,
     pub set_to_list: &'static RtOp,
     pub set_union: &'static RtOp,
+    pub str_from_bytes: &'static RtOp,
     pub str_get: &'static RtOp,
     pub str_new: &'static RtOp,
     pub sum_disc: &'static RtOp,
@@ -784,21 +791,22 @@ pub const OPS: RuntimeOps = RuntimeOps {
     set_size: &RUNTIME_OPS[65],
     set_to_list: &RUNTIME_OPS[66],
     set_union: &RUNTIME_OPS[67],
-    str_get: &RUNTIME_OPS[68],
-    str_new: &RUNTIME_OPS[69],
-    sum_disc: &RUNTIME_OPS[70],
-    sum_new: &RUNTIME_OPS[71],
-    sum_new_reuse: &RUNTIME_OPS[72],
-    sum_payload: &RUNTIME_OPS[73],
-    value_encode: &RUNTIME_OPS[74],
-    value_eq: &RUNTIME_OPS[75],
-    vec_concat: &RUNTIME_OPS[76],
-    vec_drop: &RUNTIME_OPS[77],
-    vec_empty: &RUNTIME_OPS[78],
-    vec_get: &RUNTIME_OPS[79],
-    vec_len: &RUNTIME_OPS[80],
-    vec_of_arr: &RUNTIME_OPS[81],
-    vec_push: &RUNTIME_OPS[82],
-    vec_split: &RUNTIME_OPS[83],
-    vec_update: &RUNTIME_OPS[84],
+    str_from_bytes: &RUNTIME_OPS[68],
+    str_get: &RUNTIME_OPS[69],
+    str_new: &RUNTIME_OPS[70],
+    sum_disc: &RUNTIME_OPS[71],
+    sum_new: &RUNTIME_OPS[72],
+    sum_new_reuse: &RUNTIME_OPS[73],
+    sum_payload: &RUNTIME_OPS[74],
+    value_encode: &RUNTIME_OPS[75],
+    value_eq: &RUNTIME_OPS[76],
+    vec_concat: &RUNTIME_OPS[77],
+    vec_drop: &RUNTIME_OPS[78],
+    vec_empty: &RUNTIME_OPS[79],
+    vec_get: &RUNTIME_OPS[80],
+    vec_len: &RUNTIME_OPS[81],
+    vec_of_arr: &RUNTIME_OPS[82],
+    vec_push: &RUNTIME_OPS[83],
+    vec_split: &RUNTIME_OPS[84],
+    vec_update: &RUNTIME_OPS[85],
 };

@@ -227,6 +227,11 @@ const OP_RATIONAL_CMP: &str = "rational-cmp";
 const OP_BYTES_SLICE: &str = "bytes-slice";
 /// `bytes-compact(buf) -> handle` — a content-equal sequence with independent storage (consumes buf).
 const OP_BYTES_COMPACT: &str = "bytes-compact";
+/// `str-from-bytes(buf) -> handle` — the runtime TOTAL UTF-8 decode: strictly validate `buf` as
+/// well-formed UTF-8 and return it AS a String (a String IS a UTF-8 Bytes leaf, so a valid buffer is
+/// re-tagged with no copy), or `NULL` when invalid. CONSUMES `buf`. The compiler wraps the handle-or-NULL
+/// into the `(Option String)` sum (`Some buf` / `None`). Never traps.
+const OP_STR_FROM_BYTES: &str = "str-from-bytes";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -430,6 +435,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
                 || binding_escapes(db, len, binder, false)
         }
         Core::BytesCompact { operand } => binding_escapes(db, operand, binder, false),
+        // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers ownership out as the
+        // String on success, drops it on failure), so a binding used as the operand escapes into the result.
+        Core::StrFromBytes { bytes, .. } => binding_escapes(db, bytes, binder, false),
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
@@ -708,6 +716,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BigIntToI64 { operand }
         | Core::BinIntRead { bytes: operand, .. }
         | Core::BinRestRead { bytes: operand, .. }
+        | Core::StrFromBytes { bytes: operand, .. }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
         Core::ListAt {
@@ -1007,6 +1016,8 @@ fn mark_binder_dups_inner(
         Core::StrAt { string, index, .. } => {
             seq(db, &[(string, false), (index, false)], live_after, sites)
         }
+        // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers it out as the String).
+        Core::StrFromBytes { bytes, .. } => consume(db, bytes, live_after, sites),
         // BigInt/Rational arith/cmp BORROW their handle operands (`tail_borrowed: true` in `binding_escapes`).
         Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
@@ -2030,6 +2041,17 @@ fn collect_used_ops_into(
         Core::BytesCompact { operand } => {
             out.insert(OP_BYTES_COMPACT);
             collect_used_ops_into(db, operand, out);
+        }
+        // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
+        // buffer is invalid UTF-8), then build `Some(handle)` / `None` (`sum-new`, `arr-alloc` for None's
+        // unit). The returned handle is already OWNED (str-from-bytes consumes the buffer and transfers it
+        // out), so it is used DIRECTLY as the `Some` payload — no `dup`. The None branch has no handle to
+        // drop (the runtime consumed the buffer on failure).
+        Core::StrFromBytes { bytes, .. } => {
+            out.insert(OP_STR_FROM_BYTES);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            collect_used_ops_into(db, bytes, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops_into(db, cond, out);
@@ -6424,6 +6446,44 @@ fn emit(
         Core::BytesCompact { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [compacted]
+            Ok(())
+        }
+        // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
+        // `str-from-bytes` (CONSUMES it; strict UTF-8 validate → the buffer AS a String handle, or NULL when
+        // invalid), then build `Some(handle)` / `None`. The returned handle is already OWNED (str-from-bytes
+        // transfers the buffer out on success), so it is used DIRECTLY as the `Some` payload — no `dup`. On
+        // failure the runtime already dropped the buffer, so the `None` branch has nothing to drop. One
+        // scratch slot (the result handle i32) above `base`; the operand recursion floats above it.
+        Core::StrFromBytes {
+            bytes,
+            disc_some,
+            disc_none,
+        } => {
+            let result_slot = base;
+            if result_slot + 1 > *high {
+                *high = result_slot + 1;
+            }
+            scratch_ty.insert(result_slot, ValType::I32);
+            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [buf]
+            out.push(Lir::CallImport(OP_STR_FROM_BYTES)); // [handle-or-NULL] (consumes buf)
+            out.push(Lir::LocalSet(result_slot)); // result_slot = handle-or-NULL, stack empty
+            // valid = (handle != NULL).
+            out.push(Lir::LocalGet(result_slot));
+            out.push(Lir::ConstI32(NULL_HANDLE));
+            out.push(Lir::I32Ne); // [valid]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(handle). The handle is OWNED (str-from-bytes transferred the buffer out); use it
+            // directly as the payload under `disc_some`, no `dup`.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(result_slot)); // [disc_some, handle]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: the unit payload is the inline-unit constant (as `Map.lookup`/`Bytes.at` do). The
+            // buffer was consumed+dropped by str-from-bytes on failure, so there is nothing to release here.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
             Ok(())
         }
         // A runtime `Bytes.slice(bytes, start, len)` — the fallible sub-range read. Bounds-check `start >=

@@ -50,27 +50,41 @@ def parse-pair(a: String, b: String) -> Result((Int64, Int64), Err) =
 
 ## 1. The one principle everything else follows from
 
-**`?` is a compile-time desugar to the effect system's *within-function abortive lowering* — it borrows the
-lowering substrate, not the surface.** There is no user-visible `Try` effect, no `(effect …)` declaration,
-no handler the user writes. `e?` lowers to a `match` whose short-circuit arm is an abortive **break** to a
-compiler-synthesized **boundary block**; the boundary is the enclosing function body (v1) or an explicit
-`try { }` region (v2).
+**`?` is a compile-time desugar that borrows the effect system's *within-function abortive* discipline —
+the short-circuit is discharged entirely at compile time, contributing nothing to the effect row.** There
+is no user-visible `Try` effect, no `(effect …)` declaration, no handler the user writes. `e?` lowers to a
+`match` on the operand whose **short-circuit arm yields the boundary's failure value** (§3.2); the boundary
+is the enclosing function body (v1) or an explicit `try { }` region (v2). (An earlier draft framed the
+short-circuit as a `break` to a synthesized `Mir::Block`; there is no such node in `Core` — see the
+correction below.)
 
 Three consequences fall out of this principle, and each one is load-bearing:
 
+> **IMPLEMENTATION CORRECTION (2026-07-15, v-try-operator).** An earlier draft of this section named
+> `Mir::Block` / `Mir::Break` as the lowering target, "landed for E4". That was **wrong**: rcdzc's `Core`
+> IR has **no forward-break / labeled-block value node**, and the effects E4 work does **not** emit a
+> runtime `block`/`br` — it discharges an abortive perform at **compile time** (`effects.rs`'s `abortive`
+> set + `abort_value`). So `?` is **not** lowered to a block/break. The correct, equivalent realization
+> (implemented) is a **compile-time match / short-circuit on the operand**: `e?` becomes a two-way choice
+> on `e`'s discriminant — the success arm yields the payload, the failure arm yields the boundary's
+> failure value. The text below has been updated to describe that; the *semantics* (§3.2) are unchanged.
+
 1. **`?` always exits the *lexically* enclosing boundary** — the function it appears in, or the nearest
    enclosing `try`. That boundary is therefore **always in the same function body** at desugar time. So `?`
-   only ever needs the **cheapest** abortive rung — the within-function `block`/`br` of
-   [DESIGN-effects-rcdzc.md §4.2](./DESIGN-effects-rcdzc.md) (`Mir::Block` / `Mir::Break`) — and **never**
-   the cross-function non-local-exit calling convention. (A `?` in a helper exits the *helper*, exactly as
-   Rust's does; it does not reach into the caller.)
+   is discharged entirely **within the function body**, exactly like the E4 within-function abortive
+   handling ([DESIGN-effects-rcdzc.md §4.2](./DESIGN-effects-rcdzc.md), which folds the abort at compile
+   time) — and **never** the cross-function non-local-exit calling convention. (A `?` in a helper exits the
+   *helper*, exactly as Rust's does; it does not reach into the caller.)
 2. **`?` contributes nothing to the effect row or the manifest.** Because the boundary is synthesized and
-   discharged entirely at compile time (a `block`/`br` pair the fold produces), no effect label escapes. A
-   program using `?` is *row-identical* to the desugared nested-`match` — it stays as pure as its body. `?`
-   is therefore not the thin end of the *effect-row* wedge either.
-3. **No new runtime, no new WIT, no backend change.** The lowering targets `Mir::Block` / `Mir::Break`,
-   which `select` already maps to wasm `block` / `br` (landed for E4). `?` is a front-half feature —
-   surface + resolve + type + a Hir→Mir desugar.
+   discharged entirely at compile time (the fold selects the success/failure arm of a match on the
+   operand), no effect label escapes. A program using `?` is *row-identical* to the desugared
+   nested-`match` — it stays as pure as its body. `?` is therefore not the thin end of the *effect-row*
+   wedge either.
+3. **No new runtime, no new WIT, no backend change.** The lowering targets the **existing sum-match /
+   `SumNew` Core** the compiler already emits for a hand-written `match` on `Result`/`Option` (a constant
+   operand folds to the selected arm; a runtime operand emits a `Core::MatchSum`) — `select` already
+   lowers both. There is **no** new `Core` node and **no** `select.rs` change. `?` is a front-half feature —
+   surface + resolve + type + a Hir→Core desugar.
 
 ## 2. Surface (ML + s-expr + binary) — coordinate with `v-syntax`
 
@@ -92,54 +106,63 @@ word-string head, per the *compound-ctors-are-reserved-symbols* rule).
 
 ## 3. IR shapes and the desugar
 
-### 3.1 A `Try` node, carried from Ast to Hir, desugared at Hir→Mir
+### 3.1 A `Try` node, carried from Ast through resolve/infer, desugared at Hir→Core lowering
 
 ```rust
-// Ast / Hir gain a leaf (sibling to the other control forms):
-Try { operand: Box<_> }          // (try e)
-TryBlock { body: Box<_> }        // (try-block …)   -- v2
+// A first-class resolved node (in rcdzc, `Resolved::Try`; sibling to the strict `Not`):
+Try { operand: StructId }        // (try e)
+// TryBlock { body: StructId }   // (try-block …)   -- v2, not yet added
 ```
 
 `Try` survives resolve and infer as a first-class node (so type errors point at the `?`, not at desugared
-guts), then is **desugared during the Hir→Mir lowering** against the enclosing boundary.
+guts), then is **desugared during the Hir→Core lowering** against the enclosing boundary.
 
 ### 3.2 The desugar (the whole semantics, in two rewrites)
 
 Let `B` be the enclosing boundary and `T_B` its result type (the function's declared return type in v1, or
-the `try` block's type in v2). `T_B` is either `Result(a, b)` or `Option(a)`.
+the `try` block's type in v2). `T_B` is either `Result(a, b)` or `Option(a)`. A `?` appears in a
+CONTINUATION position — `e?` yields a value that the rest of the boundary body consumes; the canonical
+shape is a let-initializer `(let ((x (try e))) <rest>)`, where `<rest>` is that continuation and produces
+the boundary value. The rewrite makes the continuation the success arm and short-circuits on failure:
 
 **A `Result`-typed operand** `e : Result(v, b)` — requires `T_B = Result(_, b)` (same error type `b`):
 
 ```
-e?   ==>   match e with
-           | Result.Ok(x)  => x                       -- normal path: yields the payload
-           | Result.Err(r) => break B (Result.Err(r)) -- abortive: the boundary's value becomes Err(r)
+(let ((x (try e))) rest)   ==>   match e with
+                                 | Result.Ok(x)  => rest         -- normal path: x = payload, run the continuation
+                                 | Result.Err(r) => Result.Err(r) -- short-circuit: the boundary value IS the failure
 ```
 
 **An `Option`-typed operand** `e : Option(v)` — requires `T_B = Option(_)`:
 
 ```
-e?   ==>   match e with
-           | Option.Some(x) => x
-           | Option.None(_) => break B (Option.None)
+(let ((x (try e))) rest)   ==>   match e with
+                                 | Option.Some(x) => rest
+                                 | Option.None    => Option.None
 ```
 
-`break B w` is `Mir::Break{ value: w }` targeting the `Mir::Block` synthesized for boundary `B` (§4). The
-`Ok`/`Some` disc is read off the operand's solved type (the built-in Option/Result variant discs, exactly as
-`List.at` / `Map.lookup` do today — `lower.rs:1552`, `lower.rs:1808`).
+The failure arm yields the operand's failure variant **unchanged** — and because `T_B` shares that failure
+variant (the boundary is `Result(_, b)` / `Option(_)`, the same error type by the §5 check), the failure
+value is just `e` itself re-emitted, needing no reconstruction. There is **no `break`/`Block`** — the
+short-circuit is the failure ARM of an ordinary match, whose value flows out as the boundary's value
+because the `?` sits in the boundary's tail continuation. The `Ok`/`Some` disc is read off the operand's
+solved type (the built-in Option/Result variant discs, exactly as `List.at` / `Map.lookup` do today —
+`option_discs`/`result_discs`, `lower.rs`).
 
-### 3.3 The boundary block
+### 3.3 How it lowers to Core
 
-A boundary `B` with body `body` and result type `T_B` lowers to:
+The rewrite targets the **existing sum-match Core** the compiler already emits for a hand-written `match`
+on a `Result`/`Option`:
 
-```
-Mir::Block { result_ty: T_B, body: <body, with each contained e? desugared as in §3.2> }
-```
+- A **constant** operand (`e` folds to a `Core::SumNew` — e.g. a checked-arith over constants → `Some v` /
+  `None`) folds to the **selected arm** at compile time: success → the continuation with `x` bound to the
+  payload; failure → the `SumNew` failure value. (This is the landed T1a path.)
+- A **runtime** operand emits a `Core::MatchSum` on `e` (bound once): the success arm's continuation reads
+  the payload via `Core::SumPayload`, the failure arm re-yields `e`. (T1b.)
 
-The block's **normal fallthrough value** is `body`'s value (already `T_B`-typed — e.g. `Result.Ok((x,y))`);
-its **break value** is whatever a `?` inside supplied (`Result.Err(r)` / `Option.None`). Both are `T_B`, so
-the block is well-typed. Unit-free, no state, no continuation object — this is the E4 abortive shape with
-`init` unused.
+Both are lowered by `select` already (a `match` on a sum is not new), so `?` adds **no new `Core` node and
+no `select.rs` code**. The normal value is the continuation's value (`T_B`-typed — e.g. `Result.Ok((x,y))`)
+and the short-circuit value is the operand's failure variant (also `T_B`), so the match is well-typed.
 
 ## 4. The boundary: function (v1) then `try { }` (v2)
 
@@ -147,9 +170,12 @@ The operator chose **both**, layered — the function boundary is the degenerate
 body" case.
 
 **v1 — the enclosing function.** When a function body contains at least one `?` *not* inside a nested `try`
-block, the lowering wraps the whole body in a boundary block whose `T_B` is the function's **result type**.
-No new surface — the annotation the user already writes (`-> Result(a, b)` / `-> Option(a)`) is the boundary
-type. A `?` in a function whose result type is neither `Result` nor `Option` is a reject (§6).
+block, the boundary `T_B` is the function's **result type** (in Cadenza, the type of the function's body —
+a return type is declared by ascribing the body `(: body T)`). No new surface — the annotation the user
+already writes (`-> Result(a, b)` / `-> Option(a)`) is the boundary type. The `?` desugars into a match on
+its operand whose failure arm's value flows out as the function's value (§3.2); there is no separate
+"boundary block" node to synthesize — the enclosing function body *is* the boundary. A `?` in a function
+whose result type is neither `Result` nor `Option` is a reject (§6, CDZ0230).
 
 **v2 — an explicit `try { }` block.** `try { body }` is a boundary whose `T_B` is the block's own inferred /
 checked `Result`/`Option` type, and whose *value* (when no `?` fires) is `body`. It lets a `?` be caught
@@ -205,7 +231,7 @@ boundary that wants one) exist in the prelude with docstrings, so the conversion
 
 | Code | Meaning | Where |
 |---|---|---|
-| **CDZ0230** *(new)* | a `?` has **no fallible boundary that admits it** — the enclosing function/`try` result type is neither `Result` nor `Option`, or there is none. **Fix hint:** "annotate this function's return type as `Result(_, e)` / `Option(_)`, or wrap the expression in a `try { … }` block." | Hir→Mir desugar / a resolve-time boundary check |
+| **CDZ0230** *(new)* | a `?` has **no fallible boundary that admits it** — the enclosing function/`try` result type is neither `Result` nor `Option`, or there is none. **Fix hint:** "annotate this function's return type as `Result(_, e)` / `Option(_)`, or wrap the expression in a `try { … }` block." | `infer::collect` (the boundary check ascends to the enclosing function body via `enclosing_boundary_ty`) |
 | (CDZ0203) | the `?`'d type disagrees with the boundary — wrong error type, or `Result`-`?` under an `Option` boundary. The ordinary `TypeMismatch`; the fix hint names `Result.map-err` / `Option.ok-or` when a conversion would reconcile it. | infer |
 
 CDZ0230 sits free in the CDZ02xx types-and-patterns band (0201/0202/0203, 0210–0214, 0220/0221 taken; 0230
@@ -214,20 +240,23 @@ DESIGN-effects-rcdzc.md §7 insists on.
 
 ## 7. Increments (top-to-bottom, the way the vertical lands them)
 
-Corpus lives in a **new** `spec/semantics/22-try-operator.sexp` (each stage names the cases it turns green;
+Corpus lives in a **new** `spec/semantics/23-try-operator.sexp` (each stage names the cases it turns green;
 promote passing breaker probes into it per the *breaker-promotes-passing-probes* rule).
 
 - **T0 — surface + type + rejections (no lowering).** `v-syntax`: ML postfix `?` token, `(try e)` canonical
   s-expr, binary `Try` node, round-trip on all three. `rcdzc`: `Try` Hir leaf carried through resolve/infer;
   the bidirectional boundary-type check (§5); **CDZ0230** + the CDZ0203 mismatch. **Green:** the reject cases
   (`?` in a non-fallible function; `Result`-`?` under `Option`; mismatched error type) + the pure type-check
-  cases. No value executes yet.
-- **T1 — function-boundary lowering (the core win).** Synthesize the boundary block around a function body
-  containing `?`; desugar `e?` per §3.2 for **both** `Result` and `Option`; lower via `Mir::Block` /
-  `Mir::Break` (E4 substrate, already in `select`). **Green:** the nested-`match`-collapse cases — the
-  `parse-pair` shape (Result) and a `head`/`lookup` chain (Option) — **executed through wasmtime** (a value
-  comes out: the happy path *and* a short-circuit path). This is the increment that delivers the operator's
-  ask.
+  cases. No value executes yet. **(Landed: T0a = the `Try` node through resolve/infer + operand-shape
+  CDZ0203; T0b = the boundary check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203.)**
+- **T1 — function-boundary lowering (the core win).** Desugar `e?` per §3.2 for **both** `Result` and
+  `Option` — a match on the operand whose success arm binds the payload and whose failure arm yields the
+  operand's failure value (which flows out as the function's value; **no `Block`/`Break` node** — see the
+  §1 correction). **Green:** the nested-`match`-collapse cases **executed through wasmtime** (a value comes
+  out: happy path *and* short-circuit). **(Landed: T1a = the let-initializer `(let ((x (try e))) rest)`
+  desugar for a CONSTANT-FOLDING operand — the two Option cases fold to their value. T1b = the RUNTIME
+  operand via `Core::MatchSum` + a `(call …)` case that runs a value through wasmtime, and `?` in
+  non-let-init positions — pending.)**
 - **T2 — `try { }` block boundary (v2).** ML `try { … }` keyword + `(try-block …)` s-expr (round-trip);
   innermost-boundary resolution; the function boundary becomes the degenerate whole-body `try`. **Green:**
   mid-function catch cases (the `classify` shape); nested `try` blocks targeting the innermost.
@@ -239,23 +268,28 @@ promote passing breaker probes into it per the *breaker-promotes-passing-probes*
 
 - **Surface** — `implementation/seed/crates/cadenza-syntax/` (lexer token, ML↔s-expr↔binary, round-trip
   tests). **`v-syntax` territory.**
-- **Ast/Hir node** — the `Try` / `TryBlock` leaves in `rcdzc/src/core.rs` (sibling to the other control
-  nodes).
-- **Resolve / boundary tracking** — `rcdzc/src/resolve.rs`: track the nearest enclosing fallible boundary
-  (function result type or `try` block) so a stray `?` is caught as CDZ0230.
-- **Infer** — `rcdzc/src/infer.rs`: the bidirectional check of §5. **`v-inference` reviews.**
-- **Desugar → Mir** — `rcdzc/src/lower.rs`: emit the `Mir::Block` boundary + rewrite each `?` to
-  `match … | short => Mir::Break`. The Option/Result variant discs are read off the solved type exactly as
-  `List.at` (`lower.rs:1552`) / `Map.lookup` (`lower.rs:1808`) do.
-- **Select (unchanged)** — `Mir::Block`/`Mir::Break` → `block`/`br` already exists from E4; `?` should add
-  **no** `select.rs` code. If it seems to, the desugar targeted the wrong node.
-- **Diagnostics** — `rcdzc/src/diag.rs::Code` (CDZ0230 + its fix hint). **`v-diagnostics` reviews.**
+- **Ast node** — the `Resolved::Try { operand }` variant in `rcdzc/src/resolved.rs` (sibling to the strict
+  `Not`); `resolve_try` in `resolve.rs` (mirrors `resolve_not`, arity-1). `try` is a control grammar head.
+  (`TryBlock` for v2 is not yet added.)
+- **Infer** — `rcdzc/src/infer.rs`: `fallible_shape` (classify `Option`/`Result` by variant names — no
+  hard-coded key); `type_of(Try)` = the success payload; `enclosing_boundary_ty` (ascend to the enclosing
+  function body — the boundary type is the body's type) + the `collect` boundary check (§5/§6). **`v-inference`
+  reviews.**
+- **Desugar → Core** — `rcdzc/src/lower.rs`: `try_let_desugar` (called from `lower_let`) rewrites `(let ((x
+  (try e))) rest)` into a match on the operand — a constant `Core::SumNew` operand folds to the selected
+  arm; a runtime operand emits `Core::MatchSum` (T1b). **No `Block`/`Break`.** The Option/Result variant
+  discs are read off the solved type via `option_discs`/`result_discs` (`lower.rs`), exactly as `List.at` /
+  `Map.lookup` do.
+- **Select (unchanged)** — the sum-match / `SumNew` Core `?` targets is **already** lowered by `select`; `?`
+  adds **no** `select.rs` code. If it seems to, the desugar targeted the wrong node.
+- **Diagnostics** — `rcdzc/src/diag.rs::Code` (`TryNoBoundary` → CDZ0230 + its fix hint). **`v-diagnostics`
+  reviews.**
 
 ## 9. The gate that protects it
 
 Standard fleet gate (AGENTS-fleet.md §gate): `cargo test -p rcdzc --lib` (a desugar unit + a wasmtime run
 where a `?` value executes, both happy and short-circuit path; a reject unit for CDZ0230), `cargo xtask
-gate` (diff the FAIL SET — the new `22-try-operator.sexp` cases are additive; a `Todo→Fail` flip is a
+gate` (diff the FAIL SET — the new `23-try-operator.sexp` cases are additive; a `Todo→Fail` flip is a
 miscompile), `cargo xtask check`. The **executing** wasmtime cases are the ones that matter — `?` is a
 control construct, so a value must come out the far side, not merely type-check.
 

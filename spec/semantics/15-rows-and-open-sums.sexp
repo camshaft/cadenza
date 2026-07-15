@@ -420,6 +420,55 @@
             (def (main) (name-of (Unknown unit))) (export main)))
   (error  CDZ0210))
 
+(case "a SINGLE-variant open sum still requires an open-tail arm"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm: a
+           single-named-variant CLOSED sum erases to a newtype whose sole constructor pattern is
+           irrefutable (no `_` needed). But the SAME sum declared OPEN (`(type Box (Wrap Int64) .. r)`)
+           is NOT a newtype — the row variable means a value's variant is not statically `Wrap`, so a
+           match covering only `(Wrap n)` without a `_` arm is non-exhaustive (CDZ0210). Pins that
+           open-ness suppresses the single-variant newtype erasure for exhaustiveness.")
+  (input  (do
+            (type Box (Wrap Int64) .. r)
+            (def (unwrap (: b Box)) (match b ((Wrap n) n)))
+            (def (main) (unwrap (Wrap 42))) (export main)))
+  (error  CDZ0210))
+
+(case "a single-variant open sum with an open-tail arm dispatches its named variant"
+  (doc    "The runnable companion: the SAME single-variant open sum `(type Box (Wrap Int64) .. r)`, now
+           WITH the open-tail `_` arm, is exhaustive and dispatches the named `Wrap` variant to its
+           payload — `(unwrap (Wrap 42))` yields 42. Pins that the newtype-erasure suppression (which
+           keeps the value a boxed sum) does not break the named variant's own payload read.")
+  (input  (do
+            (type Box (Wrap Int64) .. r)
+            (def (unwrap (: b Box)) (match b ((Wrap n) n) (_ 0)))
+            (def (main) (unwrap (Wrap 42))) (export main)))
+  (output (: 42 Int64)))
+
+(case "an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm (the open-tail
+           arm handles the variants not covered as data): the `_` arm covers not just the UNNAMED row-tail
+           variants but also any NAMED variant the specific arms omit. `(type Vocab (A Int64) (B Int64)
+           .. r)` matched with only an `A` arm plus `_` dispatches a `B` value through `_` → 99. Pins that
+           the wildcard is a genuine catch-all over the whole uncovered set, named and unnamed alike.")
+  (input  (do
+            (type Vocab (A Int64) (B Int64) .. r)
+            (def (rd (: v Vocab)) (match v ((A n) n) (_ 99)))
+            (def (main) (rd (B 3))) (export main)))
+  (output (: 99 Int64)))
+
+(case "a nested pattern under an open sum's named variant still requires the outer open-tail arm"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm composed with
+           #Patterns Compose: an open sum whose named variant carries a compound payload
+           (`(type Vocab (Wrap (Option Int64)) .. r)`) is matched by NESTING into the payload
+           (`(Wrap (Some n))` / `(Wrap (None))`), and the OUTER open level still needs its `_` arm — the
+           row tail is uncovered by any `Wrap` pattern. With the `_` present the match is exhaustive and
+           the nested `(Some 5)` payload reads through to 5.")
+  (input  (do
+            (type Vocab (Wrap (Option Int64)) .. r)
+            (def (rd (: v Vocab)) (match v ((Wrap (Some n)) n) ((Wrap (None)) 0) (_ -1)))
+            (def (main) (rd (Wrap (Some 5)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "an open sum's payload decodes against a schema to a typed result"
   (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed: a variant's payload is
            decoded against a schema resolved at run time, yielding a typed Ok result on a match. A

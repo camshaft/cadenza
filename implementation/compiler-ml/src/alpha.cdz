@@ -1,0 +1,144 @@
+/// alpha.cdz — ALPHA-EQUIVALENCE over the canonical homoiconic `Ast` (imported cross-file from `ast`):
+/// are two terms equal up to consistent renaming of BOUND variables? This is the equivalence a compiler
+/// uses to compare lambda terms / detect duplicate definitions / validate a capture-avoiding rewrite —
+/// distinct from `ast-eq` (raw STRUCTURAL equality, which says `(fn (x) x)` ≠ `(fn (y) y)`) and from
+/// `scopecheck` (free-variable counting). It recognizes the binder form `(fn (p) <body>)`; every other
+/// `List` is a generic form compared element-wise.
+///
+/// The comparison threads a RENAMING `Map String String` — each bound name in the LEFT term maps to the
+/// corresponding bound name in the RIGHT. A `Name x` in the left matches a `Name y` in the right iff
+/// either `x` is bound and `ren[x] == y`, or `x` is free and `x == y` verbatim (free variables are rigid;
+/// bound ones rename). Two `(fn (xa) …)` / `(fn (xb) …)` bind `xa ↦ xb` and compare their bodies under
+/// the extended renaming — so `(fn (x) x)` α-equals `(fn (y) y)` but `(fn (x) z)` does NOT α-equal
+/// `(fn (y) w)` (distinct free vars).
+///
+/// This exercises the shape the still-live-binding fixes unblocked: TWO `Ast` scrutinees (`a` and `b`)
+/// matched at once, a `Map` threaded through the mutual `aeq` ↔ `aeq-list` recursion, and each recursion
+/// consuming child lists across the mutual edge — the natural homoiconic comparison, no workaround.
+
+import { Ast } from "ast"
+
+/// The `Name` at position `i` of `elems`, or None (a borrowing indexed read).
+def name-at(elems: List(Ast), i: Int64) = match List.at(elems, i) with
+  | Option.Some(Ast.Name(n)) => Some(n)
+  | _ => None(unit)
+
+/// The child `Ast` at position `i`, or a Unit-Int sentinel (never matches a real node).
+def child-at(elems: List(Ast), i: Int64) = match List.at(elems, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => Ast.Int(0)
+
+/// The child at `i` interpreted as a list of `Ast` (a `fn`'s param clause), or empty.
+def child-at-list(elems: List(Ast), i: Int64) = match child-at(elems, i) with
+  | Ast.List(ps) => ps
+  | _ => []
+
+/// Alpha-equivalence of `a` and `b` under the bound-name renaming `ren` (left name → right name).
+def aeq(ren: Map(String, String), a: Ast, b: Ast) = match a with
+  | Ast.Int(m) => (match b with | Ast.Int(n) => m == n | _ => false)
+  | Ast.Str(s) => (match b with | Ast.Str(t) => s == t | _ => false)
+  | Ast.Bool(p) => (match b with | Ast.Bool(q) => p == q | _ => false)
+  | Ast.Name(x) => (match b with
+    | Ast.Name(y) => (match Map.lookup(ren, x) with
+      | Option.Some(rx) => rx == y             // x is bound: its rename must equal y
+      | Option.None(_) => x == y)              // x is free: must equal y verbatim
+    | _ => false)
+  | Ast.List(ea) => (match b with
+    | Ast.List(eb) =>
+      (match name-at(ea, 0) with
+        | Some(h) => (if h == "fn" then aeq-fn(ren, ea, eb) else aeq-list(ren, ea, eb, 0))
+        | None(_) => aeq-list(ren, ea, eb, 0))
+    | _ => false)
+
+/// Two `(fn (x) <body>)` forms: bind the left's param to the right's, then compare bodies. If either is
+/// not a well-formed `fn` (no param Name), fall back to element-wise comparison.
+def aeq-fn(ren: Map(String, String), ea: List(Ast), eb: List(Ast)) =
+  match name-at(child-at-list(ea, 1), 0) with
+    | Some(xa) => (match name-at(child-at-list(eb, 1), 0) with
+      | Some(xb) => aeq(Map.insert(ren, xa, xb), child-at(ea, 2), child-at(eb, 2))
+      | None(_) => false)
+    | None(_) => aeq-list(ren, ea, eb, 0)
+
+/// Element-wise alpha-equivalence of two child lists (the mutual partner of `aeq`). Lengths must match.
+def aeq-list(ren: Map(String, String), ea: List(Ast), eb: List(Ast), i: Int64) =
+  if i == List.len(ea) then
+    List.len(ea) == List.len(eb)
+  else
+    (if i >= List.len(eb) then
+      false
+    else
+      (if aeq(ren, child-at(ea, i), child-at(eb, i)) then aeq-list(ren, ea, eb, i + 1) else false))
+
+/// Are `a` and `b` alpha-equivalent (equal up to bound-variable renaming)?
+def alpha-eq(a: Ast, b: Ast) = aeq(#{}, a, b)
+
+/// Builders for readable tests.
+def nm(s: String) = Ast.Name(s)
+def lst(xs: List(Ast)) = Ast.List(xs)
+def fn1(p: String, body: Ast) = lst([nm("fn"), lst([nm(p)]), body])
+def app(f: Ast, x: Ast) = lst([nm("app"), f, x])
+
+@test
+def alpha-refl-literal() =
+  if alpha-eq(Ast.Int(5), Ast.Int(5)) then unit else trap("a literal is alpha-eq to itself")
+
+@test
+def alpha-int-differ() =
+  if alpha-eq(Ast.Int(5), Ast.Int(6)) then trap("5 is not alpha-eq 6") else unit
+
+@test
+def alpha-bound-rename() =
+  // (fn (x) x) vs (fn (y) y) — alpha-equal (bound var renamed consistently)
+  if alpha-eq(fn1("x", nm("x")), fn1("y", nm("y"))) then unit else trap("(fn x x) ~ (fn y y)")
+
+@test
+def alpha-free-differ() =
+  // (fn (x) z) vs (fn (y) w) — NOT equal: z and w are distinct FREE variables
+  if alpha-eq(fn1("x", nm("z")), fn1("y", nm("w"))) then trap("distinct free vars are not alpha-eq") else unit
+
+@test
+def alpha-free-same() =
+  // (fn (x) (app x z)) vs (fn (y) (app y z)) — equal: bound x~y renamed, free z matches verbatim
+  if alpha-eq(fn1("x", app(nm("x"), nm("z"))), fn1("y", app(nm("y"), nm("z")))) then
+    unit
+  else
+    trap("same free var, renamed bound var → alpha-eq")
+
+@test
+def alpha-nested-binders() =
+  // (fn (x) (fn (y) (app x y))) vs (fn (a) (fn (b) (app a b))) — equal (both binders rename consistently)
+  if alpha-eq(fn1("x", fn1("y", app(nm("x"), nm("y")))), fn1("a", fn1("b", app(nm("a"), nm("b"))))) then
+    unit
+  else
+    trap("nested binders rename consistently")
+
+@test
+def alpha-capture-distinction() =
+  // (fn (x) (fn (y) x)) vs (fn (x) (fn (y) y)) — NOT equal: the inner body references DIFFERENT binders
+  if alpha-eq(fn1("x", fn1("y", nm("x"))), fn1("x", fn1("y", nm("y")))) then
+    trap("K and KI combinators are not alpha-eq")
+  else
+    unit
+
+@test
+def alpha-structural-differ() =
+  // (fn (x) x) vs (app (fn (x) x) z) — different structure → not equal
+  if alpha-eq(fn1("x", nm("x")), app(fn1("x", nm("x")), nm("z"))) then
+    trap("different structure is not alpha-eq")
+  else
+    unit
+
+@test
+def alpha-generic-form-elementwise() =
+  // (app f a) vs (app f a) with the same free names — equal through the generic element-wise walk
+  if alpha-eq(app(nm("f"), nm("a")), app(nm("f"), nm("a"))) then unit else trap("identical apps alpha-eq")
+
+@test
+def alpha-generic-arity-differ() =
+  // (app f) vs (app f a) — different child counts → not equal
+  if alpha-eq(lst([nm("app"), nm("f")]), app(nm("f"), nm("a"))) then
+    trap("different arity is not alpha-eq")
+  else
+    unit
+
+export { alpha-eq }

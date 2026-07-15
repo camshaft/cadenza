@@ -4,19 +4,42 @@
 //! so it can be built, land, and run before the operator has created the Slack app. This module resolves
 //! config from, in priority order:
 //!   1. environment variables (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, …),
-//!   2. a gitignored TOML file (`.claude/fleet/slack.toml` by default, or `$SLACK_BRIDGE_CONFIG`),
-//!   3. built-in defaults for the non-secret fields.
+//!   2. `~/.cadenza-env` — a home-dir, out-of-repo dotenv file the operator drops their tokens in,
+//!   3. a gitignored TOML file (`.claude/fleet/slack.toml` by default, or `$SLACK_BRIDGE_CONFIG`),
+//!   4. built-in defaults for the non-secret fields.
 //!
 //! Credentials are NEVER hardcoded or committed — `slack.toml` is gitignored (see `.gitignore`). A
 //! [`Config`] whose [`Config::tokens`] returns `None` is valid: the caller logs "tokens absent, idle" and
 //! the transport loop stays dormant, retrying, rather than panicking.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
+
+/// Redact a secret for `Debug`: keep only the `xoxb-`/`xapp-` style prefix so logs stay diagnosable
+/// without ever printing the token body. SECURITY (PR #393): these structs hold live Slack credentials; a
+/// stray `{:?}`/`dbg!`/panic-format must not leak them, so `Debug` is hand-rolled to redact.
+fn redact(secret: &str) -> String {
+    match secret.split_once('-') {
+        Some((prefix, _)) if !prefix.is_empty() => format!("{prefix}-***"),
+        _ if secret.is_empty() => "<unset>".to_string(),
+        _ => "***".to_string(),
+    }
+}
+
+fn redact_opt(secret: &Option<String>) -> String {
+    match secret {
+        Some(s) => redact(s),
+        None => "<none>".to_string(),
+    }
+}
 
 /// The two Slack credentials the Socket Mode client needs. Present together or not at all — a bridge with
 /// only one token can't run, so [`Config::tokens`] yields `Some` only when BOTH are set.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// NOTE: `Debug` is REDACTING (no derive) — see [`redact`]. PR #393 security hygiene.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SlackTokens {
     /// Bot User OAuth Token (`xoxb-…`) — used for `chat.postMessage` etc.
     pub bot_token: String,
@@ -24,8 +47,19 @@ pub struct SlackTokens {
     pub app_token: String,
 }
 
+impl fmt::Debug for SlackTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlackTokens")
+            .field("bot_token", &redact(&self.bot_token))
+            .field("app_token", &redact(&self.app_token))
+            .finish()
+    }
+}
+
 /// Fully-resolved bridge configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// NOTE: `Debug` is REDACTING (no derive) so the token fields never print raw. PR #393 security hygiene.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     /// Bot token, if provided (env or file). `None` = fail-soft dormant mode.
     pub bot_token: Option<String>,
@@ -40,6 +74,19 @@ pub struct Config {
     pub default_to: String,
     /// This bridge's own fleet agent name / inbox.
     pub bridge_agent: String,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("bot_token", &redact_opt(&self.bot_token))
+            .field("app_token", &redact_opt(&self.app_token))
+            .field("channel", &self.channel)
+            .field("fleet_dir", &self.fleet_dir)
+            .field("default_to", &self.default_to)
+            .field("bridge_agent", &self.bridge_agent)
+            .finish()
+    }
 }
 
 /// The subset read from the optional TOML file. Every field optional; env overrides any of these.
@@ -68,26 +115,43 @@ impl Config {
         }
     }
 
-    /// Resolve config from the process environment plus an optional TOML file, using `default_fleet_dir`
-    /// when neither env nor file sets one. Pure w.r.t. its inputs: `env` is a lookup closure (so tests
-    /// pass a fixed map instead of touching the real environment), and the file is read from disk only if
-    /// present. Never fails on a missing file or missing tokens — that's the fail-soft contract.
+    /// Resolve config from the process environment plus an optional TOML file (no `~/.cadenza-env` layer).
+    /// Pure w.r.t. its inputs: `env` is a lookup closure (tests pass a fixed map). Kept for tests + as the
+    /// thin base; [`Config::resolve_layered`] adds the dotenv layer. Fail-soft: missing file/tokens is fine.
     pub fn resolve<F>(env: F, default_fleet_dir: &Path) -> Self
     where
         F: Fn(&str) -> Option<String>,
     {
-        // Locate the config file: $SLACK_BRIDGE_CONFIG, else <fleet_dir candidate>/slack.toml. We need a
-        // fleet-dir guess first (env or default) to find a relative slack.toml.
+        Self::resolve_layered(env, &BTreeMap::new(), default_fleet_dir)
+    }
+
+    /// Resolve config with a THREE-layer precedence: process env > `dotenv` map (`~/.cadenza-env`) >
+    /// `slack.toml`. The operator drops their tokens in `~/.cadenza-env` (a home-dir, out-of-repo secret
+    /// file), so it slots between explicit env vars and the repo-local toml. Pure w.r.t. inputs: both `env`
+    /// and `dotenv` are supplied by the caller ([`Config::from_env`] reads the real ones). Fail-soft.
+    pub fn resolve_layered<F>(
+        env: F,
+        dotenv: &BTreeMap<String, String>,
+        default_fleet_dir: &Path,
+    ) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        // Locate the toml config: $SLACK_BRIDGE_CONFIG, else <fleet_dir guess>/slack.toml.
         let fleet_dir_guess = env("FLEET_DIR")
+            .or_else(|| dotenv.get("FLEET_DIR").cloned())
             .map(PathBuf::from)
             .unwrap_or_else(|| default_fleet_dir.to_path_buf());
         let file_path = env("SLACK_BRIDGE_CONFIG")
+            .or_else(|| dotenv.get("SLACK_BRIDGE_CONFIG").cloned())
             .map(PathBuf::from)
             .unwrap_or_else(|| fleet_dir_guess.join("slack.toml"));
         let file = read_file_config(&file_path);
 
-        // env wins over file wins over default.
-        let pick = |key: &str, file_val: Option<String>| env(key).or(file_val);
+        // env > dotenv > file > default.
+        let pick = |key: &str, file_val: Option<String>| {
+            env(key).or_else(|| dotenv.get(key).cloned()).or(file_val)
+        };
 
         let fleet_dir = pick("FLEET_DIR", file.fleet_dir)
             .map(PathBuf::from)
@@ -96,7 +160,10 @@ impl Config {
         Config {
             bot_token: pick("SLACK_BOT_TOKEN", file.bot_token).filter(|s| !s.is_empty()),
             app_token: pick("SLACK_APP_TOKEN", file.app_token).filter(|s| !s.is_empty()),
-            channel: pick("SLACK_BRIDGE_CHANNEL", file.channel).filter(|s| !s.is_empty()),
+            // Accept SLACK_BRIDGE_CHANNEL or the shorter SLACK_CHANNEL alias (the dotenv file may use either).
+            channel: pick("SLACK_BRIDGE_CHANNEL", file.channel)
+                .or_else(|| env("SLACK_CHANNEL").or_else(|| dotenv.get("SLACK_CHANNEL").cloned()))
+                .filter(|s| !s.is_empty()),
             fleet_dir,
             default_to: pick("FLEET_DEFAULT_TO", file.default_to)
                 .filter(|s| !s.is_empty())
@@ -107,9 +174,51 @@ impl Config {
         }
     }
 
-    /// Convenience: resolve from the REAL process environment.
+    /// Convenience: resolve from the REAL process environment + `~/.cadenza-env` (dotenv) if present.
     pub fn from_env(default_fleet_dir: &Path) -> Self {
-        Self::resolve(|k| std::env::var(k).ok(), default_fleet_dir)
+        let dotenv = home_cadenza_env();
+        Self::resolve_layered(|k| std::env::var(k).ok(), &dotenv, default_fleet_dir)
+    }
+}
+
+/// Parse dotenv-style `KEY=VALUE` lines (as in `~/.cadenza-env`): ignores blank lines and `#` comments,
+/// trims whitespace, strips one layer of surrounding quotes from the value, and honors a leading `export`.
+/// Pure — unit-tested. Unknown keys are kept (the caller only reads the ones it knows).
+pub fn parse_dotenv(text: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_string();
+        let mut val = v.trim();
+        // Strip one layer of matching quotes.
+        if (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
+            || (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+        {
+            val = &val[1..val.len() - 1];
+        }
+        if !key.is_empty() {
+            out.insert(key, val.to_string());
+        }
+    }
+    out
+}
+
+/// Read `~/.cadenza-env` into a map, or empty if absent/unreadable (fail-soft). `$HOME` missing → empty.
+fn home_cadenza_env() -> BTreeMap<String, String> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return BTreeMap::new();
+    };
+    let path = PathBuf::from(home).join(".cadenza-env");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_dotenv(&text),
+        Err(_) => BTreeMap::new(),
     }
 }
 
@@ -258,5 +367,100 @@ mod tests {
             cfg.tokens().is_some(),
             "tokens loaded from the explicit path"
         );
+    }
+
+    // ── ~/.cadenza-env dotenv layer + precedence ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_dotenv_handles_comments_export_quotes() {
+        let text = "# comment\n\nexport SLACK_BOT_TOKEN=xoxb-1\nSLACK_APP_TOKEN=\"xapp-2\"\nSLACK_CHANNEL='D0X'\nbad line no equals\n";
+        let m = parse_dotenv(text);
+        assert_eq!(m.get("SLACK_BOT_TOKEN").unwrap(), "xoxb-1");
+        assert_eq!(
+            m.get("SLACK_APP_TOKEN").unwrap(),
+            "xapp-2",
+            "double quotes stripped"
+        );
+        assert_eq!(
+            m.get("SLACK_CHANNEL").unwrap(),
+            "D0X",
+            "single quotes stripped"
+        );
+        assert!(!m.contains_key("bad line no equals"));
+    }
+
+    #[test]
+    fn dotenv_supplies_tokens_when_env_absent() {
+        let dir = tmp_dir("dotenv");
+        let dotenv =
+            parse_dotenv("SLACK_BOT_TOKEN=xoxb-d\nSLACK_APP_TOKEN=xapp-d\nSLACK_CHANNEL=D0DM\n");
+        let cfg = Config::resolve_layered(env_map(&[]), &dotenv, &dir);
+        let t = cfg.tokens().expect("tokens from dotenv");
+        assert_eq!(t.bot_token, "xoxb-d");
+        assert_eq!(t.app_token, "xapp-d");
+        assert_eq!(
+            cfg.channel.as_deref(),
+            Some("D0DM"),
+            "SLACK_CHANNEL alias honored"
+        );
+    }
+
+    #[test]
+    fn precedence_env_over_dotenv_over_file() {
+        let dir = tmp_dir("prec");
+        std::fs::write(
+            dir.join("slack.toml"),
+            "bot_token = \"xoxb-file\"\napp_token = \"xapp-file\"\n",
+        )
+        .unwrap();
+        let dotenv = parse_dotenv("SLACK_BOT_TOKEN=xoxb-dotenv\n");
+        let cfg = Config::resolve_layered(
+            env_map(&[
+                ("FLEET_DIR", dir.to_str().unwrap()),
+                ("SLACK_APP_TOKEN", "xapp-env"),
+            ]),
+            &dotenv,
+            &dir,
+        );
+        assert_eq!(cfg.app_token.as_deref(), Some("xapp-env"), "env wins");
+        assert_eq!(
+            cfg.bot_token.as_deref(),
+            Some("xoxb-dotenv"),
+            "dotenv beats file"
+        );
+    }
+
+    // ── SECURITY: redacting Debug (PR #393) ─────────────────────────────────────────────────────
+
+    #[test]
+    fn debug_redacts_secrets() {
+        let t = SlackTokens {
+            bot_token: "xoxb-SECRETBODY".into(),
+            app_token: "xapp-SECRETBODY".into(),
+        };
+        let dbg = format!("{t:?}");
+        assert!(
+            !dbg.contains("SECRETBODY"),
+            "token body must not appear: {dbg}"
+        );
+        assert!(
+            dbg.contains("xoxb-***") && dbg.contains("xapp-***"),
+            "prefix kept: {dbg}"
+        );
+
+        let cfg = Config {
+            bot_token: Some("xoxb-SECRETBODY".into()),
+            app_token: Some("xapp-SECRETBODY".into()),
+            channel: Some("D0X".into()),
+            fleet_dir: PathBuf::from("/tmp/f"),
+            default_to: "concierge".into(),
+            bridge_agent: "slack-bridge".into(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("SECRETBODY"),
+            "config Debug must not leak tokens: {dbg}"
+        );
+        assert!(dbg.contains("D0X"), "non-secret fields still shown");
     }
 }

@@ -635,13 +635,14 @@ fn iface_func_sigs(engine: &Engine, item: &ComponentItem) -> Option<Vec<IfaceFun
 }
 
 /// Validate that each peer's EXPORTED interface func matches the SIGNATURE of the CONSUMER's like-named
-/// IMPORT — both arity (param/result count) and the position-by-position component types. A raw-closure
-/// forward (`bind_peer_ifaces_into`) does no subtype check, so a mismatch (a differing arity OR a
-/// differing type, e.g. consumer `neg : s64->s64` vs peer `neg : f64->f64`) would trap opaquely at call
-/// time; catching it here yields an actionable compose-time error naming the interface, op, and the
-/// disagreement. (An op the consumer imports that the peer does not export is already caught downstream —
-/// `peer missing <fname>` — so we only check funcs present on the peer; and only interfaces the consumer
-/// actually imports, so an extra peer op is not an error.)
+/// IMPORT — the op is PRESENT, and both its arity (param/result count) and its position-by-position
+/// component types agree. A raw-closure forward (`bind_peer_ifaces_into`) does no subtype check, so a
+/// mismatch (a MISSING op, a differing arity, OR a differing type — e.g. consumer `neg : s64->s64` vs
+/// peer `neg : f64->f64`) would surface only as an opaque error: a missing op as wasmtime's
+/// instance-level "a matching implementation was not found in the linker" (never naming the op), an
+/// arity/type mismatch as a runtime trap. Catching all three here yields an actionable compose-time
+/// error naming the interface, op, and the disagreement. (Only interfaces the consumer actually imports
+/// are checked, so an EXTRA peer op the consumer doesn't bind is not an error.)
 fn check_peer_iface_signatures(
     engine: &Engine,
     consumer: &Component,
@@ -668,7 +669,21 @@ fn check_peer_iface_signatures(
         for (fname, want_params, want_results) in &consumer_iface {
             let Some((_, got_params, got_results)) = peer_iface.iter().find(|(n, _, _)| n == fname)
             else {
-                continue;
+                // The consumer imports an op the peer's interface does NOT export. wasmtime otherwise
+                // fails to satisfy the consumer's whole interface import with an opaque instance-level
+                // error ("a matching implementation was not found in the linker") that never names the
+                // missing op. Report it here naming the op + what the peer DOES offer.
+                let offered: Vec<&str> = peer_iface.iter().map(|(n, _, _)| n.as_str()).collect();
+                return Err(anyhow!(
+                    "peer `{}` does not export op `{fname}`, which the consumer binds — the peer's \
+                     interface offers {} — the peer must export every op the consumer's binding names",
+                    peer.interface,
+                    if offered.is_empty() {
+                        "no ops".to_string()
+                    } else {
+                        format!("[{}]", offered.join(", "))
+                    },
+                ));
             };
             // Arity first (the count disagreement is the clearest message), then position-by-position
             // types (matching arity but a differing type, e.g. s64 vs f64, is the subtler face).

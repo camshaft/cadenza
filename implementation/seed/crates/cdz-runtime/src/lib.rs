@@ -3142,13 +3142,10 @@ fn op_str_get(h: Handle) -> String {
 /// `op_str_get`/`op_bytes_get`/value-encode's `Shape::Str` arm do. Returns `Handle::NULL` for invalid
 /// UTF-8 so the compiler can build the `(Option String)` sum (`Some buf` / `None`), or wrap directly.
 ///
-/// ⚠ NOT YET WIT-EXPORTED — the load-bearing half of the coordinated `str-from-bytes` op (blocks the
-/// compiler-in-Cadenza port's decode/encode string content, `String.from-bytes` on a runtime Bytes
-/// declines at lower.rs). Kept UNEXPORTED (no `Guest` method, no WIT line) so it stays out of the shipped
-/// wasm (DCE'd — no reachable caller) and the frozen runtime hash is UNCHANGED. When the compiler wires
-/// `Core::StrFromBytes` it adds ONLY the one-line WIT export + a `Guest` method calling THIS ready+tested
-/// fn — the load-bearing logic (flatten + strict validate) is done and proven here.
-#[cfg_attr(not(test), allow(dead_code))]
+/// WIT-EXPORTED at index 83 (`str-from-bytes`) — the runtime half of the coordinated `String.from-bytes`
+/// op, called by the `Guest::str_from_bytes` method. The compiler emits it (`Core::StrFromBytes`) when
+/// `String.from-bytes` is applied to a RUNTIME byte sequence (a constant `Bytes.of` still folds in
+/// lower.rs). The load-bearing logic (flatten + strict validate + consume/re-tag) lives here.
 fn op_str_from_bytes(buf: Handle) -> Handle {
     if is_immediate(buf) {
         // The empty/inline-unit Bytes: no bytes → the empty string is valid UTF-8. `buf` (an immediate)
@@ -3225,8 +3222,8 @@ fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
 // had no remaining coordination path and was dead maintenance surface (unexported → DCE'd → hash-neutral
 // either way); removed it + its test. The underlying primitives it composed — `bytes_flatten` +
 // `champ_eq` — stay thoroughly covered by the collection fuzzers + the `compact_makes_a_*_canonical`
-// contract tests. (The other two prepared coordination ops — `op_str_from_bytes`, `op_bytes_scalar_at` —
-// remain LIVE: str-from-bytes is the string-round-trip blocker, scalar-at the lexer's random-access read.)
+// contract tests. (`op_str_from_bytes` is now WIT-EXPORTED at index 83 — the string round-trip blocker is
+// wired; `op_bytes_scalar_at` remains prepared-but-unexported: scalar-at the lexer's random-access read.)
 
 // ─── Map: dynamic-key collection of (key, value) handle pairs, stored verbatim ──────────
 // Pairs are flattened into `handles` as [k0, v0, k1, v1, …]; pair count = handles.len() / 2. OOB
@@ -5189,6 +5186,9 @@ impl Guest for Component {
     }
     fn bytes_compact(buf: u32) -> u32 {
         op_bytes_compact(Handle::from_u32(buf)).to_u32()
+    }
+    fn str_from_bytes(buf: u32) -> u32 {
+        op_str_from_bytes(Handle::from_u32(buf)).to_u32()
     }
     // Debug leak oracle (index 54). The number of live heap objects, or 0 when the counter is not
     // compiled in (default build). Not imported by the compiler; a leak-check harness asserts it is 0

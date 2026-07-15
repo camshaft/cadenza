@@ -381,7 +381,8 @@ pub enum FleetCmd {
     /// reply (in the sender's inbox + `processed/`) whose `in_reply_to` names that request file, and
     /// reports any ORPHAN (archived, no reply). Requests archived before the `in_reply_to` field
     /// existed, or resolved by a hand-`send` instead of `fleet ack`, are reported as UNVERIFIABLE
-    /// (not counted as orphans). Exits non-zero if any orphan is found. Run it from any worktree.
+    /// (not counted as orphans). Report-only by default (exit 0); pass `--strict` to exit non-zero
+    /// when any orphan is found. Run it from any worktree.
     Audit {
         /// Show every checked request, not just the orphans/unverifiable summary.
         #[arg(long)]
@@ -601,27 +602,47 @@ fn status(fleet: &Fleet) {
         None
     };
     let live_windows = session.as_deref().map(tmux_windows).unwrap_or_default();
+    let now = now_unix();
 
     println!("Fleet board ({} agent(s)):", reg.agents.len());
     println!(
-        "  {:<18} {:<13} {:<7} {:<8} {:<7} INBOX",
-        "AGENT", "ROLE", "MODEL", "STATUS", "WINDOW"
+        "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<9} INBOX",
+        "AGENT", "ROLE", "MODEL", "STATUS", "WINDOW", "HB-AGE"
     );
+    let mut stale = 0usize;
     for a in &reg.agents {
-        let window = if live_windows.iter().any(|w| w == &a.name) {
-            "live"
-        } else {
-            "-"
-        };
+        let has_window = live_windows.iter().any(|w| w == &a.name);
+        let window = if has_window { "live" } else { "-" };
         let inbox = inbox_depth(fleet, &a.name);
         let role = if a.vertical.is_empty() {
             a.role.clone()
         } else {
             format!("{}:{}", a.role, a.vertical)
         };
+        // Heartbeat age + a stale flag: an ACTIVE, windowed agent whose heartbeat is older than its
+        // stale window (the same bound `fleet watchdog` re-arms on) is almost certainly a dead loop —
+        // surface it here so the board is a single pane of glass for the stall problem, not just the
+        // watchdog's job. A stopped/never-stamped agent shows a plain age with no flag.
+        let (hb_age, flag) = match heartbeat_age_secs(fleet, &a.name, now) {
+            None => ("never".to_string(), ""),
+            Some(age) => {
+                let window_secs = stale_window_secs(parse_interval_secs(&a.interval), 2, 600);
+                let is_stale = a.status == "active" && has_window && age > window_secs;
+                if is_stale {
+                    stale += 1;
+                }
+                (fmt_age(age), if is_stale { " ⚠STALE" } else { "" })
+            }
+        };
         println!(
-            "  {:<18} {:<13} {:<7} {:<8} {:<7} {}",
-            a.name, role, a.model, a.status, window, inbox
+            "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<9} {}{}",
+            a.name, role, a.model, a.status, window, hb_age, inbox, flag
+        );
+    }
+    if stale > 0 {
+        println!(
+            "\n  ⚠ {stale} active agent(s) STALE (heartbeat past their stale window) — \
+             `cargo xtask fleet watchdog` will re-arm them."
         );
     }
 
@@ -969,6 +990,17 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
         }
     }
 
+    // Precompute the set of ACTIVE agent names ONCE (registry.json is parsed a single time here, not
+    // per-request — the processed/ history can be hundreds of files). An orphan only matters if its
+    // sender is still active and thus stuck waiting.
+    let active: std::collections::HashSet<String> = fleet
+        .load()
+        .agents
+        .into_iter()
+        .filter(|a| a.status == "active")
+        .map(|a| a.name)
+        .collect();
+
     // Every merge-request archived in pr-sync/processed is a resolution we expect a reply for.
     let processed = fleet.inbox("pr-sync").join("processed");
     let mut orphans: Vec<(String, String)> = Vec::new(); // (filename, sender)
@@ -1003,12 +1035,7 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             // before `in_reply_to` existed / via a hand-`send`. We can't prove a reply for the latter,
             // so classify conservatively: only flag as ORPHAN when the sender is a STILL-ACTIVE agent
             // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise).
-            let sender_active = fleet
-                .load()
-                .agents
-                .iter()
-                .any(|a| a.name == mr.from && a.status == "active");
-            if sender_active {
+            if active.contains(&mr.from) {
                 orphans.push((fname.clone(), mr.from.clone()));
             } else {
                 unverifiable += 1;
@@ -1319,6 +1346,19 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Render a duration in seconds as a compact human age (`45s`, `12m`, `3h`, `2d`) for the board.
+fn fmt_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
 }
 
 /// Age in seconds of the agent's heartbeat touch-file (`now - mtime`), or `None` if it has never been
@@ -2021,5 +2061,16 @@ mod tests {
             serde_json::from_str(r#"{"from":"a","to":"b","kind":"note","subject":"s","seq":9}"#)
                 .unwrap();
         assert_eq!(old.in_reply_to, "");
+    }
+
+    #[test]
+    fn fmt_age_picks_the_right_unit() {
+        assert_eq!(fmt_age(0), "0s");
+        assert_eq!(fmt_age(59), "59s");
+        assert_eq!(fmt_age(60), "1m");
+        assert_eq!(fmt_age(3599), "59m");
+        assert_eq!(fmt_age(3600), "1h");
+        assert_eq!(fmt_age(86399), "23h");
+        assert_eq!(fmt_age(86400), "1d");
     }
 }
