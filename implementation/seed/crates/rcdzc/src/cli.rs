@@ -21,7 +21,7 @@
 //! when exactly one artifact is produced and `-o` does not name an existing directory, in which case
 //! `-o` is the exact output FILE path. With no `-o`, artifacts are written to the current directory.
 
-use crate::{Artifact, Severity, Target, compile};
+use crate::{Artifact, OptLevel, Severity, Target, compile_with_opt};
 use clap::Parser;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -66,6 +66,81 @@ pub struct CompileArgs {
     /// case) → the component exports its boundary funcs at top level.
     #[arg(long, value_name = "INTERFACE")]
     component_name: Option<String>,
+
+    /// Optimization LEVEL — how much work the compiler spends optimizing the emitted program, trading
+    /// compile time for output quality (`DESIGN-tiered-optimization-levels-rcdzc.md`). `O0` = fast
+    /// dev-iteration (canonicalization only); `O1` = the DEFAULT (cheap local cleanups); `O2` = release
+    /// (whole-function analyses — LICM, global CSE, accumulator intro, inlining); `O3` = aggressive
+    /// (whole-program / speculative). Omitted → the declared default (`O1`), so a non-interactive build
+    /// picks a level without asking. A higher level never changes what the program MEANS, only how the
+    /// artifact is shaped.
+    #[arg(long, value_name = "LEVEL", default_value_t = OptLevelArg::default())]
+    opt_level: OptLevelArg,
+}
+
+/// The `--opt-level` choice, as a clap-parsed value (its own enum so clap validates the spelling and
+/// `--help` lists `o0..o3` — the same wrapper pattern as [`TargetArg`], keeping the CLI surface here and
+/// mapping to the core [`OptLevel`] via [`From`]). Its `Default` mirrors `OptLevel::default()` so a
+/// no-flag build gets the core's declared default without duplicating which level that is.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OptLevelArg {
+    /// Fast dev iteration — canonicalization only (the cheapest correct emit).
+    #[value(name = "o0", alias = "O0")]
+    O0,
+    /// The DEFAULT — `O0` plus cheap local cleanups (copy prop, algebraic identities, local CSE).
+    #[value(name = "o1", alias = "O1")]
+    O1,
+    /// Release — `O1` plus whole-function analyses (LICM, global CSE, accumulator intro, inlining).
+    #[value(name = "o2", alias = "O2")]
+    O2,
+    /// Aggressive — `O2` plus whole-program / speculative passes.
+    #[value(name = "o3", alias = "O3")]
+    O3,
+}
+
+impl Default for OptLevelArg {
+    fn default() -> Self {
+        // Mirror the core's declared default so `cdz compile` with no `--opt-level` = `rcdzc::compile`.
+        OptLevelArg::from_core(OptLevel::default())
+    }
+}
+
+impl OptLevelArg {
+    /// The core [`OptLevel`] this CLI choice selects.
+    fn to_core(self) -> OptLevel {
+        match self {
+            OptLevelArg::O0 => OptLevel::O0,
+            OptLevelArg::O1 => OptLevel::O1,
+            OptLevelArg::O2 => OptLevel::O2,
+            OptLevelArg::O3 => OptLevel::O3,
+        }
+    }
+
+    /// The CLI wrapper for a core [`OptLevel`] — used to derive `Default` from `OptLevel::default()`.
+    fn from_core(level: OptLevel) -> Self {
+        match level {
+            OptLevel::O0 => OptLevelArg::O0,
+            OptLevel::O1 => OptLevelArg::O1,
+            OptLevel::O2 => OptLevelArg::O2,
+            OptLevel::O3 => OptLevelArg::O3,
+        }
+    }
+}
+
+impl std::fmt::Display for OptLevelArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `default_value_t` prints the default via Display; match clap's lower-case value spelling.
+        write!(
+            f,
+            "{}",
+            match self {
+                OptLevelArg::O0 => "o0",
+                OptLevelArg::O1 => "o1",
+                OptLevelArg::O2 => "o2",
+                OptLevelArg::O3 => "o3",
+            }
+        )
+    }
 }
 
 /// A backend target, as a clap-parsed value (its own enum so clap validates the spelling and `--help`
@@ -133,6 +208,12 @@ impl CompileArgs {
     /// its exports under. A wrapping driver turns this into a `KIND_COMPONENT_NAME` input artifact.
     pub fn component_name(&self) -> Option<&str> {
         self.component_name.as_deref()
+    }
+
+    /// The requested optimization [`OptLevel`] (`--opt-level`, default `OptLevel::default()`). A wrapping
+    /// driver (the `cdz` bin) reads this to call [`run_prepared`] with the chosen level.
+    pub fn opt_level(&self) -> OptLevel {
+        self.opt_level.to_core()
     }
 }
 
@@ -211,7 +292,9 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
         inputs.push(component_name_artifact(iface));
     }
 
-    run_prepared(inputs, &cli.targets(), cli.out, prog)
+    // Read `opt_level` BEFORE moving `cli.out` into the call (a partial move would poison `cli`).
+    let opt_level = cli.opt_level();
+    run_prepared(inputs, &cli.targets(), cli.out, opt_level, prog)
 }
 
 /// Build the `KIND_ENTRY` input artifact naming a package's entry file — its bytes are the entry name.
@@ -240,6 +323,7 @@ pub fn run_prepared(
     inputs: Vec<Artifact>,
     targets: &[Target],
     out: Option<PathBuf>,
+    opt_level: OptLevel,
     prog: &str,
 ) -> ExitCode {
     // Apply the target default here (so both `run` and an external driver get the same rule): explicit
@@ -271,7 +355,7 @@ pub fn run_prepared(
     // stack the ambient thread happens to have. See `rcdzc::host`.
     let out_dest = out;
     let cli_out = &out_dest;
-    let out = crate::run_with_compiler_stack(|| compile(&inputs, &targets));
+    let out = crate::run_with_compiler_stack(|| compile_with_opt(&inputs, &targets, opt_level));
 
     // Report diagnostics (stderr). When the inputs carry a `spans` side-table (present whenever the run
     // compiled a SOURCE file — `cdz compile foo.cdz`), map each diagnostic's node to a source
