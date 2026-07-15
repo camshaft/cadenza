@@ -107,8 +107,16 @@ fn cap_subject(first_line: &str) -> String {
     }
 }
 
+/// Slack's `chat.postMessage` rejects a `text` longer than 40000 chars, and a mrkdwn *section block*
+/// caps at 3000. We post as plain `text` (not a section block), so cap well under 40000 with headroom for
+/// mrkdwn markup. A fleet `ask` body can be multiple KB, and an over-limit post would FAIL — the outbound
+/// mirror would then retry the same message forever, blocking the queue. Truncating keeps delivery robust;
+/// the full ask still lives in the concierge inbox and tmux.
+const SLACK_TEXT_CAP: usize = 3500;
+
 /// Render a fleet message (drained from the bridge's inbox, i.e. an agent → operator message) as a
-/// Slack-mrkdwn string: who it's from, the kind, the subject, and the body/ref when present.
+/// Slack-mrkdwn string: who it's from, the kind, the subject, and the body/ref when present. The result is
+/// length-capped (see [`SLACK_TEXT_CAP`]) so a large body can't make the Slack post fail.
 pub fn render_fleet_message(msg: &crate::inbox::Message) -> String {
     let from = if msg.from.is_empty() {
         "unknown"
@@ -132,7 +140,19 @@ pub fn render_fleet_message(msg: &crate::inbox::Message) -> String {
     if !msg.body.trim().is_empty() {
         lines.push(msg.body.trim().to_string());
     }
-    lines.join("\n")
+    cap_for_slack(lines.join("\n"))
+}
+
+/// Truncate `s` to [`SLACK_TEXT_CAP`] characters (not bytes — never split a multibyte char), appending an
+/// elision marker when cut. A no-op for the common short message.
+fn cap_for_slack(s: String) -> String {
+    if s.chars().count() <= SLACK_TEXT_CAP {
+        return s;
+    }
+    let marker = "\n…[truncated — full text in the fleet inbox]";
+    let keep = SLACK_TEXT_CAP.saturating_sub(marker.chars().count());
+    let head: String = s.chars().take(keep).collect();
+    format!("{head}{marker}")
 }
 
 /// A short usage/help string shown when the operator sends an empty message or `help`.
@@ -240,6 +260,31 @@ mod tests {
         let s = render_fleet_message(&m);
         assert!(s.contains("go with B"));
         assert!(!s.contains("``"), "no empty code span for a missing ref");
+    }
+
+    #[test]
+    fn render_caps_a_huge_body_for_slack() {
+        // A multi-KB ask body must not produce an over-limit post (which would fail + retry forever).
+        let huge = "x".repeat(20_000);
+        let m = Message::new("v-x", "slack-bridge", "ask", "big decision").with_body(huge);
+        let s = render_fleet_message(&m);
+        assert!(
+            s.chars().count() <= SLACK_TEXT_CAP,
+            "capped under Slack's limit: {}",
+            s.chars().count()
+        );
+        assert!(s.contains("truncated"), "elision marker present");
+        assert!(
+            s.contains("big decision"),
+            "header/subject survives the cap"
+        );
+    }
+
+    #[test]
+    fn render_does_not_touch_a_normal_message() {
+        let m = Message::new("pr-sync", "slack-bridge", "merged", "landed").with_body("all green");
+        let s = render_fleet_message(&m);
+        assert!(!s.contains("truncated"), "short message untouched");
     }
 
     #[test]

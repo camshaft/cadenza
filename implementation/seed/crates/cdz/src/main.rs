@@ -94,6 +94,14 @@ enum Cmd {
     /// behaviour-preserving.
     Corpus(cdz_corpus::cli::CorpusArgs),
 
+    // ── calc (cdz-calc) ─────────────────────────────────────────────────────────────────────────
+    /// The calculator REPL over the real language, exact by construction. `cdz calc` starts the
+    /// interactive loop; `cdz calc --once "<expr>"` computes one line and exits (the launcher/script
+    /// hook). Variables accumulate and `ans` recalls the last result; `--plain` prints the bare value,
+    /// `--sexpr` reads the s-expression surface, `--no-exact` turns off forced rationals. Folded in from
+    /// the `cdz-calc` bin so a single `cdz` on the PATH also gives the calculator.
+    Calc(cdz_calc::cli::CalcArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -182,6 +190,8 @@ fn main() -> ExitCode {
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
+        // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
+        Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),

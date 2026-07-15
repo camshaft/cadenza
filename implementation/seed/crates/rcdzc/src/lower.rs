@@ -838,14 +838,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
-        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The DESUGAR to
-        // a synthesized boundary `Mir::Block` + a `match … | short => Mir::Break` is the next slice (T1);
-        // until then it DECLINES (a Todo, never a miscompile — self-hosting-and-bootstrap.md §An
-        // Unsupported Construct Is Declined). The operand is still walked so its own core faults surface.
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2). BRICK 2,
+        // the CONSTANT-SUCCESS fold: when the operand folds to a compile-time-CONSTANT success variant
+        // (`Some x` / `Ok x`), `?` unwraps it — the whole `(try e)` IS the payload, no boundary break fires
+        // (the happy path never short-circuits). This turns a constant-`Some`/`Ok` `?` into the payload
+        // exactly as `List.at` folds a constant in-range read. A constant FAILURE (`None`/`Err`) or a
+        // RUNTIME operand still needs the boundary `Core::Block` + `Core::Break` (BRICK 3), so it DECLINES
+        // here — never a miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined).
+        // The operand is walked either way so its own core faults surface.
         Resolved::Try { operand } => match core_of(db, operand) {
             Core::Poison(r) => Core::Poison(r),
+            // A constant success variant: `(try (Some x))` / `(try (Ok x))` folds to the payload. The
+            // success disc is read off the operand's solved Option/Result type by variant NAME
+            // (`option_discs`/`result_discs`), never assumed positionally.
+            Core::SumNew { disc, payloads }
+                if success_disc_of(db, operand) == Some(disc) && payloads.len() == 1 =>
+            {
+                core_of(db, payloads[0])
+            }
             _ => Core::Poison(Reject::decline(
-                "the `?`/`try` operator does not lower yet (boundary desugar pending)",
+                "the `?`/`try` operator lowers only a constant success operand yet (the boundary \
+                 break for a failure / runtime operand is the next brick)",
             )),
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -2145,6 +2158,11 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
             disc: disc.int,
             payloads: vec![operand],
         },
+        // `Ast.Float`'s payload is Float64, so a width-64-grounded float operand lifts to `Ast.Float`.
+        crate::ty::Ty::Float(ft) if ft.ground_width() == 64 => Core::SumNew {
+            disc: disc.float,
+            payloads: vec![operand],
+        },
         crate::ty::Ty::Bool => Core::SumNew {
             disc: disc.bool,
             payloads: vec![operand],
@@ -2153,11 +2171,11 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
             disc: disc.str,
             payloads: vec![operand],
         },
-        // No `Ast` value leaf for this type (a Float, a compound, a function, an unresolved var) — decline
-        // honestly rather than building a wrong-typed leaf.
+        // No `Ast` value leaf for this type (a narrow-width float, a compound, a function, an unresolved
+        // var) — decline honestly rather than building a wrong-typed leaf.
         other => Core::Poison(Reject::decline(format!(
             "an active unquote of a runtime {} value has no Ast leaf to lift into \
-             (only Int64/Bool/String and an existing Ast value lift)",
+             (only Int64/Float64/Bool/String and an existing Ast value lift)",
             other.render_name()
         ))),
     }
@@ -2173,6 +2191,8 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
 //   Bool b   →  0x03, then one byte (0 = false, 1 = true)
 //   Str  s   →  0x04, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes (same shape as Name — a
 //              string LITERAL, distinguished from a Name by its tag, not its payload layout)
+//   Float f  →  0x05, then the f64 BIT PATTERN as 8 bytes LE (`Decimal::to_f64_bits`) — a stable
+//              canonical form (equal doubles → equal bits; -0.0 ≠ 0.0), decoded via `Decimal::from_f64`
 // The encoding is a pure function of the tree (equal trees → identical bytes) and is self-delimiting
 // (every node carries its own length), so `decode` consumes the WHOLE input or reports an error. Each
 // tag byte is a stable constant (adding a variant appends a NEW tag; existing tags never shift), so a
@@ -2182,6 +2202,7 @@ const AST_TAG_NAME: u8 = 0x01;
 const AST_TAG_LIST: u8 = 0x02;
 const AST_TAG_BOOL: u8 = 0x03;
 const AST_TAG_STR: u8 = 0x04;
+const AST_TAG_FLOAT: u8 = 0x05;
 
 /// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
 /// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
@@ -2243,6 +2264,14 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
         };
         out.push_str(&v.to_i64()?.to_string());
         Some(())
+    } else if d == disc.float && payloads.len() == 1 {
+        // A float LITERAL renders as the shortest round-tripping decimal (`float_text`) — always carrying
+        // a `.` or `e` so it re-reads as a float, not an int. `read` parses it back to the same f64 bits.
+        let Core::ConstFloat(dec) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(&float_text(&dec));
+        Some(())
     } else if d == disc.bool && payloads.len() == 1 {
         let Core::ConstBool(b) = core_of(db, payloads[0]) else {
             return None;
@@ -2301,6 +2330,24 @@ fn push_escaped_str(out: &mut String, s: &str) {
     }
 }
 
+/// The canonical re-readable text of a float `Decimal` — the double it denotes (`to_f64_bits`) rendered
+/// as Rust's SHORTEST round-tripping decimal (`{}`), forced to carry a `.` (or `e`) so the reader lexes it
+/// as a float, not an integer (a bare `3` would re-read as `Ast.Int`). `SexprReader::read_node` parses
+/// this back via `f64` + `Decimal::from_f64`, so `read(print (Ast.Float d)) == (Ast.Float d)` bit-for-bit
+/// (the shortest form re-parses to the same double). A non-finite double cannot arise — a `Decimal` is
+/// always finite. `-0.0` keeps its sign (`{}` prints `-0`); infinities have no `Decimal`, so never occur.
+fn float_text(dec: &crate::ast::Decimal) -> String {
+    let f = f64::from_bits(dec.to_f64_bits());
+    let s = format!("{f}");
+    // `{}` prints an integer-valued double without a fraction (`3` for `3.0`); append `.0` so it re-lexes
+    // as a float. A form already carrying `.`/`e`/`inf`/`nan` (the last two cannot occur) is left as-is.
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Lower `(read s)` — the inverse of `print`: FOLD a compile-time-visible `Core::ConstStr` by parsing it
 /// as ONE s-expression and reifying it into the `Ast` value it denotes (`"(+ 1 2)"` → `(Ast.List (list
 /// (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))`). A runtime `String` (no visible `Core::ConstStr`) declines;
@@ -2338,6 +2385,7 @@ fn lower_read(db: &mut Db, str_val: StructId) -> Core {
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
 enum SNode {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(String),
     Name(String),
@@ -2358,6 +2406,24 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             Core::SumNew {
                 disc: disc.int,
                 payloads: vec![payload],
+            }
+        }
+        SNode::Float(f) => {
+            // Rebuild the `Decimal` from the parsed f64 (exact — `from_f64` round-trips the bits). A
+            // non-finite f64 can't arise: `print` never emits `inf`/`nan` and `read_node` only makes a
+            // Float from a finite-parsing token. Fall back to a name-free decline path via ConstFloat of 0
+            // only if `from_f64` somehow returns None (a finite f64 always yields Some).
+            match crate::ast::Decimal::from_f64(*f) {
+                Some(dec) => {
+                    let payload = synth_core(db, Core::ConstFloat(dec), crate::ty::Ty::float64());
+                    Core::SumNew {
+                        disc: disc.float,
+                        payloads: vec![payload],
+                    }
+                }
+                None => Core::Poison(Reject::decline(
+                    "read: a non-finite float has no Ast.Float value form",
+                )),
             }
         }
         SNode::Bool(b) => {
@@ -2474,13 +2540,21 @@ impl<'a> SexprReader<'a> {
         let tok = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
         // `true`/`false` are BOOLEAN literals, not names — `print_ast_value` emits an `Ast.Bool` as the
         // bare word, and the lexer never yields a `Name` spelled `true`/`false`, so the round-trip is
-        // unambiguous (a name can never collide). Then a decimal `i64`; else a bare name.
+        // unambiguous (a name can never collide). Then a decimal `i64`; then a FLOAT token (one carrying a
+        // `.`/`e`/`E` that parses as finite f64 — `print` always renders an `Ast.Float` with a `.`/`e`, so
+        // an int-shaped token stays `Ast.Int`); else a bare name.
         match tok {
             "true" => Some(SNode::Bool(true)),
             "false" => Some(SNode::Bool(false)),
             _ => match tok.parse::<i64>() {
                 Ok(n) => Some(SNode::Int(n)),
-                Err(_) => Some(SNode::Name(tok.to_string())),
+                Err(_) => {
+                    let looks_float = tok.contains('.') || tok.contains('e') || tok.contains('E');
+                    match tok.parse::<f64>() {
+                        Ok(f) if looks_float && f.is_finite() => Some(SNode::Float(f)),
+                        _ => Some(SNode::Name(tok.to_string())),
+                    }
+                }
             },
         }
     }
@@ -2524,10 +2598,11 @@ impl<'a> SexprReader<'a> {
     }
 }
 
-/// The Int/Bool/Str/Name/List discriminants of the built-in `Ast` sum (read by name so a reordering
-/// does not silently mis-tag). `None` if the sum or a variant is missing.
+/// The Int/Float/Bool/Str/Name/List discriminants of the built-in `Ast` sum (read by name so a
+/// reordering does not silently mis-tag). `None` if the sum or a variant is missing.
 struct AstDiscs {
     int: u32,
+    float: u32,
     bool: u32,
     str: u32,
     name: u32,
@@ -2541,6 +2616,7 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     };
     Some(AstDiscs {
         int: variant_disc_by_name(db, &ty, "Int")?,
+        float: variant_disc_by_name(db, &ty, "Float")?,
         bool: variant_disc_by_name(db, &ty, "Bool")?,
         str: variant_disc_by_name(db, &ty, "Str")?,
         name: variant_disc_by_name(db, &ty, "Name")?,
@@ -2563,6 +2639,15 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
         let n = v.to_i64()?;
         out.push(AST_TAG_INT);
         out.extend_from_slice(&n.to_le_bytes());
+        Some(())
+    } else if d == disc.float && payloads.len() == 1 {
+        // A float: the 8-byte f64 BIT PATTERN (`to_f64_bits`), LE — a stable canonical form (equal
+        // doubles → equal bits, -0.0 ≠ 0.0). Decoded via `Decimal::from_f64`.
+        let Core::ConstFloat(dec) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push(AST_TAG_FLOAT);
+        out.extend_from_slice(&dec.to_f64_bits().to_le_bytes());
         Some(())
     } else if d == disc.bool && payloads.len() == 1 {
         let Core::ConstBool(b) = core_of(db, payloads[0]) else {
@@ -2708,6 +2793,23 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.int,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 8))
+        }
+        AST_TAG_FLOAT => {
+            // 8-byte f64 bit pattern (LE) → a `Decimal` via `from_f64`. A non-finite pattern (inf/NaN) has
+            // no `Decimal` value form → `None` (the decode reports the error case, never a wrong value).
+            let field = rest.get(..8)?;
+            let bits = u64::from_le_bytes(field.try_into().ok()?);
+            let dec = crate::ast::Decimal::from_f64(f64::from_bits(bits))?;
+            let payload = synth_core(db, Core::ConstFloat(dec), crate::ty::Ty::float64());
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.float,
                     payloads: vec![payload],
                 },
                 disc.ty.clone(),
@@ -16341,6 +16443,17 @@ fn result_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
         }
     }
     Some((ok_disc?, err_disc?))
+}
+
+/// The SUCCESS-variant discriminant of a fallible value `id` — `Some`'s disc for an `Option`, `Ok`'s for a
+/// `Result` (read off `id`'s solved sum type by variant NAME, never assumed positionally). `None` if `id`
+/// is neither. This is what the `?`/try desugar unwraps: `(try e)` on a success value yields the payload;
+/// the fallible variant (`None`/`Err`) is the short-circuit (the boundary break — BRICK 3). Used to fold a
+/// CONSTANT success operand (`Core::SumNew` at this disc) to its payload.
+fn success_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
+    option_discs(db, id)
+        .map(|(some, _)| some)
+        .or_else(|| result_discs(db, id).map(|(ok, _)| ok))
 }
 
 /// Lower `(List.at list index)` — the fallible indexed read. FOLD when the `list` operand is a

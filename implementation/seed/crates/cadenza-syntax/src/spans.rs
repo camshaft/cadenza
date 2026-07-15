@@ -98,7 +98,56 @@ impl SpanTable {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::sexpr;
+
+    #[test]
+    fn remap_rekeys_drops_unreachable_and_preserves_file() {
+        // A table over 3 OLD ids, remapped through an OLD→NEW map. `remap` must: move each mapped span
+        // to its NEW index, DROP a `None` (unreachable old node), leave an untouched new slot at the
+        // default (0,0), and preserve the file id. This unit-pins the defensive behaviors the ML-surface
+        // span remap (`ml-parser-node-order`) relies on — separately from the canon integration test.
+        let mut t = SpanTable::new(FileId(7));
+        t.push(Span::new(0, 1)); // old 0
+        t.push(Span::new(2, 3)); // old 1  (will be dropped — maps to None)
+        t.push(Span::new(4, 5)); // old 2
+        // old 0 → new 2, old 1 → None (unreachable), old 2 → new 0. new_len = 4 (one slot never filled).
+        let id_map = [Some(StructId(2)), None, Some(StructId(0))];
+        let r = t.remap(&id_map, 4);
+        assert_eq!(r.len(), 4, "sized to new_len");
+        assert_eq!(r.file(), FileId(7), "file id preserved");
+        assert_eq!(r.get(StructId(0)), Some(Span::new(4, 5)), "old 2 → new 0");
+        assert_eq!(r.get(StructId(2)), Some(Span::new(0, 1)), "old 0 → new 2");
+        // old 1 was None → its span is dropped; new slots 1 and 3 stay at the default (0,0).
+        assert_eq!(
+            r.get(StructId(1)),
+            Some(Span::new(0, 0)),
+            "unfilled slot is default"
+        );
+        assert_eq!(
+            r.get(StructId(3)),
+            Some(Span::new(0, 0)),
+            "trailing slot is default"
+        );
+        assert_eq!(r.get(StructId(4)), None, "past the end is None");
+    }
+
+    #[test]
+    fn remap_drops_a_span_whose_new_id_is_out_of_range() {
+        // Defensive: a map entry pointing past `new_len` must be DROPPED, not panic or grow the table.
+        let mut t = SpanTable::new(FileId(0));
+        t.push(Span::new(0, 1)); // old 0
+        t.push(Span::new(1, 2)); // old 1
+        // old 0 → new 0 (in range); old 1 → new 5 (out of range for new_len=2) → dropped.
+        let r = t.remap(&[Some(StructId(0)), Some(StructId(5))], 2);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r.get(StructId(0)), Some(Span::new(0, 1)));
+        assert_eq!(
+            r.get(StructId(1)),
+            Some(Span::new(0, 0)),
+            "out-of-range new id dropped"
+        );
+    }
 
     #[test]
     fn node_at_offset_finds_the_innermost_node() {
@@ -124,5 +173,33 @@ mod tests {
     fn node_at_offset_past_the_source_is_none() {
         let (_, spans) = sexpr::read_all_spanned("(+ 1 2)").expect("parse");
         assert_eq!(spans.node_at_offset(9999), None);
+    }
+
+    #[test]
+    fn node_at_offset_prefers_the_smallest_containing_span() {
+        // The tie-break is by span LENGTH: given nested spans containing the offset, the SMALLEST
+        // (innermost) wins. Build a table by hand — id 0 the outer [0,10), id 1 an inner [2,6), id 2 a
+        // still-smaller [3,4) — all containing offset 3; the deepest ([3,4)) must be chosen.
+        let mut t = SpanTable::new(FileId(0));
+        t.push(Span::new(0, 10)); // id 0 — outer
+        t.push(Span::new(2, 6)); // id 1 — middle
+        t.push(Span::new(3, 4)); // id 2 — innermost, contains 3
+        assert_eq!(
+            t.node_at_offset(3),
+            Some(StructId(2)),
+            "smallest containing span wins"
+        );
+        // Offset 2 is in id 1 [2,6) and id 0 [0,10) but NOT id 2 [3,4) → id 1 (the smaller of the two).
+        assert_eq!(t.node_at_offset(2), Some(StructId(1)));
+        // Offset 0 is only in id 0.
+        assert_eq!(t.node_at_offset(0), Some(StructId(0)));
+        // Offset at the outer end is half-open — contained by none.
+        assert_eq!(t.node_at_offset(10), None);
+    }
+
+    #[test]
+    fn node_at_offset_on_an_empty_table_is_none() {
+        let t = SpanTable::new(FileId(0));
+        assert_eq!(t.node_at_offset(0), None);
     }
 }

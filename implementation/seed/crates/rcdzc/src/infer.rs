@@ -7317,39 +7317,46 @@ fn check_application(
     // still sees WHICH op wanted WHAT) but code it CDZ0201, descend into the operands, and stop.
     {
         // (expected element/list type, the given element/list type) on a genuine element mismatch.
-        let list_op_mismatch: Option<(Ty, Ty)> = match crate::eval::meta_apply_of(db, head) {
-            // push: args = [list, elem]; the elem must match the list's element type.
-            Some(crate::resolved::Prim::ListPush) if args.len() == 2 => {
-                match type_of(db, args[0]) {
-                    Ty::List(elem) => {
-                        let given = type_of(db, args[1]);
-                        (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given))
+        // The offending ARGUMENT occurrence is the actionable locus (the pushed/updated element, or the
+        // second list in `concat`) — the reject anchors there, not the whole application node, so the
+        // squiggle points at the culprit (matching the file's "anchor the specific offending element"
+        // pattern; PR #399 review). The tuple carries `(expected, given, culprit_arg_occ)`.
+        let list_op_mismatch: Option<(Ty, Ty, StructId)> =
+            match crate::eval::meta_apply_of(db, head) {
+                // push: args = [list, elem]; the elem must match the list's element type.
+                Some(crate::resolved::Prim::ListPush) if args.len() == 2 => {
+                    match type_of(db, args[0]) {
+                        Ty::List(elem) => {
+                            let given = type_of(db, args[1]);
+                            (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given, args[1]))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 }
-            }
-            // update: args = [list, index, elem]; the elem must match the list's element type.
-            Some(crate::resolved::Prim::ListUpdate) if args.len() == 3 => {
-                match type_of(db, args[0]) {
-                    Ty::List(elem) => {
-                        let given = type_of(db, args[2]);
-                        (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given))
+                // update: args = [list, index, elem]; the elem must match the list's element type.
+                Some(crate::resolved::Prim::ListUpdate) if args.len() == 3 => {
+                    match type_of(db, args[0]) {
+                        Ty::List(elem) => {
+                            let given = type_of(db, args[2]);
+                            (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given, args[2]))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 }
-            }
-            // concat: args = [a, b]; the two lists' element types must agree — name the whole list types.
-            Some(crate::resolved::Prim::ListConcat) if args.len() == 2 => {
-                match (type_of(db, args[0]), type_of(db, args[1])) {
-                    (Ty::List(ea), Ty::List(eb)) if !ea.agrees_with(&eb) => {
-                        Some((Ty::List(ea), Ty::List(eb)))
+                // concat: args = [a, b]; the two lists' element types must agree — name the whole list types.
+                // The SECOND list is the actionable locus (the first is the operand whose element type the
+                // result takes; the mismatch is that the second doesn't match it).
+                Some(crate::resolved::Prim::ListConcat) if args.len() == 2 => {
+                    match (type_of(db, args[0]), type_of(db, args[1])) {
+                        (Ty::List(ea), Ty::List(eb)) if !ea.agrees_with(&eb) => {
+                            Some((Ty::List(ea), Ty::List(eb), args[1]))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 }
-            }
-            _ => None,
-        };
-        if let Some((expected, given)) = list_op_mismatch {
+                _ => None,
+            };
+        if let Some((expected, given, culprit)) = list_op_mismatch {
             trace!(target: "rcdzc::infer", head = head.0, "fault: a list op's element does not share the list's element type (CDZ0201)");
             // Name the operation the same way the generic member-op arm does (`List.push` expects …), but
             // code it CDZ0201 — the uniform collection-homogeneity code, not the member-op arm's CDZ0203.
@@ -7368,7 +7375,7 @@ fn check_application(
                 None => "list elements must share one type (the operation's element type differs from the list's)"
                     .to_string(),
             };
-            out.push(Reject::coded(Code::Malformed, message));
+            out.push(Reject::coded(Code::Malformed, message).at(culprit));
             for &a in args {
                 collect(db, a, out);
             }
@@ -9227,14 +9234,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
                         let code = list_homogeneity_code(&first_ty, &et);
                         trace!(target: "rcdzc::infer", node = id.0, ?code, "fault: list elements differ in type");
-                        out.push(Reject::coded(
-                            code,
-                            format!(
-                                "list elements must share one type: {} and {}",
-                                first_ty.render_name(),
-                                et.render_name()
-                            ),
-                        ));
+                        // Anchor at the OFFENDING element `e`, not the whole list node — the squiggle points
+                        // at the specific element whose type breaks homogeneity, the minimal culprit (PR #399
+                        // review; matches the file's "anchor the specific offending element" pattern). Without
+                        // the explicit `.at(e)`, `collect`'s `set_origin_if_absent(id)` would stamp the whole
+                        // `(list …)` node, highlighting the entire list rather than the one bad element.
+                        out.push(
+                            Reject::coded(
+                                code,
+                                format!(
+                                    "list elements must share one type: {} and {}",
+                                    first_ty.render_name(),
+                                    et.render_name()
+                                ),
+                            )
+                            .at(e),
+                        );
                     }
                 }
             }

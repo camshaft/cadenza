@@ -566,6 +566,9 @@ impl<'a> Printer<'a> {
                 // dispatched like `match`, never a shadowable value), so this always sugars, in both
                 // expression and pattern position; the empty form `(bin)` prints as `b[]`.
                 "bin" => return self.print_bin(args),
+                "tagged-template" if self.is_tagged_template_shape(args) => {
+                    return self.print_tagged_template(args);
+                }
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -1818,6 +1821,51 @@ impl<'a> Printer<'a> {
         self.bracketed("b[", "]", false, segs, |p, s| p.expr(s, 0));
     }
 
+    /// A tagged template `(tagged-template <tag> (chunks <str>…) (holes <expr>…))` renders back to the
+    /// glued surface `tag"…"`. B1 (hole-free): the single chunk is the whole body, escaped, between the
+    /// quotes; the tag name is glued directly before the opening `"` (the reader re-lexes the glued
+    /// ident+string as one `TaggedTemplate` token). Holes `{expr}` are the next brick — until then a
+    /// node with any hole falls the `is_tagged_template_shape` guard and prints as a generic call (its
+    /// structure stays visible rather than round-tripping to garbage).
+    fn print_tagged_template(&mut self, args: &[StructId]) {
+        let tag = self.a.as_name(args[0]).unwrap_or("");
+        let chunks = match self.a.get(args[1]) {
+            Struct::List(items) => &items[1..], // drop the "chunks" head
+            _ => &[],
+        };
+        // B1 invariant (guarded by is_tagged_template_shape): exactly one chunk, no holes.
+        let body = chunks.first().and_then(|&c| self.a.as_str(c)).unwrap_or("");
+        self.doc.word(format!(
+            "{}\"{}\"",
+            emit_name(tag),
+            literal::escape_string(body)
+        ));
+    }
+
+    /// Whether `args` is a tagged-template node this printer can re-sugar to `tag"…"` — B1's hole-free
+    /// shape: `[<tag-name>, (chunks <one-str>), (holes)]`. A node with holes (until B2 lands) or an odd
+    /// shape returns false so it prints as a generic call (structure visible, never garbage).
+    fn is_tagged_template_shape(&self, args: &[StructId]) -> bool {
+        if args.len() != 3 || self.a.as_name(args[0]).is_none() {
+            return false;
+        }
+        // Note: `self.a.head_name` reads a LIST's head atom (the Arenas helper); the printer's local
+        // `self.head_name` takes an atom id and would return None for these list nodes.
+        let one_str_chunk = match self.a.get(args[1]) {
+            Struct::List(items) => {
+                self.a.head_name(args[1]) == Some("chunks")
+                    && items.len() == 2
+                    && self.a.as_str(items[1]).is_some()
+            }
+            _ => false,
+        };
+        let no_holes = match self.a.get(args[2]) {
+            Struct::List(items) => self.a.head_name(args[2]) == Some("holes") && items.len() == 1,
+            _ => false,
+        };
+        one_str_chunk && no_holes
+    }
+
     /// `[e, …]`, with an optional `.. rest` spread (`[1, 2, .. rest]`).
     fn print_list_literal(&mut self, elems: &[StructId]) {
         if self.has_rest_marker(elems) {
@@ -3018,6 +3066,38 @@ mod tests {
         assert_eq!(
             assert_roundtrip("@cfg(\"a\", \"b\") def f() = 1", 80),
             "@cfg(\"a\", \"b\")\ndef f() = 1"
+        );
+    }
+
+    #[test]
+    fn tagged_template_round_trips_hole_free() {
+        // B1: a hole-free tagged template `tag"…"` reads to `(tagged-template <tag> (chunks <str>)
+        // (holes))` and prints back to the glued `tag"…"` surface.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m() = jsx\"hello world\"").arenas),
+            "(def (m) (tagged-template jsx (chunks \"hello world\") (holes)))"
+        );
+        assert_eq!(
+            assert_roundtrip("def m() = jsx\"hello world\"", 80),
+            "def m() = jsx\"hello world\""
+        );
+        // The canonical s-expr node prints back to the sugar.
+        assert_eq!(
+            print(
+                &sexpr::read("(def (m) (tagged-template id (chunks \"hi\") (holes)))").unwrap(),
+                80
+            ),
+            "def m() = id\"hi\""
+        );
+        // Escapes in the body survive (escape_string ∘ unescape_string).
+        assert_eq!(
+            assert_roundtrip("def m() = id\"a\\nb\\\"c\"", 80),
+            "def m() = id\"a\\nb\\\"c\""
+        );
+        // A tag glued to an EMPTY string is a valid (empty single chunk) template.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m() = e\"\"").arenas),
+            "(def (m) (tagged-template e (chunks \"\") (holes)))"
         );
     }
 

@@ -3450,6 +3450,33 @@
   (call   main (: 1 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 15 Int64)))
 
+; The same single-instantiation recursive-generic producer→consumer composition, but the produced element
+; is a USER-DEFINED generic sum (`(type Box (Wrap a))`) rather than the built-in `List` — `wrapall : List a
+; -> List (Box a)` wraps each element, and `sumfirst` unwraps + sums them. This exercises the same
+; list-pattern shaping (the producer's `xs` shapes `List _`, and its result `List (Box _)` carries the
+; element through the `Box` wrap) over a USER sum's payload, not only the built-in collection element. At a
+; single element type (Int64) it monomorphizes and runs: `sumfirst(wrapall([n,n,n]))` = `3·n`.
+
+(case "a recursive-generic producer wrapping elements in a user sum is consumed at one type"
+  (doc    "`wrapall : List a -> List (Box a)` wraps each list element in a USER generic sum `(Box a)` (a
+           recursive-generic PRODUCER whose result element is `Box a`), and `sumfirst` unwraps each `Box`
+           and sums the payloads. The producer's parameter shapes `List _` from its list pattern and its
+           result carries the element through the `Box.Wrap` construction; at a single element type the
+           composition monomorphizes and runs. `sumfirst(wrapall([n,n,n]))` = `3·n`. Pins the
+           producer→consumer path over a USER sum's payload (not just the built-in List element), the
+           user-type companion of the `mapl`/`suml` case above.")
+  (input  (do
+            (type Box (Wrap a))
+            (def (wrapall xs)
+              (match xs ((list) (list)) ((list h .. t) (List.push (wrapall t) (Box.Wrap h)))))
+            (def (unwrap1 b) (match b ((Box.Wrap v) v)))
+            (def (sumfirst xs)
+              (match xs ((list) 0) ((list h .. t) (+ (unwrap1 h) (sumfirst t)))))
+            (def (main (: n Int64)) (sumfirst (wrapall (list n n n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,

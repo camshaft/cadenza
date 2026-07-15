@@ -90,7 +90,15 @@ so that a string decoded from bytes and re-encoded yields those same bytes.
 
 ### A Collection's Homogeneity Violation Is A Malformed Collection
 
-The built-in collections — lists, maps, and sets — are each HOMOGENEOUS: a list's elements share one type, and a map associates keys of one type with values of one type (*A List Is An Ordered Homogeneous Sequence*, *A Map Associates Keys With Values*, *A Set Is A Collection Of Unique Elements*). A construction whose elements, keys, or values do NOT share one type MUST be rejected as a MALFORMED COLLECTION with a single, uniform diagnostic code (`CDZ0201`) — the collection itself is ill-formed, independent of the collection kind (list / map / set), of how the construction is written (a literal, or a functional-construction operation like append / replace-at-index / concatenate / insert), and of HOW the element types differ (a cross-kind clash, a numeric mix that does not silently promote, or two same-kind values of different shape). This uniformity is a requirement, so that a consumer branching on the code sees one category for "this collection is not homogeneous" rather than a code that varies with the incidental shape of the disagreement (*diagnostics.md §Every Diagnostic Has A Stable Code*).
+The built-in collections — lists, maps, and sets — are each HOMOGENEOUS: a list's elements share one type, and a map associates keys of one type with values of one type (*A List Is An Ordered Homogeneous Sequence*, *A Map Associates Keys With Values*, *A Set Is A Collection Of Unique Elements*).
+
+A construction whose elements, keys, or values do not share one type MUST be rejected as a malformed collection with the diagnostic code `CDZ0201`, so that a heterogeneous collection is treated as the collection being unbuildable rather than as a value of some other type.
+
+The malformed-collection code a heterogeneous construction takes MUST be the same code independent of the collection kind — list, map, or set — so that the diagnostic names one category rather than one per collection kind.
+
+The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the construction is written, whether a literal or a functional-construction operation such as append, replace-at-index, concatenate, or insert, so that the code does not vary with the construction form.
+
+The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the element types differ, whether a cross-kind clash, a numeric mix that does not silently promote, or two same-kind values of different shape, so that a consumer branching on the code sees one category for "this collection is not homogeneous" rather than a code that varies with the incidental shape of the disagreement (*diagnostics.md §Every Diagnostic Has A Stable Code*).
 
 This is distinct from the type-conflict code (`CDZ0203`), which names a two-types-must-AGREE unification conflict — a conditional's branches disagreeing, a value annotation contradicting its expression, or a comparison of two values whose shapes do not match. A collection's internal heterogeneity is NOT such a conflict: it is the collection being unbuildable, so it takes the malformed-collection code, not the mismatch code.
 

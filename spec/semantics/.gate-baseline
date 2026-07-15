@@ -480,6 +480,7 @@ pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
+pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
@@ -1077,6 +1078,7 @@ pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
+pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
@@ -1254,6 +1256,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -1270,6 +1273,7 @@ pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
 pass	a resume outside any handler arm is rejected
+pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned lookup result consumed with a wildcard never inspects the payload
@@ -1418,6 +1422,7 @@ pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
 pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
+pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -1469,6 +1474,7 @@ pass	a set built at run time escapes to the host as its value form
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set collapses a duplicate element
+pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
@@ -2058,6 +2064,8 @@ pass	converting a unit to another unit of the same dimension is an exact rationa
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
+pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
+pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
@@ -2589,6 +2597,7 @@ pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
@@ -2678,6 +2687,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two pattern keys match with one satisfied by the runtime-keyed entry
 pass	two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right
 pass	two performs bound by nested lets thread the handler state in order
 pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them
@@ -2751,7 +2761,7 @@ pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	`?` on the failure variant short-circuits the boundary (Option, None path)
-todo	`?` on the success variant unwraps the payload (Option, happy path)
+pass	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode

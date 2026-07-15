@@ -23,24 +23,27 @@
 use std::collections::HashMap;
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
+#[allow(deprecated)]
+// `DocumentSymbol` has a deprecated `deprecated` field we must populate (via `..default`).
+use lsp_types::DocumentSymbol;
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, GotoDefinition, HoverRequest, References, Request as _, SemanticTokensFullRequest,
-    Shutdown,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
+    SemanticTokensFullRequest, Shutdown,
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
-    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, SemanticToken,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, Location, MarkedString, Position, PublishDiagnosticsParams,
+    Range, ReferenceParams, SemanticToken, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -80,14 +83,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// capability flag beyond sync is required for the classic push model), `hover` (the "type at
 /// cursor" read, backed by the `TypeAt` query), `definition` (go-to, backed by `ResolveOf`),
 /// `references` (find-all-uses, backed by `UsesOf`), `completion` (scope bindings + top-level symbols,
-/// backed by `ScopeAt` + `Symbols`), and `semanticTokens/full` (colour-by-meaning, backed by the
-/// `Highlight` query — the token legend is `semantic_token_legend`).
+/// backed by `ScopeAt` + `Symbols`), `documentSymbol` (the outline, backed by `Symbols`), and
+/// `semanticTokens/full` (colour-by-meaning, backed by the `Highlight` query — the token legend is
+/// `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
+        // The document outline (Ctrl-Shift-O / the breadcrumb bar) — every top-level declaration, backed
+        // by the `Symbols` query.
+        document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         // Completion with no trigger characters — the client invokes it on the usual identifier typing /
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
@@ -253,6 +260,11 @@ impl Server {
                 let result = self.completion(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            DocumentSymbolRequest::METHOD => {
+                let (id, params) = cast_request::<DocumentSymbolRequest>(req)?;
+                let result = self.document_symbol(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -288,6 +300,17 @@ impl Server {
             result_id: None,
             data: tokens,
         }))
+    }
+
+    /// Answer a `textDocument/documentSymbol`: the document OUTLINE — every top-level declaration
+    /// (value/function/type/effect/module), backed by the `Symbols` query. `None` when the document is
+    /// not open; an empty (flat) list otherwise. Returned as the flat `DocumentSymbol` form (no nesting
+    /// yet — Cadenza's top-level declarations are a flat list; nested module members are a later
+    /// refinement once `Symbols` reports them hierarchically).
+    fn document_symbol(&self, params: &DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        let symbols = document_symbols_for(&doc.text, doc.is_ml);
+        Some(DocumentSymbolResponse::Nested(symbols))
     }
 
     /// Answer a `textDocument/definition`: resolve the cursor's reference to its DEFINING occurrence
@@ -906,6 +929,73 @@ fn symbol_kind_to_completion_kind(kind: &str) -> CompletionItemKind {
     }
 }
 
+// ── the analysis: source text → LSP document symbols (the outline), via the `Symbols` query ──────────
+
+/// Compute the document outline for `text` — every TOP-LEVEL declaration (value/function/type/effect/
+/// module), backed by the `Symbols` query. Each declaration becomes a `DocumentSymbol` with a
+/// `SymbolKind`, its NAME occurrence's source range, and the same range as the selection range (there
+/// is no separate "full body" span in the query yet, so range == selection_range — an editor still
+/// navigates + highlights the name). Flat (no children): Cadenza's top-level declarations are a flat
+/// list; nesting module members under their module is a later refinement once `Symbols` reports the
+/// hierarchy. TOTAL: an un-analyzable buffer yields whatever partial set the query produces, never a
+/// panic.
+fn document_symbols_for(text: &str, is_ml: bool) -> Vec<DocumentSymbol> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::Symbols,
+        rcdzc::sidecar::KIND_SYMBOLS,
+    ) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in answer.lines() {
+        // `name<TAB>kind<TAB>name-node-id`
+        let mut cols = line.splitn(3, '\t');
+        let (Some(name), Some(kind), Some(node)) = (cols.next(), cols.next(), cols.next()) else {
+            continue;
+        };
+        let Some(range) = node
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
+            .map(|s| byte_range_to_range(text, s.start, s.end))
+        else {
+            continue;
+        };
+        #[allow(deprecated)]
+        // the `deprecated` field is deprecated but non-optional in this lsp-types.
+        out.push(DocumentSymbol {
+            name: name.to_string(),
+            detail: Some(kind.to_string()),
+            kind: symbol_kind_to_document_kind(kind),
+            tags: None,
+            deprecated: None,
+            range,
+            selection_range: range,
+            children: None,
+        });
+    }
+    out
+}
+
+/// Map a `Symbols`-query kind spelling to the LSP `SymbolKind` for the outline. `value`→CONSTANT,
+/// `function`→FUNCTION, `type`→ENUM (a Cadenza sum is a set of variants — ENUM is the closest LSP
+/// icon), `effect`→EVENT, `module`→MODULE. An unknown kind → VARIABLE (a neutral fallback).
+fn symbol_kind_to_document_kind(kind: &str) -> SymbolKind {
+    match kind {
+        "value" => SymbolKind::CONSTANT,
+        "function" => SymbolKind::FUNCTION,
+        "type" => SymbolKind::ENUM,
+        "effect" => SymbolKind::EVENT,
+        "module" => SymbolKind::MODULE,
+        _ => SymbolKind::VARIABLE,
+    }
+}
+
 // ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
 
 /// Compute the LSP semantic tokens for `text` — colour-by-meaning, backed by the `Highlight` query
@@ -1409,5 +1499,29 @@ mod tests {
         // A buffer that does not parse yields a defined (possibly empty) candidate set, never a panic.
         let _ = completions_at("def (f x = (", true, Position::new(0, 5));
         let _ = completions_at("", true, Position::new(0, 0));
+    }
+
+    #[test]
+    fn document_symbols_outline_every_top_level_declaration_with_its_kind() {
+        // The outline lists each top-level declaration with the right SymbolKind + a navigable range.
+        let text = "def answer = 42\ndef double(x: Int64) -> Int64 = x + x";
+        let syms = document_symbols_for(text, true);
+        let by_name: std::collections::HashMap<_, _> =
+            syms.iter().map(|s| (s.name.as_str(), s)).collect();
+        assert!(by_name.contains_key("answer"), "answer missing: {syms:?}");
+        assert!(by_name.contains_key("double"), "double missing: {syms:?}");
+        assert_eq!(by_name["answer"].kind, SymbolKind::CONSTANT);
+        assert_eq!(by_name["double"].kind, SymbolKind::FUNCTION);
+        // Each symbol carries a real range (its name occurrence), and range == selection_range.
+        let d = by_name["double"];
+        assert_eq!(d.range, d.selection_range);
+        assert_eq!(d.range.start.line, 1, "double is on line 1");
+    }
+
+    #[test]
+    fn document_symbols_is_total_on_malformed_source() {
+        // A buffer that does not parse yields a defined (possibly empty) outline, never a panic.
+        let _ = document_symbols_for("def (f x = (", true);
+        let _ = document_symbols_for("", true);
     }
 }

@@ -19853,6 +19853,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_op_homogeneity_reject_anchors_at_the_offending_argument() {
+        // The `List.push`/`List.update`/`List.concat` homogeneity reject (CDZ0201) must anchor at the
+        // OFFENDING ARGUMENT — the pushed/updated element, or the second list in concat — not the whole
+        // `(List.push …)` application node, so the squiggle points at the culprit (PR #399 review). Without
+        // the anchor, `collect`'s `set_origin_if_absent(id)` stamped the whole call.
+        // push: the pushed element `"x"` (a String into a List Int64) is the locus, not the call.
+        let push = reject_full(
+            "(module m (def (f (: xs (List Int64))) ((. List push) xs \"x\")) (export f))",
+        )
+        .expect("a wrong-element List.push rejects");
+        assert_eq!(
+            push.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            push.message
+        );
+        let src_push =
+            "(module m (def (f (: xs (List Int64))) ((. List push) xs \"x\")) (export f))";
+        let db_push = crate::db::Db::load(parse(src_push));
+        assert_eq!(
+            db_push.ast.as_str(crate::ast::StructId(
+                push.node.expect("push reject carries an anchor")
+            )),
+            Some("x"),
+            "the List.push homogeneity reject anchors at the pushed element `\"x\"`, not the call: {}",
+            push.message
+        );
+        // update: the updated element (arg 3) is the locus.
+        let update = reject_full(
+            "(module m (def (f (: xs (List Int64))) ((. List update) xs 0 \"y\")) (export f))",
+        )
+        .expect("a wrong-element List.update rejects");
+        let src_up =
+            "(module m (def (f (: xs (List Int64))) ((. List update) xs 0 \"y\")) (export f))";
+        let db_up = crate::db::Db::load(parse(src_up));
+        assert_eq!(
+            db_up.ast.as_str(crate::ast::StructId(
+                update.node.expect("update reject carries an anchor")
+            )),
+            Some("y"),
+            "the List.update homogeneity reject anchors at the updated element `\"y\"`: {}",
+            update.message
+        );
+    }
+
+    #[test]
     fn a_list_int_literal_vs_float_offers_a_float_literal_retype_fix() {
         // A list-homogeneity clash between an INTEGER LITERAL and a FLOAT type has the SAME one-shot repair
         // the annotation site's `(: 3 Float64)` gives: rewrite the integer literal `n` as a float literal
@@ -29930,13 +29976,25 @@ mod match_engine {
             .is_none(),
             "a quoted string vs a quoted name is well-typed (both Ast) — the runtime value is false"
         );
-        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a FLOAT literal — no
-        // `Ast.Float` variant; Int/Bool/Str/Name/List are realized) is NOT reified: it DECLINES (a Todo),
-        // never a miscompile.
+        // A FLOAT literal reifies to `(Ast.Float d)` — a float is a syntactic form (the Ast sum now
+        // realizes the COMPLETE spec set: Int/Float/Bool/Str/Name/List). `(quote 3.0)` is `(Ast.Float
+        // 3.0)`, DISTINCT from `(Ast.Int 3)`, so they compare unequal.
+        assert!(
+            reject_code("(module m (def (main) (= (quote 1.5) (Ast.Float 1.5))) (export main))")
+                .is_none(),
+            "a quoted float equals the same Ast.Float node"
+        );
+        assert!(
+            reject_code("(module m (def (main) (= (quote 3.0) (Ast.Int 3))) (export main))")
+                .is_none(),
+            "a quoted float vs a quoted int is well-typed (both Ast) — the runtime value is false"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum still can't carry (a CHAR literal — no
+        // `Ast.Char` variant) is NOT reified: it DECLINES (a Todo), never a miscompile.
         assert_eq!(
-            reject_code("(module m (def (main) (quote 1.5)) (export main))"),
+            reject_code("(module m (def (main) (quote #\\a)) (export main))"),
             None,
-            "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
+            "an un-reifiable quote body (a char leaf) declines cleanly (no artifact, no coded rejection)"
         );
     }
 
@@ -30072,6 +30130,70 @@ mod match_engine {
             ),
             "a quoted string and a quoted name are different Ast values (false)"
         );
+    }
+
+    #[test]
+    fn an_ast_float_folds_through_reify_eval_and_round_trips() {
+        use crate::testkit::parse;
+        // The `Ast.Float` leaf variant end-to-end — the LAST of the spec's six Ast forms (type-system.md
+        // §The Abstract Syntax Tree Is An Ordinary Sum Type). `(eval (quote 1.5))` reconstructs the float
+        // literal and folds to `1.5`; encode/decode (the f64 bit pattern) and print/read (the shortest
+        // re-readable decimal) round-trip; and an integer-valued float `3.0` stays a float through read
+        // (its `.0` is preserved), NOT collapsed to `Ast.Int`.
+        let eval_float = "(module m (def (main) (eval (quote 1.5))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(eval_float))).expect("compile"),
+                "main"
+            ),
+            1.5,
+            "(eval (quote 1.5)) executes the reconstructed float literal to 1.5"
+        );
+        for (src, what) in [
+            (
+                "(module m (def (main) \
+                   (match (Ast.decode (Ast.encode (Ast.Float 1.5))) \
+                     ((Ok a) (= a (Ast.Float 1.5))) \
+                     ((Err _) false))) \
+                 (export main))",
+                "encode/decode round-trips an Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (read (print (Ast.Float 1.5))) (Ast.Float 1.5))) \
+                 (export main))",
+                "print/read round-trips an Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0))) \
+                 (export main))",
+                "an integer-valued Ast.Float (3.0) stays a float through read, not Ast.Int",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote 2.5))) \
+                      (Ast.List (list (Ast.Name \"f\") (Ast.Float 2.5))))) \
+                 (export main))",
+                "an active unquote of a float literal lifts to Ast.Float",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((x 4.5)) \
+                     (= (quasiquote (f (unquote x))) \
+                        (Ast.List (list (Ast.Name \"f\") (Ast.Float 4.5)))))) \
+                 (export main))",
+                "an active unquote of a runtime float lifts to Ast.Float by inferred type",
+            ),
+        ] {
+            assert!(
+                run_returns::<bool>(
+                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                    "main"
+                ),
+                "Ast.Float — {what}"
+            );
+        }
     }
 
     #[test]
@@ -49187,6 +49309,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_producer_wrapping_elements_in_a_user_sum_is_consumed_at_one_type() {
+        // COVERAGE (v-inference): the same recursive-generic producer→consumer path as above, but the
+        // produced element is a USER-defined generic sum `(Box a)` — `wrapall : List a -> List (Box a)`
+        // wraps each element, `sumfirst` unwraps + sums. Exercises the A+B list-pattern shaping over a
+        // USER sum's payload (not just the built-in List element): the producer's `xs` shapes `List _` and
+        // its result carries the element through the `Box.Wrap` construction. Single element type (Int64) →
+        // monomorphizes + runs. `sumfirst(wrapall([n,n,n]))` = `3·n`. Pins the user-sum producer path so a
+        // future change to `pattern_implied_ty`/`solve_recursive_params` can't silently regress it.
+        let src = "(module m \
+            (type Box (Wrap a)) \
+            (def (wrapall xs) \
+              (match xs ((list) (list)) ((list h .. t) (List.push (wrapall t) (Box.Wrap h))))) \
+            (def (unwrap1 b) (match b ((Box.Wrap v) v))) \
+            (def (sumfirst xs) \
+              (match xs ((list) 0) ((list h .. t) (+ (unwrap1 h) (sumfirst t))))) \
+            (def (main (: n Int64)) (sumfirst (wrapall (list n n n)))) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "6"); // 3·2
+        assert_eq!(run_closure(src, 4).unwrap(), "12"); // 3·4
+    }
+
+    #[test]
     fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
         // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
         // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
@@ -50204,16 +50351,34 @@ mod stage1 {
     }
 
     #[test]
-    fn a_well_formed_try_under_a_matching_boundary_declines_until_t1() {
-        // A `?` whose operand kind MATCHES the enclosing function's fallible result type is well-formed at
-        // the type level (no CDZ0230, no CDZ0203). It does NOT lower yet — the boundary `Mir::Block` +
-        // `Mir::Break` desugar is T1 — so it DECLINES, a Todo (self-hosting-and-bootstrap.md §An
-        // Unsupported Construct Is Declined), never a miscompile. The body's tail `(Some …)` makes the
-        // boundary `Option`, matching the `?`'s Option operand. FLIPS to an executing-value test in T1.
-        let msg = expect_decline("(let ((x (try (Int64.checked-add 20 22)))) (Some x))");
+    fn a_constant_success_try_folds_to_the_payload() {
+        // BRICK 2 (the CONSTANT-SUCCESS fold, DESIGN-try-operator-rcdzc.md §3.2): a `?` on a compile-time
+        // `Some x` / `Ok x` unwraps to the payload — no boundary break fires on the happy path, so it
+        // needs no `Core::Block`/`Break` (that is the failure/runtime path, BRICK 3). `(Int64.checked-add
+        // 20 22)` folds to `(Some 42)`, so `(try …)` folds to `42`; the body's tail `(Some x)` makes the
+        // boundary `Option`, matching. It COMPILES (a value, not a decline) — the corpus case "`?` on the
+        // success variant unwraps the payload" runs it to `(Some 84)` against the real heap.
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) (export main))";
         assert!(
-            msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
-            "a well-formed `(try …)` under a matching boundary declines pending the desugar: {msg}"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`Some` `?` under a matching Option boundary folds to the payload, not declines"
+        );
+    }
+
+    #[test]
+    fn a_constant_failure_try_declines_until_the_boundary_break() {
+        // The companion: a constant FAILURE operand (`None`/`Err`) must SHORT-CIRCUIT the boundary — it
+        // needs the `Core::Block` + `Core::Break` desugar (BRICK 3), so it DECLINES cleanly for now (a
+        // Todo, never a miscompile). `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` would
+        // break `main` to `None`. Pins that BRICK 2's fold is SUCCESS-ONLY — a failure does not silently
+        // fold (which would drop the short-circuit and miscompile).
+        let msg = expect_decline("(let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))");
+        assert!(
+            msg.contains("try")
+                || msg.contains('?')
+                || msg.contains("break")
+                || msg.contains("brick"),
+            "a constant-failure `?` declines pending the boundary break (BRICK 3): {msg}"
         );
     }
 }

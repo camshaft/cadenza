@@ -42,8 +42,26 @@ export default function Rationals() {
       <Runnable source={`(+ 0.1R 0.2R)`} />
       <P>
         Same digits you'd type for a float, one letter's difference — and the answer is the number you
-        meant, not the nearest float to it. (Integers take an <C>N</C> suffix for the arbitrary-precision{" "}
-        <C>BigInt</C> type, the same idea for whole numbers that outgrow <C>Int64</C>.)
+        meant, not the nearest float to it.
+      </P>
+
+      <H2>Whole numbers that outgrow Int64: <C>BigInt</C></H2>
+      <P>
+        The same instinct — trade speed for exactness when it matters — has a whole-number counterpart. An{" "}
+        <C>Int64</C> refuses to hold a value past its range: <C>9223372036854775807 × 1000</C> overflows,
+        and the compiler declines rather than wrap.
+      </P>
+      <Runnable source={`(* 9223372036854775807 1000)`} expect="error" />
+      <P>
+        When you genuinely need bigger, <C>BigInt</C> is the arbitrary-precision integer — it grows to fit
+        any whole number. Build one with <C>BigInt.of</C> (or write the <C>N</C> literal suffix), and the
+        product that overflowed an <C>Int64</C> is exact:
+      </P>
+      <Runnable source={`(* (BigInt.of 9223372036854775807) (BigInt.of 1000))`} />
+      <P>
+        The result comes back as a <C>BigInt</C> far beyond the 64-bit range — no overflow, no wrap. It's
+        the same trade as <C>Rational</C>: reach for it when a value must be exact whatever its size, and
+        pay for the arbitrary precision only where you asked for it.
       </P>
 
       <H2>Always in lowest terms</H2>

@@ -165,6 +165,16 @@ test("renderFleetMessage omits absent ref/body cleanly", () => {
   assert.ok(!s.includes("``"), "no empty code span for a missing ref");
 });
 
+test("renderFleetMessage caps a huge body so the Slack post can't fail", () => {
+  const s = renderFleetMessage({ from: "v-x", kind: "ask", subject: "big", body: "x".repeat(20000) });
+  assert.ok(s.length <= 3500, `capped under Slack's limit: ${s.length}`);
+  assert.ok(s.includes("truncated"), "elision marker present");
+  assert.ok(s.includes("big"), "header/subject survives");
+  // A normal short message is untouched.
+  const short = renderFleetMessage({ from: "pr-sync", kind: "merged", subject: "landed", body: "all green" });
+  assert.ok(!short.includes("truncated"));
+});
+
 test("helpText names the default recipient and the prefixes", () => {
   const h = helpText("concierge");
   assert.ok(h.includes("concierge"));

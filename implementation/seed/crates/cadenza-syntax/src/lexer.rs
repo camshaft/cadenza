@@ -525,6 +525,23 @@ impl<'a> Lexer<'a> {
                 _ => break,
             }
         }
+        // A `"` GLUED to the identifier (no whitespace) is a TAGGED TEMPLATE `tag"…"` — the ident is the
+        // tag, the string its body. One token spanning `tag` through the closing `"`, exactly like `b"`
+        // is one token (not the name `b` then a string). A SPACE between (`tag "s"`) stays a bare ident
+        // then a separate string. (`b"`/`#"` are handled earlier by their own arms; any OTHER ident glued
+        // to `"` reaches here.) The parser splits the span into tag + body. An unterminated body → Error.
+        if self.peek() == Some('"') {
+            let quote = self.bump().unwrap(); // the opening `"`
+            let body = self.read_string(quote);
+            return Token {
+                kind: if body.kind == Kind::Str {
+                    Kind::TaggedTemplate
+                } else {
+                    Kind::Error // unterminated string body
+                },
+                span: a.span.merge(body.span),
+            };
+        }
         Token {
             kind: Kind::Ident,
             span: a.span.merge(end),
@@ -903,6 +920,20 @@ mod tests {
             vec![Kind::Ident, Kind::LBracket, Kind::Int, Kind::RBracket]
         );
         assert_eq!(kinds("b\"x\"")[0], Kind::ByteStr);
+    }
+
+    #[test]
+    fn tagged_template_lexes_a_glued_ident_string() {
+        // `tag"…"` — an identifier GLUED to a string — is one TaggedTemplate token (like `b"…"`).
+        assert_eq!(kinds("jsx\"hi\""), vec![Kind::TaggedTemplate]);
+        assert_eq!(kinds("id\"a b\""), vec![Kind::TaggedTemplate]);
+        // A SPACE between the ident and the string is NOT a tagged template — a bare ident then a string.
+        assert_eq!(kinds("jsx \"hi\""), vec![Kind::Ident, Kind::Str]);
+        // `b"…"`/`#"…"` keep their own kinds (their arms precede the general ident arm).
+        assert_eq!(kinds("b\"x\"")[0], Kind::ByteStr);
+        assert_eq!(kinds("#\"m\"")[0], Kind::SymLit);
+        // An unterminated body is an Error, not a TaggedTemplate.
+        assert_eq!(kinds("jsx\"oops")[0], Kind::Error);
     }
 
     #[test]

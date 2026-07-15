@@ -62,16 +62,24 @@ function parseOperatorMessage(text, defaultTo) {
   return { to, kind, subject, body: rest };
 }
 
+// Slack's chat.postMessage rejects an over-long `text`; a multi-KB fleet `ask` body would make the post
+// FAIL and the outbound relay retry it forever, blocking the queue. Cap well under the limit (matches the
+// Rust SLACK_TEXT_CAP); the full text still lives in the fleet inbox.
+const SLACK_TEXT_CAP = 3500;
+
 /// Render a fleet message (drained from the bridge's inbox, i.e. an agent → operator message) as a
 /// Slack-mrkdwn string. Shows who it's from, the kind, the subject, and the body/ref when present. Kept
-/// compact so a stream of them reads well in a channel.
+/// compact so a stream of them reads well in a channel, and length-capped so a big body can't fail the post.
 function renderFleetMessage(msg) {
   const from = msg.from || "unknown";
   const kind = msg.kind || "note";
   const lines = [`*${from}* · _${kind}_` + (msg.subject ? `: ${msg.subject}` : "")];
   if (msg.ref) lines.push("`" + msg.ref + "`");
   if (msg.body && msg.body.trim()) lines.push(msg.body.trim());
-  return lines.join("\n");
+  const out = lines.join("\n");
+  if (out.length <= SLACK_TEXT_CAP) return out;
+  const marker = "\n…[truncated — full text in the fleet inbox]";
+  return out.slice(0, SLACK_TEXT_CAP - marker.length) + marker;
 }
 
 /// A short usage/help string shown when the operator sends an empty message or `help`.
