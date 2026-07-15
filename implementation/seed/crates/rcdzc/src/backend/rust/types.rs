@@ -77,6 +77,13 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // (Mk Int64 Int64))` → `(i64, i64)`. (A named Rust newtype struct is a possible future
         // refinement; the erased mapping is correct and matches the wasm backend's read-through.)
         Ty::Nominal { inner, .. } => rust_type(inner),
+        // A LIST is a homogeneous sequence — Rust's native growable sequence `Vec<T>` (the wasm backend
+        // builds it on the persistent `vec-*` heap; here it is an owned `Vec`). The element type maps
+        // recursively, so a `List Int64` → `Vec<i64>` and a nested `List (List Int64)` → `Vec<Vec<i64>>`
+        // compose; an element with no native mapping declines the whole list. (Cadenza lists are
+        // PERSISTENT/immutable; a `Vec` is owned+`Clone`, and every list op emitted for this backend
+        // produces a NEW `Vec` — no in-place mutation — so the value semantics agree.)
+        Ty::List(elem) => Some(format!("Vec<{}>", rust_type(elem)?)),
         // Functions and type/erased values have no native mapping.
         _ => None,
     }

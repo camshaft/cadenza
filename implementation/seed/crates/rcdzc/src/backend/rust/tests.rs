@@ -211,15 +211,44 @@ fn an_if_emits_a_rust_if_expression() {
 }
 
 #[test]
-fn a_list_result_declines_attributed_to_this_target() {
-    // A list-returning export has no native rep yet (tuples/records do, lists don't) — declines cleanly.
-    let src = "(module m (def (main) (list 1 2 3)) (export main))";
-    let err = try_compile_rust(src).expect_err("a list result must decline");
-    assert!(
-        err.iter()
-            .any(|m| m.contains("compound") || m.contains("native Rust")),
-        "decline message: {err:?}"
+fn a_runtime_list_emits_a_native_rust_vec() {
+    // A `List T` maps to Rust's `Vec<T>`, and a runtime `(list …)` construction → the `vec![…]` macro.
+    // Build the list behind a recursive call so it survives to runtime (a constant list folds away).
+    let rs = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n n) (f (+ n -1)))) \
+                    (def (main) (f 3)) (export main))",
     );
+    assert!(rs.contains("-> Vec<i64>"), "list return type:\n{rs}");
+    assert!(rs.contains("vec!["), "vec! construction:\n{rs}");
+
+    // A list PARAMETER crosses as `Vec<T>`; a nested list → `Vec<Vec<i64>>`.
+    let param = compile_rust("(module m (def (g (: xs (List Int64))) xs) (export g))");
+    assert!(param.contains("xs: Vec<i64>"), "list param type:\n{param}");
+    let nested = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list (list n)) (f (+ n -1)))) \
+                    (def (main) (f 2)) (export main))",
+    );
+    assert!(
+        nested.contains("-> Vec<Vec<i64>>"),
+        "nested list type:\n{nested}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_list_builds_and_runs() {
+    // A runtime list crosses rustc end-to-end: build `(list n n n)` behind a recursive call so it is a
+    // genuine runtime `Vec`, return it, and render it as cdz-run's `(list …)` text via a small driver.
+    let module = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n n n) (f (+ n -1)))) \
+                    (def (mklist) (f 2)) (export mklist))",
+    );
+    // The emitted module returns a `Vec<i64>`; the driver joins it into the canonical `(list 0 0 0)` form.
+    let driver = "fn main() { let v = prog::mklist(); let mut s = String::from(\"(list\"); \
+                  for e in v.iter() { s.push(' '); s.push_str(&format!(\"{}\", e)); } s.push(')'); \
+                  println!(\"{}\", s); }";
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(out, "(list 0 0 0)");
+    }
 }
 
 #[test]
