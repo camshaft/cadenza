@@ -416,6 +416,21 @@ impl<'a> Parser<'a> {
     }
 
     /// Fold a run of comment leads around `node`: `[c0, c1]` -> `(comment c0 (comment c1 node))`.
+    ///
+    /// The parser REPRESENTS each `//` comment as a `(comment "text" node)` NODE of the canonical
+    /// representation — not discarded as lexical trivia — wrapping the following form so the comment is
+    /// ATTACHED to the part it annotates (its position recovered on printing). Because the node is an
+    /// ordinary list node, it survives the binary-AST codec: printing the binary AST back to text and
+    /// re-parsing yields the same `(comment …)` (and `(doc …)`) nodes — comments and documentation both
+    /// round-trip. (An intra-program EDIT preserving them is the sidecar `Rewrite` surface, not yet built.)
+    //= spec/capabilities/agent-authoring.md#comments-are-parsed-into-the-representation
+    //# A textual syntax's parser MUST represent a comment it reads as a node of the canonical representation rather than discard it as lexical trivia, because the canonical stored form is the binary AST and a comment not carried by the tree is not stored.
+    //= spec/capabilities/agent-authoring.md#comments-are-parsed-into-the-representation
+    //# A comment MUST be attached in the canonical representation to the part of the program it annotates, so that its position relative to that part is recovered on printing.
+    //= spec/capabilities/agent-authoring.md#comments-survive-round-trip-and-edits
+    //# A comment MUST be preserved when a program's binary AST is printed to a textual syntax and parsed back.
+    //= spec/capabilities/agent-authoring.md#documentation-survives-round-trip-and-edits
+    //# Documentation MUST be preserved when a program's binary AST is printed to a textual syntax and parsed back.
     fn wrap_comments(&mut self, comments: Vec<Lead>, mut node: StructId) -> StructId {
         for lead in comments.into_iter().rev() {
             let head = self.name("comment", lead.span);
