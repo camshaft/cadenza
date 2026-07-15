@@ -127,23 +127,21 @@ export default function Bytes() {
         id="bytes:2"
         prompt={
           <>
-            Slice the three bytes <C>B C D</C> out of <C>b"ABCDE"</C>, starting at index <C>1</C>.
-            Remember <C>Bytes.slice</C>'s second argument is a <em>length</em>, not an end index — fill it
-            in so <C>Bytes.len</C> of the result is <C>3</C>.
+            <C>Bytes.concat</C> joins two byte sequences into a new one, and because <C>Bytes</C> compares
+            by content, you can check the result against a literal. Fill the hole with the byte-string that
+            completes <C>b"AB"</C> into <C>b"ABC"</C>, so the equality holds and the answer is <C>1</C>.
           </>
         }
         starter={`(def (main)
-  (Bytes.len
-    (Option.expect (Bytes.slice b"ABCDE" 1 ?) "in range")))`}
+  (if (= (Bytes.concat b"AB" ?) b"ABC") 1 0))`}
         solution={`(def (main)
-  (Bytes.len
-    (Option.expect (Bytes.slice b"ABCDE" 1 3) "in range")))`}
-        expected="3"
+  (if (= (Bytes.concat b"AB" b"C") b"ABC") 1 0))`}
+        expected="1"
         hint={
           <>
-            You want three bytes, and the argument <em>is</em> the count — so it's <C>3</C>, not an end
-            index. (Write <C>4</C>, as if it were <C>String.slice</C>'s end, and you'd get four bytes —{" "}
-            <C>B C D E</C> — instead.)
+            Joining <C>b"AB"</C> with one more byte should give <C>b"ABC"</C>, so the missing piece is the
+            single-byte literal <C>b"C"</C>. The join builds a fresh value, then <C>=</C> compares it to{" "}
+            <C>b"ABC"</C> byte for byte.
           </>
         }
       />

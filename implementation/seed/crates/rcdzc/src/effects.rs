@@ -3199,6 +3199,64 @@ fn thread_bounded(
             children.extend(relems);
             Some((db.push_list(children), cur))
         }
+        // A RECORD CONSTRUCTOR `("record" (label value)…)` — a STRICT compound constructor whose field
+        // VALUES are evaluated in written order before the record is built. Thread each field's value (a
+        // perform there reads/threads state), keeping the label, and rebuild the same `("record" (label
+        // rvalue)…)` form. The companion of the tuple/list arm above for the ML record literal `{ a = …, b
+        // = … }`, which lowers to this string-headed ctor with `(label value)` pair args. (Matched on the
+        // RAW form via `as_ctor_form` — like the `let` arm — because `Resolved::Record` holds a sorted
+        // BTreeMap that loses the written order the source evaluates in.)
+        _ if db.ast.as_ctor_form(node, "record").is_some() => {
+            let fields: Vec<StructId> = db.ast.as_ctor_form(node, "record").unwrap().to_vec();
+            let mut cur = states;
+            let mut rfields = Vec::with_capacity(fields.len());
+            for field in fields {
+                let Struct::List(kv) = db.ast.get(field).clone() else {
+                    return None;
+                };
+                if kv.len() != 2 {
+                    return None;
+                }
+                // The label is copied structurally (a field name, not a value to thread); the VALUE is
+                // threaded (it may perform).
+                let label_copy = copy_pure(db, kv[0]);
+                let (rvalue, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
+                cur = next;
+                rfields.push(db.push_list(vec![label_copy, rvalue]));
+            }
+            let head = db.push_atom(Leaf::Str("record".to_string()));
+            let mut children = vec![head];
+            children.extend(rfields);
+            Some((db.push_list(children), cur))
+        }
+        // A MAP CONSTRUCTOR `("map" (key value)…)` — a STRICT compound whose entries are evaluated in
+        // written order, and within each entry the KEY then the VALUE (both may perform). Thread the key,
+        // then the value, per entry, and rebuild the same `("map" (rkey rvalue)…)` form. The map companion
+        // of the record arm above (a `(key value)` pair like a record field, but the KEY is a value to
+        // thread, not a copied label). Matched on the RAW form (`Resolved::Map`'s `entries` slice is fine
+        // too, but the raw form keeps the written order uniformly with the other ctor arms).
+        _ if db.ast.as_ctor_form(node, "map").is_some() => {
+            let entries: Vec<StructId> = db.ast.as_ctor_form(node, "map").unwrap().to_vec();
+            let mut cur = states;
+            let mut rentries = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let Struct::List(kv) = db.ast.get(entry).clone() else {
+                    return None;
+                };
+                if kv.len() != 2 {
+                    return None;
+                }
+                // KEY then VALUE, both threaded (either may perform), in evaluation order.
+                let (rkey, next_k) = thread_bounded(db, kv[0], cur, ctx, inline_depth)?;
+                let (rvalue, next_v) = thread_bounded(db, kv[1], next_k, ctx, inline_depth)?;
+                cur = next_v;
+                rentries.push(db.push_list(vec![rkey, rvalue]));
+            }
+            let head = db.push_atom(Leaf::Str("map".to_string()));
+            let mut children = vec![head];
+            children.extend(rentries);
+            Some((db.push_list(children), cur))
+        }
         // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
         // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
         // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with

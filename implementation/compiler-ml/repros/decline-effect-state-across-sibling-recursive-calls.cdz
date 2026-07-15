@@ -1,7 +1,13 @@
-/// MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc, iter 38). A self-recursive EFFECTFUL function
-/// that makes TWO sibling recursive calls in a match arm, under a STATE-THREADING handler, does not thread
-/// the handler state between the siblings — the second call resumes from the INITIAL state, not the state
-/// the first call left. `cdz check` CLEAN; `cdz compile` SUCCEEDS; runs WRONG.
+/// ⚠ UPGRADED TO AN HONEST DECLINE (2026-07-14, iter 43) — this was a SILENT MISCOMPILE (returned 0) at
+/// iter 38; a sibling's tail-resumptive-fold change now REJECTS the shape ("this handler is not yet
+/// reducible by the tail-resumptive fold") instead of miscompiling it. A SAFETY IMPROVEMENT: the wrong
+/// value is gone; it is a clean decline pending the real fix (threading state across sibling self-calls).
+/// `run` is exported so `cdz compile` reproduces the decline. The original iter-38 analysis follows.
+///
+/// ORIGINAL (iter 38 — was a MISCOMPILE, now a decline). A self-recursive EFFECTFUL function
+/// that makes TWO sibling recursive calls in a match arm, under a STATE-THREADING handler, did not thread
+/// the handler state between the siblings — the second call resumed from the INITIAL state, not the state
+/// the first call left. `cdz check` CLEAN; then `cdz compile` returned the WRONG value (now declines).
 ///
 ///   walk (Node Leaf Leaf) under `handle Fresh(0) | next(s) => resume(s, s+1)`
 ///   should draw id 0 for the first leaf and id 1 for the second → 0 + 1 = 1.  IT RETURNS 0

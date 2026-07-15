@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 307 tests total across 33 modules):
+top. Current `src/` modules (each with same-file `@test`s — 317 tests total across 34 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -231,6 +231,16 @@ top. Current `src/` modules (each with same-file `@test`s — 307 tests total ac
   WORKING. (A `Map`-env interpreter with SHADOWING is the UNSAFE cousin — it trips the still-live-binding
   miscompile; see `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`, so this optimizer
   stays a pure rewrite.)
+- `src/ssa.cdz` — an SSA LINEARIZER: flatten the arithmetic `Expr` (cross-file from `parse`) into a
+  straight-line list of THREE-ADDRESS instructions (`Lit(dst, v)` / `Op(dst, opcode, ra, rb)`), each
+  defining a fresh SSA register — the pre-register-allocation form a real backend lowers to. Mints fresh
+  register ids by THREADING A COUNTER through the result (`(reg, next, instrs)` triple), NOT a `Fresh`
+  effect: the effect-based gensym over a two-child tree needs two sibling recursive calls under a
+  state-threading handler, which the tail-resumptive fold declines (see
+  `repros/decline-effect-state-across-sibling-recursive-calls.cdz`) — pure counter-threading is the
+  correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
+  re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
+  WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -243,7 +253,11 @@ A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics 
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
 `cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
 DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
-full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`.
+full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`. A newer
+SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) `cdz check`s clean and
+its `fn`+leaf tests PASS, but its `let` tests MISCOMPILE (the extended scope is LOST through the recursion
+— the mutual-recursion still-live face); withheld as `repros/blocked-scopecheck-mutual-recursion-scope-
+loss.cdz`.
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
 check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
@@ -342,6 +356,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `let x=1 in (let x=10 in x) + x` → 20 not 11 (the inner `Map.insert(env,"x",10)` corrupts the env the
   sibling `Var x` reads); `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`. Inserting
   a DIFFERENT key is correct — only same-key SHADOW + sibling self-call corrupts.
+  🔬 MUTUAL-RECURSION FACE (iter 42) — `repros/miscompile-node-payload-consumed-by-mutual-recursion-
+  corrupts-sibling-read.cdz`: a `fc(node)` that matches `node` binding its child list `elems`, reads the
+  whole `node` again in one operand (`head-of(node)`), AND passes `elems` to a list-walker `fl` that
+  recurses BACK into `fc` (mutual `fc↔fl`) — the mutual walk consumes the shared `elems` payload,
+  corrupting the sibling `head-of(node)`. `fc (List [Name "a", Int 5])` → 1 not 101 (head reads None). An
+  INLINE walk that does NOT call `fc` back is correct — it is the `fc↔fl` cycle over the shared payload.
+  This is the IDIOMATIC homoiconic-Ast resolver shape (`check`/`check-list`), so a scope-checker over the
+  canonical `Ast` can't be written the natural way — WITHHELD as `repros/blocked-scopecheck-mutual-
+  recursion-scope-loss.cdz` (a `let`-binder resolver whose extended `Set` scope is LOST through the
+  recursion: `free-vars (let ((x 5)) (+ x x))` → 3 not 1, the bound `x`s read as free — even rewritten as
+  a single index-walk fn). Fix locus: dup the aggregate/collection operand of a (mutual-)recursive call
+  whose callee consumes a payload/scope a sibling still reads.
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
   LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
@@ -358,32 +384,28 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   the `dup` of a `LocalRef`/`Param` LHS still read later — same missing-dup defect as the push/insert
   length face (which `push` was patched for, `concat` not). Repro + its push-twin isolate the exact op.
 
-- **OPEN (seed `rcdzc` — EFFECT MISCOMPILE, silent wrong value, iter 38): a self-recursive effectful fn
-  with TWO sibling recursive calls in a match arm does not thread the handler state between the siblings.**
-  `repros/miscompile-effect-state-not-threaded-across-sibling-recursive-calls.cdz`. `walk (Node Leaf Leaf)`
+- **OPEN (seed `rcdzc` — EFFECT DECLINE, iter 38; ⚠ UPGRADED from a silent miscompile to an honest decline
+  iter 43): a self-recursive effectful fn with TWO sibling recursive calls in a match arm does not thread
+  the handler state between the siblings.** `repros/decline-effect-state-across-sibling-recursive-calls.cdz`.
+  ⚠ At iter 38 this SILENTLY returned 0; a sibling's tail-resumptive-fold change now REJECTS the shape
+  ("not yet reducible by the tail-resumptive fold") — a SAFETY IMPROVEMENT (the wrong value is gone).
+  `walk (Node Leaf Leaf)`
   under `handle Fresh(0) | next(s) => resume(s, s+1)` (arm: `let a = walk(l) in let b = walk(r) in a + b`)
-  should draw id 0 then id 1 → 1; it RETURNS **0** (both leaves draw id 0 — the second sibling call resumes
-  from the INITIAL state, not the state the first left). SHARP (each necessary): TWO sibling recursive
+  should draw id 0 then id 1 → 1; it once RETURNED **0** (both leaves drew id 0 — the second sibling call
+  resumed from the INITIAL state), now DECLINES. SHARP (each necessary): TWO sibling recursive
   calls in one arm (a SINGLE recursive call threads correctly); a STATE-THREADING handler (a
   constant-handback `resume(1, s)` counts the draws CORRECTLY — 2 — so the draws happen, only the state
   threading is lost); a self-call inside a `match` arm (two calls to a SEPARATE effectful fn thread fine,
-  and a single self-recursive draw loop threads fine — `fresh.cdz`). The tell: the BARE `walk(l) + walk(r)`
-  arm DECLINES honestly ("not yet reducible by the tail-resumptive fold") but the let-sequenced form
-  MISCOMPILES — the fold accepts a shape it cannot correctly thread. Root: the tail-resumptive
-  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline + `#eff3$s0`
-  mangled-name leak, but here a SELF-recursive fn, silent). WORKAROUND: keep the effect on a SINGLE
-  recursive spine ("flatten pure, then gensym") — `src/label.cdz` does this.
+  and a single self-recursive draw loop threads fine — `fresh.cdz`). Root: the tail-resumptive
+  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline). WORKAROUND for
+  a linearizer: thread a COUNTER through the RESULT (pure), not a `Fresh` handler — `src/ssa.cdz` does this.
 
-- **OPEN (seed `rcdzc` — EFFECT DECLINE, not a miscompile, iter 38): performing an effect op directly as
-  an ELEMENT of a tuple/list/record constructor is not yet reducible by the tail-resumptive fold.**
-  `repros/decline-effect-perform-inside-a-compound-constructor.cdz`. `let p = (Fresh.next(), Fresh.next())`
-  → "this handler is not yet reducible by the tail-resumptive fold" (no recursion needed; a single perform
-  element declines too). CONTRAST — a perform WORKS in an arith operand (`Fresh.next() + Fresh.next()`), a
-  call arg (`twice(Fresh.next())`), a sum-ctor payload (`W.Mk(Fresh.next())`), and let-bound before a tail
-  self-call. WORKAROUND: prefetch each perform into a `let`, then build the tuple/list/record from the
-  bound vars (`let a = Fresh.next() in let b = Fresh.next() in (a, b)` works). Fix locus: extend the
-  reducible set in `effects.rs` to a perform in a `Tuple`/`ListNew`/`Record` element (hoist like the
-  arith/call/sum cases it already handles). Honest decline (`cdz check` clean, `cdz compile` declines).
+- ✅ **FIXED (iter 43, siblings incl. `@b2af1244`): performing an effect op directly as an ELEMENT of a
+  tuple/list/record constructor.** `repros/fixed-effect-perform-inside-a-compound-constructor.cdz` (was
+  `decline-…`). `let p = (Fresh.next(), Fresh.next())` and the list/record forms now COMPILE and thread the
+  handler state correctly (tuple → (0,1), record fields left-to-right). The tail-resumptive fold's reducible
+  set was extended to `Tuple`/`ListNew`/`Record` elements. A perform still works in an arith operand / call
+  arg / sum-ctor payload as before. (The remaining effect gap is the sibling-recursive-call one above.)
 
 - **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
   `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =
@@ -478,27 +500,30 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   depth-threshold sensitivity of the slot-alias family. `src/prec.cdz`'s deep `paren-count` case is
   withheld for this (its shallow cases pass).
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value; ⚠ NARROWED to LOOP-CONTEXT iter 39): runtime
-  `String.at` breaks content equality INSIDE A SELF-RECURSIVE LOOP.**
-  `repros/miscompile-runtime-string-at-content-equality.sexp`. ⚠ A sibling PARTIALLY FIXED this — every
-  STRAIGHT-LINE case now works: `at(runtime i) == "a"` → true, `at(runtime 1) == at(runtime 3)` → true, a
-  helper called twice → correct, two sequenced `at`+`==` → correct. The REMAINING failure is LOOP-CONTEXT
-  ONLY: `String.at(s,i) == c` inside a self-recursive loop threading `s` as a param returns FALSE every
-  iteration (even the FIRST — the char is a valid `Some` of byte-len 1, but `==` yields false). So
-  `count-a "banana"` STILL returns 0; minimal survivor `cnt "aa" 0 0` (2-iter loop) → 0 not 2. A
-  CONSTANT-index `String.at` folds + compares correctly. This still silently breaks a LOOP-based LEXER
-  (which is why `src/lex.cdz` lexes over char-CODES not a String). **ROOT-CAUSED (two
-  layers in `backend/wasm/select.rs`):** (1) `Core::ValueEq` `bytes-compact`s a String operand only when
-  OWNED, but a `String.at` result is a non-flat `bytes-slice` rope reached via `Option.expect`; (2)
-  `heap_operand_ownership` classifies `SumExpect`/`SumPayload`/`Proj` as always `Borrowed` — right for a
-  `Map.lookup`, WRONG for a fresh producer like `String.at` (a `bytes-slice` is Owned, `Option.expect`
-  transfers it out). The principled fix is layer 2 (a `SumExpect`/`SumPayload` of a producer is Owned) —
-  which then also serves the `Map.lookup` borrow-decline family. A naive layer-1-only fix (compact
-  borrowed Strings too) makes isolated compares correct but double-frees in a loop; reverted, root-cause
-  documented in the repro for a seed agent. Now that the straight-line path is fixed, the residual is the
-  LOOP-TRANSFORM emit needing the same slice-compact the straight-line emit got. `String.slice` on a
-  runtime string NOW WORKS (iter 39: returns `Option String`, `slice("hello world",0,5)` → Some "hello",
-  OOB → None) — the earlier "constant strings only" decline is GONE.
+- **✅ FIXED (seed `rcdzc`, 2026-07-14 — was a MISCOMPILE, silent wrong value): runtime `String.at`
+  content equality, INCLUDING the loop-context residual.** `repros/miscompile-runtime-string-at-content-
+  equality.sexp`. A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
+  to the same char obtained any other way (a literal, a different-index `String.at`); it equalled only
+  ITSELF at the identical index. A sibling had earlier fixed the STRAIGHT-LINE cases (compacting an OWNED
+  String operand at the `=` site); the surviving failure was LOOP-CONTEXT — `String.at(s,i) == c` in a
+  self-recursive loop threading `s` returned false every iteration, so `count-a "banana"` still returned 0
+  not 3, and `src/lex.cdz` had to lex over char-CODES not a String. **ROOT of the residual:** `String.at`
+  returns `Some(bytes-slice(str, pos, len))` — a ROPE slice (a byte offset INTO the source), and String
+  equality (`champ_eq`) + key hashing compare PHYSICAL bytes, so the slice compared by its offset, never
+  matching a flat twin; the `=`-site owned-compact could not reach it because `SumExpect` extracts the
+  payload as a BORROW from the `Some` wrapper the wrapper still owns. **FIX (in the `Core::StrAt` emit) —
+  NOT the layer-2 ownership reclassification hypothesized** (that double-frees, as the borrow above
+  explains): compact the fresh slice to an INDEPENDENT flat leaf AT THE PRODUCER, right after
+  `bytes-slice`, before wrapping it in `Some`. Doing it there fixes ALL uses (straight-line AND loop, a
+  map/set key, a re-concat) and is cheap (a `String.at` result is ≤4 bytes). It also exposed and fixed a
+  latent bug: `String.at` CONSUMED its string operand (`bytes-slice` consumes) without `dup`ing it — the
+  pre-fix code masked this by LEAKING the un-compacted `Some(slice)` (the leak pinned the source alive but
+  compared wrong); compaction then dropped the source early → a use-after-free the recursive scan hit as a
+  trap. So the fix also `dup`s the borrowed source before the slice consumes it and makes `String.at` a
+  clean BORROW (like `List.at`/`Bytes.at`) — the None branch no longer drops the source, and
+  `binding_escapes` marks the string borrowed. Migrated to the graded corpus (`spec/semantics/13-
+  strings.sexp`: content-equal-to-literal + recursive char-scan) + seed unit tests. (`String.slice` on a
+  runtime string now works too — a sibling landed it iter 39.)
 
 - **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
   to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.

@@ -13655,6 +13655,62 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak once the escaped child drops");
     }
 
+    /// The MIRROR of the projection-escape above, and the runtime contract the compiler's fix for the
+    /// mutual-recursion still-live-binding miscompile RELIES ON (`spec@6db817a3`: an `fc↔fl` walk consumes
+    /// a node's shared child payload while a sibling operand still reads the parent — the idiomatic
+    /// homoiconic-Ast resolver shape; fix = "dup the aggregate/collection operand of a (mutual-)recursive
+    /// call whose callee consumes a payload a sibling still reads"). Here we KEEP the parent and DUP-then-
+    /// fully-CONSUME a payload reference (owner A = the consuming recursive walk), asserting owner B (the
+    /// parent + a SIBLING read of it) is UNCORRUPTED. The existing projection test drops the PARENT and
+    /// keeps the child; this keeps the parent and consumes a dup'd payload ref — the shape the resolver hits.
+    #[test]
+    fn rc_convention_shared_payload_consumed_while_parent_and_sibling_survive() {
+        reset();
+        let before = live_nodes();
+        // node = (tuple head=Name('a'), elems=[Name('b'), Int(5)]) — a "List" AST node: a head + child list.
+        let head = op_sum_new(0, boxed_int_leaf(97)); // Name('a')
+        let e0 = op_sum_new(0, boxed_int_leaf(98)); // Name('b')
+        let e1 = op_sum_new(1, boxed_int_leaf(5)); // Int(5)
+        let elems = op_arr_alloc(2);
+        op_arr_set(elems, 0, e0);
+        op_arr_set(elems, 1, e1);
+        let node = op_arr_alloc(2);
+        op_arr_set(node, 0, head);
+        op_arr_set(node, 1, elems);
+        // The compiler's FIX shape: DUP the `elems` payload before passing it into the consuming walk
+        // (rc 1→2 — one reference for `node`, one for the walk that will consume it).
+        let elems_ref = op_arr_get(node, 1);
+        op_dup(elems_ref);
+        // Owner A — the consuming (mutual-)recursive walk fully releases ITS `elems` reference (the walk
+        // drops each element as it descends; here modelled as a single op_drop of the dup'd ref).
+        op_drop(elems_ref);
+        // Owner B — the SIBLING read of the PARENT `node` (head-of-node) must be UNCORRUPTED. This is the
+        // exact read the miscompile broke (`head reads None`); the dup keeps `elems` (and thus `node`) alive.
+        assert_eq!(
+            op_get_int(op_sum_payload(op_arr_get(node, 0))),
+            97,
+            "sibling head-of-node read survives the shared payload's consume (no corruption)"
+        );
+        // And `elems`, still held by `node`, is fully intact — both children readable.
+        assert_eq!(
+            op_get_int(op_sum_payload(op_arr_get(op_arr_get(node, 1), 0))),
+            98,
+            "the shared payload's element 0 (Name 'b') survives"
+        );
+        assert_eq!(
+            op_get_int(op_sum_payload(op_arr_get(op_arr_get(node, 1), 1))),
+            5,
+            "…and element 1 (Int 5) survives"
+        );
+        // Dropping the parent reclaims everything exactly once (the walk already released its dup'd ref).
+        op_drop(node);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free: the dup'd payload ref was consumed, the parent's ref freed the rest"
+        );
+    }
+
     /// §3.5 — `match Some(x) => x`: dup the borrowed payload, then drop the scrutinee. Payload
     /// survives; the sum node is reclaimed.
     #[test]

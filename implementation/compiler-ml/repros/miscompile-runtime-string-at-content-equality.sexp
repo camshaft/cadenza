@@ -1,4 +1,17 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc). `cdz check` CLEAN; `cdz compile -t wasm`
+;; ✅ FIXED (2026-07-14, seed rcdzc) — REGRESSION WITNESS. `count-a "banana"` now returns 3 and a
+;; runtime-index `String.at` compares by CONTENT. FIX (in the `Core::StrAt` emit, backend/wasm/select.rs):
+;; `String.at` returns `Some(bytes-slice(str, pos, len))` — a ROPE slice (a byte offset INTO the source),
+;; and String `=` (`champ_eq`) + key hashing compare PHYSICAL bytes, so the slice compared by its offset,
+;; never matching a flat twin. The producer now COMPACTS the fresh slice to an independent flat leaf right
+;; after `bytes-slice` (before wrapping in `Some`), fixing every downstream use. NOT the layer-2 ownership
+;; reclassification hypothesized below — that double-frees: `SumExpect` extracts the payload as a BORROW
+;; from the `Some` wrapper (owned by it), so the `=` site cannot own-and-compact it. The fix also `dup`s
+;; the borrowed source before the consuming `bytes-slice` (the emit was consuming `str` without a dup — a
+;; latent bug the leaked un-compacted slice masked; compaction unmasked it as a UAF in the recursive scan)
+;; and makes `String.at` a clean BORROW like `List.at`/`Bytes.at`. Migrated to the graded corpus
+;; (spec/semantics/13-strings.sexp) + seed unit tests. Kept as the witness.
+;;
+;; ORIGINAL (2026-07-14): MISCOMPILE — SILENT WRONG VALUE. `cdz check` CLEAN; `cdz compile -t wasm`
 ;; SUCCEEDS; runs and returns the WRONG answer. Runtime `String.at` at a RUNTIME index produces a
 ;; one-character String that does NOT compare equal (by `=`) to the same character obtained any other
 ;; way — a different-index `String.at`, a `String.concat`-built char, or a constant char literal. So

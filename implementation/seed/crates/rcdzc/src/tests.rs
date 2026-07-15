@@ -2524,6 +2524,77 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// The char-by-char lexer idiom: a recursive scan reading each Unicode scalar with `String.at` at a
+/// RUNTIME index and comparing its content — `(= (String.at s i) "a")`. `String.at` returns
+/// `Some(bytes-slice(str, pos, len))`, a ROPE slice (an offset INTO the source), so before the fix its
+/// content-equality (`champ_eq`, a physical-byte compare) compared by rope OFFSET and NEVER matched a
+/// flat twin — `count-a "banana"` returned 0 (a silent wrong value), blocking a lexer over a runtime
+/// string. The fix COMPACTS the fresh slice to an independent flat leaf at the producer (the `StrAt`
+/// Some-branch, after `dup`ing the borrowed source so the slice owns its own reference), so the result
+/// compares by content everywhere. "banana" has three 'a's → 3. `#[ignore]` — needs the runtime store.
+#[test]
+#[ignore]
+fn a_runtime_string_at_result_compares_by_content_in_a_recursive_scan() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[str-at-scan] debug-counters runtime not in the store; skipping");
+        return;
+    };
+    let src = "(module m \
+           (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) \"ok\")) \
+           (def (cnt (: s String) (: i Int64) (: acc Int64)) \
+             (if (= i (String.byte-len s)) acc \
+                 (cnt s (+ i 1) (if (= (at s i) \"a\") (+ acc 1) acc)))) \
+           (def (main) (cnt \"banana\" 0 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(3),
+        "the recursive scan must count the three 'a's in \"banana\" (was 0 — a String.at rope-offset \
+         content-equality miscompile)"
+    );
+}
+
+/// The `String.at` slice-compaction + borrow-`dup` fix must not DOUBLE-FREE the source string: reading a
+/// char with `String.at` and then REUSING the same string afterwards must run without a trap to the
+/// correct value. The Some-branch `dup`s the borrowed source before the consuming `bytes-slice`, so the
+/// slice owns an INDEPENDENT reference and the source survives for its later use; a MISSING dup would free
+/// the source under the slice → a use-after-free (the recursive char-scan hit exactly that as a trap
+/// before the dup landed). `rep` builds an owned runtime rope so `String.at` reaches its real producer
+/// path (a constant folds away). A clean run to the right value witnesses the no-double-free property;
+/// the leak-balance of the compaction itself is covered by the rope-eq / value-eq / map-key `net-to-0`
+/// tests (which pass with this change). `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_string_at_then_reuse_does_not_double_free_the_source() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[str-at-reuse] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // Read char 0 of an owned rope, compare it, THEN reuse the SAME rope via `String.byte-len`. If
+    // `String.at` freed the source (missing dup), the later `byte-len` reads freed memory → trap. The
+    // rope "hixxx" has char 0 = "h" (→ matches, +1), byte-length 5. `1 + 5 = 6`.
+    let src = "(module m \
+        (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+        (def (use (: s String)) \
+          (+ (if (= (Option.expect (String.at s 0) \"x\") \"h\") 1 0) (String.byte-len s))) \
+        (def (main) (use (rep \"hi\" 3))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(6),
+        "String.at then reuse: char 0 of \"hixxx\" is \"h\" (→1) + byte-len 5 = 6; a double-freed source \
+         (a missing dup before the consuming bytes-slice) would trap or read garbage in the later byte-len"
+    );
+}
+
 /// A RUNTIME STRING ROPE used as a MAP KEY is canonicalized (`bytes-compact`) at the insert/lookup CHAMP
 /// sites, so a rope key is found by its flat twin — the map/set KEY remainder of the value-eq rope fix.
 /// `Map.insert`/`Map.lookup` hash+compare the key with `champ_hash`/`champ_eq` (PHYSICAL bytes); a
@@ -3678,6 +3749,39 @@ fn a_perform_in_a_tuple_constructor_element_threads() {
     assert!(
         compile_component(&crate::codec::encode(&parse(src))).is_ok(),
         "a perform in a string-headed tuple ctor element must thread, not decline"
+    );
+}
+
+/// A perform in a RECORD field VALUE (the string-headed `("record" (label value)…)` primitive, what the ML
+/// record literal `{ a = … }` lowers to) now THREADS — the `thread_bounded` record arm threads each field
+/// value in WRITTEN order (keeping the label) and rebuilds the ctor. Fields WRITTEN `b`,`a` (reverse of
+/// sorted): `b` reads 0, `a` reads 1 → `(- (. r a) (. r b))` = 1 (had it evaluated in sorted order it would
+/// be -1), pinning written-order evaluation. Completes the compound-ctor element threading (tuple/list/record).
+#[test]
+fn a_perform_in_a_record_field_threads_in_written_order() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((r (\"record\" (b (Fresh.next)) (a (Fresh.next))))) (- (. r a) (. r b))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed record ctor field must thread, not decline"
+    );
+}
+
+/// A perform in a MAP constructor entry VALUE (the string-headed `("map" (key value)…)` primitive) now
+/// THREADS — the `thread_bounded` map arm threads each entry's key then value in written order and rebuilds
+/// the ctor. `(let ((m ("map" (10 (Fresh.next)) (20 (Fresh.next))))) …)` reads 0 under key 10, 1 under key
+/// 20. Completes the compound-ctor element threading: tuple / list / record / map.
+#[test]
+fn a_perform_in_a_map_entry_value_threads() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((m (\"map\" (10 (Fresh.next)) (20 (Fresh.next))))) (Map.size m)))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed map ctor entry value must thread, not decline"
     );
 }
 
@@ -12981,7 +13085,7 @@ mod match_engine {
         );
         assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
         assert!(
-            errors[0].message.contains("is a TYPE that cannot cross"),
+            errors[0].message.contains(crate::diag::TYPE_EXPORT_MARKER),
             "the surviving error names the real cause: {}",
             errors[0].message
         );
@@ -12997,6 +13101,41 @@ mod match_engine {
             }),
             "the no-runtime-form declines must not accompany the coded reject: {:?}",
             out.diagnostics
+        );
+        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a type-value that
+        // `typeval_of` does not reduce to a bakeable concrete type — hits the SAME reject branch. Its
+        // message previously said "is a TYPE that cannot cross …", which did NOT contain
+        // `TYPE_EXPORT_MARKER`, so the three no-runtime-form declines LEAKED (the coded reject plus a
+        // built-in-as-value / nullary-lambda / type-value cascade). The reworded message embeds the marker,
+        // so `dedup_faults` drops the cascade here too — one coded error, exactly like the parameterized
+        // case above.
+        let ann = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (: Int64 Type)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let ann_errors: Vec<&crate::abi::Diagnostic> = ann
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            ann_errors.len(),
+            1,
+            "a nullary `(: T Type)` type-value export = one error, got: {:?}",
+            ann.diagnostics
+        );
+        assert!(
+            ann_errors[0]
+                .message
+                .contains(crate::diag::TYPE_EXPORT_MARKER),
+            "the nullary-annotated reject also names the marker: {}",
+            ann_errors[0].message
         );
     }
 
@@ -20811,6 +20950,42 @@ mod match_engine {
                 "`{ok}` is a valid integer segment width"
             );
         }
+    }
+
+    #[test]
+    fn a_misspelled_bin_segment_kind_offers_the_rename_fix() {
+        // A bin segment kind head that is a plausible typo of a known kind — `byte`→`bytes`, `utf`→`utf8`,
+        // `bit`→`bits` — now names it + carries a rename fix on the kind head (the bin twin of the
+        // member/variant did-you-mean). A far miss keeps the plain "unrecognized kind" message.
+        for (typo, want) in [("byte", "bytes"), ("utf", "utf8"), ("bit", "bits")] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: b Bytes)) (bin ({typo} b))) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("`{typo}` must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{typo}: {}", d.message);
+            assert!(
+                d.message.contains(&format!("did you mean `{want}`?")),
+                "`{typo}` suggests `{want}`: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some(want),
+                "`{typo}` carries the rename fix to `{want}`: {:?}",
+                d.fix
+            );
+        }
+        // A FAR miss keeps the plain message, no fix (no baseless guess).
+        let far =
+            reject_full("(module m (def (main) (bin (xyzzy 5))) (export main))").expect("reject");
+        assert!(
+            far.message.contains("unrecognized bin segment kind")
+                && !far.message.contains("did you mean")
+                && far.fix.is_none(),
+            "a far-miss kind keeps the plain message with no fix: {} fix={:?}",
+            far.message,
+            far.fix
+        );
     }
 
     #[test]
@@ -30018,6 +30193,64 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wrong_arity_record_or_map_entry_offers_a_delete_the_surplus_fix() {
+        // A record field / map entry is a fixed-arity `(key value)` pair. A SURPLUS element `(x 1 2)` /
+        // `(1 2 3)` now routes through the shared `fixed_arity_reject` — a delete-the-surplus fix, bringing
+        // these entry forms to fix-parity with the rest of the fixed-arity family. TOO FEW (`(x)` / `(1)`)
+        // keeps the message with no fix (nothing to delete).
+        let find = |src: &str, msg: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains(msg))
+                .unwrap_or_else(|| panic!("expected the entry-arity fault for {src}"))
+        };
+        // SURPLUS record field → delete fix.
+        let rec = find(
+            "(module m (def (main) (record (x 1 2))) (export main))",
+            "record field must be (key value)",
+        );
+        assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
+        assert_eq!(
+            rec.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a surplus record field carries a delete fix: {:?}",
+            rec.fix
+        );
+        // SURPLUS map entry → delete fix (both the NAME alias and the primitive form).
+        for src in [
+            "(module m (def (main) (map (1 2 3))) (export main))",
+            "(module m (def (main) (\"map\" (1 2 3))) (export main))",
+        ] {
+            let m = find(src, "a map entry is a (key value) pair");
+            assert_eq!(
+                m.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "a surplus map entry carries a delete fix: {src} -> {:?}",
+                m.fix
+            );
+        }
+        // TOO FEW — nothing to delete, no fix.
+        let few_rec = find(
+            "(module m (def (main) (record (x))) (export main))",
+            "record field must be (key value)",
+        );
+        assert!(
+            few_rec.fix.is_none(),
+            "a too-few record field has no surplus to delete: {:?}",
+            few_rec.fix
+        );
+        let few_map = find(
+            "(module m (def (main) (map (1))) (export main))",
+            "a map entry is a (key value) pair",
+        );
+        assert!(
+            few_map.fix.is_none(),
+            "a too-few map entry has no surplus to delete: {:?}",
+            few_map.fix
+        );
+    }
+
+    #[test]
     fn a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form() {
         // A record TYPE `(Record (x Int64) (x Bool))` names field `x` twice. A record's field names are a
         // fixed SET (the same rule the record VALUE `(record (a 1) (a 2))` is rejected for), but the type
@@ -32451,6 +32684,51 @@ mod diagnostics {
                 redundant.len(),
                 1,
                 "a catch-all after a finite type is fully covered is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duplicate_or_shadowed_list_length_arm_is_redundant() {
+        // LIST-match redundancy — the list-length analogue of the variant/literal duplicate & shadowing
+        // checks. A list arm covers a length (exact `(list a)` = len 1, or a `≥ k` ray `(list a .. r)`); a
+        // later arm whose lengths are all already covered is unreachable (`ArmCover::ListExact`/`ListFrom`
+        // + the `min_list_from` subsumption). Each emits exactly one CDZ0213.
+        for src in [
+            // A duplicate exact length (both match length-1 lists).
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A duplicate empty-list arm.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list) 9) (_ 1))) (def (main) (f (list))) (export main))",
+            // A rest arm `(list a .. r)` [len ≥ 1] shadows a later exact `(list a b)` [len 2 ≥ 1].
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A zero-lead rest `(list .. r)` [every length] shadows a later `(list a)`.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list .. r) 0) ((list a) 9))) (def (main) (f (list))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a duplicate/shadowed list-length arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_or_partly_covered_list_length_arms_do_not_warn() {
+        // Negatives — no list arm's lengths are fully covered by an earlier one, so none is flagged.
+        for src in [
+            // Distinct lengths + a rest for the remainder: 0, 1, then ≥ 1 — the rest is NOT redundant (it
+            // covers ≥ 2, which no earlier arm did) and neither exact arm shadows another.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a) a) ((list a .. r) 9))) (def (main) (f (list))) (export main))",
+            // Distinct exact lengths.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A rest of lead 2 [len ≥ 2] does NOT cover a later exact len-1 `(list a)` — length 1 ∉ [2, ∞).
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a b .. r) a) ((list a) 7) (_ 0))) (def (main) (f (list 1))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a match whose list arms cover distinct lengths must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
             );
         }
     }
