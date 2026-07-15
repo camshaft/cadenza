@@ -174,6 +174,43 @@ def is-empty(s: Solid) = leaf-count(s) == 0
 
 def fmax-int(a: Int64, b: Int64) = if a > b then a else b
 
+/// ---- simplify: an Empty-absorbing normalization (a real driver pass) ----------------------------
+/// Rebuild the tree bottom-up, absorbing the `Empty` identity so a mesh backend never evaluates a boolean
+/// against nothing. This is the archetypal recursive tree-REWRITE (returns a `Solid`, unlike the folds that
+/// return a scalar) — a mesh driver runs exactly this before meshing. The algebraic identities:
+///   • `union Empty x` = `union x Empty` = `x`     (Empty is union's identity)
+///   • `intersection Empty x` = `intersection x Empty` = `Empty`  (Empty absorbs intersection)
+///   • `difference Empty x` = `Empty`;  `difference x Empty` = `x` (subtracting nothing is a no-op)
+///   • `translate/rotate/scale _ Empty` = `Empty`  (transforming nothing is nothing)
+/// Leaves and a genuinely non-empty node are rebuilt unchanged. `simplify` is idempotent (a second pass is a
+/// no-op — pinned in the suite) and never adds geometry (`leaf-count (simplify s) <= leaf-count s`).
+def simplify(s: Solid) = match s with
+  | Solid.Empty => Solid.Empty
+  | Solid.Cube(v) => Solid.Cube(v)
+  | Solid.Sphere(r) => Solid.Sphere(r)
+  | Solid.Cylinder(h, r) => Solid.Cylinder(h, r)
+  | Solid.Union(a, b) =>
+    let sa = simplify(a) in
+    let sb = simplify(b) in
+    (if is-empty(sa) then sb else (if is-empty(sb) then sa else Solid.Union(sa, sb)))
+  | Solid.Intersection(a, b) =>
+    let sa = simplify(a) in
+    let sb = simplify(b) in
+    (if is-empty(sa) then Solid.Empty else (if is-empty(sb) then Solid.Empty else Solid.Intersection(sa, sb)))
+  | Solid.Difference(a, b) =>
+    let sa = simplify(a) in
+    let sb = simplify(b) in
+    (if is-empty(sa) then Solid.Empty else (if is-empty(sb) then sa else Solid.Difference(sa, sb)))
+  | Solid.Translate(by, of) =>
+    let so = simplify(of) in
+    (if is-empty(so) then Solid.Empty else Solid.Translate(by, so))
+  | Solid.Rotate(deg, of) =>
+    let so = simplify(of) in
+    (if is-empty(so) then Solid.Empty else Solid.Rotate(deg, so))
+  | Solid.Scale(by, of) =>
+    let so = simplify(of) in
+    (if is-empty(so) then Solid.Empty else Solid.Scale(by, so))
+
 /// ============================ @test suite (gate coverage for G1) ============================
 /// These pin the model's invariants: constructors build the right shape, the folds count correctly, the
 /// n-ary combinators fold with the right identities, and recursion runs end-to-end under wasmtime. A future
@@ -271,8 +308,67 @@ def transforms-preserve-leaf-count() =
   let wrapped = translate(v3(1.0, 0.0, 0.0), rotate(v3(0.0, 0.0, 90.0), scale(v3-splat(2.0), base))) in
   if leaf-count(wrapped) == 2 then (if count-nodes(wrapped) == 6 then unit else trap("3 transforms + union + 2 leaves = 6")) else trap("2 leaves")
 
+@test
+def simplify-absorbs-empty-in-union() =
+  // union(Empty, cube) simplifies to just the cube — 1 node, no wrapping Union
+  let t = union(empty(), cube-uniform(1.0)) in
+  let s = simplify(t) in
+  if count-nodes(s) == 1 then (if leaf-count(s) == 1 then unit else trap("1 leaf")) else trap("union(Empty, x) simplifies to x")
+
+@test
+def simplify-absorbs-empty-in-union-rhs() =
+  let s = simplify(union(cube-uniform(1.0), empty())) in
+  if count-nodes(s) == 1 then unit else trap("union(x, Empty) simplifies to x")
+
+@test
+def simplify-intersection-with-empty-is-empty() =
+  // intersecting with nothing yields nothing
+  let s = simplify(intersection(cube-uniform(1.0), empty())) in
+  if is-empty(s) then unit else trap("intersection(x, Empty) is Empty")
+
+@test
+def simplify-difference-subtracting-empty-is-noop() =
+  // subtracting nothing leaves the base
+  let s = simplify(difference(cube-uniform(1.0), empty())) in
+  if count-nodes(s) == 1 then (if leaf-count(s) == 1 then unit else trap("1 leaf")) else trap("difference(x, Empty) is x")
+
+@test
+def simplify-transform-of-empty-is-empty() =
+  // translating/rotating/scaling nothing is nothing
+  let s = simplify(translate(v3(1.0, 2.0, 3.0), empty())) in
+  if is-empty(s) then unit else trap("translate(_, Empty) is Empty")
+
+@test
+def simplify-prunes-a-nested-empty-branch() =
+  // union(cube, translate(_, Empty)) → the translate branch prunes to Empty, absorbed → just the cube
+  let t = union(cube-uniform(1.0), translate(v3-zero(), empty())) in
+  let s = simplify(t) in
+  if count-nodes(s) == 1 then (if leaf-count(s) == 1 then unit else trap("1 leaf")) else trap("nested empty branch pruned")
+
+@test
+def simplify-preserves-a-fully-real-tree() =
+  // no Empty anywhere: simplify is structure-preserving (same node + leaf count)
+  let t = union(cube-uniform(1.0), translate(v3(0.0, 0.0, 1.0), sphere(1.0))) in
+  let s = simplify(t) in
+  if count-nodes(s) == 4 then (if leaf-count(s) == 2 then unit else trap("2 leaves")) else trap("real tree preserved (4 nodes)")
+
+@test
+def simplify-is-idempotent() =
+  // simplify (simplify t) == simplify t in node count — a second pass changes nothing
+  let t = union(empty(), union(cube-uniform(1.0), translate(v3-zero(), empty()))) in
+  let once = simplify(t) in
+  let twice = simplify(simplify(t)) in
+  if count-nodes(once) == count-nodes(twice) then unit else trap("simplify is idempotent")
+
+@test
+def simplify-never-adds-geometry() =
+  // leaf-count (simplify s) <= leaf-count s, always
+  let t = union(empty(), intersection(cube-uniform(1.0), empty())) in
+  let s = simplify(t) in
+  if leaf-count(s) == 0 then unit else trap("simplify of an all-empty tree has no geometry")
+
 export { Solid.*, Vec3.*, v3, v3-zero, v3-splat, vx, vy, vz, v3-add, v3-mul, v3-eq,
          cube, cube-uniform, sphere, cylinder, empty,
          union, difference, intersection, union-all, intersection-all, difference-all,
          translate, rotate, scale,
-         count-nodes, leaf-count, depth, is-empty }
+         count-nodes, leaf-count, depth, is-empty, simplify }

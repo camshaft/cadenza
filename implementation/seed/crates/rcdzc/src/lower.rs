@@ -838,14 +838,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
-        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2). BRICK 2,
-        // the CONSTANT-SUCCESS fold: when the operand folds to a compile-time-CONSTANT success variant
-        // (`Some x` / `Ok x`), `?` unwraps it — the whole `(try e)` IS the payload, no boundary break fires
-        // (the happy path never short-circuits). This turns a constant-`Some`/`Ok` `?` into the payload
-        // exactly as `List.at` folds a constant in-range read. A constant FAILURE (`None`/`Err`) or a
-        // RUNTIME operand still needs the boundary `Core::Block` + `Core::Break` (BRICK 3), so it DECLINES
-        // here — never a miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined).
-        // The operand is walked either way so its own core faults surface.
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2/§4 v1). The
+        // enclosing FUNCTION body IS the boundary (v1): a `?`'s failure arm's value flows out as the
+        // function's value — there is no separate boundary-block node for v1 (§4). Two constant folds:
+        //   * CONSTANT SUCCESS (`Some x`/`Ok x`) → the payload; the happy path never short-circuits (BRICK 2a).
+        //   * CONSTANT FAILURE (`None`/`Err`) → `Core::Break { value }`; the failure short-circuits the
+        //     boundary, and `lower_let`/the strict-spine propagate the `Break` up to the boundary body's
+        //     value (BRICK 3a). A `Break` on the UNCONDITIONAL strict spine folds the enclosing `let`/spine
+        //     to the failure value; a conditional/runtime failure needs the real block/br (a later brick).
+        // A `?` on a RUNTIME operand still declines (never a miscompile — §An Unsupported Construct Is
+        // Declined). The operand is walked either way so its own core faults surface.
         Resolved::Try { operand } => match core_of(db, operand) {
             Core::Poison(r) => Core::Poison(r),
             // A constant success variant: `(try (Some x))` / `(try (Ok x))` folds to the payload. The
@@ -856,9 +858,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             {
                 core_of(db, payloads[0])
             }
+            // A constant FAILURE variant: `(try (None))` / `(try (Err r))` — the `?` short-circuits the
+            // enclosing boundary, so the whole `(try e)` becomes a `Core::Break` carrying the FAILURE value
+            // (the operand itself, e.g. `None`/`Err r`, which is `T_B`-typed — it IS the boundary result).
+            // `lower_let` folds a `let` whose init is this `Break` to the break value (the failure flows out
+            // as the boundary body's value); a `Break` reaching the backend un-folded declines (BRICK 3b).
+            Core::SumNew { disc, .. } if success_disc_of(db, operand) == Some(disc) => {
+                // Success disc but arity ≠ 1 — a malformed success (should not reach here); decline.
+                Core::Poison(Reject::decline(
+                    "the `?`/`try` operator lowers only a single-payload success operand yet",
+                ))
+            }
+            Core::SumNew { .. } => Core::Break { value: operand },
             _ => Core::Poison(Reject::decline(
-                "the `?`/`try` operator lowers only a constant success operand yet (the boundary \
-                 break for a failure / runtime operand is the next brick)",
+                "the `?`/`try` operator lowers only a constant operand yet (the boundary break for a \
+                 runtime operand is the next brick)",
             )),
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -2980,6 +2994,29 @@ fn lower_let(
     // its own init onward (a subset of the outer region), so its count/escape reads identically off the
     // outer map. So reuse the nearest enclosing cached region's map (`Db::let_region_uses`) instead of
     // re-collecting; only a let with NO cached enclosing region walks (once per whole nest → O(N) total).
+    // TRY SHORT-CIRCUIT (BRICK 3a): a binding whose INIT is a `?` on a constant FAILURE
+    // (`DESIGN-try-operator-rcdzc.md` §4 v1) lowers to a `Core::Break`, short-circuiting the enclosing
+    // boundary: the failure value flows out as the boundary body's value, so the whole `let` folds to that
+    // break value and the body (+ later bindings) never runs. Sound because a `let` INIT is on the
+    // UNCONDITIONAL strict spine (evaluated left-to-right before the body), so the first init that breaks is
+    // reached unconditionally; every binding BEFORE it must be pure (its value is discarded when the break
+    // fires). GATED by a `Resolved::Try` PRE-FILTER so a non-try init is never lowered early — calling
+    // `core_of(init)` before the keep-analysis populates `db.kept_bindings` would perturb a closure/multi-use
+    // binding's lowering decision (a memoization-order hazard). Only a `Resolved::Try` init is probed.
+    for (i, &(_name_occ, init)) in bindings.iter().enumerate() {
+        if matches!(resolved_of(db, init), Resolved::Try { .. })
+            && let Core::Break { value } = core_of(db, init)
+        {
+            // Every earlier init must be pure (its discarded value carries no lost effect). A perform/host
+            // call / trap in an earlier init is an effect the break would drop — leave it to a later brick.
+            if bindings[..i]
+                .iter()
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
+            {
+                return core_of(db, value);
+            }
+        }
+    }
     let uses = enclosing_or_collected_region_uses(db, node, bindings, body);
     let mut kept: Vec<(StructId, StructId)> = Vec::new();
     for &(_name_occ, init) in bindings.iter() {
@@ -4791,10 +4828,45 @@ fn desugar_refutable_nested_list_elements(
     Some(core_of(db, rewritten))
 }
 
-/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) with
-/// every PAYLOAD argument replaced by a wildcard `_` — the discriminant-only test pattern for the guard.
-/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, so it is reused
-/// verbatim. An applied ctor `(C.V p…)` keeps its HEAD and replaces each arg with a fresh `_`.
+/// A FRESH deep copy of a refutable payload sub-pattern (a literal atom, or a nested compound like `(Some
+/// 0)` / `(. Sum V)`) for reuse in the guard's discriminant-test pattern. A node has ONE parent and
+/// `push_list` reparents, so the guard cannot share the ORIGINAL sub-pattern (the body re-match reuses it) —
+/// this rebuilds it as an independent subtree (atoms via a leaf copy, lists rebuilt child-by-child). Only
+/// used for a KEPT (non-bare-binder) payload, so it never needs to preserve a binder's identity.
+fn clone_refutable_payload(db: &mut Db, e: StructId) -> StructId {
+    match db.ast.get(e) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            let cloned: Vec<StructId> = children
+                .iter()
+                .map(|&c| clone_refutable_payload(db, c))
+                .collect();
+            db.push_list(cloned)
+        }
+    }
+}
+
+/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) for the
+/// guard's discriminant test, with every BARE-BINDER payload argument replaced by a wildcard `_` but every
+/// REFUTABLE payload sub-pattern (a literal, a nested constructor) KEPT.
+///
+/// 🩸 Why keep refutable payloads: the guard's job is to decide whether this arm's element pattern matches
+/// so the arm fires or FALLS THROUGH. The body re-match `(match __lc (<ctor-pat> body) (_ (trap)))` traps in
+/// its `_` arm, so the guard MUST have already proven the FULL element pattern matches — not just the
+/// discriminant. If a payload sub-pattern is a LITERAL (`(Op.Add 0)`), wildcarding it made the guard pass on
+/// discriminant alone (`Op.Add` present) for an element whose actual payload is `5`, then the body re-match
+/// `(Op.Add 0)` failed to match `(Op.Add 5)` and hit the `_ → trap` — a SILENT TRAP miscompile on what
+/// should be a clean fall-through to a sibling `(Op.Add n)` arm (two same-variant arms refining the payload
+/// by different literals). Keeping the literal in the guard test makes the guard FALSE for payload `5`, so
+/// control falls through correctly and the body-rematch trap is genuinely dead.
+///
+/// A BARE-BINDER payload (`(Op.Add n)`) is still wildcarded — it matches any value, so the guard should not
+/// bind it (the body re-match binds `n`); wildcarding keeps the guard a pure discriminant+refinement test.
+/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, reused verbatim.
 fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> StructId {
     match db.ast.get(ctor_pat) {
         crate::ast::Struct::List(children) => {
@@ -4804,8 +4876,17 @@ fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> Struc
                 Some(first) if db.ast.as_name(first) == Some(".") => ctor_pat,
                 Some(head) => {
                     let mut new_children = vec![head];
-                    for _ in 1..children.len() {
-                        new_children.push(db.push_name("_"));
+                    for &arg in &children[1..] {
+                        // A BARE BINDER / `_` payload → wildcard it (the guard should not bind, and it
+                        // matches any value so it need not be tested). A REFUTABLE payload (a literal, a
+                        // nested ctor — anything NOT a bare name) is CLONED and kept (a fresh subtree, since
+                        // the ORIGINAL arg is reused by the body re-match — a node has one parent), so the
+                        // guard tests it and a mismatch FALLS THROUGH instead of trapping in the body re-match.
+                        if db.ast.as_name(arg).is_some() {
+                            new_children.push(db.push_name("_"));
+                        } else {
+                            new_children.push(clone_refutable_payload(db, arg));
+                        }
                     }
                     db.push_list(new_children)
                 }
@@ -12444,8 +12525,28 @@ fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
 /// `*`/`/`/comparison to the exact rational fold. (A `Rational`/other mix never reaches lowering —
 /// `check_application` rejected it CDZ0301 — so if ONE operand is a Rational the other is too.)
 fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
-    args.iter()
-        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Rational))
+    // A bare `Rational` OR a quantity over a Rational magnitude — a `(Qty Rational u)` erases to its
+    // inner Rational core, so a comparison of two such quantities folds through the same rational path
+    // (they are same-dimension same-reference-unit under the model, a same-unit compare of the erased
+    // rationals). Peel `Ty::Qty` to its inner; without this a `(< (Qty Rational) (Qty Rational))` fell to
+    // the scalar compare and DECLINED ("compound needs a heap walk").
+    args.iter().any(|&a| {
+        matches!(
+            peel_qty_inner_ty(crate::infer::type_of(db, a)),
+            crate::ty::Ty::Rational
+        )
+    })
+}
+
+/// The inner numeric type of a `(Qty T u)`, or the type itself when not a quantity — so a quantity's
+/// magnitude arithmetic/comparison routes by its ERASED inner numeric (a quantity erases to its inner
+/// value's core). Shared by `rational_operand`/`bigint_operand` so a `(Qty Rational/BigInt u)` takes the
+/// exact rational/bigint path rather than the fixnum scalar path.
+fn peel_qty_inner_ty(ty: crate::ty::Ty) -> crate::ty::Ty {
+    match ty {
+        crate::ty::Ty::Qty { inner, .. } => *inner,
+        other => other,
+    }
 }
 
 /// True iff either operand of a binary op has solved type `Ty::BigInt` — the signal to route `+`/`-`/
@@ -12453,8 +12554,17 @@ fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
 /// never reaches lowering — `check_application` rejected it CDZ0301 — so if ONE operand is a BigInt the
 /// other is too.)
 fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
-    args.iter()
-        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+    // A bare `BigInt` OR a quantity over a BigInt magnitude (`(Qty BigInt u)` erases to its inner BigInt
+    // handle) — peel `Ty::Qty` so a `(< (Qty BigInt) (Qty BigInt))` routes to the bigint comparison
+    // (`bigint-cmp`) rather than declining as a compound scalar compare. The arithmetic `+`/`-`/`*`/`/`
+    // over a BigInt-inner quantity is dispatched separately (`quantity_inner_is_bigint`); this covers the
+    // COMPARISON path, which reads `bigint_operand` in `lower_comparison`.
+    args.iter().any(|&a| {
+        matches!(
+            peel_qty_inner_ty(crate::infer::type_of(db, a)),
+            crate::ty::Ty::BigInt
+        )
+    })
 }
 
 /// True iff either operand of a binary op has solved type `Ty::Float` — the signal to remap `+`/`-`/`*`/

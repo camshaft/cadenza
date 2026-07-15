@@ -25623,6 +25623,64 @@ mod match_engine {
     }
 
     #[test]
+    fn two_same_variant_ctor_list_elements_refining_the_payload_by_literal_fall_through() {
+        // REGRESSION (silent TRAP miscompile): two list-element arms matching the SAME ctor variant but
+        // refining the payload with different LITERALS — `((list (Op.Add 0) .. r) …) ((list (Op.Add n) .. r)
+        // …)`. The ctor-element desugar (`desugar_refutable_ctor_list_elements`) built the arm GUARD from
+        // `ctor_pattern_with_wildcard_payloads`, which wildcarded ALL payloads — so `(Op.Add 0)`'s guard
+        // passed on the DISCRIMINANT alone (`Op.Add` present) for an element whose actual payload is 5, then
+        // the body re-match `(match __lc ((Op.Add 0) body) (_ (trap)))` failed (5 ≠ 0) and hit the `_ → trap`
+        // — a SILENT WRONG TRAP on what should be a clean fall-through to the sibling `(Op.Add n)` arm. FIX:
+        // the guard KEEPS a refutable (literal/nested-ctor) payload sub-pattern (wildcards only bare binders),
+        // so a literal mismatch fails the guard → falls through, and the body re-match's trap is dead.
+        // `cdz check` was clean (the trap is emit-only) — a check-vs-emit gap.
+        let first = run_heap_value(
+            "(module m (type Op (Add Int64) (Neg Int64)) \
+               (def (f (: xs (List Op))) \
+                 (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add n) .. r) n) (_ -1))) \
+               (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+            vec!["5".to_string()],
+        );
+        let Some(v) = first else {
+            eprintln!(
+                "runtime wasm not found; skipping same-variant literal-refinement fall-through run"
+            );
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "(Op.Add 5) must NOT match the literal-payload arm (Op.Add 0); it FALLS THROUGH to (Op.Add n), \
+             binding n=5 — never trapping (the guard now tests the literal payload, not just the discriminant)"
+        );
+        // The literal-payload arm DOES fire when the payload matches: (Op.Add 0) → 100.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add n) .. r) n) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["0".to_string()],
+            )
+            .unwrap(),
+            "100",
+            "(Op.Add 0) matches the literal-payload arm"
+        );
+        // TWO literal-payload arms of the same variant: (Op.Add 0) then (Op.Add 5); input 5 → second → 200.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add 5) .. r) 200) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["5".to_string()],
+            )
+            .unwrap(),
+            "200",
+            "the second literal-payload arm fires when the first's literal does not match"
+        );
+    }
+
+    #[test]
     fn a_nullary_variant_list_element_dispatches_by_discriminant() {
         // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
         // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary
@@ -31759,6 +31817,38 @@ mod match_engine {
         assert!(
             rendered.contains("105"),
             "a (Qty BigInt meter) add must run the bigint op (5 + 100 = 105): {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
+        // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
+        // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
+        // `bigint_operand`/`rational_operand` (read by `lower_comparison`) now peel `Ty::Qty` to the inner.
+        // A CONSTANT comparison folds to a `Bool` with no runtime, so `run_returns::<i64>` (via the `if`)
+        // works on the minimal linker. `(< (Qty (BigInt 5) m) (Qty (BigInt 100) m))` = true → 1.
+        let big = "(do (def (main) (if (< ((. Qty of) ((. BigInt of) 5) ((. Unit base) #\"meter\")) \
+                   ((. Qty of) ((. BigInt of) 100) ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(big)))
+                    .expect("a (Qty BigInt) comparison compiles (no compound-walk decline)"),
+                "main",
+            ),
+            1,
+            "5 meter < 100 meter (BigInt inner) folds to true"
+        );
+        // `(< (Qty (Rational 1/40) m) (Qty (Rational 127/5000) m))` = true (25 mm < 1 inch) → 1.
+        let rat = "(do (def (main) (if (< ((. Qty of) ((. Rational of) 1 40) ((. Unit base) #\"meter\")) \
+                   ((. Qty of) ((. Rational of) 127 5000) ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(rat)))
+                    .expect("a (Qty Rational) comparison compiles"),
+                "main",
+            ),
+            1,
+            "1/40 meter < 127/5000 meter (Rational inner) folds to true"
         );
     }
 
@@ -50659,19 +50749,56 @@ mod stage1 {
     }
 
     #[test]
-    fn a_constant_failure_try_declines_until_the_boundary_break() {
-        // The companion: a constant FAILURE operand (`None`/`Err`) must SHORT-CIRCUIT the boundary — it
-        // needs the `Core::Block` + `Core::Break` desugar (BRICK 3), so it DECLINES cleanly for now (a
-        // Todo, never a miscompile). `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` would
-        // break `main` to `None`. Pins that BRICK 2's fold is SUCCESS-ONLY — a failure does not silently
-        // fold (which would drop the short-circuit and miscompile).
-        let msg = expect_decline("(let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))");
+    fn a_constant_failure_try_short_circuits_the_boundary_to_the_failure() {
+        // BRICK 3a (DESIGN-try-operator-rcdzc.md §4 v1): a `?` on a constant FAILURE (`None`/`Err`) short-
+        // circuits the enclosing FUNCTION boundary — the failure value flows out as the function's value.
+        // `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` in the let-init `Core::Break`s, and
+        // `lower_let` folds the whole `let` to `None` (the body + later bindings never run). No boundary
+        // block node for v1 (the function body IS the boundary). It COMPILES (the corpus case "`?` on the
+        // failure variant short-circuits the boundary" runs it to `(None unit)`).
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))) \
+                   (export main))";
         assert!(
-            msg.contains("try")
-                || msg.contains('?')
-                || msg.contains("break")
-                || msg.contains("brick"),
-            "a constant-failure `?` declines pending the boundary break (BRICK 3): {msg}"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`None` `?` short-circuits the boundary to `None`, not declines"
+        );
+    }
+
+    #[test]
+    fn a_constant_err_try_short_circuits_a_result_boundary() {
+        // The Result companion: a constant `Err` `?` under a Result boundary short-circuits to the `Err`.
+        // `(try (Err 7))` breaks `main` to `(Err 7)`. Pins that the fold reads the SUCCESS disc (`Ok`) off
+        // the operand type and treats the non-success `Err` as the break, symmetric with the Option/`None`
+        // case. The operand + boundary are annotated `(Result Int64 Int64)` so the Result type is fully
+        // determined (an unannotated `(Ok x)` alone leaves `(Result _ _)` undetermined — a separate
+        // type-determinism concern, not the `?` fold).
+        let src = "(module m (def (main) (: (let ((x (try (: (Err 7) (Result Int64 Int64))))) (Ok x)) \
+                   (Result Int64 Int64))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`Err` `?` short-circuits the Result boundary to `Err`"
+        );
+    }
+
+    #[test]
+    fn a_constant_failure_after_an_effectful_binding_declines() {
+        // The soundness guard for BRICK 3a's strict-spine fold: the break drops every LATER binding + the
+        // body, so an EARLIER binding whose init has an OBSERVABLE side effect (a host call) cannot be
+        // dropped — folding would lose that effect. Such a shape DECLINES (a later brick handles it with the
+        // real block/br that runs the effect THEN breaks). Here an earlier `(log.emit …)` host call precedes
+        // the failing `?`; the fold must not fire. (A pure earlier binding — the T1 shape — still folds.)
+        let src = "(do (effect Log (op emit (-> Int64 Unit))) \
+                   (def (main) (host (Log) \
+                     (let ((a (Log.emit 1)) (x (try (Int64.checked-add Int64.max 1)))) (Some x)))) \
+                   (export main))";
+        // Must NOT compile to a value that dropped the `Log.emit` — declines (or keeps the call); either
+        // way it does not silently fold away the effect. Assert it does not run to a bare `(None …)` value
+        // with the emit lost — a decline is the correct conservative outcome here.
+        let out = compile_component(&crate::codec::encode(&parse(src)));
+        assert!(
+            out.is_err(),
+            "a constant-failure `?` after an effectful earlier binding must decline (the break would \
+             drop the host call), not silently fold"
         );
     }
 }
@@ -63312,6 +63439,38 @@ mod cross_component_oracle {
             extern_abi_val_type(&Ty::Unit),
             None,
             "Unit has no cross-boundary representation"
+        );
+
+        // THE OPAQUE-HANDLE COROLLARY (documents a deliberate limitation of the compose-time peer
+        // signature check): because EVERY runtime-owned compound crosses as the SAME `U32` handle, two
+        // STRUCTURALLY-DIFFERENT compounds have the SAME boundary signature. So `check_peer_iface_signatures`
+        // (which compares component Types) CANNOT distinguish a `(Tuple Int64 Int64)` from a `(Tuple Int64
+        // Int64 Int64)` or a `(Record …)` at a peer op's param/result — they are all `U32`. A compound
+        // SHAPE mismatch between a consumer's binding and a peer's export is therefore NOT caught at compose
+        // time; it surfaces as a runtime trap if the peer reads a field the crossed value doesn't have. This
+        // is intrinsic to the zero-cost opaque-handle ABI (the handle is meaningful only to the shared
+        // runtime; the component boundary sees a bare `u32`) — the signature check guards SCALAR shapes
+        // (which cross faithfully) and ARITY; compound shape agreement is the Cadenza-source contract's job,
+        // not the boundary's. Pinning it so a future "make the check catch compound shapes" attempt knows it
+        // must first make compound shapes VISIBLE at the boundary (which would forfeit zero-cost).
+        let tup2 = Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::int64()]));
+        let tup3 = Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::int64(), Ty::int64()]));
+        let rec = {
+            let mut f = std::collections::BTreeMap::new();
+            f.insert(crate::resolved::Symbol::plain("a"), Ty::int64());
+            Ty::Record(std::rc::Rc::new(f))
+        };
+        assert_eq!(
+            extern_abi_val_type(&tup2),
+            extern_abi_val_type(&tup3),
+            "two DIFFERENT tuple shapes share the SAME u32 boundary signature — the boundary is opaque \
+             to compound shape (a shape mismatch is a runtime concern, not a compose-time one)"
+        );
+        assert_eq!(
+            extern_abi_val_type(&tup2),
+            extern_abi_val_type(&rec),
+            "a Tuple and a Record also share the u32 handle signature — the compound boundary form is \
+             opaque by design (zero-cost)"
         );
     }
     // ------------------------------------------------------------------------------------------------

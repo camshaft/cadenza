@@ -190,11 +190,10 @@ def range-step(lo, hi, step) = Iter.StepRangeI((lo, (hi, step)))
 /// when `hi <= lo`. Handy for counting down (`range-down(5, 0)` → 4, 3, 2, 1, 0).
 def range-down(hi, lo) = Iter.DownRangeI((hi, lo))
 
-/// Iterate a SET's elements in CANONICAL (sorted) element order. Bridges a collection into the lazy
-/// pull-iterator via `Set.to-list` (the deterministic-order enumeration) + `from-list`, so every
-/// iterator transformer/consumer (map/filter/fold/…) composes over a set. Monomorphic `Set Int64` here
-/// (iter.cdz is Int64), matching the iterator's element type.
-def iter-set(s) = Iter.FromList(Set.to-list(s))
+// NOTE — `iter-set` (a Set → iterator bridge via `Set.to-list` + `from-list`) is TEMPORARILY REMOVED:
+// the `Set.to-list` prelude surface it needs was dropped from trunk by the naming-cutover batch (a
+// non-atomic land of the surface+consumer stack), so referencing it here broke compiler-ml's build.
+// Re-add `iter-set` once the Set.to-list front-end surface is restored (a separate MR is in flight).
 
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
@@ -1021,32 +1020,6 @@ def deep-pipeline-map-filter-take() =
   else
     trap("deep map∘filter∘take pipeline")
 
-// ── iter-set: a Set bridges into the iterator (canonical order) ──────────────────────────────────
-
-@test
-def iter-set-canonical-order() =
-  // {5,2,8,2} -> canonical sorted iteration [2,5,8]
-  if int-list-eq(collect-list(iter-set(Set.of([5, 2, 8, 2]))), [2, 5, 8]) then
-    unit
-  else
-    trap("iter-set canonical order = [2,5,8]")
-
-@test
-def iter-set-count-is-cardinality() =
-  // dedup: {3,1,2,1,3} has 3 distinct elements
-  if count(iter-set(Set.of([3, 1, 2, 1, 3]))) == 3 then unit else trap("iter-set count = 3")
-
-@test
-def iter-set-composes-with-transformers() =
-  // a set drops into the existing ops: sum of the doubled evens of {1,2,3,4,5,6} = 2*(2+4+6) = 24
-  if sum(map(filter(iter-set(Set.of([1, 2, 3, 4, 5, 6])), fn(x) => x % 2 == 0), fn(x) => x * 2)) == 24 then
-    unit
-  else
-    trap("iter-set |> filter even |> map *2 |> sum = 24")
-
-@test
-def iter-set-sum-canonical() =
-  // sum over an iterated set = sum of its distinct elements: {10,20,30} -> 60
-  if sum(iter-set(Set.of([10, 20, 30, 10]))) == 60 then unit else trap("iter-set sum = 60")
+// (iter-set + its tests removed with the producer above — re-add when Set.to-list is restored.)
 
 export { Iter.* }

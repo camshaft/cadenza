@@ -1752,6 +1752,50 @@
   (input  (do (def (main) ((. Int8 wrapping-add) 100 100)) (export main)))
   (output (: -56 Int8)))
 
+; ── The width-TRUNCATION conversion `(UInt N).wrap` / `(Int N).wrap` on a RUNTIME value ──────────────
+; `.wrap` is the TOTAL width conversion (distinct from the `wrapping-add`/`-mul` ARITHMETIC above): it
+; truncates its operand to the low N bits of the TARGET type's width (`UInt8.wrap` IS byte truncation —
+; there is no `Int.to-byte`; the width comes from the type). It lowers to a `Core::Convert{op: Wrap}`,
+; whose TARGET width is the node's OWN solved type. A constant operand folds; a RUNTIME operand emits the
+; machine truncate + (for a signed target) sign-extend. These pin the CONVERSION's observed result at the
+; boundary directly — the existing uses feed `.wrap` into a `bin`/`Bytes` construction and check
+; downstream, but none pins the wrap's OWN value on a runtime operand across the boundary, both backends.
+
+(case "uint8 wrap truncates a wide runtime value to the low 8 bits"
+  (doc    "`(UInt8.wrap n)` over a runtime Int64 keeps only the low 8 bits (mod 256): 300 → 44, 256 → 0,
+           and an in-range 200 → 200 (unchanged). A runtime operand exercises the emitted machine truncate
+           (a constant would fold), and the result crosses the boundary as a UInt8. Pins the byte-
+           truncation conversion's own value — `UInt8.wrap` IS byte truncation (no `Int.to-byte`), the
+           width read off the UInt8 target type — on both backends.")
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
+  (call   main (: 300 Int64))
+  (output (: 44 UInt8))
+  (call   main (: 256 Int64))
+  (output (: 0 UInt8))
+  (call   main (: 200 Int64))
+  (output (: 200 UInt8)))
+
+(case "int8 wrap truncates and sign-extends the low 8 bits of a runtime value"
+  (doc    "The SIGNED companion: `(Int8.wrap n)` truncates to the low 8 bits AND sign-extends them to the
+           Int8 range — 200's low byte (0xC8) has the sign bit set, so it reads as -56; 127 stays 127.
+           Distinct from `UInt8.wrap` (which zero-extends to 0..255): the same low 8 bits become a NEGATIVE
+           value under the signed target. Pins that the wrap conversion's sign-extension follows the TARGET
+           type's signedness, on both backends.")
+  (input  (do (def (main (: n Int64)) (Int8.wrap n)) (export main)))
+  (call   main (: 200 Int64))
+  (output (: -56 Int8))
+  (call   main (: 127 Int64))
+  (output (: 127 Int8)))
+
+(case "uint16 wrap truncates a wide runtime value to the low 16 bits"
+  (doc    "The wider-narrow face: `(UInt16.wrap n)` keeps the low 16 bits (mod 65536): 70000 → 4464
+           (70000 - 65536). Pins that the truncation width is the TARGET type's (16 here, not 8 or 64), so
+           the conversion is not hardwired to a byte — the width is read off the solved type, on both
+           backends.")
+  (input  (do (def (main (: n Int64)) (UInt16.wrap n)) (export main)))
+  (call   main (: 70000 Int64))
+  (output (: 4464 UInt16)))
+
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")
   (input  (> 5 3))

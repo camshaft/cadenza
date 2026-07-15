@@ -16,6 +16,11 @@
     "comments": {
       "patterns": [
         {
+          "comment": "A `///` doc comment — matched BEFORE the `//` rule (TextMate tries patterns in order) so a doc comment gets the distinct documentation scope an editor themes apart from an ordinary comment.",
+          "name": "comment.line.documentation.cadenza",
+          "match": "///.*$"
+        },
+        {
           "name": "comment.line.double-slash.cadenza",
           "match": "//.*$"
         },

@@ -178,6 +178,41 @@ impl<'a> Parser<'a> {
         self.atom(Leaf::Name(name.into()), span)
     }
 
+    /// Parse a tagged-template HOLE's source text as an ordinary ML expression and GRAFT the result
+    /// into this builder, returning the grafted root id. A hole `{expr}` holds any expression, so it is
+    /// parsed by the full ML reader (`read_ml`) in its own arena, then its root subtree is copied here
+    /// (leaves + structure) so it lives in the one arena this parse produces. Every grafted node is
+    /// given the template token's `span` (a hole has no independent source span in this token — the
+    /// whole `tag"…"` is one lexed token; a finer per-hole span is a future refinement). A hole that
+    /// fails to parse contributes its recovered/error arena (the reader never panics), and any parse
+    /// errors are surfaced by lifting them into this parser's error list.
+    fn graft_ml_expr(&mut self, src: &str, span: Span) -> StructId {
+        let parsed = read_ml(src);
+        for e in &parsed.errors {
+            self.errors.push(ParseError {
+                span,
+                message: format!("in a tagged-template hole: {}", e.message),
+            });
+        }
+        self.graft_subtree(&parsed.arenas, parsed.arenas.root, span)
+    }
+
+    /// Recursively copy the subtree rooted at `id` in `src` into this builder, giving each copied node
+    /// `span`. Returns the new root id. (An arena is append-only, so a post-order copy is valid.)
+    fn graft_subtree(&mut self, src: &Arenas, id: StructId, span: Span) -> StructId {
+        match src.get(id) {
+            crate::ast::Struct::Atom(leaf) => self.atom(src.leaf(*leaf).clone(), span),
+            crate::ast::Struct::List(children) => {
+                let children = children.clone();
+                let kids: Vec<StructId> = children
+                    .iter()
+                    .map(|&c| self.graft_subtree(src, c, span))
+                    .collect();
+                self.list(kids, span)
+            }
+        }
+    }
+
     /// Classify a numeric token's text into a value node, DESUGARING a `100N`/`0.5R` type suffix to
     /// the annotation `(: <literal> BigInt|Rational)` — the ML twin of the sexpr reader's suffix
     /// desugar, so a suffixed literal reads to the SAME arena on both surfaces. A bare number stays a
@@ -745,27 +780,37 @@ impl<'a> Parser<'a> {
                 let word = self.text(t).strip_prefix("#\\").unwrap_or("");
                 self.atom(literal::char_leaf(word), span)
             }
-            // A TAGGED TEMPLATE `tag"…"` → `(tagged-template <tag> (chunks <str>…) (holes <expr>…))` —
-            // a binding-dispatched compile-time macro over literal chunks + `{expr}` holes. The token
-            // text is `<tag>"<body>"`; split at the first `"` into the tag name and the string body.
-            // (B1: hole-free — the body is one chunk and there are no holes; `{expr}` interpolation is
-            // the next brick.) The head is the reserved name `tagged-template`, the child-list shape the
-            // expander (rcdzc) dispatches on — the invariant is chunks.len() == holes.len() + 1.
+            // A TAGGED TEMPLATE `tag"…{expr}…"` → `(tagged-template <tag> (chunks <str>…) (holes <expr>…))`
+            // — a binding-dispatched compile-time macro over literal chunks + `{expr}` holes. The token
+            // text is `<tag>"<body>"`; `split_template_body` splits it into the tag, the unescaped
+            // literal chunks (`{{`/`}}` → `{`/`}`), and each hole's raw source text. Each hole is
+            // RE-PARSED as an ordinary expression (via `read_ml`), so a hole can hold any expression.
+            // The head is the reserved name `tagged-template`; invariant chunks.len() == holes.len() + 1.
             Kind::TaggedTemplate => {
                 let t = self.bump().unwrap();
-                let raw = self.text(t);
-                let q = raw.find('"').unwrap_or(raw.len());
-                let tag_name = &raw[..q];
-                let body_tok = &raw[q..]; // `"<body>"` — a full string token for `unescape_string_token`
+                let raw = self.text(t).to_string();
                 let head = self.name("tagged-template", span);
+                let body = literal::split_template_body(&raw);
+                let (tag_name, chunk_strs, hole_srcs) = match body {
+                    Some(b) => (b.tag, b.chunks, b.holes),
+                    None => (String::new(), vec![String::new()], Vec::new()),
+                };
                 let tag = self.name(tag_name, span);
-                // chunks: the single literal chunk (the whole body, B1 has no holes to split on).
+                // chunks: each literal piece as a Str leaf.
                 let chunks_head = self.name("chunks", span);
-                let chunk = self.atom(literal::unescape_string_token(body_tok), span);
-                let chunks = self.list(vec![chunks_head, chunk], span);
-                // holes: empty (B1).
+                let mut chunks = vec![chunks_head];
+                for s in chunk_strs {
+                    chunks.push(self.atom(Leaf::Str(s), span));
+                }
+                let chunks = self.list(chunks, span);
+                // holes: each hole's source re-parsed as an expression and grafted in. `read_ml` returns
+                // its own arena; `graft` copies the parsed root's subtree into this builder.
                 let holes_head = self.name("holes", span);
-                let holes = self.list(vec![holes_head], span);
+                let mut holes = vec![holes_head];
+                for src in hole_srcs {
+                    holes.push(self.graft_ml_expr(&src, span));
+                }
+                let holes = self.list(holes, span);
                 self.list(vec![head, tag, chunks, holes], span)
             }
             Kind::BacktickName => {

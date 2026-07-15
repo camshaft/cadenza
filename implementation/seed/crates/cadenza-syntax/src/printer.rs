@@ -1829,22 +1829,35 @@ impl<'a> Printer<'a> {
     /// structure stays visible rather than round-tripping to garbage).
     fn print_tagged_template(&mut self, args: &[StructId]) {
         let tag = self.a.as_name(args[0]).unwrap_or("");
-        let chunks = match self.a.get(args[1]) {
-            Struct::List(items) => &items[1..], // drop the "chunks" head
-            _ => &[],
+        let chunks: Vec<StructId> = match self.a.get(args[1]) {
+            Struct::List(items) => items[1..].to_vec(), // drop the "chunks" head
+            _ => Vec::new(),
         };
-        // B1 invariant (guarded by is_tagged_template_shape): exactly one chunk, no holes.
-        let body = chunks.first().and_then(|&c| self.a.as_str(c)).unwrap_or("");
-        self.doc.word(format!(
-            "{}\"{}\"",
-            emit_name(tag),
-            literal::escape_string(body)
-        ));
+        let holes: Vec<StructId> = match self.a.get(args[2]) {
+            Struct::List(items) => items[1..].to_vec(), // drop the "holes" head
+            _ => Vec::new(),
+        };
+        // Reassemble `tag"chunk0{hole0}chunk1…chunkN"` — chunks and holes interleave, one more chunk than
+        // holes (the guard guarantees chunks.len() == holes.len() + 1). Each literal chunk re-escapes its
+        // string content AND its braces (`{`→`{{`, `}`→`}}`) so a literal brace round-trips (never
+        // re-read as a hole); each hole prints as `{<expr>}`.
+        self.doc.word(format!("{}\"", emit_name(tag)));
+        for (i, &chunk) in chunks.iter().enumerate() {
+            let s = self.a.as_str(chunk).unwrap_or("");
+            self.doc.word(escape_template_chunk(s));
+            if let Some(&hole) = holes.get(i) {
+                self.doc.word("{");
+                self.expr(hole, 0);
+                self.doc.word("}");
+            }
+        }
+        self.doc.word("\"");
     }
 
-    /// Whether `args` is a tagged-template node this printer can re-sugar to `tag"…"` — B1's hole-free
-    /// shape: `[<tag-name>, (chunks <one-str>), (holes)]`. A node with holes (until B2 lands) or an odd
-    /// shape returns false so it prints as a generic call (structure visible, never garbage).
+    /// Whether `args` is a tagged-template node this printer can re-sugar to `tag"…"`: shape
+    /// `[<tag-name>, (chunks <str>…), (holes <expr>…)]`, every chunk a `Str`, and the invariant
+    /// chunks.len() == holes.len() + 1. An odd shape returns false so it prints as a generic call
+    /// (structure visible, never garbage) rather than a form that would not round-trip.
     fn is_tagged_template_shape(&self, args: &[StructId]) -> bool {
         if args.len() != 3 {
             return false;
@@ -1861,19 +1874,20 @@ impl<'a> Printer<'a> {
         }
         // Note: `self.a.head_name` reads a LIST's head atom (the Arenas helper); the printer's local
         // `self.head_name` takes an atom id and would return None for these list nodes.
-        let one_str_chunk = match self.a.get(args[1]) {
-            Struct::List(items) => {
-                self.a.head_name(args[1]) == Some("chunks")
-                    && items.len() == 2
-                    && self.a.as_str(items[1]).is_some()
+        let n_chunks = match self.a.get(args[1]) {
+            Struct::List(items)
+                if self.a.head_name(args[1]) == Some("chunks")
+                    && items[1..].iter().all(|&c| self.a.as_str(c).is_some()) =>
+            {
+                items.len() - 1
             }
-            _ => false,
+            _ => return false,
         };
-        let no_holes = match self.a.get(args[2]) {
-            Struct::List(items) => self.a.head_name(args[2]) == Some("holes") && items.len() == 1,
-            _ => false,
+        let n_holes = match self.a.get(args[2]) {
+            Struct::List(items) if self.a.head_name(args[2]) == Some("holes") => items.len() - 1,
+            _ => return false,
         };
-        one_str_chunk && no_holes
+        n_chunks == n_holes + 1
     }
 
     /// `[e, …]`, with an optional `.. rest` spread (`[1, 2, .. rest]`).
@@ -2675,6 +2689,27 @@ fn split_rational_name(s: &str) -> Option<(&str, &str)> {
     (ok(num_digits) && ok(den)).then_some((num, den))
 }
 
+/// Escape a tagged-template literal CHUNK for re-emission between the quotes of `tag"…"`: apply the
+/// string escapes (`\n`/`\t`/`\r`/`\\`/`\"`) AND double literal braces (`{`→`{{`, `}`→`}}`) so a brace
+/// in the chunk is NOT re-read as a hole delimiter. The inverse of the reader's chunk-unescape in
+/// `literal::split_template_body`, so `tag"…"` round-trips.
+fn escape_template_chunk(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn emit_name(s: &str) -> String {
     if name_is_bare_safe(s) {
         s.to_string()
@@ -3136,6 +3171,53 @@ mod tests {
                 80
             ),
             "jsx\"hi\""
+        );
+    }
+
+    #[test]
+    fn tagged_template_holes_round_trip() {
+        // B2: `{expr}` interpolation holes. The body splits into chunks at hole boundaries — a body
+        // with N holes has N+1 chunks (some empty) — and each hole is an ordinary parsed expression.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m(x) = jsx\"a{x}b\"").arenas),
+            "(def (m x) (tagged-template jsx (chunks \"a\" \"b\") (holes x)))"
+        );
+        assert_eq!(
+            assert_roundtrip("def m(x) = jsx\"a{x}b\"", 80),
+            "def m(x) = jsx\"a{x}b\""
+        );
+        // Leading/trailing empty chunks (a hole at each edge) → chunks ["", "+", ""].
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m(x, y) = t\"{x}+{y}\"").arenas),
+            "(def (m x y) (tagged-template t (chunks \"\" \"+\" \"\") (holes x y)))"
+        );
+        assert_eq!(
+            assert_roundtrip("def m(x, y) = t\"{x}+{y}\"", 80),
+            "def m(x, y) = t\"{x}+{y}\""
+        );
+        // A hole holds ANY expression (parsed by the full ML reader).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m(a, b) = t\"sum={a + b * 2}!\"").arenas),
+            "(def (m a b) (tagged-template t (chunks \"sum=\" \"!\") (holes (+ a (* b 2)))))"
+        );
+        assert_eq!(
+            assert_roundtrip("def m(a, b) = t\"sum={a + b * 2}!\"", 80),
+            "def m(a, b) = t\"sum={a + b * 2}!\""
+        );
+        // `{{` / `}}` are LITERAL braces in a chunk, not holes — they round-trip (chunk holds `{`/`}`).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m(x) = t\"lit {{brace}} {x} end\"").arenas),
+            "(def (m x) (tagged-template t (chunks \"lit {brace} \" \" end\") (holes x)))"
+        );
+        assert_eq!(
+            assert_roundtrip("def m(x) = t\"lit {{brace}} {x} end\"", 80),
+            "def m(x) = t\"lit {{brace}} {x} end\""
+        );
+        // A hole may contain a STRING literal with braces — a raw `"` inside the hole opens/closes it, so
+        // its braces don't miscount (`g("}")` is one hole holding the string `"}"`).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m() = t\"x{g(\"}\")}y\"").arenas),
+            "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"}\"))))"
         );
     }
 

@@ -277,6 +277,88 @@ fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64)
 /// is CLOSED (`\n \t \r \\ \"`); an unrecognized `\x` is a lexical defect — `Err(x)` names the first
 /// offending escape char (the caller turns it into a `Leaf::BadEscape` marker the compiler rejects
 /// CDZ0001). `Ok(s)` is the normalized text when every escape is valid.
+/// The parsed pieces of a tagged-template token `tag"…{expr}…"`: the tag name, the literal CHUNKS
+/// (unescaped: `\n`/`\t`/`\r`/`\\`/`\"` string escapes AND `{{`/`}}` → `{`/`}` brace escapes applied),
+/// and the raw SOURCE TEXT of each hole (the text between a hole's outer `{` and matching `}`, which the
+/// PARSER re-parses as an ordinary expression). Invariant: `chunks.len() == holes.len() + 1` — a body
+/// with N holes has N+1 literal chunks (some possibly empty, e.g. `"{x}"` → chunks `["",""]`, holes
+/// `["x"]`). Hole nesting is brace-balanced, and a `"…"` inside a hole shields its braces (so
+/// `f("}")` is one hole). This is the shared split the lexer's `read_template_body` scan mirrors; the
+/// lexer already validated termination, so this assumes a well-formed body (a stray unmatched brace
+/// closes/ignores gracefully rather than panicking).
+pub struct TemplateBody {
+    pub tag: String,
+    pub chunks: Vec<String>,
+    pub holes: Vec<String>,
+}
+
+/// Split a tagged-template TOKEN (`tag"…"`, the whole lexed span) into its [`TemplateBody`]. Returns
+/// `None` if `token` is not `<ident>"…"`-shaped.
+pub fn split_template_body(token: &str) -> Option<TemplateBody> {
+    let q = token.find('"')?;
+    let tag = token[..q].to_string();
+    let body = token[q + 1..].strip_suffix('"').unwrap_or(&token[q + 1..]);
+    let mut chunks: Vec<String> = Vec::new();
+    let mut holes: Vec<String> = Vec::new();
+    let mut chunk = String::new();
+    let mut it = body.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            // A string escape in the LITERAL text — decode into the chunk (the closed string set).
+            '\\' => match it.next() {
+                Some('n') => chunk.push('\n'),
+                Some('t') => chunk.push('\t'),
+                Some('r') => chunk.push('\r'),
+                Some('\\') => chunk.push('\\'),
+                Some('"') => chunk.push('"'),
+                Some(other) => chunk.push(other), // unknown escape: keep the char (lexer accepted it)
+                None => {}
+            },
+            // `{{` / `}}` — a literal brace in the chunk (not a hole).
+            '{' if it.peek() == Some(&'{') => {
+                it.next();
+                chunk.push('{');
+            }
+            '}' if it.peek() == Some(&'}') => {
+                it.next();
+                chunk.push('}');
+            }
+            // `{` opens a hole: the current chunk ends, and the hole's raw source is collected up to the
+            // matching `}` (brace-balanced, with `"…"` inside the hole shielding its braces).
+            '{' => {
+                chunks.push(std::mem::take(&mut chunk));
+                let mut hole = String::new();
+                let mut depth: u32 = 1;
+                let mut in_str = false;
+                for h in it.by_ref() {
+                    match h {
+                        '"' => {
+                            in_str = !in_str;
+                            hole.push(h);
+                        }
+                        '{' if !in_str => {
+                            depth += 1;
+                            hole.push(h);
+                        }
+                        '}' if !in_str => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break; // end of this hole (the matching `}` is not part of its text)
+                            }
+                            hole.push(h);
+                        }
+                        _ => hole.push(h),
+                    }
+                }
+                holes.push(hole);
+            }
+            _ => chunk.push(c),
+        }
+    }
+    chunks.push(chunk); // the trailing chunk (always one more chunk than holes)
+    Some(TemplateBody { tag, chunks, holes })
+}
+
 pub fn unescape_string(inner: &str) -> Result<String, char> {
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();

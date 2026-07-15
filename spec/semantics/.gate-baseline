@@ -95,6 +95,8 @@ pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
+pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
+pass	Map.to-list length is the map's entry count
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
@@ -111,6 +113,8 @@ pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
+pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
+pass	Set.to-list length is the set's cardinality (deduped)
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
@@ -542,6 +546,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a def parameter may be a list rest pattern binding the head
+pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
 pass	a default-fraction pragma makes a bare literal exact — 1/3 not 0
@@ -707,6 +712,7 @@ pass	a handler whose STATE is a RECORD combining a scalar counter and a heap LIS
 pass	a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance
 pass	a handler whose STATE is a sum destructures it in the arm
 pass	a header of packed nibbles and a length-prefixed body round-trips
+pass	a heap capture persists across two applications of a curried closure
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
@@ -1111,6 +1117,7 @@ pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
+pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
@@ -1163,7 +1170,9 @@ pass	a pure let-bound lambda and a performing one are both applied in the handle
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity over a BigInt magnitude compares by its exact value
 pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
+pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
@@ -1585,6 +1594,7 @@ pass	a three-argument closure exported to the host is called with all three
 pass	a three-arm match consumed as an operand yields into the enclosing expression
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
+pass	a three-level curried spine applies through both intermediate closures
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a top-level module is named by a top-level def's body
@@ -2242,6 +2252,7 @@ pass	inserting a runtime element yields a set that contains it
 pass	inserting a value of a different type into a map is a type error
 pass	inserting an element yields a set containing it
 pass	inserting into the empty map then looking a key up yields the value
+pass	int8 wrap truncates and sign-extends the low 8 bits of a runtime value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
@@ -2734,6 +2745,7 @@ pass	two same-signature Bytes-returning closures share one call — second
 pass	two same-signature String-returning closures share one call
 pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
+pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
@@ -2743,6 +2755,8 @@ pass	two sum types whose names differ only by punctuation stay DISTINCT types
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
+pass	uint16 wrap truncates a wide runtime value to the low 16 bits
+pass	uint8 wrap truncates a wide runtime value to the low 8 bits
 pass	unary negation binds tighter than binary addition
 pass	unary negation in a lambda body negates the argument
 pass	unary negation of a bound integer name yields its opposite
@@ -2787,7 +2801,7 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	`?` on the failure variant short-circuits the boundary (Option, None path)
+pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode

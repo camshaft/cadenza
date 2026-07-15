@@ -3820,3 +3820,69 @@
     (def (main) (run ((. Box C) add) 3 4))
     (export main)))
   (output (: 7 Int64)))
+
+; --- Curried-closure representation unification: the persistence and depth faces -------------------
+; ed3b7503e flattened a nested-unary curried closure to the same one-lift machine rep the multi-param
+; sugar gets (the two spellings of one arrow type now share a representation; the boxed-apply trap is
+; pinned above). These pin what the unification must PRESERVE, promoted from passing breaker probes:
+; capture persistence across REPEATED applications, depth-3 spines, HOF transport of a partial
+; application, and heap-valued captures.
+
+(case "a partial application persists its capture across two applications"
+  (doc    "`h = (add 10)` where `add n = (fn (m) (+ n m))` — the def-returning-lambda spelling — is
+           applied TWICE: `(h 1) + (h 2)` = 11 + 12 = 23. The captured n = 10 must survive the first
+           application untouched (an env consumed or mutated by the first call skews the second). The
+           repeated-application companion of the single-apply partial-application case above, over the
+           nested-unary spelling the flattening unifies.")
+  (input  (do
+            (def (add (: n Int64)) (fn (m) (+ n m)))
+            (def (main (: d Int64))
+              (let ((h (add 10)))
+                (+ (h 1) (h 2))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 23 Int64)))
+
+(case "a three-level curried spine applies through both intermediate closures"
+  (doc    "`add3 n = (fn (m) (fn (k) (+ (+ n m) k)))` applied `(((add3 1) 2) 3)` = 6 — TWO
+           intermediate closure values, each capturing the previous level's environment. The depth-3
+           face of the spine flattening: a caller that flattens `((f x) y)` to one two-arg call must
+           either flatten the 3-spine to one three-arg call or nest correctly — mixing the two (a
+           flattened outer over a chained inner) reintroduces the arity-mismatch trap the fix closed.")
+  (input  (do
+            (def (add3 (: n Int64)) (fn (m) (fn (k) (+ (+ n m) k))))
+            (def (main (: d Int64))
+              (((add3 1) 2) 3))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 6 Int64)))
+
+(case "a def-returning-lambda partial application passes through a HOF parameter"
+  (doc    "`(apply-to (add 10) 5)` — the partial application (nested-unary spelling) crosses a
+           function-typed PARAMETER boundary `(-> Int64 Int64)` and is applied indirectly inside the
+           callee → 15. Pins the unified representation surviving the calling-convention seam (the
+           HOF's indirect call must agree with the lifted signature — the exact mismatch class the
+           boxed-apply trap exposed, here through a param instead of a sum).")
+  (input  (do
+            (def (add (: n Int64)) (fn (m) (+ n m)))
+            (def (apply-to (: f (-> Int64 Int64)) (: x Int64)) (f x))
+            (def (main (: d Int64))
+              (apply-to (add 10) 5))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 15 Int64)))
+
+(case "a heap capture persists across two applications of a curried closure"
+  (doc    "`cat s = (fn (t) (String.byte-len (String.concat s t)))`; `h = (cat \"ab\")` applied twice:
+           `(h \"c\")` = 3, `(h \"de\")` = 4 → 7. The captured HEAP string must survive the first
+           application's consuming concat (the env's `s` is concat's operand each call — a capture
+           dropped or consumed by call one corrupts call two). The heap-env companion of the scalar
+           persistence case.")
+  (input  (do
+            (def (cat (: s String)) (fn (t) (String.byte-len (String.concat s t))))
+            (def (main (: d Int64))
+              (let ((h (cat "ab")))
+                (+ (h "c") (h "de"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))

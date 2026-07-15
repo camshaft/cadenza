@@ -36,9 +36,18 @@ fn parse_frames(mut data: &[u8]) -> Vec<serde_json::Value> {
         if body_end > data.len() {
             break; // truncated (shouldn't happen once the process has exited)
         }
-        if let Ok(v) = serde_json::from_slice(&data[body_start..body_end]) {
-            out.push(v);
-        }
+        let body = &data[body_start..body_end];
+        // A body that was FRAMED (its Content-Length is present and the bytes are all here) but does not
+        // parse as JSON is a PROTOCOL VIOLATION — fail hard rather than skip it. Silently dropping an
+        // unparseable-but-framed message would let a real regression (the server emitting invalid JSON
+        // for some message) pass this end-to-end test green; the whole point of the gate is to catch it.
+        let v: serde_json::Value = serde_json::from_slice(body).unwrap_or_else(|e| {
+            panic!(
+                "server emitted a framed message whose body is not valid JSON ({e}): {:?}",
+                String::from_utf8_lossy(body)
+            )
+        });
+        out.push(v);
         data = &data[body_end..];
     }
     out
