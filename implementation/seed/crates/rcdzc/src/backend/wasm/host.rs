@@ -59,15 +59,29 @@ pub struct HostImport {
 pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
     match ty {
         Ty::Bool => Some(AbiValType::Bool),
-        // A 64-bit float crosses as `f64`; a narrower float width has no scalar host ABI here yet.
-        Ty::Float(ft) if ft.ground_width() == 64 => Some(AbiValType::F64),
+        // A char crosses as the component-model `char` primitive (a Unicode scalar), lowered to core i32.
+        Ty::Char => Some(AbiValType::Char),
+        // Each aliased float width crosses as its component primitive (`f64`/`f32`); a non-aliased width
+        // (a deferred/unsolved float) has no boundary form and declines.
+        Ty::Float(ft) => match ft.ground_width() {
+            64 => Some(AbiValType::F64),
+            32 => Some(AbiValType::F32),
+            _ => None,
+        },
+        // Every ALIASED integer width crosses as its faithful component-model primitive (`s8`/`u8`/…/
+        // `s64`/`u64`), lowered to the core i32 (width ≤ 32) or i64 (64) slot the canonical ABI uses — the
+        // canonical lowering sign/zero-extends a narrow value into its i32 slot, which IS a narrow int's
+        // in-guest representation, so a narrow result needs no extra guest-side conversion. A NON-aliased
+        // width (`(UInt 48)`, a deferred/unsolved int) has no boundary primitive and declines.
         Ty::Int(it) => match (it.ground_signed(), it.ground_width()) {
-            // Only the aliased 32/64 widths have a scalar `AbiValType`; a narrower aliased width
-            // (8/16) has a component primitive but the runtime-op ABI table only models u32/s64/bool/f64,
-            // so this increment crosses 32- and 64-bit integers (the corpus host ops are `Int64`). A
-            // narrower or non-aliased width declines (a later increment widens the ABI table).
+            (true, 8) => Some(AbiValType::S8),
+            (false, 8) => Some(AbiValType::U8),
+            (true, 16) => Some(AbiValType::S16),
+            (false, 16) => Some(AbiValType::U16),
+            (true, 32) => Some(AbiValType::S32),
             (false, 32) => Some(AbiValType::U32),
             (true, 64) => Some(AbiValType::S64),
+            (false, 64) => Some(AbiValType::U64),
             _ => None,
         },
         _ => None,
@@ -88,8 +102,8 @@ pub fn extern_abi_val_type(ty: &Ty) -> Option<AbiValType> {
     }
     // A value the RUNTIME OWNS crosses as its opaque `u32` heap handle — the compound types that live on
     // the value heap (a tuple/record/sum/list/map/set + the byte-rope String/Bytes + the bignum BigInt/
-    // Rational), and an erased nominal over one. NOT a narrow scalar (Int8 has no scalar `abi_val_type` yet
-    // but is NOT a heap value). `Unit`/a bare function → None (declines).
+    // Rational), and an erased nominal over one. Every aliased SCALAR (incl. a narrow int) already returned
+    // via `abi_val_type` above (it crosses by value, not as a handle). `Unit`/a bare function → None.
     //
     // So a COMPOUND crosses between peers as an opaque handle INTO the one shared runtime instance (X5),
     // NOT marshaled into a component-model aggregate — no serialization, the shared runtime owns the value.

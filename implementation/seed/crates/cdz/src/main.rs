@@ -2269,11 +2269,17 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             }
             _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
         };
-        // Suppress the parse-recovery `<error>`-placeholder cascade — an unbound-name fault whose subject
-        // is the synthetic `<error>` node the ML reader left where a production failed. It is UNLEXABLE on
-        // the ML surface, so a diagnostic naming it is never a real name; the printed parse error already
-        // says what to fix. Only when this file actually had a parse error (else a stray match is real).
-        if any_parse_error && code == "CDZ0101" && message.contains("`<error>`") {
+        // Suppress the parse-recovery `<error>`-placeholder cascade — ANY fault whose subject is the
+        // synthetic `<error>` node the ML reader left where a production failed. A failed production leaves
+        // the placeholder in whatever position it was parsing, so it surfaces in DIFFERENT downstream checks
+        // depending on where: an expression position → `unbound name `<error>`` (CDZ0101); a REPEATED
+        // parameter position (a garbled param list recovers several `<error>` binders) → "parameter
+        // `<error>` is bound more than once" (CDZ0102); an unused binder → the CDZ0306 warning. All name the
+        // synthetic placeholder the user never wrote, layered on the real parse error. `<error>` is UNLEXABLE
+        // on the ML surface (`<` starts no identifier), so a diagnostic naming it is ALWAYS the placeholder,
+        // never a real name — drop it regardless of code. Gated on the file actually having had a parse
+        // error, so a legitimate `<error>` symbol in a parse-clean s-expr file is still reported.
+        if any_parse_error && message.contains("`<error>`") {
             continue;
         }
         any_error |= severity == "error";
