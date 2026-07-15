@@ -412,6 +412,17 @@
   (input  (Qty.pow (Qty.of 3.0 (Unit.base #"meter")) 2))
   (output (: (Qty.of 9.0 (Unit.^ (Unit.base #"meter") 2)) (Qty Float64 (Unit.^ (Unit.base #"meter") 2)))))
 
+(case "raising a BigInt-magnitude quantity to a power runs the unbounded multiply"
+  (doc    "`(Qty.pow (Qty.of (BigInt.of n) meter) 2)` over a BigInt inner: `Qty.pow` lowers to a repeated
+           multiply of the erased magnitude (`value·value`), which for a BigInt runs the runtime `bigint-*`
+           op on the heap handle — NOT the fixnum path. `Qty.value` recovers the squared magnitude: n=5 →
+           25. Pins that `Qty.pow`'s repeated-multiply reaches the bigint arithmetic through the quantity
+           (the `Qty.pow` companion of the bigint-inner-quantity arithmetic fix), staying valid + exact.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (Qty.pow (Qty.of (BigInt.of n) (Unit.base #"meter")) 2))) (export main)))
+  (call   main (: 5 Int64)) (output (: 25 BigInt))
+  (call   main (: 1000000 Int64)) (output (: 1000000000000 BigInt)))
+
 (case "the power form derives the same dimension as repeated multiplication"
   (doc    "`(= (Qty.pow (Qty.of 2.0 meter) 2) (* (Qty.of 2.0 meter) (Qty.of 2.0 meter)))` is true: raising
            to the 2nd power and multiplying twice derive the SAME dimension (meter²) AND the same value

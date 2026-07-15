@@ -2423,6 +2423,7 @@ pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-vs-constructor AST equality holds regardless of operand order
+pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
