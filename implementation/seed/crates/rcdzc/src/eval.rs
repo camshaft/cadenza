@@ -1135,6 +1135,8 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             collect_callees(db, rhs, out);
         }
         Resolved::Not { operand } => collect_callees(db, operand, out),
+        // `(try e)` — descend into the fallible operand (its callees are the `try`'s callees).
+        Resolved::Try { operand } => collect_callees(db, operand, out),
         // A match's scrutinee and every arm BODY run when this body runs — a self-call inside an arm
         // (e.g. `sum-to`'s match base case) is a real edge, so descend into each. (A pattern is not
         // executed code — it is a probe — so it contributes no callee.)

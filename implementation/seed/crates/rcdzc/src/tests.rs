@@ -49256,6 +49256,99 @@ mod stage1 {
         let c = reduce_ctor(&mut db, p, w8, &[w8]).expect("build");
         assert_ne!(a, c, "different widths are different modules");
     }
+
+    // ── the `?`/`try` fallible short-circuit operator — T0a: node plumbing + operand typing ─────────
+    // (DESIGN-try-operator-rcdzc.md). These pin the FRONT-HALF invariants the later slices build on:
+    // `(try e)` resolves as a first-class node, its type is the operand's SUCCESS payload, an operand
+    // that is not a fallible sum is CDZ0203, and (until the boundary desugar lands, T1) a well-formed
+    // `(try e)` DECLINES rather than miscompiling.
+
+    /// The type of `main`'s body (`(try …)`) at a given operand — the success payload the `?` yields.
+    fn try_body_ty(body: &str) -> crate::ty::Ty {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let ast = parse(&src);
+        let mut db = crate::db::Db::load(ast);
+        let b = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .and_then(|d| d.body)
+            .expect("def main has a body");
+        crate::infer::type_of(&mut db, b)
+    }
+
+    #[test]
+    fn try_on_an_option_yields_the_some_payload_type() {
+        // `(try (Int64.checked-add 20 22))` — the operand is `(Option Int64)`, so the `?` UNWRAPS the
+        // `Some` payload: the node's type is `Int64`. (The value does not lower yet — T1; this pins the
+        // TYPE half.)
+        let ty = try_body_ty("(try (Int64.checked-add 20 22))");
+        assert_eq!(
+            ty.render_name(),
+            "Int64",
+            "`(try (Option Int64))` yields the Some payload Int64, got {}",
+            ty.render_name()
+        );
+    }
+
+    #[test]
+    fn try_on_a_result_yields_the_ok_payload_type() {
+        // `(try (Ok 1))` — the operand is `(Result Int64 _)`, so `?` yields the `Ok` payload `Int64`
+        // (the `Err` type is a still-unsolved phantom here, which does not affect the success payload).
+        let ty = try_body_ty("(try (Ok 1))");
+        assert_eq!(
+            ty.render_name(),
+            "Int64",
+            "`(try (Result Int64 _))` yields the Ok payload Int64, got {}",
+            ty.render_name()
+        );
+    }
+
+    #[test]
+    fn try_on_a_non_fallible_operand_is_a_type_mismatch() {
+        // A `?` on a plain Int64 has nothing to unwrap — the ordinary type mismatch CDZ0203 (the operand
+        // must be a `Result`/`Option`). Anchored at the operand.
+        let d = expect_error("(try 5)");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0203"),
+            "a `?` on a non-fallible operand is CDZ0203, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("fallible"),
+            "message should say the operand must be fallible: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn try_with_the_wrong_arity_is_malformed() {
+        // `(try)` / `(try a b)` are malformed — `try` takes EXACTLY one operand (the surplus-delete fix
+        // path shared with `quote`). CDZ0201.
+        for body in ["(try)", "(try 1 2)"] {
+            let d = expect_error(body);
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0201"),
+                "`{body}` is malformed (arity), got: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_try_declines_until_the_boundary_desugar_lands() {
+        // T0a carries `(try e)` through resolve/infer but does NOT lower it yet (the boundary `Mir::Block`
+        // + `Mir::Break` desugar is T1). A well-formed `(try (Ok 1))` therefore DECLINES — a Todo, never a
+        // miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined). This test
+        // FLIPS to an executing-value test when T1 lands.
+        let msg = expect_decline("(try (Ok 1))");
+        assert!(
+            msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
+            "a well-formed `(try …)` declines pending the desugar: {msg}"
+        );
+    }
 }
 
 // ── value-heap R0: the canonical `list<u8>` ABI (memory + cabi_realloc + list<u8> lift) ────────────

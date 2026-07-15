@@ -838,6 +838,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The DESUGAR to
+        // a synthesized boundary `Mir::Block` + a `match … | short => Mir::Break` is the next slice (T1);
+        // until then it DECLINES (a Todo, never a miscompile — self-hosting-and-bootstrap.md §An
+        // Unsupported Construct Is Declined). The operand is still walked so its own core faults surface.
+        Resolved::Try { operand } => match core_of(db, operand) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "the `?`/`try` operator does not lower yet (boundary desugar pending)",
+            )),
+        },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
@@ -9485,6 +9495,9 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
             collect_binding_uses(db, rhs, false, out);
         }
         Resolved::Not { operand } => collect_binding_uses(db, operand, false, out),
+        // `(try e)` — the operand is used as a WHOLE value (it is matched/unwrapped), so it does not
+        // count as a projection position; recurse with `proj_operand = false`.
+        Resolved::Try { operand } => collect_binding_uses(db, operand, false, out),
         Resolved::Let { bindings, body } => {
             for (_, v) in &bindings {
                 collect_binding_uses(db, *v, false, out);

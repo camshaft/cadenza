@@ -133,6 +133,8 @@ pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	`try` takes exactly one operand — a two-operand form is malformed
+pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
@@ -269,6 +271,8 @@ pass	a UInt32 addition that overflows the 32-bit width is rejected at compile ti
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a `?` on a String operand is a type error
+pass	a `?` on a non-fallible operand is a type error
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -2683,6 +2687,8 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	`?` on the failure variant short-circuits the boundary (Option, None path)
+todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
