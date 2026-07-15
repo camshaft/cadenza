@@ -1281,6 +1281,7 @@ pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
 pass	a recursive generic function called at one type twice shares a single instantiation
+pass	a recursive generic function is instantiated at three distinct machine shapes
 pass	a recursive generic function is instantiated at two different types
 pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument

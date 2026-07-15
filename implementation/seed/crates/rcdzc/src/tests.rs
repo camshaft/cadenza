@@ -37255,6 +37255,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_is_instantiated_at_three_distinct_machine_shapes() {
+        // COVERAGE (v-inference): recursive-generic monomorphization scales past TWO instantiations. `loopn`
+        // (threads its 2nd arg unchanged → generic) is called at Int64, String, AND Bool in one program —
+        // three distinct machine shapes (i64 slot / i32 heap handle / i32 discriminant), each monomorphized
+        // into its own function; the three copies coexist. `loopn 2 k = k`; `byte-len(loopn 1 "ab") = 2`;
+        // `loopn 1 true` → true so the `if` takes 100. With a runtime boundary `k`: `k + 2 + 100`. Uses the
+        // value heap (the String), so SKIPS when the runtime store is absent. Pins that the per-type
+        // specialization count is not capped at two and a heap-handle + discriminant copy coexist with the
+        // scalar one.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main (: k Int64)) \
+                 (+ (loopn 2 k) (+ (String.byte-len (loopn 1 \"ab\")) (if (loopn 1 true) 100 0)))) \
+               (export main))",
+        )))
+        .expect("a recursive generic at Int64+String+Bool compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping three-shape recursive-generic run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(v, "107", "5 + byte-len(ab)=2 + 100"),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_recursive_generic_threading_another_generic_is_transitively_generic() {
         // 09-functions "a recursive generic function threading another generic is itself generic at two
         // types": `wrap` threads its generic `y` into a SECOND generic recursive `idr`, so `wrap`'s
