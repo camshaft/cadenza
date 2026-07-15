@@ -235,6 +235,11 @@ jobs:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: |
           npm ci
+          # Fast, browser/wasm-free unit tests first (node --test, type-stripping; needs node >=22.6,
+          # which node-version:22 resolves to) — a pure-logic regression (wrap/strip, applyFix byte
+          # splice, offset conversion, share round-trip, calculator classify, chapter-registry sync)
+          # fails the merge here before the slower jco example run.
+          npm run test:unit
           npm run check:examples
           npm run check:calculator
           npm run build
