@@ -1579,6 +1579,15 @@ pub struct Db {
     /// performs never reaches the normal component's import set). Keyed by BODY occ like the inline sets.
     pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
 
+    /// The `@tag("…")` string tags a definition carries, keyed by its BODY occurrence (like `tests`).
+    /// A `@tag("slow")` annotation records `"slow"` here; a def may carry several (`@tag("slow")
+    /// @tag("net")` → `["slow", "net"]`), accumulated in annotation order. A tag is INDEPENDENT metadata
+    /// — it does NOT imply `@test` — but its load-bearing use is filtering the `@test` set: `cdz test
+    /// --tag slow` runs only the tests whose def carries the `"slow"` tag (`Db::tags_of`). Empty for a
+    /// def with no `@tag`. The tag surface is `@tag("string")` (a call-style annotation whose name
+    /// position is the application `(tag "string")`); `strip_annotations` reads that shape.
+    pub(crate) tags: crate::fxhash::FxHashMap<StructId, Vec<String>>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1643,6 +1652,7 @@ impl Db {
             inline_never,
             inline_always,
             tests,
+            tags,
         } = strip_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
@@ -2089,6 +2099,7 @@ impl Db {
             inline_never,
             inline_always,
             tests,
+            tags,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -2849,6 +2860,21 @@ impl Db {
         idxs.sort_unstable();
         idxs.dedup();
         idxs
+    }
+
+    /// The `@tag("…")` string tags definition `def` carries, in annotation order (empty if it has no
+    /// `@tag`, or if `def` is out of range / bodyless). Keyed by the def's BODY occurrence — the same
+    /// identity `test_defs`/the inline sets use — so a tag recorded by `strip_annotations` against a def's
+    /// body is found here by its `defs` index. Backs `cdz test --tag <tag>`: a test runs iff `tags_of`
+    /// for its def contains the requested tag (AND-composed with the `--case` name filter). A tag is
+    /// INDEPENDENT of `@test`, so this returns tags on any def, test or not.
+    pub fn tags_of(&self, def: usize) -> &[String] {
+        const NONE: &[String] = &[];
+        self.defs
+            .get(def)
+            .and_then(|d| d.body)
+            .and_then(|body| self.tags.get(&body))
+            .map_or(NONE, Vec::as_slice)
     }
 
     /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
@@ -3874,6 +3900,10 @@ pub(crate) struct StrippedAnnotations {
     /// nullary export (`property-based-testing.md` sibling: a plain assertion test). Recorded by BODY occ
     /// like the inline sets; `Db::is_test`/`test_defs` read it. Empty for an ordinary (non-test) build.
     pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
+    /// The `@tag("…")` string tags each annotated def carries, keyed by BODY occ (like `tests`). A def
+    /// may carry several tags; they accumulate in annotation order. Read by `Db::tags_of` to back
+    /// `cdz test --tag`. See the `Db::tags` field for the surface + semantics.
+    pub(crate) tags: crate::fxhash::FxHashMap<StructId, Vec<String>>,
 }
 
 /// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
@@ -3963,6 +3993,8 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut tests: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    let mut tags: crate::fxhash::FxHashMap<StructId, Vec<String>> =
+        crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
@@ -3983,6 +4015,18 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         // plus a phantom unbound-name for the def it wrapped). A future annotation that needs real semantics
         // adds its name to `KNOWN_ANNOTATIONS` + a set here; until then it is an inert, unwrapped marker.
         let name = ast.as_name(name_occ).map(str::to_string);
+        // A CALL-STYLE annotation carries an ARGUMENT: `@tag("slow")` reifies to `(@ (tag "slow") def)`,
+        // so the NAME position is the APPLICATION `(tag "slow")` — a form, not a bare name (`as_name`
+        // above is `None`). Read it as `(HEAD ARG…)`: `@tag("…")` is the modeled call-style annotation,
+        // its head `tag` + a single STRING argument the tag text. A def may stack several
+        // (`@tag("slow") @tag("net")`), each recorded below. Any other application-name annotation is an
+        // inert unknown marker (unwrapped, recorded nowhere), exactly like an unknown bare name.
+        let tag_arg: Option<String> = ast.as_form(name_occ, "tag").and_then(|app_tail| {
+            match app_tail {
+                [only] => ast.as_str(*only).map(str::to_string),
+                _ => None, // `@tag` with not-exactly-one-arg (or a non-string arg) — not a modeled tag
+            }
+        });
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
             continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
@@ -4017,14 +4061,22 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
                 tests.insert(body);
             }
             // An unknown annotation name (or a non-name annotation head): unwrapped above, recorded in no
-            // policy set — a transparent no-op marker so the wrapped def still takes effect.
+            // policy set — a transparent no-op marker so the wrapped def still takes effect. A call-style
+            // `@tag("…")` lands here (its name is an application, not a bare name) and is recorded below.
             _ => {}
+        }
+        // A `@tag("…")` records its string against the def's BODY occ, accumulating across stacked tags
+        // (`@tag("slow") @tag("net")` → both). Independent of `@test` — a tag is metadata; the `cdz test
+        // --tag` filter reads it via `Db::tags_of`. Recorded AFTER the unwrap so `body` is the def's occ.
+        if let Some(tag) = tag_arg {
+            tags.entry(body).or_default().push(tag);
         }
     }
     StrippedAnnotations {
         inline_never,
         inline_always,
         tests,
+        tags,
     }
 }
 
@@ -4780,5 +4832,33 @@ mod tests {
         let db = Db::load(ast);
         assert_eq!(db.def_by_name("main"), Some(0));
         assert_eq!(db.def_by_name("nope"), None);
+    }
+
+    /// `@tag("…")` — the call-style annotation `(@ (tag "s") (def …))` — records its string against the
+    /// annotated def, readable by `tags_of`; a def with no `@tag` has none; stacked `@tag`s accumulate;
+    /// and a `@tag` composes with `@test` (both annotations on one def take effect). Pins the
+    /// `strip_annotations` app-name recognition + the `Db::tags` map that backs `cdz test --tag`.
+    #[test]
+    fn tag_annotation_records_string_tags_by_def() {
+        let ast = crate::testkit::parse(
+            "(do \
+               (@ (tag \"slow\") (def (a) 1)) \
+               (@ (tag \"slow\") (@ (tag \"net\") (def (b) 2))) \
+               (@ test (def (c) 3)) \
+               (export a))",
+        );
+        let db = Db::load(ast);
+        let tags = |name: &str| db.tags_of(db.def_by_name(name).expect("def")).to_vec();
+        // A single `@tag` records exactly its string.
+        assert_eq!(tags("a"), vec!["slow".to_string()]);
+        // Stacked `@tag`s accumulate (order: innermost annotation is stripped first, so "net" then "slow"
+        // as the loop unwraps — assert as a set-membership, order is an implementation detail).
+        let b = tags("b");
+        assert!(
+            b.contains(&"slow".to_string()) && b.contains(&"net".to_string()) && b.len() == 2,
+            "both tags recorded: {b:?}"
+        );
+        // A def with `@test` but no `@tag` has no tags (a tag is independent metadata).
+        assert!(tags("c").is_empty(), "an untagged def has no tags");
     }
 }

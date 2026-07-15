@@ -329,6 +329,73 @@ fn a_filter_selects_a_subset() {
     assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
 }
 
+/// `cdz test --tag <t>` runs only the tests whose def carries the `@tag("t")` string tag, AND-composed
+/// with `--filter`. Written in the SEXPR canonical form `(@ (tag "t") (@ test (def …)))` — the shape the
+/// ML surface `@tag("t")` reifies to (the ML parser change for the call-style annotation is the sibling
+/// v-syntax slice; the rcdzc recognition + the runner filter, exercised here, land independently against
+/// the canonical form). Covers: no `--tag` runs every test; `--tag` selects only the matching tag; a
+/// second tag selects the other; multiple tags on one def are each selectable; `--tag` AND `--filter`
+/// intersect; an unknown tag selects nothing (a vacuously green run).
+#[test]
+fn a_tag_selects_a_subset_and_composes_with_filter() {
+    let d = dir("tag");
+    // Three tests: two tagged ("slow"/"fast"), one untagged; plus a def carrying TWO tags.
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (@ (tag \"slow\") (@ test (def (slow-one) (if (= 1 1) unit (trap \"s\"))))) \
+           (@ (tag \"fast\") (@ test (def (fast-one) (if (= 2 2) unit (trap \"f\"))))) \
+           (@ (tag \"slow\") (@ (tag \"net\") (@ test (def (both-one) (if (= 3 3) unit (trap \"b\")))))) \
+           (@ test (def (untagged) (if (= 4 4) unit (trap \"u\")))) \
+           (export slow-one))",
+    );
+
+    // No `--tag`: every test runs (four).
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(ok, "untagged run passes all: {stdout}{stderr}");
+    assert!(stdout.contains("4 passed, 0 failed"), "{stdout}");
+
+    // `--tag slow`: slow-one + both-one (both carry "slow"); NOT fast-one / untagged.
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "slow"]);
+    assert!(ok, "{stdout}");
+    assert!(
+        stdout.contains("PASS slow-one") && stdout.contains("PASS both-one"),
+        "both slow-tagged tests run: {stdout}"
+    );
+    assert!(
+        !stdout.contains("fast-one") && !stdout.contains("untagged"),
+        "the untagged + differently-tagged tests are skipped: {stdout}"
+    );
+    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+
+    // `--tag net`: only the multiply-tagged def (a second tag on the same def is selectable).
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "net"]);
+    assert!(ok, "{stdout}");
+    assert!(
+        stdout.contains("PASS both-one") && stdout.contains("1 passed, 0 failed"),
+        "a second tag on the same def selects it: {stdout}"
+    );
+
+    // `--tag slow --filter both`: AND — only both-one (slow-tagged AND name contains "both").
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "slow", "--filter", "both"]);
+    assert!(ok, "{stdout}");
+    assert!(
+        stdout.contains("PASS both-one")
+            && !stdout.contains("slow-one")
+            && stdout.contains("1 passed, 0 failed"),
+        "--tag AND --filter intersect: {stdout}"
+    );
+
+    // An unknown tag selects nothing — a vacuously green run (0 tests, still exit 0).
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "nope"]);
+    assert!(ok, "no matching tag → vacuously green: {stdout}");
+    assert!(
+        !stdout.contains("PASS "),
+        "no test runs under an unknown tag: {stdout}"
+    );
+}
+
 /// `cdz test` FOLLOWS the entry file's import closure — a test in a module that imports a sibling type
 /// links against it and runs, the same closure `cdz check` walks. Before this, `cdz test` compiled the
 /// single file alone → `import` was "not modeled" and the imported name was unbound.
