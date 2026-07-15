@@ -3833,6 +3833,16 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         let Resolved::Match { scrutinee, arms } = crate::resolve::resolved_of(db, id) else {
             continue;
         };
+        // A match whose lowering POISONS — a malformed/typo'd arm pattern (a bare name that is a variant
+        // TYPO, `(match c (Rd 1) …)` on `(type Color Red Green)` → CDZ0201 "did you mean `Red`?"), a
+        // wrong-arity ctor, a non-linear binder — is being REJECTED; a later arm reading "unreachable"
+        // because the typo'd arm was (mis)read as a catch-all binder is CONSEQUENT noise, not an
+        // INDEPENDENT problem. Skip the whole match's redundant-arm pass, deferring to the poison the SAME
+        // lowering produces (the CDZ0201 the two can never disagree with) — the redundant-arm twin of the
+        // guard `collect_unused`'s match-binder pass already applies.
+        if matches!(core_of(db, id), Core::Poison(_)) {
+            continue;
+        }
         // The scrutinee's finite cover size — `Some(n)` iff the specific arms CAN exhaust the type (a sum
         // of `n` variants, or Bool = 2). `None` for an open type, where only a catch-all closes coverage.
         let cover_size = finite_cover_size(db, scrutinee);

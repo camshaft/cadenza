@@ -6758,6 +6758,33 @@ fn pattern_constraints(
         {
             return Ok(vec![(path.into(), disc)]);
         }
+        // A bare name that is NOT a variant of the scrutinee's sum but is a PLAUSIBLE TYPO of one — `Rd`
+        // over a `(type Color Red Green)` scrutinee — is almost certainly a misspelled nullary-variant
+        // pattern, NOT a catch-all binder the author intended. Treating it as a binder silently turns the
+        // arm into a wildcard, masking the real variants (a later `Green` arm reads "unreachable") and
+        // drawing a misleading CDZ0306 "unused binding `Rd`" — the exact confusion the DOTTED form
+        // (`Color.Rd`) avoids with "the type `Color` has no variant `Rd` — did you mean `Red`?". Give the
+        // bare form the SAME enrichment: reject CDZ0201 with a did-you-mean + a replace fix on the name,
+        // when `name` is a confident near-miss (`suggest::nearest`) of a variant of the scrutinee sum.
+        // GATED to a real near-miss so a genuine binder (`x`, or any name unlike every variant) still
+        // binds — only a name close to an existing variant is judged a typo, never an arbitrary lowercase
+        // binder. (The value-position twin of `enrich_pattern_head_suggestion`; here the pattern is a bare
+        // atom, which never reaches that compound-head path.)
+        if name != "_"
+            && let Some(candidate) = nearest_variant_typo(db, ty, &name)
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "this match arm names `{name}`, which is not a variant of the matched type \
+                     {} — did you mean `{candidate}`? (a bare name here is read as a catch-all \
+                     binding, which is almost certainly not intended)",
+                    ty.render_name()
+                ),
+            )
+            .at(pat)
+            .with_fix(Fix::replace_heuristic(pat, candidate)));
+        }
         return Ok(Vec::new()); // a binder / wildcard — no constraint
     }
     // A TUPLE pattern `(tuple p0 p1…)` at `path` — a variant's tuple PAYLOAD, destructured positionally
@@ -7447,6 +7474,27 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
         .iter()
         .position(|v| v.name == name)
         .map(|i| i as u32)
+}
+
+/// A CONFIDENT near-miss variant of the scrutinee sum `ty` for a bare arm-pattern `name` that is NOT
+/// itself a variant — the "did you mean `Red`?" candidate for a misspelled bare nullary-variant pattern
+/// (`Rd` over `(type Color Red Green)`). `None` when `ty` is not a sum, `name` IS a variant (no typo), or
+/// no variant is within `suggest::nearest`'s edit-distance cutoff (a genuine binder, not a typo). This is
+/// what distinguishes a misspelled variant arm from an intentional catch-all binder: only a name close to
+/// an EXISTING variant is judged a typo. Reads the sum's variant names off its `decl` (the same candidate
+/// set `enrich_pattern_head_suggestion` uses for the compound-head form).
+fn nearest_variant_typo(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<String> {
+    let decl = match ty {
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+        _ => return None,
+    };
+    let t = db.type_decl_by_occ(decl)?;
+    // Already a variant → not a typo (the caller's `variant_disc_by_name` handles the exact match).
+    if t.variants.iter().any(|v| v.name == name) {
+        return None;
+    }
+    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    crate::diag::suggest::nearest(name, &names)
 }
 
 /// A map from an access PATH to the solved TYPE of the sub-value there — populated as the tree descends
