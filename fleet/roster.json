@@ -30,7 +30,7 @@
     { "name": "v-cdz-tooling", "role": "vertical", "vertical": "cdz-tooling", "area": "cdz", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-lsp", "role": "vertical", "vertical": "lsp", "area": "cdz", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-property-testing", "role": "vertical", "vertical": "property-testing", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "librarian", "role": "librarian", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "librarian", "role": "librarian", "model": "opus", "effort": "high", "interval": "8m" },
     { "name": "v-core-opt", "role": "vertical", "vertical": "core-opt", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-slack-bridge", "role": "vertical", "vertical": "slack-bridge", "area": "integrations", "model": "opus", "effort": "high", "interval": "30m" }
   ]

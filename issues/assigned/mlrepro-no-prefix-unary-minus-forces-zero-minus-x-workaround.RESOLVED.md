@@ -47,3 +47,5 @@ is missing an expected operator.
 - Fix or remove the bogus `did you mean Neg` heuristic for negation contexts.
 - Add corpus regression cases: prefix-negate of a name, of a paren expr, in a lambda body, float,
   and a quantity.
+
+<!-- RESOLVED 2026-07-15 (trunk@ab8304572): prefix unary minus -e = arity-1 (- e), type-directed 0-e across int/float/rational/bigint/qty. Migrated to 06-numeric-model.sexp (11 cases). -->

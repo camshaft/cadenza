@@ -15,3 +15,5 @@ type-system spec), not the impl gloss. The 4 cases already exist as todos — ma
 
 Area: rcdzc (infer + lowering for open sums). This is a coherent feature slice. Coordinate with
 v-patterns (owns match exhaustiveness) for the open-tail-arm exhaustiveness cases.
+
+<!-- BLOCKED 2026-07-15: NOT a per-issue fix — vertical-sized + design-blocked. The 4 TODOs need 2 UNPINNED surface designs (bare-undeclared-ctor→open-variant WITHOUT regressing CDZ0101 typo detection; schema-decode surface = decode/payload-of/Int64-schema/DecodeError). fix-open-sum-schema escalated an ask to concierge (anon poly-variants vs explicit open-sum decl vs defer) + closed itself. Fold into a design+vertical pair once the operator picks a direction. Do NOT reassign as a fix agent. -->
