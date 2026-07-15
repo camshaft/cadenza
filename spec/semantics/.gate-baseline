@@ -2456,6 +2456,7 @@ pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
+todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a match on an open sum omitting the open-tail arm is rejected
