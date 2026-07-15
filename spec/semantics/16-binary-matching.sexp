@@ -364,6 +364,47 @@
   (input  (bin (bytes (Bytes.of (list 1 2 3)) 2)))
   (error  CDZ0304))
 
+; --- A bin pattern applies only to a Bytes scrutinee -----------------------------------------
+; A `(bin …)` pattern DECODES a Bytes value, so it is well-formed only over a Bytes scrutinee. Matching
+; it against a definite NON-Bytes scrutinee — an Int64, a String, a List — is a type error (CDZ0203, 'a
+; `(bin …)` pattern decodes a Bytes value, but this scrutinee is <T>'), the bin twin of the map-key /
+; list-element pattern-type checks. It is caught at the offending arm, not silently accepted (which left
+; the arm to fall through to a misleading generic 'pattern not yet supported'). An unsolved (`Any`/`Var`)
+; scrutinee is skipped — a runtime Bytes may still flow in — so the reject fires only on a DEFINITE
+; non-Bytes type, whether a constant or a runtime parameter.
+
+(case "a bin pattern over an Int64 scrutinee is a type error"
+  (doc    "`(match 5 ((bin (u8 x)) x) (_ 0))` matches a `(bin …)` pattern against the Int64 `5`. A bin
+           pattern decodes a Bytes value, and an Int64 is not Bytes, so it is rejected (CDZ0203, naming the
+           scrutinee's type). Pins that the bin pattern's scrutinee-type check fires on a definite non-Bytes
+           scalar — the binary-matching companion of a list pattern over a non-list scrutinee.")
+  (input  (do (def (main) (match 5 ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a String scrutinee is a type error"
+  (doc    "`(match \"hi\" ((bin (u8 x)) x) (_ 0))` — a String is not Bytes (text vs a byte sequence are
+           distinct types; the bridge is `String.to-bytes`/`from-bytes`), so a bin pattern over it is
+           rejected (CDZ0203). Pins that a String scrutinee does not silently decode as bytes — the author
+           must encode it first.")
+  (input  (do (def (main) (match "hi" ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a List scrutinee is a type error"
+  (doc    "`(match (list 1 2) ((bin (u8 x)) x) (_ 0))` — a `(List Int64)` is not Bytes (a list of integers
+           is not a byte sequence; `Bytes.of` is the explicit bridge), rejected CDZ0203. Pins that the
+           scrutinee-type check covers a compound collection, not only a scalar.")
+  (input  (do (def (main) (match (list 1 2) ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a runtime non-Bytes scrutinee is a type error"
+  (doc    "`(match n ((bin (u8 x)) x) (_ 0))` with `n` a runtime Int64 parameter — the scrutinee is a
+           definite non-Bytes type known statically even though its value arrives at run time, so the reject
+           still fires (CDZ0203). Pins that the check is on the scrutinee's static TYPE, not whether it is a
+           constant; a runtime Int64 is rejected exactly as the constant `5` is (distinct from an unsolved
+           `Any`/`Var` scrutinee, which is skipped because a runtime Bytes may flow in).")
+  (input  (do (def (main (: n Int64)) (match n ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
 ; ============================================================================================
 ; Protocol round-trips — construct and match are inverse over a whole realistic layout
 ; ============================================================================================

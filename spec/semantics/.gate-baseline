@@ -267,6 +267,10 @@ pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
+pass	a bin pattern over a List scrutinee is a type error
+pass	a bin pattern over a String scrutinee is a type error
+pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
+pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
