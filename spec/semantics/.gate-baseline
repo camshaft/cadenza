@@ -625,6 +625,7 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
+pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
@@ -698,11 +699,14 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a guard combines the payload binder with the rest binder
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
+pass	a guard reads payload binders from two ctor list elements
+pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guard-elided masked add computes inline over runtime operands
 pass	a guarded arm among same-constructor match arms keeps first-match-wins

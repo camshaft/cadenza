@@ -8927,3 +8927,78 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 22 Int64)))
+
+; --- Guard-reads-payload-binder: the scope-composition faces ---------------------------------------
+; d6483cee2 folds a user guard cond into the innermost discriminant arm so a ctor list element's
+; payload binders are LIVE in the cond (was a false CDZ0101). Its pin covers one binder at the head;
+; these pin the scope compositions, promoted from passing breaker probes.
+
+(case "a guard reads payload binders from two ctor list elements"
+  (doc    "`(guard (list (Op.Add a) (Op.Mul b) .. r) (> a b))` — the cond reads binders from TWO
+           refutable elements, so the fold must land where BOTH are live (the innermost of the two
+           discriminant tests). [Add 5, Mul 2] passes → 7; [Add 1, Mul 9] fails → -1 → 6. A cond
+           folded after only the first element's test leaves `b` unbound.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add a) (Op.Mul b) .. r) (> a b)) (+ a b))
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (List.push (list) (Op.Add 5)) (Op.Mul 2)))
+                 (f (List.push (List.push (list) (Op.Add 1)) (Op.Mul v)))))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 6 Int64)))
+
+(case "a guard reads the payload binder and an enclosing parameter together"
+  (doc    "The cond `(> n k)` mixes the element's payload binder with an ENCLOSING param — the folded
+           cond must see both scopes (the relocated cond's environment is the arm's, chained to the
+           function's). Passing (5 > 3 → 5) and failing (2 > 3 → -1) both verified → 4.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)) (: k Int64))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n k)) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 5)) 3) (f (List.push (list) (Op.Add v)) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 4 Int64)))
+
+(case "a failing payload-binder guard falls to a later arm re-binding the payload"
+  (doc    "Arm one guards `(> n 9)` (→ 100+n), arm two re-binds the SAME ctor payload unguarded
+           (→ n): [Add 15] passes the guard → 115... verified as 120 total with [Add 5] falling to
+           arm two → 5. Pins the fall-through re-desugar: BOTH arms independently desugar their
+           refutable element, and the first arm's folded cond failing must reach the second arm's
+           discriminant test, not the trap the original bug left behind.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n 9)) (+ 100 n))
+                ((list (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 15))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 120 Int64)))
+
+(case "a guard combines the payload binder with the rest binder"
+  (doc    "`(guard (list (Op.Add n) .. r) (> n (List.len r)))` — the cond reads the payload binder
+           AND the rest binder `r` (the list's tail, len 0 here): [Add 2] → 2 > 0 → 2; [Add 0] →
+           fails → -1 → 1. Pins that the relocated cond sees every binder the arm pattern introduces,
+           including the rest.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n (List.len r))) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 2))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
