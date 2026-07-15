@@ -56,6 +56,9 @@ struct Agent {
     interval: String,
     /// The Claude model this agent runs under (`opus` for most; `fable` for `breaker`).
     model: String,
+    /// The reasoning-effort level the window launches with (`low`|`medium`|`high`|`xhigh`|`max`).
+    #[serde(default = "default_effort")]
+    effort: String,
     /// `active` (loop should be running) or `stopped` (removed — window kept for scrollback).
     status: String,
     /// Whether the window is launched with `--disallowedTools AskUserQuestion`. True for every role
@@ -91,6 +94,8 @@ struct RosterEntry {
     interval: String,
     #[serde(default = "default_model")]
     model: String,
+    #[serde(default = "default_effort")]
+    effort: String,
 }
 
 fn default_interval() -> String {
@@ -98,6 +103,9 @@ fn default_interval() -> String {
 }
 fn default_model() -> String {
     "opus".to_string()
+}
+fn default_effort() -> String {
+    "high".to_string()
 }
 
 /// Resolve a roster/`--model` alias to the full model id `claude --model` receives. The fleet runs
@@ -263,6 +271,9 @@ pub enum FleetCmd {
         /// 1M-context model id by the launcher.
         #[arg(long, default_value = "opus")]
         model: String,
+        /// The reasoning-effort level (`low`|`medium`|`high`|`xhigh`|`max`).
+        #[arg(long, default_value = "high")]
+        effort: String,
         /// A file (e.g. a queue `.sexp`) to seed into the new agent's inbox as an `assign` message,
         /// so it starts with its one job in hand.
         #[arg(long)]
@@ -351,8 +362,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             area,
             interval,
             model,
+            effort,
             seed,
-        } => add(&fleet, name, role, vertical, area, interval, model, seed),
+        } => add(
+            &fleet, name, role, vertical, area, interval, model, effort, seed,
+        ),
         FleetCmd::Remove { name } => remove(&fleet, &name),
         FleetCmd::Send {
             to,
@@ -438,6 +452,7 @@ fn agent_from_roster(fleet: &Fleet, e: &RosterEntry) -> Agent {
         branch,
         interval: e.interval.clone(),
         model: e.model.clone(),
+        effort: e.effort.clone(),
         status: "active".to_string(),
         disallow_ask: !matches!(e.role.as_str(), "concierge" | "design"),
     }
@@ -515,6 +530,7 @@ fn add(
     mut area: String,
     interval: String,
     model: String,
+    effort: String,
     seed: Option<PathBuf>,
 ) {
     // Materialize the tracked source so a freshly-added agent's role body is present in the runtime
@@ -560,6 +576,7 @@ fn add(
         branch,
         interval,
         model,
+        effort,
         status: "active".to_string(),
         disallow_ask,
     };
@@ -690,6 +707,7 @@ fn describe(fleet: &Fleet, name: &str) {
     println!("WORKTREE={}", q(&a.worktree));
     println!("ROLE={}", q(&a.role));
     println!("MODEL={}", q(&resolve_model(&a.model)));
+    println!("EFFORT={}", q(&a.effort));
     println!("INTERVAL={}", q(&a.interval));
     println!("VERTICAL={}", q(&a.vertical));
     println!("AREA={}", q(&a.area));
@@ -821,8 +839,8 @@ fn sync_roster(fleet: &Fleet, cwd: &Path) -> usize {
             entries.push_str(&format!(", \"area\": {:?}", a.area));
         }
         entries.push_str(&format!(
-            ", \"model\": {:?}, \"interval\": {:?} }}",
-            a.model, a.interval
+            ", \"model\": {:?}, \"effort\": {:?}, \"interval\": {:?} }}",
+            a.model, a.effort, a.interval
         ));
         n += 1;
     }

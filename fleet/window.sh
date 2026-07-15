@@ -31,6 +31,7 @@ eval "$CONFIG"   # sets WORKTREE, ROLE, MODEL, INTERVAL, VERTICAL, AREA, DISALLO
 : "${WORKTREE:?registry gave no WORKTREE for $AGENT}"
 : "${ROLE:?registry gave no ROLE for $AGENT}"
 : "${MODEL:=us.anthropic.claude-opus-4-8[1m]}"
+: "${EFFORT:=high}"
 : "${INTERVAL:=10m}"
 
 if [ ! -d "$WORKTREE" ]; then
@@ -59,7 +60,7 @@ concierge and keep working — never wait for a reply."
 # system OFF (the machine and repo are trusted; this matches how the prior /loop crons ran). That is
 # why `--dangerously-skip-permissions` is set below. Do NOT copy this launcher for an interactive or
 # untrusted session — the bypass is scoped to this trusted, unattended fleet on purpose.
-CLAUDE_ARGS=(--effort high --model "$MODEL" --dangerously-skip-permissions)
+CLAUDE_ARGS=(--effort "$EFFORT" --model "$MODEL" --dangerously-skip-permissions)
 
 # Structural guard: every window EXCEPT the interactive roles (concierge, design) is denied the
 # human-question tool, so no unattended agent can pop an interactive prompt in its window. The
@@ -68,6 +69,6 @@ if [ "${DISALLOW_ASK:-1}" = "1" ]; then
   CLAUDE_ARGS+=(--disallowedTools AskUserQuestion)
 fi
 
-echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL interval=$INTERVAL) in $WORKTREE"
+echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL effort=$EFFORT interval=$INTERVAL) in $WORKTREE"
 echo "           claude ${CLAUDE_ARGS[*]}"
 exec claude "${CLAUDE_ARGS[@]}" "$KICKOFF"
