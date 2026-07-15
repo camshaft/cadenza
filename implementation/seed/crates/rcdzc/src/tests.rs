@@ -33438,6 +33438,70 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lambda_valued_def_body_is_type_checked_by_the_diagnostics_query() {
+        // A `(def name (fn (p…) body))` LAMBDA-VALUED def registers a def whose `body` occurrence IS the
+        // `fn` node (empty `db.defs` params). The def-body walk runs `type_errors` over that lambda node,
+        // whose `collect_node` arm used to check ONLY param-linearity — never descending into the body. So
+        // a type fault / unbound name in a lambda-valued def body silently PASSED `cdz check` (and
+        // `compile`, when the def is unreached) while the SAME logic written `(def (name p…) body)` was
+        // rejected — a check/compile discrepancy on a purely syntactic surface choice, the lambda-valued
+        // analogue of the pattern-fault / binop-arity / do-block `check`≡`compile` gaps. `collect_node`'s
+        // `Lambda` arm now descends into the body when the lambda IS a registered def body.
+        //
+        // A numeric-mix type fault in a NON-exported lambda-valued def body is now caught (CDZ0301).
+        let mismatch = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (+ x 1.0))))",
+        )));
+        assert!(
+            mismatch
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0301")),
+            "an ill-typed lambda-valued def body must be caught by check: {mismatch:?}"
+        );
+        // An unbound name in a non-exported lambda-valued def body is caught (CDZ0101) — unbound is
+        // unconditional well-formedness, not gated on the def being reached.
+        let unbound = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (nonexistent x))))",
+        )));
+        assert!(
+            unbound
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("nonexistent")),
+            "an unbound name in a lambda-valued def body must be caught: {unbound:?}"
+        );
+        // Reported EXACTLY ONCE when the lambda-valued def is ALSO reached via a call (no infer/emit
+        // double, and no double between the standalone body walk and the reached-poison walk).
+        let called = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (+ x 1.0))) \
+             (def (main (: x Int64)) (helper x)) (export main))",
+        )));
+        assert_eq!(
+            called
+                .iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0301"))
+                .count(),
+            1,
+            "the ill-typed lambda-valued body reports once, not a double: {called:?}"
+        );
+        // NO false positive over an INLINE / let-bound lambda: it is NOT a registered def body, so it is
+        // checked at its β-reduction call site (unchanged) — a well-typed HOF argument stays clean, and an
+        // UNINSTANTIATED generic body raises no spurious fault here.
+        for ok in [
+            "(module m (def (apply-it (: f (-> Int64 Int64)) (: x Int64)) (f x)) \
+             (def (main (: x Int64)) (apply-it (fn ((: y Int64)) (+ y 1)) x)) (export main))",
+            "(module m (def helper (fn ((: x Int64)) (+ x 1))) (export helper))",
+        ] {
+            let clean = crate::diagnostics(&mut crate::db::Db::load(parse(ok)));
+            assert!(
+                clean
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a well-typed lambda body must produce no error: {ok} → {clean:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_do_local_declaration_binds_the_following_forms() {
         // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
         // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
