@@ -24,12 +24,12 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     PublishDiagnostics,
 };
-use lsp_types::request::{Request as _, Shutdown};
+use lsp_types::request::{HoverRequest, Request as _, Shutdown};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, InitializeParams, InitializeResult, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, MarkedString, Position, PublishDiagnosticsParams, Range,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -71,13 +71,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
     Ok(())
 }
 
-/// The capabilities this server advertises. Increment 1: FULL text-document sync (the client resends
-/// the whole document on each change — simplest correct model; incremental sync is a later refinement)
-/// and diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
-/// capability flag beyond sync is required for the classic push model).
+/// The capabilities this server advertises: FULL text-document sync (the client resends the whole
+/// document on each change — simplest correct model; incremental sync is a later refinement),
+/// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
+/// capability flag beyond sync is required for the classic push model), and `hover` (the "type at
+/// cursor" read, backed by the `TypeAt` query).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..Default::default()
     }
 }
@@ -126,9 +128,9 @@ impl Server {
         Ok(())
     }
 
-    /// Dispatch a client REQUEST. Increment 1 answers no feature requests yet (hover/definition are the
-    /// next increments); an unknown method gets a `MethodNotFound` error response so the client is not
-    /// left waiting. `shutdown` is handled in `serve` via `handle_shutdown`.
+    /// Dispatch a client REQUEST. `hover` is answered from the `TypeAt` query; other feature requests
+    /// (definition/references/completion) are the next increments and get a `MethodNotFound` error so the
+    /// client is not left waiting. `shutdown` is handled in `serve` via `handle_shutdown`.
     fn handle_request(
         &mut self,
         req: Request,
@@ -137,15 +139,34 @@ impl Server {
         if req.method == Shutdown::METHOD {
             return Ok(());
         }
-        let resp = Response::new_err(
-            req.id.clone(),
-            lsp_server::ErrorCode::MethodNotFound as i32,
-            format!(
-                "cdz lsp: unsupported request `{}` (not yet implemented)",
-                req.method
-            ),
-        );
-        self.send_response(resp)
+        match req.method.as_str() {
+            HoverRequest::METHOD => {
+                let (id, params) = cast_request::<HoverRequest>(req)?;
+                let result = self.hover(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            _ => {
+                let resp = Response::new_err(
+                    req.id.clone(),
+                    lsp_server::ErrorCode::MethodNotFound as i32,
+                    format!(
+                        "cdz lsp: unsupported request `{}` (not yet implemented)",
+                        req.method
+                    ),
+                );
+                self.send_response(resp)
+            }
+        }
+    }
+
+    /// Answer a `textDocument/hover`: resolve the cursor position to the innermost node and report its
+    /// type (the "type at cursor" read, backed by the `TypeAt` query — a grammar keyword names itself, a
+    /// definition shows its signature). `None` (JSON `null`) when the document is not open, the position
+    /// maps to no node, or the node has no meaningful hover — total, never an error.
+    fn hover(&self, params: &HoverParams) -> Option<Hover> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        hover_at(&doc.text, doc.is_ml, pos.position)
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -257,13 +278,19 @@ fn uri_is_ml(uri: &Uri) -> bool {
     }
 }
 
-// The `_ = ExtractError` import guard: keep the type referenced so a future typed-request dispatch that
-// uses `Request::extract` (which yields `ExtractError`) compiles without re-importing.
-#[allow(dead_code)]
-fn _extract_error_marker(_: ExtractError<Request>) {}
-
-#[allow(dead_code)]
-fn _request_id_marker(_: RequestId) {}
+/// Extract a typed request's `(id, params)`, mapping an extraction failure into the boxed error type.
+/// The caller has already matched the method by name, so a `MethodMismatch` cannot occur; a
+/// `JsonError` is a malformed params payload.
+fn cast_request<R: lsp_types::request::Request>(
+    req: Request,
+) -> Result<(RequestId, R::Params), Box<dyn std::error::Error + Sync + Send>> {
+    req.extract(R::METHOD).map_err(|e| match e {
+        ExtractError::JsonError { error, .. } => Box::new(error) as Box<_>,
+        ExtractError::MethodMismatch(r) => {
+            format!("cdz lsp: internal method mismatch on `{}`", r.method).into()
+        }
+    })
+}
 
 // ── the analysis: source text → LSP diagnostics, via the SAME query engine `cdz check` uses ─────────
 
@@ -453,6 +480,72 @@ fn byte_to_position(text: &str, byte: usize) -> Position {
     Position::new(line, character)
 }
 
+/// The UTF-8 byte offset of an LSP [`Position`] in `text` — the inverse of [`byte_to_position`]. LSP
+/// `character` counts UTF-16 code units, so a column past a multibyte character maps to a byte offset
+/// further along than the column number. A position past the end of its line clamps to the line end; a
+/// line past the end clamps to the text end (a query is total — an out-of-range cursor never panics).
+fn position_to_byte(text: &str, pos: Position) -> usize {
+    let mut line: u32 = 0;
+    let mut utf16_col: u32 = 0;
+    for (i, ch) in text.char_indices() {
+        if line == pos.line && utf16_col >= pos.character {
+            return i;
+        }
+        if ch == '\n' {
+            // Reached the end of the target line before its target column — clamp to the newline.
+            if line == pos.line {
+                return i;
+            }
+            line += 1;
+            utf16_col = 0;
+        } else if line == pos.line {
+            utf16_col += ch.len_utf16() as u32;
+        }
+    }
+    text.len()
+}
+
+// ── the analysis: source text + cursor → LSP hover, via the `TypeAt` query ──────────────────────────
+
+/// Compute the LSP hover for the cursor `pos` in `text` — the "type at cursor" read. Parses the buffer
+/// in-memory, resolves the position to the INNERMOST node covering it (`node_at_offset`), then drives
+/// the `TypeAt` query, whose answer is a hover-ready string (a grammar keyword names itself, a
+/// definition shows its `name : type` signature, an untypeable node says "unknown"). `None` when the
+/// buffer does not parse to a span table, the position maps to no node, or the answer is empty — total,
+/// never a panic.
+fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    let byte = position_to_byte(text, pos);
+    let node = spans.node_at_offset(byte)?;
+
+    let ast_bytes = cadenza_syntax::codec::encode(&arenas);
+    let sidecar_bytes =
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
+            node: node.0,
+        })]);
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+    ];
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let bytes = compiled.artifact(rcdzc::sidecar::KIND_TYPE_AT)?;
+    let ty = String::from_utf8_lossy(bytes);
+    let ty = ty.trim();
+    // A total-but-uninformative answer ("unknown", or empty) is not worth a hover popup — return None so
+    // the editor shows nothing rather than a meaningless box.
+    if ty.is_empty() || ty == "unknown" {
+        return None;
+    }
+    // The hovered node's source range, so the editor underlines exactly the sub-expression it typed.
+    let range = spans
+        .get(node)
+        .map(|s| byte_range_to_range(text, s.start, s.end));
+    Some(Hover {
+        contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
+        range,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +580,61 @@ mod tests {
         // pair) — the char after it lands at character 2, the case a naive char-count would get wrong.
         let text = "𝟙y";
         assert_eq!(byte_to_position(text, 4), Position::new(0, 2)); // after the astral char
+    }
+
+    #[test]
+    fn position_to_byte_is_the_inverse_of_byte_to_position() {
+        // Round-trip on a multi-line, multibyte source: every byte offset that starts a char maps to a
+        // position and back to itself.
+        let text = "ab\n€x\n𝟙y";
+        for (i, _) in text.char_indices() {
+            let pos = byte_to_position(text, i);
+            assert_eq!(
+                position_to_byte(text, pos),
+                i,
+                "round-trip failed at byte {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn position_to_byte_clamps_out_of_range() {
+        let text = "ab\ncd";
+        // A column past the line end clamps to the newline (byte 2), not into the next line.
+        assert_eq!(position_to_byte(text, Position::new(0, 99)), 2);
+        // A line past the end clamps to the text end.
+        assert_eq!(position_to_byte(text, Position::new(9, 0)), text.len());
+    }
+
+    #[test]
+    fn hover_on_a_definition_reports_its_type() {
+        // Hovering a definition's name shows its signature — the "type at cursor" read. The cursor sits on
+        // the `answer` name at column 4 of `def answer = 42`.
+        let text = "def answer = 42";
+        let h = hover_at(text, true, Position::new(0, 4)).expect("a hover");
+        let rendered = match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        // The answer mentions the inferred type (an Int-family type for `42`).
+        assert!(
+            rendered.contains("Int"),
+            "hover should report the type, got: {rendered}"
+        );
+        assert!(
+            h.range.is_some(),
+            "hover should carry the node's source range"
+        );
+    }
+
+    #[test]
+    fn hover_off_any_node_is_none_not_a_panic() {
+        // A position past the end of the buffer maps to no meaningful node → no hover, never a panic.
+        let text = "def answer = 42";
+        // Far past the end.
+        let _ = hover_at(text, true, Position::new(50, 50));
+        // On leading whitespace of an empty-ish buffer.
+        assert!(hover_at("   ", true, Position::new(0, 1)).is_none());
     }
 
     #[test]
