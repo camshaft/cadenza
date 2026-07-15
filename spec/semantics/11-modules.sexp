@@ -169,6 +169,52 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a private sibling defined after its exported caller still resolves"
+  (doc    "The DEFINITION-ORDER companion of the private-sibling case above: there `helper` precedes its
+           caller; here the exported `pub` comes FIRST and forward-references the private `helper` defined
+           after it. Sibling visibility is order-independent (every member sees every member), and the
+           privacy filter must not interact with the forward-reference path: pub(21) = helper(21) = 42.
+           A resolver that binds siblings in definition order — or one that consults the (filtered) export
+           record for a not-yet-seen name — breaks exactly this shape.")
+  (input  (do
+            (module m
+              (export pub)
+              (def (pub (: x Int64)) (helper x))
+              (def (helper (: x Int64)) (* x 2)))
+            ((. m pub) 21)))
+  (output (: 42 Int64)))
+
+(case "a mutually-recursive pair fully named by the export clause resolves"
+  (doc    "A mutual-recursion CYCLE inside a module with an export clause naming BOTH members:
+           even↔odd, `((. m even) 4)` = 1 (4 is even; the cycle bottoms out through 4→3→2→1→0). The
+           knot-tying for a mutually-recursive module group must survive the presence of an export
+           clause — this pins the both-exported face (the export-everything default cycle already works;
+           the one-private face is the open false-rejection filed as
+           adv-private-module-member-in-mutual-recursion-false-reject).")
+  (input  (do
+            (module m
+              (export even odd)
+              (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1))))
+              (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))))
+            ((. m even) 4)))
+  (output (: 1 Int64)))
+
+(case "one module's export clause does not affect a same-named member of another module"
+  (doc    "Privacy is PER-MODULE state: module `a` exports only `pub` (hiding its `helper`), while module
+           `b` has NO export clause, so ITS `helper` keeps the export-everything default — `(. b helper)`
+           reaches it (7 × 3 = 21) even though a same-named member of `a` is private. A privacy filter
+           keyed by NAME rather than by (module, name) — e.g. a global hidden-names set — would let `a`'s
+           clause shadow `b`'s member. Pins the filter's scope is the declaring module's record only.")
+  (input  (do
+            (module a
+              (export pub)
+              (def (helper (: x Int64)) (* x 2))
+              (def (pub (: x Int64)) (helper x)))
+            (module b
+              (def (helper (: x Int64)) (* x 3)))
+            ((. b helper) 7)))
+  (output (: 21 Int64)))
+
 ; A module definition need not be a function: the glossary defines a Definition as "a named binding
 ; introduced by a module: a value, function, type, …", and core-semantics.md #A Module Evaluates To A
 ; Record Of Its Exports says "Each definition MUST register its name and value as a field of the module's
