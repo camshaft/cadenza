@@ -1337,6 +1337,52 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
     }
 }
 
+/// A repeated keyed lookup `(Option.expect (Map.lookup m k))` is shared by CSE (one `map-lookup` — an
+/// O(log n) CHAMP walk — pinned at the Lir level in `select.rs`); this is the RUNTIME companion proving
+/// the SHARED lookup is refcount-correct. `Map.lookup` BORROWS the map, so sharing must leave `m` fully
+/// live: the program reads key 2 TWICE (shared) AND `Map.size m` after. If the shared lookup mishandled
+/// the borrow (a premature drop of `m` or a double-consume of the boxed value), the later size read
+/// would see a freed/corrupted map. Built at run time via an insert loop so it imports the runtime.
+/// m = {0:0,1:10,2:20,3:30,4:40} → lookup 2 = 20; 20 + 20 + size(5) = 45.
+#[test]
+fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: acc (Map Int64 Int64))) \
+                   (if (< n 0) acc (build (- n 1) (Map.insert acc n (* n 10))))) \
+                 (def (f (: mp (Map Int64 Int64)) (: k Int64)) \
+                   (if (< k 0) (f mp (+ k 1)) \
+                     (+ (+ (Option.expect (Map.lookup mp 2) \"v\") (Option.expect (Map.lookup mp 2) \"v\")) \
+                        (Map.size mp)))) \
+                 (def (main (: n Int64)) (f (build n Map.empty) 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime map must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["4".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "45",
+            "shared key-2 lookup (20+20) plus a still-live size (5) = 45"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("CSE-shared map lookup trapped (refcount miscompile?): {t}")
+        }
+    }
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
