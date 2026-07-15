@@ -1426,16 +1426,21 @@ impl<'a> Parser<'a> {
         items.extend(self.doc_nodes(docs));
         self.expect(Kind::Eq, "`=`");
         // Variants are `|`-led, with an (always-printed) leading `|` before the first — tolerate its
-        // absence for robustness. Each `|` introduces a variant.
+        // absence for robustness. Each `|` introduces a variant. A `..`-led body is a ZERO-named-variant
+        // OPEN SUM (`type Opaque = .. r` — no variants, only a row tail): skip the variant loop so the
+        // trailing-`.. r` handler below reads the tail (without it, the loop's unconditional first
+        // `variant()` would try to read a name at `..` and fail — the trunk-red round-trip bug).
         if self.at(Kind::Pipe) {
             self.bump(); // optional leading `|`
         }
-        loop {
-            items.push(self.variant());
-            if self.at(Kind::Pipe) {
-                self.bump(); // `|`
-            } else {
-                break;
+        if !self.at(Kind::DotDot) {
+            loop {
+                items.push(self.variant());
+                if self.at(Kind::Pipe) {
+                    self.bump(); // `|`
+                } else {
+                    break;
+                }
             }
         }
         // OPEN SUM: an optional trailing `.. r` row-variable marker after the last variant — the sum is
