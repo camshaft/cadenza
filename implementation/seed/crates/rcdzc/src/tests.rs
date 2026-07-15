@@ -47402,6 +47402,33 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unannotated_multiparam_closure_infers_through_a_generic_recursive_hof() {
+        // INFERENCE regression (issue mlrepro-reject-multiparam-closure-through-recursive-hof-unit-domain):
+        // the MULTI-parameter twin of the case above — an unannotated `(fn (x a) (+ a x))` (the idiomatic
+        // left-fold callback) passed to a generic recursive HOF `fold-list`. `check` PASSED but `compile`
+        // rejected CDZ0203 with the closure typed `(-> Unit (-> Unit Int64))`. Root: `fold-list` is GENERIC
+        // in `f` (scheme `(-> _ (-> _ _))`), so the call MONOMORPHIZES via `type_specialize`, which
+        // re-annotates the specialized copy's `f` with the ARG's type — `type_of(closure)` = `(-> Any (->
+        // Any Int64))`, whose nested `Any` holes `encode_ty` renders as `Unit`, so the copy got `f : (->
+        // Unit (-> Unit Int64))` and its `(f h acc)` conflicted. Fix: `type_specialize` now SOLVES a bare
+        // closure arg's params (`solved_lambda_arrow`, the same body-solve `lower_lambda_value` runs) before
+        // annotating, so the copy gets the concrete `(-> Int64 (-> Int64 Int64))`. `fold-list f acc xs = acc
+        // (+ f over xs)`, BOUNDARY `acc = n` so nothing folds: `n + 5 + 7 + 30 = n + 42`.
+        let src = "(module m \
+            (def (fold-list f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (fold-list f (f h acc) t)))) \
+            (def (main (: n Int64)) (fold-list (fn (x a) (+ a x)) n (list 5 7 30))) (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "42"); // 0 + 5 + 7 + 30 = 42
+        assert_eq!(run_closure(src, 100).unwrap(), "142"); // 100 + 42
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted

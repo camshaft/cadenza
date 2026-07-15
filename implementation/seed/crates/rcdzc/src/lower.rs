@@ -9127,7 +9127,28 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             subtree_fingerprint(db, a, &mut fp);
             kinds.push(ArgKind::ConstArg(a, fp));
         } else {
-            let t = crate::infer::type_of(db, a);
+            let mut t = crate::infer::type_of(db, a);
+            // A BARE CLOSURE argument types `(-> Any … R)` — its unannotated params contribute `Any`
+            // (`type_of`'s Lambda arm), so the specialized copy would annotate this parameter with a type
+            // carrying nested `Any`, which `encode_ty` renders as `Unit` — a spurious `(-> Unit … Int64)`
+            // that then conflicts CDZ0203 when the copy applies the closure. The closure's OWN body DOES
+            // determine its params (`(fn (x a) (+ a x))` → both Int64), the same solve `lower_lambda_value`
+            // runs; run it HERE so the specialized annotation is concrete. Only fires when the arg is a
+            // lambda AND its type still has an `Any` hole (a fully-annotated / already-solved closure is
+            // untouched — byte-identical). If a hole SURVIVES the solve (a genuinely unconstrained param),
+            // DECLINE rather than annotate an unrepresentable `Unit` — a coded decline beats a miscompiled
+            // annotation. A NON-lambda arg keeps the prior behavior (its nested `Any`, if any, is untouched).
+            if t.has_any()
+                && let (Some(lam_params), Some(lam_body)) = (
+                    crate::eval::lambda_params_of(db, a),
+                    crate::eval::lambda_body(db, a),
+                )
+            {
+                match crate::infer::solved_lambda_arrow(db, &lam_params, lam_body) {
+                    Some(solved) if !solved.has_any() => t = solved,
+                    _ => return None,
+                }
+            }
             if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
                 return None;
             }

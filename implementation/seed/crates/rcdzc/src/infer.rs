@@ -1596,6 +1596,29 @@ pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> T
     ground_param(subst.apply(&var))
 }
 
+/// The fully-SOLVED arrow type of the lambda VALUE at `id` — each parameter solved from the lambda body
+/// (`solve_lambda_param_ty`, so an unannotated `(fn (x a) (+ a x))` yields `Int64 → Int64 → Int64`, not
+/// the `Any → Any → Int64` the bottom-up `type_of` Lambda arm gives), curried onto the body's type.
+/// `None` if `id` is not a lambda. Used by `type_specialize`: a bare closure passed to a generic HOF must
+/// be re-annotated with its CONCRETE type in the monomorphized copy, or the `Any` param holes encode as
+/// `Unit` and mistype the copy (`(-> Unit … R)` → spurious CDZ0203). The per-param body-solve is exactly
+/// what `lower_lambda_value` runs, so the recovered arrow agrees with how the closure itself lowers.
+pub fn solved_lambda_arrow(db: &mut Db, params: &[StructId], body: StructId) -> Option<Ty> {
+    let result = type_of(db, body);
+    // Curry right-to-left: each param's solved machine type onto the accumulated result.
+    Some(params.iter().rev().fold(result, |acc, &p| {
+        let occ = crate::eval::param_name_occ(db, p);
+        // An annotated param already types concretely via `type_of`; a bare one bottom-up types `Any`,
+        // so solve it from the body (matching `lower_lambda_value`'s fallback). A still-`Any` param
+        // (genuinely unconstrained) stays `Any` — the caller declines rather than invent a type.
+        let pt = match type_of(db, occ) {
+            Ty::Any => solve_lambda_param_ty(db, occ, body),
+            t => t,
+        };
+        Ty::Fn(Box::new(pt), Box::new(acc))
+    }))
+}
+
 /// The FUNCTION TYPE a lambda VALUE is EXPECTED to have from its immediate CONTEXT — the type its parent
 /// construct requires of it — when that context DECLARES an arrow. `type_of` computes a lambda's type
 /// bottom-up (from its body + param occurrences), so a bare `(fn (n) …)` whose param the body does not

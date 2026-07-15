@@ -1,4 +1,19 @@
-;; GAP (2026-07-14, seed rcdzc — HM inference): an UNANNOTATED closure passed to a SELF-RECURSIVE
+;; ✅ RESOLVED (2026-07-15, v-inference vertical, both arities). The idiomatic fully-inferred fold now
+;; compiles + runs, single- AND multi-argument callback:
+;;   (1) SINGLE-arg (`(fn (x) (+ x 1))`): `lambda_param_ty_from_context` (infer.rs) rejected a free-`Var`
+;;       context domain (a fully-generic HOF param `f : (-> _ R)` is a HOLE, not `Any`), so it stopped
+;;       preempting the closure's body-solve. Corpus 09-functions "an unannotated closure is inferred
+;;       through an unannotated recursive HOF parameter".
+;;   (2) MULTI-arg (`(fn (x a) (+ a x))`, this file): `type_specialize` (lower.rs) now SOLVES a bare
+;;       closure arg's params (`infer::solved_lambda_arrow`) before annotating the monomorphized copy, so
+;;       the copy gets the concrete `(-> Int64 (-> Int64 Int64))` instead of `(-> Unit (-> Unit Int64))`
+;;       (the nested-`Any`→`Unit` encode). Corpus 09-functions "an unannotated two-argument closure is
+;;       inferred through a generic recursive HOF" (main(0)→42, main(100)→142). rcdzc test
+;;       `an_unannotated_multiparam_closure_infers_through_a_generic_recursive_hof`.
+;; A GENUINELY-unconstrained closure param (`(fn (x) x)` — identity, no body constraint) still declines
+;; cleanly (decline-don't-miscompile), which is correct: it needs a determined type to monomorphize.
+;;
+;; ORIGINAL GAP (2026-07-14, seed rcdzc — HM inference): an UNANNOTATED closure passed to a SELF-RECURSIVE
 ;; higher-order function whose function parameter is ALSO unannotated fails to infer the closure's
 ;; parameter types — they are left as unsolved type variables and the emit rejects them:
 ;;   "a closure's parameter type has no machine representation"
