@@ -31255,6 +31255,30 @@ mod match_engine {
     }
 
     #[test]
+    fn a_prefixed_quantity_displays_scaled_to_its_reference_unit() {
+        // Calc relabel bug fix (mlrepro-calc-bare-quantity-relabels-to-base-without-scaling): a quantity
+        // in a NON-REFERENCE unit displays at its dimension's reference with the magnitude SCALED, so the
+        // number and unit AGREE. `5 kilometer` renders `(Qty.of 5000.0 (Unit.base #"meter"))`, NOT the old
+        // buggy `5.0 meter` (base name, scale dropped). A DISPLAY concern only — construction is untouched
+        // (no eager truncation), and `Unit.in` still converts exactly by the direct ratio. Reuses the same
+        // normalize-to-reference the mixed-unit combine runs (one source of truth). Rendered value-form is
+        // asserted through the host boundary escape.
+        let src = "(do (def (main) ((. Qty of) 5.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // runtime wasm absent (no store built) — skip, the corpus gate covers it e2e
+        };
+        assert!(
+            rendered.contains("5000") && rendered.contains("meter"),
+            "5 kilometer must display 5000 meter (scaled to reference), got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("5.0 ((. Unit base"),
+            "must NOT show the unscaled 5.0 (the relabel bug), got: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_prefixed_unit_auto_converts_to_the_reference_over_int() {
         // F2-1: `1 KiB + 1 kB` over Int64 — two units of the `information` dimension at DIFFERENT scales
         // (kibi = 1024, kilo = 1000) — each converts to the reference `byte` and sums to 2024 (NOT 2000:

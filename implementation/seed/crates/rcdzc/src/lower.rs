@@ -10905,11 +10905,21 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
     // checked FIRST (before the core match) because the erased core is a bare scalar (`ConstFloat`),
     // which would otherwise render as the bare number, losing the quantity the corpus records.
     if let crate::ty::Ty::Qty { inner, unit } = crate::infer::type_of(db, id) {
-        // The inner VALUE: the erased core IS the inner value (Qty.of erases to it), so render it at the
-        // inner type by recursing on the SAME node with the quantity peeled — build a synthetic inner
-        // render by matching the core directly (the node's core is the inner numeric's core).
-        let inner_val = const_value_ast_at(db, b, id, &inner)?;
-        let unit_ast = unit_value_ast(b, &unit);
+        // A quantity DISPLAYS at its dimension's REFERENCE unit, with its magnitude SCALED to that
+        // reference — the same normalize-to-reference the mixed-unit combine path runs, so a single
+        // quantity and a homogeneous combine render identically (`5 kilometer` and `5 km + 0 m` both
+        // → `(Qty.of 5000.0 (Unit.base #"meter"))`). This is the fix for the calc relabel bug
+        // (mlrepro-calc-bare-quantity-relabels-to-base-without-scaling): the OLD render took the unit's
+        // exponent-map NAME (`meter`) but dropped its SCALE (`1000`), so the number (`5`) and unit
+        // (`meter`) disagreed. Scaling here is a DISPLAY concern only — construction is untouched, so no
+        // stored value is truncated (DESIGN-quantity-reference-normalized-unwrap.md §1a REVISED: lazy,
+        // not eager). `Unit.in` still converts by the exact direct source→target ratio (unaffected — it
+        // renders a bare number, not a Qty). The scale is applied in the inner numeric type: Float
+        // rounds, Rational is exact, Int truncates on a non-whole ratio — the same rule the combine path
+        // and the numeric core already use (a scale-1 reference unit is a no-op, byte-neutral).
+        let (num, den) = unit.scale();
+        let inner_val = const_value_ast_scaled(db, b, id, &inner, num, den)?;
+        let unit_ast = unit_value_ast(b, &unit.at_reference());
         // `((. Qty of) <value> <unit>)` — the member-access form the reader normalizes `(Qty.of …)` to
         // (a dotted name `Qty.of` desugars to `(. Qty of)`), so the baked value re-reads/re-prints to
         // the SAME canonical shape the corpus records.
@@ -11144,6 +11154,55 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 /// (int/float/bool) the value form is the same as `const_value_ast`'s scalar arms, so match the core
 /// directly here. (A quantity over a COMPOUND inner type is not a Layer-1 case — the numeric core is
 /// scalar — so a non-scalar inner declines the escape by `None`.)
+/// Render a quantity's magnitude SCALED to its dimension's reference unit — `value × (num/den)` in the
+/// inner numeric type — for the value-form display of a `(Qty T u)` (`const_value_ast`'s Qty arm). The
+/// scale `(num, den)` is the unit's exact ratio to its reference (`unit.scale()`); a reference unit is
+/// `(1, 1)`, a no-op that delegates to the unscaled render. Mirrors the mixed-unit combine's constant
+/// fold so a single quantity and a homogeneous combine display identically: Float multiplies then
+/// rounds to a finite decimal, Rational scales exactly (cross-multiply + renormalize), Int multiplies
+/// then truncates on a non-whole ratio (the numeric core's integer-division rule). Declines (None) on a
+/// non-scalar inner or a Float scale with no finite decimal form.
+fn const_value_ast_scaled(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    id: StructId,
+    expect: &crate::ty::Ty,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    // Reference unit (scale 1/1) — no scaling, render the magnitude as-is.
+    if num == 1 && den == 1 {
+        return const_value_ast_at(db, b, id, expect);
+    }
+    match core_of(db, id) {
+        Core::ConstInt(v) => {
+            let scaled = v.to_i128()?.checked_mul(num)? / den;
+            Some(b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i128(scaled),
+                radix: Radix::Dec,
+            }))
+        }
+        Core::ConstFloat(d) => {
+            let scaled = f64::from_bits(d.to_f64_bits()) * (num as f64) / (den as f64);
+            crate::ast::Decimal::from_f64(scaled).map(|dec| b.atom_leaf(Leaf::Float(dec)))
+        }
+        Core::ConstRational(n, dd) => {
+            // Exact: (n/dd) × (num/den) = (n·num)/(dd·den), renormalized to lowest terms.
+            let sn = n.mul(&IntValue::from_i128(num));
+            let sd = dd.mul(&IntValue::from_i128(den));
+            match normalized_rational(sn, sd) {
+                Core::ConstRational(rn, rd) => {
+                    let text = format!("{}/{}", rn.to_decimal_string(), rd.to_decimal_string());
+                    Some(b.atom_leaf(Leaf::Name(text)))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn const_value_ast_at(
     db: &mut Db,
     b: &mut crate::ast::Builder,
