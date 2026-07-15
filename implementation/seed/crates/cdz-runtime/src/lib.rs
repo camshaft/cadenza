@@ -16124,6 +16124,48 @@ mod tests {
         assert_eq!(live_nodes(), before, "both ropes gone: full reclamation");
     }
 
+    /// The runtime contract behind the compiler's Perceus DUP-RETAIN fix (`spec@6c1120b2`): a heap value
+    /// used as a CONSUMING operand (here `String.concat`, which consumes its operand into the rope node)
+    /// AND with a LATER live use is emitted with a `dup` first, so the later use reads the intact original.
+    /// The prior test reads the shared leaf THROUGH another concat rope; this reads the ORIGINAL reference
+    /// DIRECTLY — the `(let ((e S)) (+ (len (String.concat e x)) (len e)))` shape the fix repairs (which
+    /// returned a wrong value when the dup was missing). After `dup(e)` + `concat(e, x)`, the original `e`
+    /// must read its full content + correct byte-len (the concat consumed a SEPARATE reference, not this
+    /// one), and everything reclaims exactly once.
+    #[test]
+    fn rope_dup_retained_operand_survives_being_consumed_by_concat() {
+        reset();
+        let before = live_nodes();
+        let e = op_str_new(String::from("hello")); // the shared string operand
+        op_dup(e); // the compiler's dup-retain: rc=2 (one ref for the concat, one for the later use)
+        let x = op_str_new(String::from("!"));
+        let rope = op_bytes_concat(e, x); // consumes ONE `e` ref + `x` → "hello!"
+        // The LATER live use reads the ORIGINAL `e` directly — it must be intact, NOT corrupted/freed.
+        assert_eq!(
+            op_str_get(e),
+            "hello",
+            "the dup-retained original reads its full content after a ref was consumed by concat"
+        );
+        assert_eq!(
+            op_bytes_len(e),
+            5,
+            "…and its byte-len is unchanged (the concat consumed a separate ref, not this one)"
+        );
+        // The rope built from the other ref is correct too.
+        assert_eq!(
+            op_str_get(rope),
+            "hello!",
+            "the concat rope reads both operands"
+        );
+        op_drop(e);
+        op_drop(rope);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free: the consumed ref lives in the rope, the retained ref freed here"
+        );
+    }
+
     #[test]
     fn rope_compact_materializes_and_releases_parent() {
         reset();
