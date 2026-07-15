@@ -3172,6 +3172,13 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             let if_head = db.push_name("if");
             else_node = db.push_list(vec![if_head, eq, then_branch, else_node]);
         }
+        // Give the synthesized `value-eq` if-chain scope-skip entries BEFORE resolving it: the chain nests
+        // O(arms) deep and every node is a non-binding `if`/`=`/application form (the arm bodies + guards
+        // are REUSED load-time occurrences, which keep their own final skip), so without this a prelude
+        // name (`=`) — or a `check_unknown_units`/`collect_faults` resolution of any inner synth node — walks
+        // O(depth) parents to conclude "not lexically bound" → O(N²) over N arms. The pass-through skip makes
+        // each such resolution O(1). Same fix as the runtime-map-match desugar below (`bf5a1a1c`).
+        db.extend_scope_skip_pass_through(else_node);
         trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime string match → value-eq if-chain");
         return core_of(db, else_node);
     }
@@ -3245,6 +3252,11 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 db.push_list(vec![if_head, eq, then_branch, else_node])
             };
         }
+        // Cover the synthesized guarded-scalar if-chain with scope-skip entries (the same O(N²) the string
+        // desugar above avoids): a wide guarded scalar match nests O(arms) deep, and each inner `=`/`if`
+        // synth node's name resolution would else ascend the whole spine. The chain is all non-binding
+        // (bodies/guards are reused load-time occurrences), so the pass-through skip is sound + O(1).
+        db.extend_scope_skip_pass_through(else_node);
         trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "guarded scalar match → if-chain (unlocks branchless if→select)");
         return core_of(db, else_node);
     }

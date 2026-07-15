@@ -44319,6 +44319,61 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_runtime_string_match_resolves_synth_names_in_bounded_time() {
+        // REGRESSION (perf): the runtime-STRING-match desugar (`lower.rs`, the `Ty::String` scrutinee arm)
+        // folds N string-literal arms into an O(N)-DEEP nested `(if (= s "k0") b0 (if (= s "k1") b1 …))`
+        // value-eq if-chain via `db.push_list`. Like the runtime-map-match chain (`bf5a1a1c`), those synth
+        // nodes are NOT in the load-time scope-skip index, so resolving a prelude name (`=`) — or any pass
+        // (`check_unknown_units`/`collect_faults`) that resolves an inner synth node — walked O(depth)
+        // enclosing `if` forms to conclude "not lexically bound" → O(arms²) `binder_in` calls (profiled:
+        // check N=400/800/1600/3200 = 14/32/91/315ms, ~3×/dbl, 89% under `resolve_name`→`binder_in`→
+        // `as_form`). FIX: call `Db::extend_scope_skip_pass_through(else_node)` on the synthesized chain
+        // before resolving it (the arm bodies/guards are reused load-time occurrences that keep their own
+        // final skip; the `if`/`=` spine is all non-binding, so the pass-through is sound + O(1)).
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N string-literal arms must resolve its synth names in O(N) `binder_in` calls, not
+        // O(N²). Correctness (the dispatch picks the right arm) is pinned by the run-value tests out of band.
+        fn wide_str_match_src(arms: usize) -> String {
+            let arm_forms: String = (0..arms)
+                .map(|i| format!("(\"k{i}\" {i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (f (: s String)) (match s {arm_forms} (_ -1))) \
+                   (def (main) (f \"k0\")) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid runtime-string match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_str_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide runtime-string match compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 200→400 is a 2× width; linear `binder_in` growth ⇒ ~2×, the O(N²) walk was ~4×. Guard the
+        // denominator and require < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_str_match_src(200));
+        let n400 = binder_in_calls(&wide_str_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            n200 > 0 && ratio < 3.0,
+            "a wide runtime-string match must resolve its synthesized value-eq if-chain names in O(arms) \
+             `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if` chain needs scope-skip \
+             coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls {ratio:.1}× \
+             (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn a_wide_list_pattern_resolves_element_binders_in_bounded_time() {
         // REGRESSION (perf): `resolve::find_leading_binder_in_list_pattern` answered "does this `(list p…
         // .. rest)` pattern bind `name`, and where?" by re-scanning the LEADING element positions from 0 on
