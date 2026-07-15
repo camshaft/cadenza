@@ -383,6 +383,21 @@
   (input  (do (def (fA (: x Int64)) (+ x 1)) (def (f-a (: y Int64)) (+ y 2)) (export fA) (export f-a)))
   (error  CDZ0201))
 
+(case "an export name with a digit-led kebab segment is rejected, not silently invalid"
+  (doc    "A hyphen is a legal Cadenza identifier character, so `step-by-2` is a valid source name — but a
+           component-model extern name requires each `-`-separated segment to START WITH A LETTER (the
+           `KebabStr` grammar wasmparser validates against), so the trailing segment `2` makes `step-by-2`
+           NOT a valid extern name. Unlike the camelCase/underscore names above, `kebab_extern_name` cannot
+           normalize it — it keeps `-`/digits verbatim, so it maps `step-by-2` to ITSELF (still invalid).
+           Emitting it produced a component wasmtime rejects WHOLESALE at load, with NO compiler diagnostic
+           — for a `@test` build every test in the file 'failed'; for a plain build the artifact was
+           unloadable (the kebab-extern-name gotcha, silent-miscompile face). The compiler now rejects it
+           CDZ0201 before emit, naming the offending name and the fix (rename so every segment begins with
+           a letter — `step-by-two` / `step-by2`), the export-NAME analogue of the interface-name and
+           collision rejects above.")
+  (input  (do (def (step-by-2 (: x Int64)) (+ x 1)) (export step-by-2)))
+  (error  CDZ0201))
+
 (case "a top-level value definition binds a name usable by the program's functions"
   (doc    "A definition is 'a value, function, type' (glossary), and each registers its name in the module
            (core-semantics.md #A Module Evaluates To A Record Of Its Exports). So a VALUE definition

@@ -167,6 +167,66 @@ fn oracle_core(names: &[&str]) -> Vec<u8> {
     m.finish()
 }
 
+/// LEVEL-EQUIVALENCE: a program compiled at EVERY `OptLevel` must emit a BYTE-IDENTICAL wasm artifact —
+/// the correctness bar of the tiered-optimization framework (`DESIGN-tiered-optimization-levels-rcdzc.md`
+/// §The one rule). Today the `PassManager` registers no passes, so every level is trivially identical;
+/// this pins the invariant at the unit tier NOW, so a future migration slice that adds a pass at O2/O3
+/// which accidentally changes emitted bytes fails HERE. (A later slice adds a corpus-wide `--opt-sweep`
+/// gate that asserts the same VALUE at every level on both backends; this is the fast byte-identity
+/// companion over a couple of representative programs.)
+#[test]
+fn every_opt_level_emits_byte_identical_wasm() {
+    use crate::backend::Target;
+    use crate::compile::{compile, compile_with_opt};
+    use crate::opt::OptLevel;
+    for prog in [prog_scalar(), prog_if()] {
+        let art = |level: OptLevel| {
+            crate::host::run_with_compiler_stack(|| {
+                let out = compile_with_opt(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        prog.clone(),
+                    )],
+                    &[Target::Wasm],
+                    level,
+                );
+                out.artifact(Target::Wasm.artifact_kind())
+                    .expect("clean program emits a wasm artifact")
+                    .to_vec()
+            })
+        };
+        let baseline = art(OptLevel::O0);
+        for level in OptLevel::ALL {
+            assert_eq!(
+                art(level),
+                baseline,
+                "opt level {level} changed the emitted wasm — a higher level must be \
+                 observably identical, only faster/smaller"
+            );
+        }
+        // `compile` (no level) must equal the default level `O1` — the thin-wrapper contract.
+        let default_art = crate::host::run_with_compiler_stack(|| {
+            let out = compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    prog.clone(),
+                )],
+                &[Target::Wasm],
+            );
+            out.artifact(Target::Wasm.artifact_kind())
+                .expect("clean program emits a wasm artifact")
+                .to_vec()
+        });
+        assert_eq!(
+            default_art,
+            art(OptLevel::O1),
+            "compile() must equal compile_with_opt(.., OptLevel::default())"
+        );
+    }
+}
+
 /// The hand-emitted envelope is byte-identical to the `wasm-encoder` oracle for a set of nullary-s64
 /// exports over one core, at N=1 and N=2 — what licenses hand-encoding the envelope (no external
 /// encoder in the byte path).
@@ -1098,6 +1158,50 @@ fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
             &[Val::Bool(false), Val::S64(i64::MAX), Val::S64(9)]
         ),
         "c=false with a=Int64.max: the untaken arm's overflow must NOT be evaluated (selects b) → no trap"
+    );
+}
+
+/// The common-operator hoist also covers a COMPARISON: `(if c (< a k) (< b k))` → `(< (if c a b) k)` —
+/// one compare over the selected operand, not two. A comparison is TOTAL (no trap, no guard), so the
+/// hoist is unconditionally value-safe; the win is a single `i64.lt_s` (the differing operand becomes a
+/// branchless select) instead of two compares feeding a select. Value parity in every direction: the
+/// hoisted compare returns the same boolean the taken arm's compare would.
+#[test]
+fn a_common_comparison_hoists_out_of_both_if_arms() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Int64) (: b Int64) (: k Int64)) \
+                   (if (if c (< a k) (< b k)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one signed-less-than survives (the differing operand is a select, not a second compare).
+    let lts = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64LtS));
+    assert_eq!(
+        lts, 1,
+        "the common-comparison hoist compares once over the selected operand, got {lts} compares"
+    );
+    use wasmtime::component::Val;
+    let run = |c: bool, a: i64, b: i64, k: i64| -> i64 {
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[Val::Bool(c), Val::S64(a), Val::S64(b), Val::S64(k)],
+        )
+    };
+    assert_eq!(
+        run(true, 3, 9, 5),
+        1,
+        "c=true → (< a k) = (< 3 5) = true → 1"
+    );
+    assert_eq!(
+        run(false, 3, 9, 5),
+        0,
+        "c=false → (< b k) = (< 9 5) = false → 0"
+    );
+    assert_eq!(
+        run(true, 9, 3, 5),
+        0,
+        "c=true → (< a k) = (< 9 5) = false → 0"
     );
 }
 
@@ -13086,6 +13190,40 @@ mod match_engine {
             "6",
             "linked-list sum binds the head AND recurses on the tail"
         );
+    }
+
+    #[test]
+    fn a_nullary_dotted_variant_pattern_matches_in_a_directly_nested_match() {
+        // REGRESSION (resolve, both surfaces): a qualified NULLARY-variant pattern `(. Ty TInt)` in a match
+        // whose scrutinee is itself an OUTER match's arm body — `(match x ((. Ty TBool) …) ((. Ty TInt)
+        // (match x …)))` — faulted as CDZ0201 "member access requires a record" while the IDENTICAL outer
+        // arm pattern compiled. `find_binder_in_pattern` mis-parsed the whole `(. Ty TInt)` member form as a
+        // variant ctor whose PAYLOAD binders were `Ty` and `TInt` (the `.` atom read as the ctor head), so
+        // it registered `Ty`/`TInt` as spurious payload binders. Those binders poisoned scope: the nested
+        // arm's identical `Ty`/`TInt` occurrences then looked SHADOWED, so `is_variant_pattern_binder_
+        // occurrence` classified them INERT (`Resolved::Unit`); the member operand `Ty` no longer reduced to
+        // the type record and `variant_disc_of` failed. Fix: a `.`-atom head means the whole list IS a
+        // nullary-member ctor (no payload binders) — bail, exactly as `lower::pattern_constraints` already
+        // special-cases it. `x` is `TInt` → outer `TInt` arm → inner match `TInt` arm → 9.
+        let src = "(module m \
+             (type Ty (TInt) (TBool)) \
+             (def (g (: x Ty)) \
+               (match x ((. Ty TBool) 0) ((. Ty TInt) (match x ((. Ty TBool) 8) ((. Ty TInt) 9))))) \
+             (def (main) (g (Ty.TInt))) \
+             (export main))";
+        // `cdz check` must be clean — no CDZ0201 on the nested arm.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a nullary dotted variant pattern in a nested match lowers with no error diagnostics: {diags:?}"
+        );
+        let Some(v) = run_heap_value(src, vec![]) else {
+            eprintln!("runtime wasm not found; skipping nested nullary-variant match run");
+            return;
+        };
+        assert_eq!(v, "9", "TInt → outer TInt arm → inner match TInt arm → 9");
     }
 
     #[test]
@@ -29256,6 +29394,46 @@ mod match_engine {
     }
 
     #[test]
+    fn eval_of_a_malformed_empty_ast_list_traps_with_the_canonical_unreachable_kind() {
+        use crate::testkit::parse;
+        // metaprogramming.md §Eval Is Optional: eval on a MALFORMED AST traps. An `(Ast.List (list))`
+        // with no elements is a compound with no operator — malformed. `eval_ast::reconstruct` has no
+        // source to rebuild for an empty list, so it rewrites the eval to an explicit `(trap "malformed
+        // AST")`: a diverging RUNTIME halt, not a value. On wasm that `Core::Trap` lowers to the
+        // `unreachable` instruction; the trap carries NO custom string (a `Core::Trap` is message-less
+        // on both backends), so the observable REASON classifies as the canonical `unreachable` kind —
+        // the SAME kind the explicit-`trap` lowering surfaces everywhere. Pins both that it traps AND
+        // that the reason is the reasonless `unreachable`, not a distinguishable arithmetic trap.
+        // `main` diverges (its body is a `trap`, type `Never`), so it exports zero results — size the
+        // results buffer to the func's actual result arity so the call reaches the trap rather than
+        // erroring on an arity mismatch (which would masquerade as a reasonless failure).
+        let src = "(module m (def (main) (eval (Ast.List (list)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        use wasmtime::component::{Component, Linker};
+        use wasmtime::{Engine, Store};
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &bytes).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let func = instance.get_func(&mut store, "main").expect("export main");
+        let mut results = vec![wasmtime::component::Val::Bool(false); func.results(&store).len()];
+        let err = func
+            .call(&mut store, &[], &mut results)
+            .expect_err("eval of an empty (malformed) Ast.List must trap, not produce a value");
+        let reason = err
+            .downcast_ref::<wasmtime::Trap>()
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| panic!("the malformed-AST halt must be a wasm Trap, got: {err}"));
+        assert!(
+            reason.to_ascii_lowercase().contains("unreachable"),
+            "the malformed-AST trap's canonical kind is `unreachable`, got: {reason}"
+        );
+    }
+
+    #[test]
     fn an_ast_bool_folds_through_reify_eval_and_the_encode_decode_round_trip() {
         use crate::testkit::parse;
         // The `Ast.Bool` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
@@ -29486,6 +29664,75 @@ mod match_engine {
                 ),
                 want,
                 "eval of a quasiquote splicing a compile-time value — {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_active_unquote_of_a_runtime_operand_lifts_by_inferred_type() {
+        use crate::testkit::parse;
+        // The runtime active-unquote lift (`quote::reify_active` → `(ast-lift e)` → `lower_ast_lift`,
+        // `[[unquote-computed-ast-needs-inferred-type-lift]]`). A runtime operand — a bound name, a param,
+        // a computed expression — lifts by its INFERRED type: an already-`Ast` value splices AS-IS
+        // (identity), else a scalar wraps in the matching leaf. Previously a runtime operand wrapped
+        // `Ast.Int` unconditionally, type-erroring a non-Int operand (and an already-Ast one) against
+        // `Ast.Int`'s Int64 payload.
+        //
+        // The canonical compiler idiom: embed a COMPUTED sub-AST into a template. `sub : Ast` splices
+        // identity, so `(wrap (Ast.Int 9))` builds `(+ 9 1)` — a 3-element `Ast.List`.
+        let identity = "(module m \
+            (def (wrap (: sub Ast)) (quasiquote (+ (unquote sub) 1))) \
+            (def (main) (match (wrap (Ast.Int 9)) ((Ast.List es) (List.len es)) (_ -1))) \
+            (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(identity))).expect("compile"),
+                "main"
+            ),
+            3,
+            "an active unquote of an Ast-valued expression splices the subtree as identity"
+        );
+        // A runtime SCALAR operand lifts to the matching leaf by inferred type — Bool → Ast.Bool, String
+        // → Ast.Str, Int64 → Ast.Int (regression). Each equals the hand-built node, so `=` is true.
+        for (src, what) in [
+            (
+                "(module m (def (main) \
+                   (let ((b true)) \
+                     (= (quasiquote (f (unquote b))) \
+                        (Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))))) \
+                 (export main))",
+                "a let-bound Bool lifts to Ast.Bool",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((s \"hi\")) \
+                     (= (quasiquote (f (unquote s))) \
+                        (Ast.List (list (Ast.Name \"f\") (Ast.Str \"hi\")))))) \
+                 (export main))",
+                "a let-bound String lifts to Ast.Str",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((n 42)) \
+                     (= (quasiquote (op-const (unquote n))) \
+                        (Ast.List (list (Ast.Name \"op-const\") (Ast.Int 42)))))) \
+                 (export main))",
+                "a let-bound Int64 still lifts to Ast.Int (regression)",
+            ),
+            (
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote (= 1 1)))) \
+                      (Ast.List (list (Ast.Name \"f\") (Ast.Bool true))))) \
+                 (export main))",
+                "a computed Bool expression lifts to Ast.Bool",
+            ),
+        ] {
+            assert!(
+                run_returns::<bool>(
+                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                    "main"
+                ),
+                "runtime active-unquote lift — {what}"
             );
         }
     }
@@ -43858,6 +44105,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handler_threads_a_map_as_its_state_across_multiple_performs() {
+        // The MAP analogue of the Set-state seen-set (corpus "a handler threads a SET as its state") — a
+        // handler state that is a MAP (key→value store) mutated with `Map.insert` and read with `Map.size`
+        // across MULTIPLE performs, exercising the CHAMP key→value path through the effect fold (distinct
+        // from the key-only Set case). `(do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count))` seeds
+        // an empty map, inserts keys 1, 2, then re-inserts 1 (deduped by key) → two keys → size 2. Guards
+        // that a Map threaded as effect state survives the fold across several performs — a pin so a
+        // Map.lookup/insert CSE change (actively churned by sibling verticals) cannot regress it.
+        let src = "(do (effect Store (op put (-> Int64 Unit)) (op count (-> Unit Int64))) \
+                   (def (main) (handle Store (Map.empty) \
+                     ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.size m) m))) \
+                     (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main))";
+        // Map state lives on the value heap, so the in-process linker can't run it — assert it COMPILES;
+        // a store run yields 2 (verified by hand via cdz-run). Mirrors the list/String-state assertions.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a map-state handler mutated across multiple performs must compile"
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
@@ -47964,6 +48232,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_producer_result_is_consumed_by_an_element_typed_consumer() {
+        // INFERENCE FIX (issue mlrepro-decline-recursive-generic-map-result-element-untied): a recursive-
+        // generic PRODUCER — `mapl : (a -> b) -> List a -> List b`, building a generic result list — whose
+        // result is then CONSUMED at a concrete element type (`suml` sums it) was DECLINED at emit: the
+        // producer's list-pattern parameter got NO shape (`pattern_implied_ty` returned `None` for a
+        // `(list …)` pattern), so `xs` grounded to `Any` and the scheme declined entirely. FIX (two parts):
+        // (A) `pattern_implied_ty` shapes a `(list …)` pattern to `List <elem>`; (B) `solve_recursive_params`
+        // preserves that body-solved shape for a generic position (instead of a bare `Var`). Now `mapl`'s
+        // param + result carry their `List` structure and the consumer pins the element. `mapl (fn (x) (+ x
+        // 1)) [n,n,n]` = `[n+1,n+1,n+1]`, `suml` of that = `3·(n+1)`; runtime boundary `n` → real
+        // call_indirect + fold, no const-fold. (The ≥2-element-type producer instantiation is a separate
+        // not-yet-built monomorphization tie — see the issue's PART C.)
+        let src = "(module m \
+            (def (mapl f xs) \
+              (match xs ((list) (list)) ((list h .. t) (List.push (mapl f t) (f h))))) \
+            (def (suml xs) \
+              (match xs ((list) 0) ((list h .. t) (+ h (suml t))))) \
+            (def (main (: n Int64)) (suml (mapl (fn (x) (+ x 1)) (list n n n)))) (export main))";
+        let Some(r) = run_closure(src, 1) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "6"); // 3·(1+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "15"); // 3·(4+1)
+    }
+
+    #[test]
     fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
         // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
         // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
@@ -51493,6 +51788,55 @@ mod sidecar_driven {
             out.has_error(),
             "a non-representable property param must decline, not emit an uncallable export"
         );
+    }
+
+    #[test]
+    fn emit_tests_declines_a_digit_led_kebab_segment_name() {
+        // REGRESSION (v-iterators, 2026-07-15): a `@test` (or any component-boundary export) name with a
+        // HYPHEN-DELIMITED SEGMENT STARTING WITH A DIGIT (`step-by-2`, `a-2-b`, `range-step-2x`) is a valid
+        // Cadenza identifier but NOT a valid component-model kebab word — `wasmparser`'s `KebabStr` requires
+        // each `-`-delimited label to start with a letter. `kebab_extern_name` keeps `-`/digits verbatim, so
+        // it normalizes such a name to ITSELF (an invalid extern name), and emitting it produced a component
+        // wasmtime rejects WHOLESALE at load — every test in the file reported "fail" / the artifact was
+        // unloadable, with NO compiler diagnostic (the [[rcdzc-kebab-extern-name-gotcha]] family). It is now
+        // a clear compile-time CDZ0201 naming the offending name, before emit.
+        for name in ["step-by-2", "a-2-b", "range-step-2x", "step-2"] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                out.has_error(),
+                "a @test named `{name}` (a digit-led kebab segment) must DECLINE, not silently emit an \
+                 invalid component: {:?}",
+                out.diagnostics
+            );
+            assert!(
+                out.diagnostics
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0201")
+                        && d.message.contains("valid component boundary name")),
+                "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
+                out.diagnostics
+                    .iter()
+                    .map(|d| &d.message)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn emit_tests_accepts_a_digit_inside_a_word_segment() {
+        // NO REGRESSION: a digit INSIDE a word (`step2`, `range-step-by2`) or a trailing digit on a word
+        // (`f2`, `call0`) IS a valid kebab word — the guard rejects only a digit that STARTS a `-`-delimited
+        // segment. These names must still emit a test component.
+        for name in ["step2", "range-step-by2", "f2"] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                !out.has_error() && out.artifacts.iter().any(|a| a.kind == "component"),
+                "a @test named `{name}` (digit inside/after a word) must EMIT: {:?}",
+                out.diagnostics
+            );
+        }
     }
 
     #[test]

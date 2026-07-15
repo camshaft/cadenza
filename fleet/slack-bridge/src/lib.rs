@@ -15,8 +15,10 @@
 //! slices atop this core. Kept a standalone crate (own workspace) so the async transport tree never
 //! enters the seed workspace's lockfile or `cargo xtask check` — see `Cargo.toml`.
 
+pub mod config;
 pub mod format;
 pub mod inbox;
 
+pub use config::{Config, SlackTokens};
 pub use format::{Intent, help_text, parse_operator_message, render_fleet_message};
 pub use inbox::{Drained, Message, deliver, drain, inbox_dir, mark_processed};

@@ -87,9 +87,17 @@
 
 (case "eval on malformed AST traps"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional: eval on malformed AST traps. An Ast.List
-           with no elements is malformed (no operator), so eval traps.")
+           with no elements is malformed (no operator), so eval traps. The eval desugar reconstructs
+           the source an `Ast.*` construction denotes; an empty `Ast.List` has no operator to
+           reconstruct, so `eval_ast::reconstruct` rewrites it to an explicit `(trap \"malformed AST\")`
+           — a diverging halt, not a value. The trap's canonical KIND is `unreachable`, the SAME on
+           every backend: an explicit `trap` lowers to wasm's `unreachable` instruction and to a Rust
+           `panic!` whose reason classifies as `unreachable` (a message-less halt — the trap_kind grader
+           classifies the actual reason, and `Core::Trap` carries no string through either backend, so
+           the observable kind is `unreachable`, matching the explicit-`trap` lowering pinned by the
+           runtime expect-on-absent case in 02-binding-and-control.sexp).")
   (input  (eval (Ast.List (list))))
-  (trap   "malformed AST"))
+  (trap   "unreachable"))
 
 (case "quasiquote constructs AST with selective evaluation"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
@@ -141,6 +149,64 @@
            are structurally equal (core-semantics.md #Equality Is Structural). An active unquote of a
            literal produces the same node quote of that literal does.")
   (input  (= (quasiquote (f (unquote true))) (quote (f true))))
+  (output (: true Bool)))
+
+; --- An active unquote of a RUNTIME operand lifts by the operand's inferred type ------------------
+; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation: ",<expr> MUST evaluate <expr>
+; normally and INSERT ITS RESULT into the AST at that position." When <expr> is a RUNTIME value (a bound
+; name, a parameter, a computed expression) its type is not known at reify time, so it lifts by its
+; INFERRED type at lowering: a value that is ALREADY an `Ast` is spliced AS-IS (identity — the compiler's
+; own subtree-embedding idiom); a scalar is wrapped in the matching leaf (Int64 → `Ast.Int`, Bool →
+; `Ast.Bool`, String → `Ast.Str`). This is the runtime companion of the literal-operand cases above,
+; where the leaf kind is known structurally. (Previously a runtime operand was wrapped `Ast.Int`
+; unconditionally, type-erroring a non-Int operand and — crucially — an already-`Ast` operand against
+; `Ast.Int`'s Int64 payload.)
+
+(case "an active unquote of an Ast-valued expression splices the subtree as identity"
+  (doc    "The canonical AST-building macro: `(def (wrap sub) `(+ ,sub 1))` embeds a COMPUTED sub-AST into
+           a template. When the unquoted value is ALREADY an `Ast`, \"insert its result\" splices that node
+           AS-IS — NOT re-wrapped in `Ast.Int` (metaprogramming.md #Quasiquote Constructs AST With Selective
+           Evaluation). `(wrap (Ast.Int 9))` builds `(+ 9 1)` — a 3-element `Ast.List` — so `List.len` is 3.
+           Pins the identity lift the compiler/macro layer needs; previously this type-errored (CDZ0201,
+           Ast against Ast.Int's Int64 payload).")
+  (input  (do
+            (def (wrap (: sub Ast)) (quasiquote (+ (unquote sub) 1)))
+            (def (main) (match (wrap (Ast.Int 9)) ((Ast.List es) (List.len es)) (_ -1)))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type"
+  (doc    "A RUNTIME operand (a let-bound name) lifts by its inferred type: `b : Bool` → `Ast.Bool`.
+           `(let ((b true)) `(f ,b))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`. Pins the
+           runtime-Bool lift (the literal case is above; this exercises the inferred-type path at lower).")
+  (input  (let ((b true))
+            (= (quasiquote (f (unquote b)))
+               (Ast.List (list (Ast.Name "f") (Ast.Bool true))))))
+  (output (: true Bool)))
+
+(case "an active unquote of a let-bound string lifts to Ast.Str by inferred type"
+  (doc    "The runtime-String companion: `s : String` → `Ast.Str`. `(let ((s \"hi\")) `(f ,s))` builds
+           `(Ast.List (list (Ast.Name \"f\") (Ast.Str \"hi\")))`. Pins the runtime-String inferred-type lift.")
+  (input  (let ((s "hi"))
+            (= (quasiquote (f (unquote s)))
+               (Ast.List (list (Ast.Name "f") (Ast.Str "hi"))))))
+  (output (: true Bool)))
+
+(case "an active unquote of a let-bound integer still lifts to Ast.Int"
+  (doc    "Regression guard: a runtime Int64 operand still lifts to `Ast.Int` (the original active-unquote
+           behavior, now via the inferred-type path). `(let ((n 42)) `(op-const ,n))` builds
+           `(Ast.List (list (Ast.Name \"op-const\") (Ast.Int 42)))`.")
+  (input  (let ((n 42))
+            (= (quasiquote (op-const (unquote n)))
+               (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))))))
+  (output (: true Bool)))
+
+(case "an active unquote of a computed boolean expression lifts to Ast.Bool"
+  (doc    "A non-leaf (computed) runtime operand lifts by its inferred type too: `(= 1 1) : Bool` →
+           `Ast.Bool`. `` `(f ,(= 1 1)) `` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`.
+           Pins that the inferred-type lift covers a computed expression, not only a bound name.")
+  (input  (= (quasiquote (f (unquote (= 1 1))))
+             (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
   (output (: true Bool)))
 
 ; An unquote MUST EVALUATE its expression (metaprogramming.md #Quasiquote Constructs AST With Selective

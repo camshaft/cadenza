@@ -3321,6 +3321,35 @@
             (export main)))
   (output (: 5 Int64)))
 
+; A recursive-generic PRODUCER composed with an element-CONSUMING consumer. The cases above thread a
+; generic value UNCHANGED or CONSUME a generic input to a concrete result; this one BUILDS a generic
+; recursive result (`mapl : (a -> b) -> List a -> List b`, transforming each element through a callback)
+; and then consumes that result at a concrete element type (`suml` sums it). The producer's result-list
+; element must be shaped from its scrutinee's element (the list-pattern shape) so the consumer can pin it:
+; a producer whose match pattern left the parameter unshaped grounded to `Any` and the whole scheme
+; DECLINED (the parameter-shape gap this exercises). `mapl (fn (x) (+ x 1)) [n,n,n]` = `[n+1,n+1,n+1]`,
+; and `suml` of that is `3·(n+1)` — with a runtime boundary `n`, so the map + fold run at run time (a real
+; call_indirect over the lifted callback, no fold). Single element type here (Int64); the ≥2-element-type
+; producer instantiation is a separate not-yet-built monomorphization tie.
+
+(case "a recursive-generic producer's result is consumed by an element-typed consumer"
+  (doc    "`mapl` builds a `List b` by applying a callback to each element of a `List a` (a recursive-
+           generic PRODUCER — its result element `b` comes from the callback, not threaded), and `suml`
+           then sums that result list — consuming its element at a concrete type. The producer's parameter
+           and result-list must be shaped `List _` from the list pattern for the composition to type; an
+           unshaped parameter grounded to `Any` and declined. `suml(mapl(fn(x) => x+1, [n,n,n]))` =
+           `3·(n+1)`; with runtime `n` the map + fold execute (call_indirect over the lifted callback).
+           Pins the recursive-generic producer→consumer composition at a single element type.")
+  (input  (do
+            (def (mapl f xs)
+              (match xs ((list) (list)) ((list h .. t) (List.push (mapl f t) (f h)))))
+            (def (suml xs)
+              (match xs ((list) 0) ((list h .. t) (+ h (suml t)))))
+            (def (main (: n Int64)) (suml (mapl (fn (x) (+ x 1)) (list n n n))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 6 Int64))
+  (call   main (: 4 Int64)) (output (: 15 Int64)))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,

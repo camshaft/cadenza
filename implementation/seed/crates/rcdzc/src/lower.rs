@@ -1487,6 +1487,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                          splice map is not yet built)",
                     )),
                 },
+                // `ast-lift` — the runtime active-unquote lift (`∀a. a → Ast`): wrap the operand's value in
+                // the `Ast` leaf its INFERRED type denotes. IDENTITY when the operand is already `Ast` (the
+                // primary case — `(quasiquote (+ (unquote sub) 1))` with `sub : Ast`), else wrap in
+                // `Ast.Int`/`Ast.Bool`/`Ast.Str` by the operand's scalar type. Works at RUNTIME (unlike the
+                // splice fold) — that is the whole point. A type with no `Ast` leaf declines.
+                Some(Prim::AstLift) if args.len() == 1 => lower_ast_lift(db, args[0]),
                 // `Ast.encode` — serialize an AST value to its canonical bytes (`ast-encoding.md` §The
                 // Encoding Is A Bijection). FOLD a compile-time-visible `Ast` value (a `Core::SumNew` tree
                 // of the Int/Name/List variants) to a `Core::BytesOf` of the canonical byte form; a runtime
@@ -2064,6 +2070,60 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
         wrapped.push(node);
     }
     Some(Core::ListNew { elems: wrapped })
+}
+
+/// Lower `ast-lift` (`∀a. a → Ast`) — the RUNTIME active-unquote lift. Wrap the operand's value in the
+/// `Ast` leaf its INFERRED type denotes: IDENTITY when the operand is ALREADY `Ast` (the compiler's own
+/// `(quasiquote (+ (unquote sub) 1))` with `sub : Ast` — no wrap, the sub-AST is spliced as-is), else a
+/// `Core::SumNew` at the matching leaf disc with the operand as payload (`Int64`→`Ast.Int`, `Bool`→
+/// `Ast.Bool`, `String`→`Ast.Str`). Works at RUNTIME (the operand core need not be constant — the payload
+/// is the operand's own core), which is the whole point over the literal-only reify dispatch. A type with
+/// no `Ast` value leaf (a Float, a compound, a function) DECLINES — never a wrong wrap or a miscompile.
+fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, operand) {
+        return Core::Poison(r);
+    }
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "ast-lift: the built-in Ast sum is unavailable",
+        ));
+    };
+    // The `Ast` sum's own declaration id — used to recognize an operand that is ALREADY an `Ast` (then
+    // the lift is the identity: a sub-AST spliced into a larger AST needs no wrapping).
+    let ast_decl = match &disc.ty {
+        crate::ty::Ty::Sum { decl, .. } => Some(*decl),
+        _ => None,
+    };
+    let operand_ty = crate::infer::type_of(db, operand);
+    match operand_ty.strip_nominal() {
+        // Already an `Ast` — identity. Return the operand's core unchanged (it is the sub-tree to splice).
+        crate::ty::Ty::Sum { decl, .. } if Some(*decl) == ast_decl => core_of(db, operand),
+        // A scalar the `Ast` sum has a value leaf for — wrap the operand (runtime or constant) as payload.
+        // `Ast.Int`'s payload is Int64, so an operand whose GROUNDED integer type is signed-64 lifts to
+        // `Ast.Int` (a bare `,n` let-bound to `42` stays sign/width-Deferred at reify time but grounds to
+        // the default signed-64 — the `Ast.Int` payload type — so it must lift, matching the old Int-only
+        // wrap). A narrower/unsigned FIXED width mismatches the Int64 payload → declines rather than
+        // mis-wrap (a later increment could widen or add narrower Ast int leaves).
+        crate::ty::Ty::Int(it) if it.ground_signed() && it.ground_width() == 64 => Core::SumNew {
+            disc: disc.int,
+            payloads: vec![operand],
+        },
+        crate::ty::Ty::Bool => Core::SumNew {
+            disc: disc.bool,
+            payloads: vec![operand],
+        },
+        crate::ty::Ty::String => Core::SumNew {
+            disc: disc.str,
+            payloads: vec![operand],
+        },
+        // No `Ast` value leaf for this type (a Float, a compound, a function, an unresolved var) — decline
+        // honestly rather than building a wrong-typed leaf.
+        other => Core::Poison(Reject::decline(format!(
+            "an active unquote of a runtime {} value has no Ast leaf to lift into \
+             (only Int64/Bool/String and an existing Ast value lift)",
+            other.render_name()
+        ))),
+    }
 }
 
 // ── AST binary encoding — the canonical byte form (`ast-encoding.md`) ────────────────────────────
@@ -13964,6 +14024,7 @@ fn hoist_common_ctor(
 /// operator (and its overflow guard, for checked arith) is DUPLICATED across the two branches:
 ///   `(if c (+ a 1) (+ b 1))`  → `(+ (if c a b) 1)`          — one checked add + one guard, not two
 ///   `(if c (* a k) (* b k))`  → `(* (if c a b) k)`
+///   `(if c (< a k) (< b k))`  → `(< (if c a b) k)`          — one compare, not two (Compare is total)
 ///   `(if c (wrap a) (wrap b))`→ `(wrap (if c a b))`         — a unary `Convert`
 /// Each DIFFERING operand position is pushed into its own `(if c pᵢ qᵢ)`; a `core_equiv` position is
 /// shared directly, so the operator applies to exactly the operand tuple the taken arm would have used.
@@ -13986,6 +14047,7 @@ fn hoist_common_arith(
 ) -> Option<Core> {
     enum Head {
         Arith(Prim),
+        Compare(Prim),
         Convert(Prim),
     }
     let (head, pairs): (Head, Vec<(StructId, StructId)>) =
@@ -14002,6 +14064,24 @@ fn hoist_common_arith(
                     rhs: re,
                 },
             ) if ot == oe => (Head::Arith(ot), vec![(lt, le), (rt, re)]),
+            // A COMPARISON is total (never traps, no guard), so the hoist is unconditionally value-safe:
+            // `(if c (< a k) (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of
+            // the SELECTED operand against `k`) with ONE compare instead of two. Operands are paired
+            // POSITIONALLY (`==` on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the
+            // `Eq`-commutativity `core_equiv` allows is irrelevant here since each position selects its own
+            // actual operand.
+            (
+                Core::Compare {
+                    op: ot,
+                    lhs: lt,
+                    rhs: rt,
+                },
+                Core::Compare {
+                    op: oe,
+                    lhs: le,
+                    rhs: re,
+                },
+            ) if ot == oe => (Head::Compare(ot), vec![(lt, le), (rt, re)]),
             (
                 Core::Convert {
                     op: ot,
@@ -14040,6 +14120,11 @@ fn hoist_common_arith(
     }
     Some(match head {
         Head::Arith(op) => Core::Arith {
+            op,
+            lhs: operands[0],
+            rhs: operands[1],
+        },
+        Head::Compare(op) => Core::Compare {
             op,
             lhs: operands[0],
             rhs: operands[1],
@@ -14152,6 +14237,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListUpdate
         | Prim::ListAt
         | Prim::AstSpliceLift
+        | Prim::AstLift
         | Prim::AstEncode
         | Prim::AstDecode
         | Prim::ListCtor
@@ -18650,6 +18736,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
         Prim::AstSpliceLift => "ast-splice-lift",
+        Prim::AstLift => "ast-lift",
         Prim::AstEncode => "ast-encode",
         Prim::AstDecode => "ast-decode",
         Prim::Print => "print",

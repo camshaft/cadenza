@@ -59,9 +59,25 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
 // fix to `wrapModule` would have left the harness testing the OLD wrapping). Import the real module so
 // the harness wraps snippets EXACTLY as the app does, by construction. `wrapModule.ts` is React-free
-// (its only import is a type), so node loads it directly (type-stripping). Snippets are authored in
-// s-expr (the guide default `authoredIn`); the reader also TOGGLES to ML, so we check that surface too.
-const { wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts"));
+// (its only import is a type), so node loads it directly VIA TYPE-STRIPPING — which needs Node ≥ 22.6
+// (on by default) or ≥ 20.19 with --experimental-strip-types. On an older Node the import fails with a
+// cryptic "Unknown file extension .ts" loader error; catch it and say exactly what's wrong + how to fix.
+let wrapModule, stripModule;
+try {
+  ({ wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts")));
+} catch (e) {
+  const msg = String(e && e.message ? e.message : e);
+  if (/Unknown file extension|strip.?types|\.ts/i.test(msg)) {
+    console.error(
+      `\ncheck-examples: cannot load src/components/wrapModule.ts — this Node (${process.version}) doesn't\n` +
+        `strip TypeScript types. Use Node ≥ 22.6 (type-stripping on by default), or run with\n` +
+        `\`node --experimental-strip-types scripts/check-examples.mjs\` on Node ≥ 20.19.\n` +
+        `(underlying error: ${msg})`,
+    );
+    process.exit(1);
+  }
+  throw e;
+}
 /// The ML the reader sees after toggling: wrap the s-expr snippet, render to ML, strip the scaffolding.
 function renderToMl(snippet) {
   return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
@@ -254,10 +270,12 @@ let pass = 0;
 const failures = []; // real, unexpected failures — these FAIL the gate.
 const stillBlocked = []; // known-blocked examples that (correctly) still fail — reported, not fatal.
 const recovered = []; // blocklist entries that now PASS — the entry should be removed + the example ships.
+const matchedEntries = new Set(); // blocklist entries that matched ≥1 example (to find stale ones).
 for (const ex of examples) {
   const block = blockedBy(ex);
   const fail = await checkExample(ex);
   if (block) {
+    matchedEntries.add(block);
     // A known-blocked example: it's EXPECTED to fail until its owner fixes the root cause.
     if (fail) stillBlocked.push({ block, ex });
     else recovered.push({ block, ex }); // it started passing — un-block it.
@@ -266,6 +284,9 @@ for (const ex of examples) {
   if (fail) { failures.push(fail); continue; }
   pass++;
 }
+// A blocklist entry that matched NO example is stale — the example was renamed/removed/rewritten so the
+// entry no longer identifies anything. Flag it (loud, not fatal) so the blocklist doesn't rot silently.
+const staleEntries = blocklist.filter((b) => !matchedEntries.has(b));
 
 console.log(
   `\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ` +
@@ -291,6 +312,17 @@ if (recovered.length) {
     "\n✅ BLOCKLIST ENTRY CAN BE REMOVED (these examples now RUN — delete their blocklist entry so they ship):\n" +
       recovered
         .map(({ block, ex }) => `  ✔ ${block.file} [${ex.kind}] "${block.match}" — was: ${block.reason}`)
+        .join("\n"),
+  );
+}
+
+if (staleEntries.length) {
+  // A blocklist entry that identifies no current example — the example was rewritten/renamed/removed.
+  // Loud so the entry gets deleted; NOT fatal (a stale block is harmless, just clutter).
+  console.log(
+    "\n⚠️  STALE BLOCKLIST ENTRY (matches no current example — delete it from example-blocklist.json):\n" +
+      staleEntries
+        .map((b) => `  ⚠ ${b.file} "${JSON.stringify(b.match)}" — ${b.reason}`)
         .join("\n"),
   );
 }

@@ -388,6 +388,17 @@ pub enum Prim {
     /// nodes; a runtime list operand declines (the runtime map is a later increment). Int-only lift, the
     /// splice companion of the active-unquote `(Ast.Int e)` wrap.
     AstSpliceLift,
+    /// `ast-lift` — a COMPILER-INTERNAL operation (`∀a. a → Ast`) emitted only by the quasiquote
+    /// desugar (`quote::reify_active`) around a RUNTIME active-unquote operand (a name `,n` / a computed
+    /// `,(f x)`) whose value type is unknown at reify time (reify runs pre-typecheck). It LIFTS the
+    /// operand's value into the `Ast` leaf its INFERRED type denotes — resolved at LOWER: IDENTITY when
+    /// the operand is already `Ast` (the compiler's own `(quasiquote (+ (unquote sub) 1))` with `sub :
+    /// Ast`), else wrap in `Ast.Int`/`Ast.Bool`/`Ast.Str` by the operand's scalar type. Applied via
+    /// `(intrinsic "ast-lift")` (never user-spellable). This replaces the old unconditional `(Ast.Int e)`
+    /// wrap of a runtime operand, which type-errored a non-Int operand against `Ast.Int`'s Int64 payload
+    /// (`[[unquote-computed-ast-needs-inferred-type-lift]]`). A LITERAL operand still dispatches by kind
+    /// in reify (no `ast-lift` needed — its kind is known structurally); only a runtime operand takes this.
+    AstLift,
     /// `Ast.encode` — serialize an AST value to its canonical binary form: `Ast → Bytes` (the `(meta
     /// apply)` of the `encode` field of the `Ast` sum record). Realizes `ast-encoding.md` §The Encoding
     /// Is A Bijection With One Canonical Byte Form: each tree has EXACTLY ONE encoding, equal trees encode
@@ -784,6 +795,7 @@ impl Prim {
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),
             "ast-splice-lift" => Some(Prim::AstSpliceLift),
+            "ast-lift" => Some(Prim::AstLift),
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
             "print" => Some(Prim::Print),

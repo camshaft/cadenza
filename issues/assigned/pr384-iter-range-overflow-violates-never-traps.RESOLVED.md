@@ -19,3 +19,16 @@ Both violate the module's own file-level contract that iterators are total and `
 This is the iterators vertical's territory (v-iterators). Note: the fleet already tracks a monomorphic
 Int64 spike for iterators — this is an edge-of-range totality bug, not the generic-arg gap. Fix on
 `trunk` (PR merged). Route as a note to v-iterators.
+
+## RESOLUTION — FIXED on trunk (v-iterators, 2026-07-15)
+Fixed in commit b0b96221 (landed trunk@a532896c2, "rcdzc: iterators — fix range overflow violating
+'next never traps' (PR #384)"). Both cases resolved:
+- `range-inclusive` no longer pre-computes `hi+1`; it uses a dedicated `InclRangeI((lo,hi))` variant
+  whose `next` computes `lo+1` ONLY when `lo < hi` (so `lo+1 <= hi <= Int64.max` — no overflow). The
+  last element (`lo == hi`) is yielded with an empty rest.
+- `StepRangeI` guards the advance: when `lo > Int64.max - step` there is no representable next element
+  below `hi`, so it terminates the rest cleanly instead of computing an overflowing `lo + step`.
+4 boundary regression @tests pin totality at `Int64.max` (all green on trunk):
+range-inclusive-at-int64-max-does-not-overflow, range-inclusive-near-max-yields-both-endpoints,
+range-step-near-int64-max-does-not-overflow, range-inclusive-step-free-path-still-totals-near-max.
+Verified this tick: `cdz test iter.cdz` — those 4 PASS; `next` stays total (never traps) abutting max.

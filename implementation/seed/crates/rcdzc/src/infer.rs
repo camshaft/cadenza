@@ -1902,12 +1902,24 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     // then default a still-unsolved NUMERIC variable to the signed-64 integer (a bare literal's default)
     // and leave anything else `Any` (genuinely unconstrained — no call site fixed it).
     for (i, (binder, var)) in param_binders.into_iter().enumerate() {
-        // A GENERIC position stays a fresh canonical `Ty::Var` (quantified in the scheme): do not seed it
-        // from a call site (which would pin it to ONE type) and do not ground it to `Any`.
+        // A GENERIC position stays a canonical `Ty::Var` in its free slots (quantified in the scheme): do
+        // not seed it from a call site (which would pin it to ONE type) and do not ground it to `Any`.
+        // PRESERVE the body-solved SHAPE when the body gave the param structure — `(match xs ((list h .. t)
+        // …))` shapes `xs` to `List ?a` (via `pattern_implied_ty`'s list arm), and keeping that shape (with
+        // its free element var) is what lets a body building a generic result FROM the element tie the
+        // result's element to the param's. A bare fresh `Var` would DISCARD the `List` shape (a
+        // recursive-generic producer's param would lose its container). Only a param the body left a BARE
+        // `Var` (structurally unshaped — a plain threaded value) gets a fresh canonical var, byte-identical
+        // to before for that case.
         if generic_positions.contains(&i) {
-            let gv = Ty::Var(fresh.var());
-            trace!(target: "rcdzc::infer", def, binder = binder.0, "A2: recursive param is GENERIC (monomorphized per call site)");
-            db.param_types.insert(binder, gv);
+            let solved = subst.apply(&var);
+            let generic = if matches!(solved, Ty::Var(_)) {
+                Ty::Var(fresh.var())
+            } else {
+                solved
+            };
+            trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %generic.render_name(), "A2: recursive param is GENERIC (monomorphized per call site)");
+            db.param_types.insert(binder, generic);
             continue;
         }
         let mut solved = subst.apply(&var);
@@ -2668,6 +2680,33 @@ fn pattern_implied_ty(db: &mut Db, pat: StructId, fresh: &mut Fresh) -> Option<T
             .collect();
         return Some(Ty::Tuple(tys.into()));
     }
+    // A LIST pattern — `(list)`, `(list h .. t)`, `(list a b)` — implies `List <elem>`. Without this a
+    // recursive list-consumer/PRODUCER whose scrutinee element flows only into a generic construction
+    // (`(match xs ((list) …) ((list h .. t) (Iter.Cons h (from-list t))))`) never shaped its parameter:
+    // the list head is not a variant-ctor scheme, so `pattern_implied_ty` returned `None`, the match's
+    // shape-unify left `xs` a free var, it grounded to `Any`, and the scheme DECLINED (undetermined-param
+    // bail). Shaping it `List <elem>` gives the param its list structure; the element is read from the
+    // leading POSITIONAL element sub-pattern (a `..` rest marker and its following rest binder bind the
+    // tail LIST, not an element, so they are skipped), else a fresh var the surrounding solve pins.
+    if let Some(items) = db.ast.as_form(pat, "list").map(<[StructId]>::to_vec) {
+        // Collect the leading positional element sub-patterns (up to the `..` rest marker), dropping the
+        // `db.ast` borrow before the recursive `pattern_implied_ty` calls take `db`.
+        let positional: Vec<StructId> = items
+            .iter()
+            .take_while(|&&e| db.ast.as_name(e) != Some(".."))
+            .copied()
+            .collect();
+        let mut elem_ty = None;
+        for e in positional {
+            if let Some(t) = pattern_implied_ty(db, e, fresh) {
+                elem_ty = Some(t);
+                break;
+            }
+        }
+        return Some(Ty::List(Box::new(
+            elem_ty.unwrap_or_else(|| Ty::Var(fresh.var())),
+        )));
+    }
     if let Some(g) = db.ast.as_form(pat, "guard").map(<[StructId]>::to_vec)
         && g.len() == 2
     {
@@ -3125,6 +3164,10 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
             Some(ast_ty) => Ty::List(Box::new(ast_ty)),
             None => Ty::Any,
         },
+        // `ast-lift : ∀a. a → Ast` — the runtime active-unquote lift (compiler-internal). Whatever the
+        // operand's type, the RESULT is an `Ast` node (identity when the operand is already `Ast`, else a
+        // wrapped `Ast.Int`/`Bool`/`Str`). The operand's type is checked at the fold (`lower_ast_lift`).
+        Prim::AstLift => ast_sum_ty(db).unwrap_or(Ty::Any),
         _ => Ty::Any,
     }
 }
@@ -3692,6 +3735,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // it, never user surface.
     if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift) {
         return compound_ctor_type(db, crate::resolved::Prim::AstSpliceLift, args);
+    }
+    // The COMPILER-INTERNAL `ast-lift` intrinsic (`(intrinsic "ast-lift") e`) — same direct-prim head as
+    // `ast-splice-lift`. Result is `Ast` (`compound_ctor_type`'s `AstLift` arm) whatever the operand's
+    // type. Only the quasiquote desugar emits it around a runtime active-unquote operand.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) {
+        return compound_ctor_type(db, crate::resolved::Prim::AstLift, args);
     }
     // The `map` VALUE-constructor alias applied — `(map (k v) …)` written as a bare NAME head. Its `args`
     // are the ENTRY-PAIR nodes (each a two-element `(key value)` list), NOT curried arguments — so type
@@ -5946,6 +5995,13 @@ fn check_application(
         }
         // The operand's own faults are collected by the caller's `collect(head/operand)`; return so the
         // generic scheme-unify below does not ALSO fault (the intrinsic has no HM scheme).
+        return;
+    }
+    // `ast-lift` (the quasiquote desugar's `(intrinsic "ast-lift") e` around a runtime active-unquote
+    // operand) accepts ANY operand type (`∀a. a → Ast`) — the lift is by the operand's inferred type at
+    // lower. So it imposes NO operand constraint here; return so the generic scheme-unify does not fault
+    // (the intrinsic has no HM scheme). The operand's own faults are collected by the caller.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) && args.len() == 1 {
         return;
     }
     // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is

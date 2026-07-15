@@ -1659,6 +1659,27 @@
                 (let ((a (Seen.add 2))) (let ((b (Seen.add 2))) (Seen.count))))) (export main)))
   (output (: 2 Int64)))
 
+(case "a handler threads a MAP as its state — a key-value store deduping keys across performs"
+  (doc    "The Map analogue of the Set-state seen-set: the threaded state is a MAP (a key→value store), and a
+           `put` operation inserts a key while a `count` operation reads its size — exercising the CHAMP
+           key→value path through the effect fold, distinct from the key-only Set case. Because a Map keys
+           uniquely, `put`ting the same key twice leaves one entry. `Store.put : Int64 -> Unit`, arm `(put (k)
+           m (resume unit (Map.insert m k k)))`; `Store.count : Unit -> Int64`, arm `(count (u) m (resume
+           (Map.size m) m))`. Seeded empty: `(Store.put 1)` → `{1:1}`, `(Store.put 2)` → `{1:1, 2:2}`,
+           `(Store.put 1)` re-inserts key 1 → still two keys, and `(Store.count)` reads `Map.size` = 2. Pins
+           that a handler state slot carries a persistent MAP through the fold across MULTIPLE performs — the
+           arm reads it (`Map.size`) and rebuilds it (`Map.insert`) per performance, and the map's key-dedup
+           holds across the threaded reads (the keyed-store idiom, and a guard that a Map.lookup/insert CSE
+           change cannot regress a Map threaded as effect state). (wasm: the rust target declines — it lacks
+           the value-heap/Map emission the component-model backend has, the same backend-parity gap as the
+           list-state and Set-state cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Store (op put (-> Int64 Unit)) (op count (-> Unit Int64)))
+            (def (main)
+              (handle Store (Map.empty) ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.size m) m)))
+                (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a RECURSIVE effectful walk accumulates into a list-state handler"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges with the state on the VALUE HEAP and the performer RECURSIVE — the compiler's real

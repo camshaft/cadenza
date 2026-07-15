@@ -156,6 +156,14 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
         return Some(payload);
     }
+    // `((intrinsic "ast-lift") e)` -> the operand `e` AS SOURCE. `ast-lift` wraps a RUNTIME active-unquote
+    // operand (a name / a computed expression — `quote::reify_active`), so reconstructing the source the
+    // AST denotes unwraps it back to `e` (the evaluated code), reused live exactly as `Ast.Int`'s payload.
+    // So `(eval (quasiquote (+ (unquote x) 4)))` — whose `,x` now reifies to `(ast-lift x)` rather than a
+    // literal-dispatched `(Ast.Int x)` — reconstructs to `(+ x 4)` and folds in the eval's enclosing scope.
+    if let Some(payload) = ast_lift_arg(ast, node) {
+        return Some(payload);
+    }
     // `(Ast.Bool payload)` -> the payload AS SOURCE (the `true`/`false` literal node). Like `Ast.Int`,
     // the payload node is reused live: a reified boolean literal `(Ast.Bool true)` unwraps back to `true`.
     if let Some(payload) = ast_ctor_arg(ast, node, "Bool") {
@@ -185,6 +193,30 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
         return Some(push_list(ast, children));
     }
     None
+}
+
+/// If `node` is the compiler-internal lift `((intrinsic "ast-lift") e)` — a 2-element list whose head is
+/// `(intrinsic ast-lift)` — its operand `e`. The shape `crate::quote::ast_lift` builds around a runtime
+/// active-unquote operand. `None` otherwise.
+fn ast_lift_arg(ast: &Arenas, node: StructId) -> Option<StructId> {
+    let Struct::List(items) = ast.get(node) else {
+        return None;
+    };
+    if items.len() != 2 {
+        return None;
+    }
+    // The head is `(intrinsic ast-lift)` — a 2-element list `[intrinsic, ast-lift]`.
+    let Struct::List(head) = ast.get(items[0]) else {
+        return None;
+    };
+    if head.len() == 2
+        && ast.as_name(head[0]) == Some("intrinsic")
+        && ast.as_name(head[1]) == Some("ast-lift")
+    {
+        Some(items[1])
+    } else {
+        None
+    }
 }
 
 /// If `node` is the constructor application `(Ast.<variant> payload)` — a list whose head is the

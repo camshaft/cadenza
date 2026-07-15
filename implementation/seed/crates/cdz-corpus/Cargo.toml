@@ -15,5 +15,6 @@ edition = "2024"
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 num-bigint = "0.4" # build `Leaf::Int` heading levels when emitting the `(document …)` arena
-# Used ONLY by the `cdz-corpus` bin for arg parsing; the library itself takes no CLI dependency.
+# Arg parsing for the corpus command surface, which now lives in the LIBRARY (`cli` module) so the
+# unified `cdz` binary can mount `cdz corpus`; the standalone bin is a thin shim over `cli::run`.
 clap = { version = "4", features = ["derive"] }

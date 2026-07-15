@@ -6,16 +6,14 @@
 //! cdz-corpus check FILE…               # verify a migration preserves the record stream
 //! ```
 //!
-//! `records` emits the flat record stream the xtask gate consumes. `migrate` projects a `.sexp`
-//! corpus file into the literate markdown format (one tagged `cdz` fence per DSL clause; see the
-//! [`cdz_corpus::markdown`] module docs). `check` proves a migration is behaviour-preserving — the
-//! reconstructed corpus's record stream is byte-identical to the original's. This bin is the only
-//! place that touches the filesystem/stdio; the logic is the pure `cdz_corpus` library.
+//! This bin is a thin shim: the command surface lives in `cdz_corpus::cli` (an embeddable clap `Args`
+//! group + a `run` entry), so the unified `cdz` binary can mount the SAME code as `cdz corpus …`
+//! without a second binary on the PATH. xtask (which shells out to this standalone bin) keeps working;
+//! both entry points share one implementation and one `--help`.
 
-use clap::{Parser, Subcommand};
-use std::io::Write;
-use std::path::Path;
 use std::process::ExitCode;
+
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(
@@ -23,121 +21,11 @@ use std::process::ExitCode;
     about = "Read and migrate the executable-semantics corpus."
 )]
 struct Cli {
-    #[command(subcommand)]
-    command: Cmd,
-}
-
-#[derive(Subcommand)]
-enum Cmd {
-    /// Parse corpus files and emit one normalized record per case to stdout.
-    Records {
-        /// Corpus `.sexp` files to read.
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
-    /// Migrate corpus `.sexp` files to literate markdown.
-    Migrate {
-        /// Write `<file>.md` beside each input instead of printing to stdout.
-        #[arg(long)]
-        write: bool,
-        /// Corpus `.sexp` files to migrate.
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
-    /// Verify a migration preserves the record stream (byte-identical) for each file.
-    Check {
-        /// Corpus `.sexp` files to check.
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
+    #[command(flatten)]
+    corpus: cdz_corpus::cli::CorpusArgs,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Cmd::Records { files } => run_records(&files),
-        Cmd::Migrate { write, files } => run_migrate(write, &files),
-        Cmd::Check { files } => run_check(&files),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(msg) => {
-            eprintln!("cdz-corpus: {msg}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// `records FILE…`: read each corpus file, normalize its cases, and emit the flat record stream to
-/// stdout (records from all files concatenated, in file then case order). A `.md` file is read as a
-/// migrated markdown corpus; any other extension is read as the s-expression corpus. Both paths emit
-/// the identical record stream (see [`cdz_corpus::read_markdown`]).
-fn run_records(files: &[String]) -> Result<(), String> {
-    let mut out = String::new();
-    for path in files {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        let is_markdown = Path::new(path).extension().is_some_and(|x| x == "md");
-        let records = if is_markdown {
-            cdz_corpus::read_markdown(&text)
-        } else {
-            cdz_corpus::read(&text)
-        }
-        .map_err(|e| format!("{path}: {e}"))?;
-        out.push_str(&cdz_corpus::render(&records));
-    }
-    std::io::stdout()
-        .write_all(out.as_bytes())
-        .map_err(|e| format!("writing stdout: {e}"))?;
-    Ok(())
-}
-
-/// `migrate [--write] FILE…`: project each `.sexp` corpus file to markdown. With `--write`, the
-/// output goes to `<stem>.md` beside the input; otherwise it prints to stdout. The document is
-/// titled with the file's stem (e.g. `01-literals`).
-fn run_migrate(write: bool, files: &[String]) -> Result<(), String> {
-    for path in files {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        let title = Path::new(path).file_stem().and_then(|s| s.to_str());
-        let md = cdz_corpus::markdown::migrate_titled(&text, title)
-            .map_err(|e| format!("{path}: {e}"))?;
-        if write {
-            let out_path = Path::new(path).with_extension("md");
-            std::fs::write(&out_path, md)
-                .map_err(|e| format!("writing {}: {e}", out_path.display()))?;
-            eprintln!("cdz-corpus: wrote {}", out_path.display());
-        } else {
-            std::io::stdout()
-                .write_all(md.as_bytes())
-                .map_err(|e| format!("writing stdout: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
-/// `check FILE…`: verify each migration is behaviour-preserving. Reports per-file OK/FAIL and exits
-/// non-zero if any file's record stream changed.
-fn run_check(files: &[String]) -> Result<(), String> {
-    let mut failures = 0;
-    for path in files {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        match cdz_corpus::markdown::check(&text) {
-            Ok(()) => println!("  ok    {path}"),
-            Err(e) => {
-                failures += 1;
-                println!("  FAIL  {path}");
-                for line in e.lines() {
-                    println!("        {line}");
-                }
-            }
-        }
-    }
-    if failures == 0 {
-        println!(
-            "\ncheck: all {} file(s) preserve the record stream",
-            files.len()
-        );
-        Ok(())
-    } else {
-        Err(format!("{failures} file(s) changed the record stream"))
-    }
+    cdz_corpus::cli::run(&cli.corpus, "cdz-corpus")
 }

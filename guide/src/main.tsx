@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider, ScrollRestoration } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import HomePage from "./components/HomePage.tsx";
+import { RouteError } from "./components/RouteError.tsx";
 import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { ProgressProvider } from "./progress/ProgressContext.tsx";
 import "./index.css";
@@ -32,6 +33,9 @@ const router = createBrowserRouter(
   [
     {
       element: <RootLayout />,
+      // Catches errors from any child route — most importantly a lazily-loaded chapter chunk that 404s
+      // after a new deploy (stale bundle). `RouteError` auto-reloads once to pick up the fresh bundle.
+      errorElement: <RouteError />,
       children: [
         { path: "/", element: <HomePage /> },
         {
