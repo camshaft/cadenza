@@ -15519,6 +15519,24 @@ mod match_engine {
             "a bare operator keeps the generic mismatch message: {}",
             bare.message
         );
+        // M180/M181 structural-delta audit: when the argument and the expected element are SAME-KIND
+        // compounds that differ structurally, the member-op message appends the minimal-conflict delta the
+        // effect-op / operator-arg / annotation sites carry — a record field-set diff into `List.push`
+        // names the field rather than leaving the reader to diff two rendered record types.
+        let delta = reject_full(
+            "(module m (def (g (: xs (List (Record (x Int64))))) \
+             ((. List push) xs (record (y 2)))) (export g))",
+        )
+        .expect("a structurally-mismatched List.push element rejects");
+        assert!(
+            delta
+                .message
+                .contains("`List.push` expects an argument of type")
+                && delta.message.contains("field `x`")
+                && delta.message.contains('y'),
+            "names the operation + the field-level delta: {}",
+            delta.message
+        );
     }
 
     #[test]
@@ -39127,6 +39145,41 @@ mod stage1 {
                 && err.message.contains("Bool"),
             "names the operation + expected/actual types: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_perform_arg_structural_mismatch_names_the_delta_not_just_the_types() {
+        // M180/M181 structural-delta audit applied to the effect-op perform arm. When the performed value
+        // and the declared operation argument are SAME-KIND compounds that differ structurally (a record
+        // field-set diff here), the perform arm named only the two rendered types — leaving the reader to
+        // diff `(Record (x Int64))` against `(Record (y Int64))` by eye. It now appends the minimal-conflict
+        // delta the annotation / operator-arg / peer-join sites already carry, so the message says WHICH
+        // field is wrong. A SCALAR mismatch (Int64 vs Bool — no structural delta) keeps the bare message.
+        let src = "(do (effect Log (op put (-> (Record (x Int64)) Unit))) \
+                   (def (main) (handle Log unit ((put (r) s (resume unit s))) \
+                   ((. Log put) (record (y 2))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a structurally-mismatched perform argument must be rejected");
+        assert!(
+            err.message.contains("operation `put`")
+                && err.message.contains("was performed")
+                && err.message.contains("field `x`")
+                && err.message.contains('y'),
+            "names the operation + the field-level delta: {}",
+            err.message
+        );
+        // NO spurious delta on a SCALAR mismatch — the same effect with an Int64 op performed a Bool keeps
+        // the bare "was performed" message (structural_delta_hint is None → the empty tail).
+        let scalar = "(do (effect Log (op put (-> Int64 Unit))) \
+                      (def (main) (handle Log unit ((put (r) s (resume unit s))) \
+                      ((. Log put) true))) (export main))";
+        let serr = compile_component(&crate::codec::encode(&parse(scalar)))
+            .expect_err("a scalar perform mismatch still rejects");
+        assert!(
+            serr.message.contains("operation `put`") && !serr.message.contains(" — "),
+            "a scalar perform mismatch carries no structural-delta tail: {}",
+            serr.message
         );
     }
 

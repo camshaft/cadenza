@@ -7554,11 +7554,18 @@ fn check_application(
                             .and_then(|k| db.ast.as_name(k))
                             .map(|n| format!("`{n}`"))
                             .unwrap_or_else(|| "this operation".to_string());
+                        // When the two types are SAME-KIND compounds that differ structurally (a record
+                        // field-set / field-type diff, a tuple arity diff, a sum-payload diff), append the
+                        // minimal-conflict delta the annotation / operator-arg / peer-join sites carry —
+                        // `(Log.put (record (y 2)))` for a `(Record (x Int64))` op then reads "… but field
+                        // `x` is missing (found `y`)" instead of leaving the reader to compare two rendered
+                        // record types. The M180/M181 structural-delta audit applied to the effect-op arm.
+                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "operation {op} expects an argument of type {}, but a value of type {} \
-                                 was performed",
+                                 was performed{delta}",
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
@@ -7578,11 +7585,17 @@ fn check_application(
                         // operator `+`/`<` reads fine already and takes the earlier float/numeric branches;
                         // a user-fn call takes the annotation-mismatch path, never this generic else.) The
                         // coercion fix (`(Int64.of …)` etc.) still rides along when one applies.
+                        // Append the SAME structural-delta hint the effect-op / operator-arg / annotation
+                        // sites carry, so a same-kind compound mismatch — `(List.push xs (record (y 2)))`
+                        // for a `List (Record (x Int64))`, a tuple-arity diff — names the minimal conflict
+                        // (`field `x` is missing (found `y`)`) instead of leaving the reader to diff two
+                        // rendered compound types. The M180/M181 audit applied to the prelude-member-op arm.
+                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "`{module}.{member}` expects an argument of type {}, but a value of \
-                                 type {} was given",
+                                 type {} was given{delta}",
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
