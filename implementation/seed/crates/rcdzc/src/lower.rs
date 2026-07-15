@@ -12144,6 +12144,58 @@ fn lower_quantity_combine(
             "runtime mixed-unit Rational combine (not yet emitted)",
         ));
     }
+    // BIGINT inner: convert each operand to the reference by `value * num / den` in UNBOUNDED bigint
+    // arithmetic (the heap-handle magnitudes can't take the i128 fold below — that path is for fixnum
+    // Int). A constant pair folds exactly over `IntValue` bignum (mul + truncating divmod); a runtime one
+    // synthesizes `value * (BigInt.of num) / (BigInt.of den)` per operand (`convert_operand_ast_bigint`)
+    // so the conversion `*`/`/` route to the runtime bigint ops, then the combine op runs on the two
+    // converted BigInt values. This is the mixed-scale analogue of the BigInt Unit.in arm.
+    let inner_is_bigint = matches!(
+        crate::infer::type_of(db, lhs),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::BigInt)
+    );
+    if inner_is_bigint {
+        // Convert `v * n / d` over IntValue bignum (exact mul, truncating divmod). `None` if a value is
+        // not a constant BigInt (→ runtime path below).
+        let conv_const = |v: &IntValue, n: i128, d: i128| -> Option<IntValue> {
+            let scaled = v.mul(&IntValue::from_i128(n));
+            scaled.divmod(&IntValue::from_i128(d)).map(|(q, _)| q)
+        };
+        if let (Core::ConstInt(lv), Core::ConstInt(rv)) = (&lc, &rc)
+            && let (Some(l), Some(r)) = (conv_const(lv, ln, ld), conv_const(rv, rn, rd))
+        {
+            // Both converted to reference-unit BigInts — fold the op (arith → a BigInt ConstInt;
+            // comparison → a ConstBool via the exact bignum compare).
+            return match op {
+                Prim::Add => Core::ConstInt(l.add(&r)),
+                Prim::Sub => Core::ConstInt(l.sub(&r)),
+                Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq => {
+                    Core::ConstBool(compare_ord(op, l.cmp(&r)))
+                }
+                _ => Core::Poison(Reject::decline("mixed-unit bigint: unsupported operator")),
+            };
+        }
+        // RUNTIME — synthesize `(op (value_l * (BigInt.of ln) / (BigInt.of ld)) (value_r * …))` and lower.
+        let lconv = match convert_operand_ast_bigint(db, lhs, ln, ld) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let rconv = match convert_operand_ast_bigint(db, rhs, rn, rd) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let head = db.push_name(combine_op_name(op));
+        let app = db.push_list(vec![head, lconv, rconv]);
+        return core_of(db, app);
+    }
     // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
     // non-whole ratio, per opting into integer math).
     if let (Some(lv), Some(rv)) = (int_of_core(&lc), int_of_core(&rc)) {
