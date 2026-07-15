@@ -42,9 +42,13 @@ struct Plan {
 /// Rewrite every well-formed `(tagged-template <tag> (chunks c…) (holes h…))` into `(<tag> (list c…)
 /// (list h…))` — the binding-dispatched application the one-tier evaluator reduces (see the module docs).
 //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
-//# The tag MUST be dispatched by binding, not by spelling: the compiler MUST resolve the tag name to a binding and require it to be a compile-time function from a list of the chunk strings and a list of the hole expressions to an abstract syntax tree, so that a program adds an embedded domain-specific syntax by defining or importing such a function rather than by extending the reader.
+//# The tag of a tagged template MUST be dispatched by binding, not by spelling, so that a program adds an embedded domain-specific syntax by defining or importing a function rather than by extending the reader.
 //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
-//# The compiler MUST evaluate that function on the one-tier compile-time evaluation mechanism, applied to the chunks and holes, and MUST splice its resulting abstract syntax tree in the tagged template's position, expanding to a fixpoint before type checking, so that a tagged template is meaning-equivalent to the hand-written program its tag function produces and is type-checked as ordinary code.
+//# The compiler MUST resolve the tag name to a binding and require it to be a compile-time function from a list of the chunk strings and a list of the hole expressions to an abstract syntax tree.
+//= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+//# The compiler MUST evaluate that tag function on the one-tier compile-time evaluation mechanism, applied to the chunks and holes.
+//= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+//# The compiler MUST splice the tag function's resulting abstract syntax tree in the tagged template's position, expanding to a fixpoint before type checking, so that a tagged template is meaning-equivalent to the hand-written program its tag function produces and is type-checked as ordinary code.
 pub fn expand(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `(tagged-template …)`; the rewrite APPENDS, so bound the scan.
     let original_len = ast.structure.len() as u32;
