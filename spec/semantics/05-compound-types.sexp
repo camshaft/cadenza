@@ -1957,6 +1957,19 @@
   (input  (do (def (main) (List.len (List.concat (list 1 2) (list true)))) (export main)))
   (error CDZ0201))
 
+(case "a retired collection-op name is rejected with a rename fix-it (CDZ0603)"
+  (doc    "The consistent-naming cutover renamed three prelude collection ops with NO transitional alias
+           (one place a name resolves — modules-and-namespaces.md §A Member Is Resolved Against Its
+           Module): `Map.size`→`Map.len`, `Tuple.cat`→`Tuple.concat`, `Tuple.pop`→`Tuple.remove`. The
+           retired name genuinely no longer resolves, but instead of the generic 'no member' it gets the
+           targeted CDZ0603 naming the canonical spelling and carrying a VERIFIED fix-it rewriting the key
+           token in place. Pins that the retired name is REJECTED (not silently accepted) and that the
+           diagnostic is CDZ0603 specifically — so a future change can't quietly re-add the old name or
+           downgrade the message. A genuine typo (a name that was never a member) still takes the ordinary
+           CDZ0201 unknown-member did-you-mean, so this fires ONLY on the fixed retired set.")
+  (input  (do (def (main) (Map.size (Map.insert (Map.empty) 1 10))) (export main)))
+  (error CDZ0603))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer
