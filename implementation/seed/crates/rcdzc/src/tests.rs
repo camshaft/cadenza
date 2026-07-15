@@ -33117,6 +33117,55 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_refining_arm_shadowed_by_an_earlier_full_variant_cover_is_redundant() {
+        // VARIANT-REFINEMENT SUBSUMPTION: a FULL-variant cover `(Some _)` matches every value of the `Some`
+        // variant, so a LATER refining arm of the SAME variant (`(Some (Some x))`, an `ArmCover::Shape`) is
+        // unreachable. Beyond the exact-duplicate `Shape` check (Inc 28) — this is a BROADER earlier arm
+        // shadowing a NARROWER same-variant later one. Each source emits exactly one CDZ0213 on the later arm.
+        for src in [
+            // `(Some _)` [full Some] then `(Some (Some x))` [refining Some] — the refinement is dead.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some _) 0) ((Some (Some x)) x) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A bare binder payload `(Some p)` is also a full cover; a later `(Some (None))` is shadowed.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some p) 1) ((Some (None)) 2) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A refining TUPLE payload after a full tuple-payload cover (`(Some (tuple _ _))` covers whole Some).
+            "(module m (def (f (: o (Option (Tuple Bool Int64)))) \
+               (match o ((Some (tuple _ _)) 0) ((Some (tuple true c)) c) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a refining arm shadowed by an earlier full-variant cover is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+        // FALSE-POSITIVE guards: a refining arm is NOT shadowed when NO earlier arm covered its variant in
+        // FULL — a refinement BEFORE the full cover is reachable, and refinements of a variant never covered
+        // in full (`(Some (Some x))` + `(Some (None))`, jointly exhausting Some but neither a full cover) do
+        // not shadow each other.
+        for src in [
+            // The refinement comes FIRST — reachable; the later full `(Some _)` is broader, not shadowed.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some _) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // Two refinements of Some, no full-Some cover — jointly exhaustive, neither shadows the other.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a refinement not shadowed by an earlier full cover must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms() {
         // An ALL-IRREFUTABLE tuple `(tuple x y)` / `(tuple _ _)` matches EVERY value of its tuple type — it
         // is a whole-type CatchAll (`is_irrefutable_cover`), so any arm after it is unreachable. The
