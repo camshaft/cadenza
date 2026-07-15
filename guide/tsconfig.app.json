@@ -21,5 +21,8 @@
 
     "types": ["vite/client"]
   },
-  "include": ["src", "src/wasm/pkg/cdz_wasm.d.ts"]
+  "include": ["src", "src/wasm/pkg/cdz_wasm.d.ts"],
+  // Unit tests (`*.test.ts`) run under `node --test` (which strips types + provides `node:*` types);
+  // they are not part of the app bundle, so keep them out of the app typecheck/build.
+  "exclude": ["src/**/*.test.ts"]
 }
