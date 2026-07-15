@@ -12001,6 +12001,31 @@ mod recursion {
             "go(0, 3, 0) = 6 iterations * (3*2)"
         );
     }
+
+    #[test]
+    fn a_loop_invariant_in_a_match_scrutinee_is_hoisted_to_valid_wasm() {
+        // REGRESSION (9bccb36a): a loop-invariant subexpression in a MATCH SCRUTINEE — `(match (< i (+ n 1))
+        // …)`, `(+ n 1)` invariant since `n` threads unchanged — was hoisted into a pre-loop slot, but its
+        // checked-add guard's TRANSIENT scratch slot was left inside the body's reusable range. The loop body
+        // then reused that slot for the i32 bool DISCRIMINANT while the hoist had recorded it at i64, so the
+        // one wasm local was declared at two widths and the module failed to validate (`type mismatch:
+        // expected i32, found i64` in func 1). The if-condition twin was fine; only the match-scrutinee hoist
+        // mis-wired. Fix: raise the body scratch floor past ALL scratch the invariant's emit touched, not just
+        // the persistent value slot. This test compiles the WHOLE program (so the emitted module is validated)
+        // and runs it: `loop 0 4` iterates i:0→5 while `i < 5` and returns 5.
+        let src = "(do (def (loop (: i Int64) (: n Int64)) \
+                        (match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))) \
+                      (def (main) (loop 0 4)) \
+                      (export main))";
+        // compile_component runs the emitted module through wasm validation — before the fix this panicked
+        // with the func-1 type mismatch, so reaching the run is itself the regression guard.
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            5,
+            "loop 0 4 counts i:0→5 while i < n+1 (=5) and returns 5"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
