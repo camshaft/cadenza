@@ -1871,6 +1871,17 @@
   (call   main (: 255 Int64) (: 127 Int64))
   (output (: 127 Int64)))
 
+(case "a guard-elided masked add computes inline over runtime operands"
+  (doc    "`(+ (& a 7) (& b 7))` over runtime operands: both masked values live in [0,7], so the sum lives
+           in [0,14] and provably fits Int64 — the compiler elides the overflow guard. With no guard to
+           re-read them, the two masked operands are emitted straight onto the stack (no scratch slots) and
+           added. Value parity is the observable proof the elision keeps the exact result: `(255, 250)` =
+           (255&7) + (250&7) = 7 + 2 = 9, `(8, 8)` = 0 + 0 = 0. Pins the guard-elided masked-add path — the
+           common LEB/bit-packing idiom where the range analysis proves no overflow.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (+ (& a 7) (& b 7))) (export main)))
+  (call   main (: 255 Int64) (: 250 Int64)) (output (: 9 Int64))
+  (call   main (: 8 Int64) (: 8 Int64)) (output (: 0 Int64)))
+
 (case "a runtime bitwise OR combines bits"
   (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
            byte. Pins the emitted bitwise-OR path.")

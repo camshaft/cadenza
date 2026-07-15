@@ -3752,6 +3752,13 @@ pub(crate) struct StrippedAnnotations {
 //# The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
 //= spec/contracts/ast-encoding.md#the-tree-carries-comments-and-documentation
 //# A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
+// Peeling the wrapper at LOAD, before resolve/type/lower ever see the form, is what makes a comment
+// SEMANTICALLY INERT: the compiler sees through it to the inner form, so a `(comment …)` changes neither
+// the runtime meaning of a program nor the type its expressions are assigned — it is pure annotation.
+//= spec/capabilities/agent-authoring.md#comments-are-semantically-inert
+//# A comment MUST NOT change the runtime meaning of a program.
+//= spec/capabilities/agent-authoring.md#comments-are-semantically-inert
+//# A comment MUST NOT change the type a program's expressions are assigned.
 pub(crate) fn strip_comments(ast: &mut Arenas) {
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);

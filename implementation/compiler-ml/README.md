@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 339 tests total across 36 modules):
+top. Current `src/` modules (each with same-file `@test`s — 369 tests total across 38 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -259,6 +259,13 @@ top. Current `src/` modules (each with same-file `@test`s — 339 tests total ac
   missing-`)` / trailing-token / dangling-op errors AND agreement with the total parser on valid input. 12
   `@test`s. Confirmed WORKING. (⚠ hit the dotted-nullary-arm finding below: `Tok.TRP` in the `'(' expr ')'`
   arm declined; bare `TRP` fixes it.)
+- `src/calc.cdz` — the FRONT-END CAPSTONE: a complete `String` → value calculator composing THREE modules
+  over a 3-hop transitive import chain (calc → `parse-checked` → `parse`). A string lexer builds `parse`'s
+  canonical `Tok` directly (so its output feeds `parse-checked` with no bridge), then the fallible parser
+  + evaluator produce a value or a positioned error. `calc "2 * (3 + 4) - 1"` → 13; malformed input (``,
+  `"1 @ 2"`, `"(1 + 2"`) reports errors via `parse-checked.ok`. Real end-to-end text-in/value-out (a REPL
+  / `--eval`). 12 `@test`s. Confirmed WORKING — the deep transitive import + the string→Tok→Expr→value
+  flow both correct.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -581,15 +588,19 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   per-iteration finding-check rebuilt `cdz` but NOT `cdz-run` — a stale runner kept reproducing the old
   trap. Finding-checks that RUN a component now rebuild `cdz-run` too.
 
-- **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines):** `String.from-bytes` (and the
-  `Ast.decode` self-decode) only compute on a *compile-time-constant* `Bytes`; a runtime byte slice
-  DECLINES ("String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
-  `lower.rs::lower_str_from_bytes` ~13051). A decoder reads a `Name`/`Str` leaf's bytes from a runtime
-  buffer, so it cannot MATERIALIZE the string content — every real AST is full of `Name` leaves, so
-  this blocks a faithful decode. The fix looks tractable and small: a runtime `String` IS the SAME flat
-  UTF-8 byte-leaf as a runtime `Bytes` (`lower.rs` ~1664, `String.concat` on runtime strings lowers to
-  `bytes-concat` over their byte leaves), so `String.from-bytes` on a runtime `Bytes` is nearly the
-  IDENTITY on the byte handle, plus UTF-8 validation for the `Option`. Worth a dedicated increment.
+- **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines; ⚠ NARROWED iter 46): `String.from-bytes`
+  computes on a compile-time-constant/foldable `Bytes` but a genuinely RUNTIME byte sequence still
+  DECLINES.** ⚠ Re-verified iter 46: `String.from-bytes` now returns `Option String` (total, UTF-8
+  validation) and WORKS for constant Bytes (`Bytes.of([72,105])` → Some "Hi", len 2) AND a param'd Bytes
+  (inlined to a constant). Only a runtime-CONSTRUCTED Bytes (e.g. via a `Bytes.concat` recursion) declines
+  ("String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
+  `lower.rs::lower_str_from_bytes`). `repros/runtime-string-from-bytes-declines.sexp` (uses a runtime
+  builder). A decoder reads a `Name`/`Str` leaf's bytes from a runtime buffer, so it STILL cannot
+  materialize string content — the iter-8 decode-Name blocker persists for the runtime case. The fix
+  looks tractable: a runtime `String` IS the SAME flat UTF-8 byte-leaf as a runtime `Bytes`, so runtime
+  `String.from-bytes` is nearly the IDENTITY on the byte handle + UTF-8 validation. Worth a dedicated
+  increment. (🔑 many string SCANNING passes are now unblocked regardless — `String.at`/`concat`/`slice`/
+  `byte-len`/`==` on runtime strings all work; only from-bytes-of-runtime-bytes remains.)
 
 - **OPEN (seed `rcdzc` — backend MISCOMPILE, silent):** a SELF-TAIL-RECURSIVE function that passes a
   TUPLE-PROJECTED SUM-HANDLE (`(. r 0)` where `r : (Tuple W …)` and `W` is a boxed sum) as a loop
@@ -750,17 +761,28 @@ are the sharp edges.
   `src/iter.cdz` uses a reified encoding instead. SUGGESTED FIX: give `Unit` a zero-info slot at the
   boxed-closure boundary (elide the param, or lower to a never-read placeholder i32).
 
-- **OPEN (seed `rcdzc` — inference GAP, blocks a generic iterator): a composed generic pull-iterator
-  leaves its element type undetermined.** `repros/decline-generic-iterator-composed-transformers.cdz`.
-  `collect(map(filter(from-list(xs), p), f))` over a polymorphic `Iter(a)` → CDZ0201 "a generic type
-  argument is undetermined" at the recursive consumer / composed call. BISECTED — the gap is the
-  COMPOSITION through `next`-recursion, not any single piece: generic `collect` through `next` works;
-  `collect(map(…))` (one closure-carrying combinator) works and runs; `collect(filter(…))` alone
-  reproduces (its arm calls `next` recursively in the `else`); the monomorphic-`Int64` version of ALL
-  of it works (what `src/iter.cdz` ships). The element type is fully pinned by the source list, so
-  there is no genuine ambiguity — inference just doesn't propagate it through the composed
-  `next`-recursion. This is the blocker to "iterators work for ANY type"; the `Int64` iterator is a
-  spike until it lands.
+- **OPEN (seed `rcdzc` — MONOMORPHIZATION gap, THE blocker to a generic iterator): a composed
+  recursive-generic call declines when specialized at ≥2 element types.**
+  `repros/decline-recursive-generic-producer-drops-element-tie.cdz`. `collect(from-list(xs))` (a
+  recursive-generic producer feeding a recursive-generic consumer) → CDZ0201 "a generic type argument
+  is undetermined" — but ONLY with TWO OR MORE distinct element instantiations in one program. SHARP
+  bisection (2026-07-15, superseding the earlier "composed transformers" framing):
+  - a SINGLE instantiation compiles AND RUNS (verified: `collect(from-list([1,2,3]))` → `[1,2,3]`;
+    `collect(from-list(["a","bb","ccc"]))` → runs). So a generic iterator works for any ONE element
+    type per program; the SECOND concurrent instantiation is what the monomorphizer can't resolve.
+  - CHECK vs COMPILE split: `cdz check` PASSES (inference accepts it); the decline is at LOWERING
+    (`type_specialize`, lower.rs ~8478). The two stages disagree.
+  - ROOT (typing): a recursive-generic PRODUCER's `def_scheme` disconnects its result element from its
+    argument element — `from-list : (-> _ (Iter _))` with two independent vars, verified via
+    `cdz type` — instead of `∀a. List(a) -> Iter(a)`. The self-call's result element isn't unified with
+    the consed element during the connected solve (`apply_type` freshens the self-call arg's vars,
+    severing the tie — the same severing `apply_scheme_to_args` already guards against for generic
+    schemes but the general `apply_type` ctor path does not).
+  - BROADER than user sums: the built-in `List` has it too (`dup-all(copy(xs))` at two instantiations
+    declines identically). A general recursive-generic monomorphization gap for composed calls, not
+    iterator-specific. This is THE blocker to "iterators work for ANY type"; `src/iter.cdz` ships a
+    monomorphic-`Int64` spike until it lands (a seed-inference-agent fix — gate-critical, not a
+    loop-tick edit).
 
 - **OPEN (seed `rcdzc` — surface/diagnostic GAP): a user-generic type var in an annotation is
   rejected.** `repros/reject-user-generic-type-var-in-annotation.cdz`. `def next(it: Iter(a)) = …` →

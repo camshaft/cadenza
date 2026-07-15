@@ -13962,6 +13962,32 @@ mod match_engine {
     }
 
     #[test]
+    fn an_operator_arg_wrap_in_variant_uses_the_readable_lead_not_the_raw_unify_message() {
+        // In an OPERATOR argument position — `(= o 5)` for `o : (Option Int64)` — the `=` scheme grounds
+        // its first operand, so the second (`5 : Int64`) is checked against `(Option Int64)`. The value is
+        // the sum's PAYLOAD where the SUM is expected, so a "wrap in `(Some …)`" fix applies. The fix was
+        // attached, but the MESSAGE stayed the raw "type mismatch: (Option Int64) and Int64 must be the same
+        // type here, but differ" (a naive-HM leak) — unlike the coercion / option-payload sibling branches,
+        // which reword to the readable arg-site phrasing. Now it does too.
+        let d = reject_full(
+            "(module m (def (f (: o (Option Int64))) (= o 5)) (def (main) (f (Some 1))) (export main))",
+        )
+        .expect("comparing an Option to its payload rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains(
+                "this argument is an Int64, but a value of type (Option Int64) is expected here"
+            ) && !d.message.contains("must be the same type here"),
+            "the readable arg-site lead replaces the raw unify message: {}",
+            d.message
+        );
+        // The wrap fix rides along, unchanged.
+        let fix = d.fix.expect("a wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(fix.replacement, format!("(Some {})", crate::abi::WRAP_HOLE));
+    }
+
+    #[test]
     fn the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded() {
         // The ctor name comes from the DECLARATION, not a built-in `Some`/`Ok` — a user sum `Box` with a
         // single `Int64`-payload variant `Wrap` yields "wrap in `Wrap`" (no-keys-outside-the-prelude).
@@ -21704,6 +21730,22 @@ mod match_engine {
         }
     }
 
+    /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
+    /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
+    fn component_imports_op(bytes: &[u8], op: &str) -> bool {
+        use wasmparser::{Parser, Payload, TypeRef};
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Ok(Payload::ImportSection(reader)) = payload {
+                for import in reader.into_iter().flatten() {
+                    if matches!(import.ty, TypeRef::Func(_)) && import.name == op {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn a_list_push_extends_and_its_runtime_length_counts() {
         // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. To exercise
@@ -21719,6 +21761,75 @@ mod match_engine {
             return;
         };
         assert_eq!(out, "4", "push then runtime length");
+    }
+
+    #[test]
+    fn a_shared_list_binding_consumed_then_reused_is_retained_not_mutated() {
+        // Perceus RETAIN placement (the shared-heap-binding-consume-then-use miscompile): a `let` list `e`
+        // is CONSUMED by `List.push` in the LEFT operand of `+` AND read again by `List.len` in the RIGHT
+        // operand. `List.push` produces a NEW list and must leave `e` unchanged, so the right `List.len e`
+        // reads the ORIGINAL length. `build 0 2 (list)` = `[0 1]` (length 2); left = `len([0 1 9])` = 3,
+        // right = `len([0 1])` = 2, sum = 5. Before the retain fix the consuming push mutated `e` in place
+        // (FBIP, rc==1) and the right read saw the grown list → 6 (a silent wrong value). The dup at the
+        // consuming occurrence (`collect_dup_sites`/`emit_binder_ref`) gives the push its own reference.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((e (build 0 2 (list)))) \
+                             (+ ((. List len) ((. List push) e 9)) ((. List len) e)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "5",
+            "the push must not mutate the shared binding read again"
+        );
+    }
+
+    #[test]
+    fn a_shared_list_param_consumed_in_a_recursive_call_sibling_is_retained() {
+        // The self-hosting face: a PARAMETER `xs` consumed by `List.push` in one operand and passed to a
+        // self-recursive call `(f 0 xs)` in the sibling operand — both read the same param. `f 1 [0 1]` =
+        // `len(push [0 1] 9)` (3) + `f 0 [0 1]` (= `len [0 1]` = 2) = 5. The push must retain the shared
+        // parameter so the self-call sees the original list; before the fix it returned 6 (and, once the
+        // dup was emitted, INVALID wasm until `dup` was added to the import set for a param retain site).
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (f n xs) (if (= n 0) ((. List len) xs) \
+                                (+ ((. List len) ((. List push) xs 9)) (f 0 xs)))) \
+               (def (main) (f 1 (build 0 2 (list)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "5",
+            "the push must retain the param shared with the self-call"
+        );
+    }
+
+    #[test]
+    fn a_single_use_list_consume_stays_on_the_fbip_fast_path_no_dup() {
+        // The FBIP fast path MUST be preserved: a list bound and consumed EXACTLY once (no later use) needs
+        // NO retain — the single `List.push` spends the sole reference in place. `build 0 2` = `[0 1]`,
+        // pushed to `[0 1 9]`, length 3. The emitted body must import NO `dup` (a single-use consume
+        // produces no retain site; a spurious dup+drop pair would regress the allocation bench). Pins that
+        // `collect_dup_sites` marks only a consume WITH a later use, and that the result is correct.
+        let src = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((e (build 0 2 (list)))) ((. List len) ((. List push) e 9)))) (export main))";
+        let bytes = component(src);
+        assert!(
+            !component_imports_op(&bytes, "dup"),
+            "a single-use consume must not import `dup` (FBIP fast path — no retain site)"
+        );
+        let Some(out) = run_on_heap(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "3", "single-use push then length");
     }
 
     #[test]
@@ -32852,6 +32963,62 @@ mod diagnostics {
             assert!(
                 redundant_arms_of(src).is_empty(),
                 "a match whose list arms cover distinct lengths must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
+    fn a_structurally_duplicate_tuple_or_nested_ctor_arm_is_redundant() {
+        // EXACT-DUPLICATE detection for TUPLE / REFINING-CONSTRUCTOR arms (`ArmCover::Shape`) — two arms of
+        // the same structural shape (binders normalized to `_`, literals by value) match the same region, so
+        // the later is unreachable. The tuple/nested analogue of the variant/literal/list duplicate check.
+        for src in [
+            // A duplicate tuple arm (`(tuple true a)` vs `(tuple true b)` — same shape `(t b:true _)`).
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // A duplicate NESTED-ctor arm (`(Some (Some x))` vs `(Some (Some y))`).
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (Some y)) y) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A duplicate tuple arm with a refining element + literal (`(tuple (Some x) 0)` twice).
+            "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some y) 0) y) (_ 9))) \
+             (def (main) (f (tuple (None) 1))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a structurally-duplicate tuple/nested-ctor arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_tuple_or_nested_ctor_arms_do_not_warn() {
+        // Negatives — no arm structurally repeats an earlier one, so none is flagged. Critically, a set of
+        // REFINING arms that jointly EXHAUST a nested sum (`(Some (Some x)) + (Some (None)) + (None)`) must
+        // NOT be mis-saturated: a `Shape` cover is PARTIAL (covers only part of the `Some` variant), so it
+        // does not count toward the 2-variant `Option` saturation and no arm is wrongly flagged.
+        for src in [
+            // Exhaustive nested-Option refinement — three distinct shapes, no duplicate, no over-saturation.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // Distinct tuple first-column values.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple false b) b))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // Distinct refining-element LITERALS in the same tuple shape.
+            "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some x) 1) x) (_ 9))) \
+             (def (main) (f (tuple (None) 2))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a match whose tuple/nested arms are structurally distinct must not warn CDZ0213: `{src}` got {:?}",
                 redundant_arms_of(src)
             );
         }
@@ -53180,6 +53347,276 @@ mod closure_host_resource {
             .expect("call(handle, None)");
         call.post_return(&mut store).expect("call post_return");
         assert_eq!(out2[0], Val::S64(0), "match None → 0");
+    }
+
+    /// COMPOUND-RESULT-PAYLOAD oracle core: a closure `(fn (r) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (-
+    /// 0 e))))` whose ONE argument is `(Result (Tuple Int64 Int64) Int64)` — the OK payload a fixed-shape TUPLE,
+    /// the ERR payload a bare scalar. The HYPOTHESIS about the canonical ABI's variant JOIN: `result<tuple<s64,
+    /// s64>, s64>` flattens EACH arm's payload then JOINS position-by-position — ok flattens to `[i64, i64]`, err
+    /// to `[i64]`; the join is `(disc: i32, j0: i64, j1: i64)` where j0 = join(ok.0, err) and j1 = join(ok.1,
+    /// <none>) = ok.1. So the OK arm reads BOTH joined slots as its tuple fields; the ERR arm reads ONLY j0 (j1
+    /// unused). If it validates + runs, a compound Result payload is an implementation gap (per-arm rebuild over
+    /// the joined slots, each arm consuming a PREFIX of the join), NOT an ABI wall. Standalone (no heap): a bare
+    /// branch — Ok→j0+j1, Err→0-j0.
+    fn closure_result_tuple_payload_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // 0 = resource-new/rep (i32)->i32; 1 = make ()->i32; 2 = call (i32 self, i32 disc, i64 j0, i64 j1)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![], vec![ValType::I32]); // 1 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 2 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make
+        funcs.function(2); // call
+        m.section(&funcs);
+        let f_make = 2u32;
+        let f_call = 3u32;
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut code = CodeSection::new();
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, disc, j0, j1) = if disc==0 { j0 + j1 (Ok (p.0,p.1)) } else { 0 - j0 (Err e, j0=e) }.
+        // (component `result` sends Ok=0; the ok tuple's 2 fields are the joined slots j0,j1; the err scalar is
+        // joined into j0.)
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // disc
+        call.instruction(&Instruction::I32Const(0)); // Ok's discriminant
+        call.instruction(&Instruction::I32Eq);
+        call.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        call.instruction(&Instruction::LocalGet(2)); // j0 (p.0)
+        call.instruction(&Instruction::LocalGet(3)); // j1 (p.1)
+        call.instruction(&Instruction::I64Add);
+        call.instruction(&Instruction::Else);
+        call.instruction(&Instruction::I64Const(0));
+        call.instruction(&Instruction::LocalGet(2)); // j0 (e)
+        call.instruction(&Instruction::I64Sub); // 0 - e
+        call.instruction(&Instruction::End);
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the COMPOUND-RESULT-PAYLOAD closure: `call`'s argument is a
+    /// `result<tuple<s64,s64>, s64>` DEFINED TYPE (the ok side a tuple minted first, then the result referencing
+    /// it + a scalar err). Both `result` and `tuple` are anonymous-allowed, so this validates (unlike a variant).
+    fn inner_reexport_component_result_tuple_payload() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // result<tuple<s64,s64>, s64>: mint the ok tuple first, then the result referencing it + a scalar err.
+        let (tup_imp, od_t) = c.type_defined();
+        od_t.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (res_imp, od_r) = c.type_defined();
+        od_r.result(
+            Some(ComponentValType::Type(tup_imp)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("r", ComponentValType::Type(res_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (tup_exp, od_t2) = c.type_defined();
+        od_t2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (res_exp, od_r2) = c.type_defined();
+        od_r2.result(
+            Some(ComponentValType::Type(tup_exp)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("r", ComponentValType::Type(res_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the COMPOUND-RESULT-PAYLOAD closure: `call` lifted against `(self: own<t>,
+    /// r: result<tuple<s64,s64>, s64>) -> s64`, NO canon options — the flatten hypothesis is `(i32 disc, i64 j0,
+    /// i64 j1)` (the ok tuple's 2 leaves joined with the err scalar at position 0).
+    fn oracle_closure_result_tuple_payload_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (tup_t, od_t) = c.type_defined();
+        od_t.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (res_t, od_r) = c.type_defined();
+        od_r.result(
+            Some(ComponentValType::Type(tup_t)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("r", ComponentValType::Type(res_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_result_tuple_payload());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT: does a `(Result (Tuple Int64 Int64) Int64)` closure ARGUMENT (a COMPOUND ok
+    /// payload joined with a scalar err) cross by native flattening (`result<tuple<s64,s64>, s64>` → `(disc: i32,
+    /// j0: i64, j1: i64)`, ok reading both joined slots, err reading j0)? `make()`, then `call(handle, Ok((3,4)))`
+    /// → 7 and a fresh `call(h2, Err(5))` → -5. If it validates + runs, a compound Result payload is an
+    /// implementation gap (per-arm rebuild over the joined slots), NOT an ABI wall.
+    #[test]
+    fn a_result_tuple_payload_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_result_tuple_payload_component(
+            &closure_result_tuple_payload_call_core(),
+        );
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("result-tuple-payload closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        // call(handle, Ok((3,4))) → 7 (the ok tuple's fields = joined slots j0=3, j1=4).
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        let ok_arg = Val::Result(Ok(Some(Box::new(Val::Tuple(vec![
+            Val::S64(3),
+            Val::S64(4),
+        ])))));
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
+            .expect("call(handle, Ok((3,4)))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(7), "match Ok((3,4)) → 7");
+
+        // A fresh handle: call(h2, Err(5)) → -5 (the err scalar joined into j0=5).
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2)
+            .expect("make call 2");
+        make.post_return(&mut store).expect("make post_return 2");
+        let err_arg = Val::Result(Err(Some(Box::new(Val::S64(5)))));
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
+            .expect("call(handle, Err(5))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out2[0], Val::S64(-5), "match Err(5) → -5");
     }
 
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE

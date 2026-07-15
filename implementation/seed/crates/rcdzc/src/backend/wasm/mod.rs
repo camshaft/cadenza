@@ -2062,9 +2062,140 @@ fn fixed_shape_option_scalar_arg(
                     },
                 },
             ))
+            // If EITHER scalar payload resolution failed above, `resolve_scalar_payload`'s `?` already returned
+            // None; the COMPOUND-payload Result path is a separate classifier (`fixed_shape_result_compound_arg`)
+            // tried by the caller when this returns None.
         }
         _ => None, // two nullary (bare enum), or a multi-payload variant — out of scope
     }
+}
+
+/// A `(Result ok err)` closure ARG where AT LEAST ONE side's payload is a fixed-shape TUPLE/record (a compound)
+/// — the compound-Result-payload path, the counterpart to [`fixed_shape_option_scalar_arg`]'s compound Option.
+/// It crosses as a native `result<ok, err>` whose ok/err valtypes are each a primitive (scalar side) or a
+/// minted `tuple<…>` (compound side). The canonical ABI flattens it to `(disc: i32, <joined leaves…>)`: each
+/// arm's payload flattens to a leaf list, and the two are JOINED position-by-position (the join length = the
+/// LONGER arm; each position's width = the wider arm's leaf there). The guest rebuilds the selected arm's cell
+/// over a PREFIX of the joined slots. SCOPE this increment: each shared position has the SAME core width across
+/// both arms (no per-leaf `wrap` needed) — a differing per-position width is a later widening (declines here).
+/// Returns `(ArgSlot::ResultCompound, joined leaf vts, SumArgRebuild)` or `None` (not a 2-payload Result, a
+/// non-fixed-shape payload, or a differing per-position join width).
+fn fixed_shape_result_compound_arg(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+) -> Option<(
+    crate::backend::wasm::envelope::ArgSlot,
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::envelope::{ArgSlot, ResultSide};
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let decl_ref = db.type_decl_by_occ(*decl)?;
+        if decl_ref.variants.len() != 2 {
+            return None;
+        }
+        (
+            decl_ref.params.clone(),
+            decl_ref
+                .variants
+                .iter()
+                .map(|v| v.payloads.clone())
+                .collect(),
+        )
+    };
+    // BOTH variants must carry exactly one payload (a Result `(Ok a) (Err b)` — not an Option's nullary arm).
+    if variant_payloads.iter().any(|p| p.len() != 1) {
+        return None;
+    }
+    // The instantiated payload TYPE of a variant (a generic param `a` → `args[pi]`).
+    let payload_ty = |db: &mut Db, occ: crate::ast::StructId| -> Option<Ty> {
+        let pname = db
+            .ast
+            .head_name(occ)
+            .or_else(|| db.ast.as_name(occ))?
+            .to_string();
+        let pi = params.iter().position(|p| *p == pname)?;
+        args.get(pi).cloned()
+    };
+    let ok_ty = payload_ty(db, variant_payloads[0][0])?;
+    let err_ty = payload_ty(db, variant_payloads[1][0])?;
+    // At least ONE side must be compound (else the all-scalar path handles it); classify each side.
+    let classify_side = |ty: &Ty| -> Option<(
+        ResultSide,
+        Vec<crate::backend::wasm::lir::ValType>,
+        SumArmPayload,
+        u32,
+    )> {
+        // Returns (boundary side, leaf vts, arm payload, decl_disc-placeholder). A scalar → `Scalar`; a
+        // fixed-shape tuple/record → `Compound` (its depth-first leaves). Neither → None.
+        if let Some(crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend }) =
+            scalar_field_rebuild(ty)
+        {
+            let byte = closure_boundary_byte(ty)?;
+            let vt = crate::backend::wasm::lir::valtype_of(ty)?;
+            Some((
+                ResultSide::Scalar(byte),
+                vec![vt],
+                SumArmPayload::Scalar {
+                    box_op,
+                    extend,
+                    wrap_join: false,
+                },
+                0,
+            ))
+        } else if let Some((_leaf_bytes, leaf_vts, rebuild_fields, shape)) =
+            nested_fixed_shape_tuple_arg(ty)
+        {
+            Some((
+                ResultSide::Compound(shape),
+                leaf_vts,
+                SumArmPayload::Compound(rebuild_fields),
+                0,
+            ))
+        } else {
+            None
+        }
+    };
+    let (ok_side, ok_vts, ok_payload, _) = classify_side(&ok_ty)?;
+    let (err_side, err_vts, err_payload, _) = classify_side(&err_ty)?;
+    // Require at least one compound side (the all-scalar Result is the other path).
+    if matches!(ok_side, ResultSide::Scalar(_)) && matches!(err_side, ResultSide::Scalar(_)) {
+        return None;
+    }
+    // Position-wise join: the join length is the LONGER arm; each shared position must have the SAME core width
+    // across arms (this increment). A differing width (would need per-leaf wrap inside the compound rebuild) or
+    // a length where the shorter arm's leaves don't PREFIX-match declines.
+    let join_len = ok_vts.len().max(err_vts.len());
+    let mut joined = Vec::with_capacity(join_len);
+    for i in 0..join_len {
+        match (ok_vts.get(i), err_vts.get(i)) {
+            (Some(a), Some(b)) if a == b => joined.push(*a),
+            (Some(a), None) => joined.push(*a),
+            (None, Some(b)) => joined.push(*b),
+            _ => return None, // differing per-position width — a later widening
+        }
+    }
+    Some((
+        ArgSlot::ResultCompound(ok_side, err_side),
+        joined,
+        SumArgRebuild {
+            base_param: 1,
+            boundary_true_disc: 0, // component `result<ok,err>` sends Ok=0
+            arm_true: SumArgArm {
+                decl_disc: 0,
+                payload: ok_payload,
+            },
+            arm_false: SumArgArm {
+                decl_disc: 1,
+                payload: err_payload,
+            },
+        },
+    ))
 }
 
 /// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
@@ -2603,6 +2734,7 @@ fn emit_closure_resource(
         && arg_tys.len() == 1
     {
         fixed_shape_option_scalar_arg(db, &arg_tys[0])
+            .or_else(|| fixed_shape_result_compound_arg(db, &arg_tys[0]))
     } else {
         None
     };
@@ -3487,6 +3619,7 @@ fn emit_multi_closure_resource(
         && arg_tys.len() == 1
     {
         fixed_shape_option_scalar_arg(db, &arg_tys[0])
+            .or_else(|| fixed_shape_result_compound_arg(db, &arg_tys[0]))
     } else {
         None
     };
@@ -4180,6 +4313,7 @@ fn emit_mixed_closure_resource(
         && arg_tys.len() == 1
     {
         fixed_shape_option_scalar_arg(db, &arg_tys[0])
+            .or_else(|| fixed_shape_result_compound_arg(db, &arg_tys[0]))
     } else {
         None
     };
@@ -4934,7 +5068,8 @@ fn emit_distinct_sig_resource(
             && group_nested.is_none()
             && group_multi_args.is_none()
             && arg_tys.len() == 1
-            && fixed_shape_option_scalar_arg(db, &arg_tys[0]).is_some();
+            && (fixed_shape_option_scalar_arg(db, &arg_tys[0]).is_some()
+                || fixed_shape_result_compound_arg(db, &arg_tys[0]).is_some());
         let arg_bytes: Vec<u8> = if group_tuple_arg.is_some()
             || group_nested.is_some()
             || group_multi_args.is_some()
@@ -4993,6 +5128,7 @@ fn emit_distinct_sig_resource(
             && arg_tys.len() == 1
         {
             fixed_shape_option_scalar_arg(db, &arg_tys[0])
+                .or_else(|| fixed_shape_result_compound_arg(db, &arg_tys[0]))
         } else {
             None
         };

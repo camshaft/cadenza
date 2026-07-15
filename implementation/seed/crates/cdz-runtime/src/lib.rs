@@ -2855,60 +2855,38 @@ fn bytes_flatten(h: Handle) {
         return; // already a leaf
     }
     let len = op_bytes_len(h) as usize;
-    let mut dst = vec![0u8; len];
-    // Copy `count` logical bytes of `node` beginning at logical `src_start` into `dst[dst_off..]`.
-    // The walk is READ-ONLY on every node (only `h` is mutated, after the loop), so briefly holding
-    // a shared ref per node is sound even across the shared subgraph.
-    let mut work: Vec<(Handle, usize, usize, usize)> = vec![(h, 0, 0, len)];
-    while let Some((node, dst_off, src_start, count)) = work.pop() {
-        if count == 0 {
-            continue;
-        }
-        let n = match unsafe { node.0.as_ref() } {
-            Some(n) => n,
-            None => continue, // null child — benign
+    // SMALL fast path (the dominant per-char case: `String.at` → a 1-byte slice → compact): the flattened
+    // bytes fit the inline `Raw` cap, so materialize them into a STACK buffer and install an inline `Raw`
+    // — skipping BOTH transient heap Vecs the general path allocates (the `dst` output Vec AND the `work`
+    // seed Vec), which for a ≤12-byte result are pure malloc/free churn (the Vec is copied into inline
+    // storage then freed — the transient-small-Vec smell). Was 2 allocs/flatten; a small flatten now
+    // allocates NOTHING. BYTE-IDENTICAL: `Raw::from` inlines a ≤cap Vec anyway, so the leaf is the same.
+    if len <= INLINE_RAW_CAP {
+        let mut buf = [0u8; INLINE_RAW_CAP];
+        fill_rope_bytes(h, &mut buf[..len], len);
+        let children = match unsafe { h.0.as_mut() } {
+            Some(n) => {
+                n.raw = Raw::Inline {
+                    len: len as u8,
+                    buf,
+                };
+                n.handles.take()
+            }
+            None => return,
         };
-        match n.handles.len() {
-            0 => {
-                // leaf: copy the sub-range, trapping on any inconsistency (a compiler-bug rope).
-                match (
-                    n.raw.get(src_start..src_start + count),
-                    dst.get_mut(dst_off..dst_off + count),
-                ) {
-                    (Some(src), Some(d)) => d.copy_from_slice(src),
-                    _ => trap_oob(),
-                }
-            }
-            1 => {
-                // slice [parent], raw = [off, len]: logical byte j is parent's byte (off + j).
-                let parent = n.handles[0];
-                let off = read_u32_at(&n.raw, 0) as usize;
-                work.push((parent, dst_off, off + src_start, count));
-            }
-            _ => {
-                // concat [left, right], raw = [len]: [0, ll) from left, [ll, len) from right.
-                let left = n.handles[0];
-                let right = n.handles[1];
-                let ll = op_bytes_len(left) as usize;
-                if src_start < ll {
-                    let lcount = count.min(ll - src_start);
-                    work.push((left, dst_off, src_start, lcount));
-                    let rcount = count - lcount;
-                    if rcount > 0 {
-                        work.push((right, dst_off + lcount, 0, rcount));
-                    }
-                } else {
-                    work.push((right, dst_off, src_start - ll, count));
-                }
-            }
+        for &c in children.iter() {
+            op_drop(c);
         }
+        return;
     }
+    let mut dst = vec![0u8; len];
+    fill_rope_bytes(h, &mut dst, len);
     // Convert `h` to a leaf: install the bytes and take its children out (so `h` no longer references
     // them), THEN release those references. Order matters — `h` is a leaf before the drops, so a
     // child freed here can never be reached through `h`.
     let children = match unsafe { h.0.as_mut() } {
         Some(n) => {
-            n.raw = Raw::from(dst); // the flattened bytes (a rope leaf; usually > inline cap → Heap)
+            n.raw = Raw::from(dst); // the flattened bytes (a wide rope leaf → Heap)
             n.handles.take() // the (now-orphaned) rope children (an owned `Handles`) to drop below
         }
         None => return,
@@ -2916,6 +2894,65 @@ fn bytes_flatten(h: Handle) {
     for &c in children.iter() {
         op_drop(c);
     }
+}
+
+/// Copy the `len` logical bytes of rope `h` into `dst` (`dst.len() == len`). The iterative walk (an
+/// explicit `(node, dst_off, src_start, count)` worklist) means a deep rope cannot overflow the wasm
+/// call stack. READ-ONLY on every node (the caller mutates `h`'s node AFTER this returns), so briefly
+/// holding a shared ref per node is sound even across a shared subgraph. Shared by both `bytes_flatten`
+/// size paths so the copy logic lives once. The worklist is REUSED from `FLATTEN_SCRATCH` (thread-local:
+/// clear + refill), so after the first flatten it never allocates again — the walk is allocation-FREE
+/// steady-state, and combined with the caller's stack-buffer output for a ≤cap result, a small flatten
+/// (the hot per-char `String.at`-compact) allocates NOTHING.
+fn fill_rope_bytes(h: Handle, dst: &mut [u8], len: usize) {
+    FLATTEN_SCRATCH.with(|cell| {
+        let work = &mut *cell.borrow_mut();
+        work.clear();
+        work.push((h, 0, 0, len));
+        while let Some((node, dst_off, src_start, count)) = work.pop() {
+            if count == 0 {
+                continue;
+            }
+            let n = match unsafe { node.0.as_ref() } {
+                Some(n) => n,
+                None => continue, // null child — benign
+            };
+            match n.handles.len() {
+                0 => {
+                    // leaf: copy the sub-range, trapping on any inconsistency (a compiler-bug rope).
+                    match (
+                        n.raw.get(src_start..src_start + count),
+                        dst.get_mut(dst_off..dst_off + count),
+                    ) {
+                        (Some(src), Some(d)) => d.copy_from_slice(src),
+                        _ => trap_oob(),
+                    }
+                }
+                1 => {
+                    // slice [parent], raw = [off, len]: logical byte j is parent's byte (off + j).
+                    let parent = n.handles[0];
+                    let off = read_u32_at(&n.raw, 0) as usize;
+                    work.push((parent, dst_off, off + src_start, count));
+                }
+                _ => {
+                    // concat [left, right], raw = [len]: [0, ll) from left, [ll, len) from right.
+                    let left = n.handles[0];
+                    let right = n.handles[1];
+                    let ll = op_bytes_len(left) as usize;
+                    if src_start < ll {
+                        let lcount = count.min(ll - src_start);
+                        work.push((left, dst_off, src_start, lcount));
+                        let rcount = count - lcount;
+                        if rcount > 0 {
+                            work.push((right, dst_off + lcount, 0, rcount));
+                        }
+                    } else {
+                        work.push((right, dst_off, src_start - ll, count));
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// `bytes-concat(a, b)` — a new Bytes = the bytes of `a` then `b`. O(1): allocates one concat node,
@@ -5241,6 +5278,20 @@ runtime_local! {
     /// the walk is iterative and never re-enters `champ_eq` (`with_raw_arity` uses a stack buffer), so
     /// the borrow never nests.
     static EQ_SCRATCH: core::cell::RefCell<Vec<(Handle, Handle)>> =
+        core::cell::RefCell::new(Vec::new());
+}
+
+runtime_local! {
+    /// REUSED scratch worklist for `fill_rope_bytes` (the `bytes_flatten` materialize walk) — same
+    /// alloc-elision as `HASH_SCRATCH`/`EQ_SCRATCH`. Every `String.at`/`Bytes` read + `bytes-compact`
+    /// flattens a rope, and the walk needs a `(node, dst_off, src_start, count)` task stack; freshly
+    /// allocating it was 1 heap alloc PER FLATTEN (on TOP of the output buffer — which the small path now
+    /// keeps on the stack). Caching it thread-locally lets each flatten `clear()` + reuse: grow once, then
+    /// every subsequent flatten is allocation-FREE steady-state — the lexer's per-char `String.at`-compact
+    /// (the hot text-scan loop) now allocates NOTHING for a ≤12-byte result. Safe: single-threaded, the
+    /// walk is iterative and never re-enters `bytes_flatten` (it only reads nodes + calls the O(1)
+    /// `op_bytes_len`), so the borrow never nests.
+    static FLATTEN_SCRATCH: core::cell::RefCell<Vec<(Handle, usize, usize, usize)>> =
         core::cell::RefCell::new(Vec::new());
 }
 
@@ -10136,6 +10187,36 @@ mod tests {
         assert!(
             flatten <= 400,
             "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 400 (linear in DEPTH: base + DEPTH×(piece+concat) + one flattened leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)"
+        );
+
+        // (J3b) SMALL flatten — the hot per-char shape a real STRING LEXER hits: `String.at(s,i)` returns a
+        // 1-byte SLICE which the compiler compacts (= `bytes_flatten`) before comparing to a char literal.
+        // A ≤INLINE_RAW_CAP result is materialized into a STACK buffer + inline `Raw` (no output Vec) and the
+        // walk worklist is REUSED from `FLATTEN_SCRATCH` (thread-local) — so a small flatten is ALLOCATION-
+        // FREE steady-state. Measure ONLY the compact (build the slice outside the timed op is impossible
+        // since compact consumes it, so build+compact and subtract the build baseline). Was 2/flatten (a
+        // transient `dst` Vec + the `work` seed Vec, both freed); now 0. Guards the lexer's per-char cost.
+        let src8 = op_str_new(String::from("abcdefgh"));
+        let build_base = measure(&mut || {
+            for _ in 0..N {
+                op_dup(src8); // op_bytes_slice CONSUMES its operand → dup the shared source first
+                op_drop(op_bytes_slice(src8, 3, 1)); // build a 1-byte slice, drop it (baseline)
+            }
+        });
+        let build_plus_compact = measure(&mut || {
+            for _ in 0..N {
+                op_dup(src8);
+                op_drop(op_bytes_compact(op_bytes_slice(src8, 3, 1))); // build + flatten
+            }
+        });
+        op_drop(src8);
+        let per_small_flatten = build_plus_compact.saturating_sub(build_base);
+        println!(
+            "ALLOC small_flatten x{N}: {per_small_flatten} (build+compact {build_plus_compact} − build {build_base})"
+        );
+        assert!(
+            per_small_flatten <= 100,
+            "small (≤cap) flatten allocs {per_small_flatten} for x{N} exceeds ceiling 100 (≈0/flatten: stack-buffer output + reused FLATTEN_SCRATCH worklist; a regression to the transient dst Vec + work Vec would be ~2/flatten = ~2000)"
         );
 
         // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
