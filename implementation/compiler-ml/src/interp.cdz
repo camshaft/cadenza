@@ -68,7 +68,7 @@ def interp-shadowing() =
 // NOTE: `let x = 1 in ((let x = 2 in x) + x)` SHOULD be 3 (2 + 1 — the outer x stays 1 after the inner
 // let's body), but currently MISCOMPILES to 4: a `Map.insert(env, …)` in the left operand's recursion
 // MUTATES the shared `env` param, so the right operand's `x` reads 2. Withheld until the seed bug is
-// fixed — see `repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`. (`interp-shadowing`
+// fixed — see `mlrepro-miscompile-map-insert-mutates-shared-recursive-param.sexp` (queue). (`interp-shadowing`
 // above passes because there the inner binding is the ONLY use of the env after insertion.)
 
 @test

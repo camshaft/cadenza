@@ -34,7 +34,7 @@ def digit-val(c: String) =
   else (if c == "8" then 8 else 9))))))))
 
 /// Scan a digit run from `i` → `(value, next-index)`. `String.at` matched INLINE (a returned char compared
-/// in a loop declines — see `repros/decline-returned-string-at-compared-in-a-loop.cdz`).
+/// in a loop declines — see `mlrepro-decline-returned-string-at-compared-in-a-loop.cdz` (queue)).
 def scan-number(s: String, i: Int64, acc: Int64) =
   if i == String.byte-len(s) then
     (acc, i)

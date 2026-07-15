@@ -7,7 +7,7 @@
 /// `Iter(a) = Susp(Unit -> Option (a, Iter(a)))`, but a `Unit`-parameter closure boxed into a heap sum
 /// currently DECLINES ("a closure's parameter type has no machine representation" — a zero-width `Unit`
 /// has no machine valtype at the closure boundary; see
-/// `repros/decline-unit-param-closure-boxed-in-sum.cdz`). So an iterator is instead a SUM of the known
+/// `mlrepro-decline-unit-param-closure-boxed-in-sum.cdz` (queue)). So an iterator is instead a SUM of the known
 /// step-shapes and `next` interprets one step. This is still lazy — `map`/`filter` build a wrapping
 /// variant and force nothing until `next` pulls — and it stores each closure over the ELEMENT type
 /// (representable), never `Unit`.
@@ -16,8 +16,8 @@
 /// the producers/transformers with unannotated signatures, but a generic recursive CONSUMER that
 /// threads a closure through its recursion (`fold`/`find`) fails to determine the type argument, and
 /// exporting a generic combinator is rejected at the component boundary — see
-/// `repros/decline-generic-recursive-consumer-threads-closure.cdz` and
-/// `repros/reject-user-generic-type-var-in-annotation.cdz`. `Int64` is the port's pervasive element
+/// `mlrepro-decline-generic-recursive-consumer-threads-closure.cdz` (queue) and
+/// `mlrepro-reject-user-generic-type-var-in-annotation.cdz` (queue). `Int64` is the port's pervasive element
 /// type, so a monomorphic iterator is the honest, working shape today; the generic version is a
 /// documented follow-up gated on those fixes.
 ///
@@ -162,7 +162,7 @@ def scan(it, init, f: Int64 -> Int64 -> Int64) = Iter.ScanI((f, (init, it)))
 // sum makes the shared closure-dispatch table decline at lowering ("a runtime closure application has
 // no matching function type"). Each combinator compiles alone; only the coexistence of two
 // distinctly-typed boxed closures breaks. Filed as
-// `repros/decline-two-distinct-closure-typed-variants-in-one-sum.cdz`; `flat-map` is gated on that fix.
+// `mlrepro-decline-two-distinct-closure-typed-variants-in-one-sum.cdz` (queue); `flat-map` is gated on that fix.
 
 // ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
 

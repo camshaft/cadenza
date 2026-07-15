@@ -13,7 +13,7 @@
 /// `n*(n-1)/2`, a closed form the tests check. `id-sum` is a SINGLE self-recursive effectful function;
 /// that shape specializes + runs correctly (a MUTUALLY-recursive effectful group with the perform in a
 /// different branch from the mutual call does not yet — see
-/// `repros/miscompile-mutually-recursive-effectful-functions.sexp`), so the port threads fresh ids with
+/// `mlrepro-miscompile-mutually-recursive-effectful-functions.sexp` (queue)), so the port threads fresh ids with
 /// self-recursion.
 effect Fresh =
   | next : -> Int64

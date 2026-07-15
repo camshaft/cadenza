@@ -92,7 +92,7 @@ def paren-count-no-parens-needed() =
 // 1 — a SEED bug, not a logic error here: `needs-parens` reads BOTH the parent operator's precedence
 // (`prec-of op`) AND the child operator's (`expr-prec child` → `prec-of child-op`), so two matched
 // `String` sum-payloads are live at once, and past a 3-deep recursion one read gets a stale value (see
-// `repros/miscompile-two-live-string-payloads-across-recursion.sexp` — the identical tree with an Int64
+// `mlrepro-miscompile-two-live-string-payloads-across-recursion.sexp` (queue) — the identical tree with an Int64
 // key counts correctly). The depth-<=2 `paren-count` tests above pass; the deep case is withheld until
 // the two-live-string-payloads miscompile is fixed.
 

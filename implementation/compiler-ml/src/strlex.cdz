@@ -20,7 +20,7 @@ type Token =
 /// ⚠ NOTE: the per-char scan INLINES `String.at`'s match into each loop arm rather than factoring a
 /// `char-at` helper that RETURNS the char. A `String`-returning helper whose result is `==`-compared
 /// INSIDE a self-recursive loop declines ("borrowing op operand has an ownership this backend cannot yet
-/// prove" — see `repros/decline-returned-string-at-compared-in-a-loop.cdz`); inlining the `String.at`
+/// prove" — see `mlrepro-decline-returned-string-at-compared-in-a-loop.cdz` (queue)); inlining the `String.at`
 /// match sidesteps it (the direct-producer form the recent String.at fix supports).
 
 def is-digit(c: String) =

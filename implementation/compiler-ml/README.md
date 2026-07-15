@@ -55,13 +55,14 @@ sibling type/function links against it and runs — so a test can reuse another 
 directory run runs each file's OWN tests (the entry-file filter keeps a shared imported library's tests
 to that library's own run, never double-counted through an importer). Tests still live SAME-FILE with
 the code they test (a cross-file test cannot yet construct a type whose variant shadows a *prelude* name
-— see `repros/import-prelude-collision`), so each module tests itself, but a test may now freely IMPORT
-non-colliding names from a sibling.
+— see the `mlrepro-import-prelude-collision` queue item), so each module tests itself, but a test may now
+freely IMPORT non-colliding names from a sibling.
 
 ## Structure (mirrors the rcdzc stages)
 
-Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 393 tests total across 40 modules):
+Source modules live under `src/`; `Project.cdz`, `README.md`, and `TESTING.md` sit at the top. (Language
+issues this port finds are filed in the shared queue — see "Language issues found" below — not a private
+`repros/` dir.) Current `src/` modules (each with same-file `@test`s — 393 tests total across 40 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -229,7 +230,7 @@ top. Current `src/` modules (each with same-file `@test`s — 393 tests total ac
   rewrite (no env, no mutation), the shape the seed folds cleanly. Contract: `eval(fold e) == eval(e)`
   (meaning-preserving) AND `size(fold e) <= size(e)` (never grows) AND idempotent. 10 `@test`s. Confirmed
   WORKING. (A `Map`-env interpreter with SHADOWING is the UNSAFE cousin — it trips the still-live-binding
-  miscompile; see `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`, so this optimizer
+  miscompile; see `mlrepro-miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz` (queue), so this optimizer
   stays a pure rewrite.)
 - `src/ssa.cdz` — an SSA LINEARIZER: flatten the arithmetic `Expr` (cross-file from `parse`) into a
   straight-line list of THREE-ADDRESS instructions (`Lit(dst, v)` / `Op(dst, opcode, ra, rb)`), each
@@ -237,7 +238,7 @@ top. Current `src/` modules (each with same-file `@test`s — 393 tests total ac
   register ids by THREADING A COUNTER through the result (`(reg, next, instrs)` triple), NOT a `Fresh`
   effect: the effect-based gensym over a two-child tree needs two sibling recursive calls under a
   state-threading handler, which the tail-resumptive fold declines (see
-  `repros/decline-effect-state-across-sibling-recursive-calls.cdz`) — pure counter-threading is the
+  `mlrepro-decline-effect-state-across-sibling-recursive-calls.cdz` (queue)) — pure counter-threading is the
   correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
   re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
   WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
@@ -300,22 +301,22 @@ top. Current `src/` modules (each with same-file `@test`s — 393 tests total ac
   DECLINES — see the Unit-thunk finding below), so each stored closure is over the element type, never
   `Unit`. Laziness is real and tested (`take 3` of a million-element `range` pulls exactly 3). 18
   `@test`s. **Monomorphic over `Int64` — a SPIKE:** the generic `Iter(a)` is blocked by two inference
-  gaps (`repros/decline-generic-iterator-composed-transformers.cdz`,
-  `repros/reject-user-generic-type-var-in-annotation.cdz`); the any-element-type version is the real
+  gaps (`mlrepro-decline-generic-iterator-composed-transformers.cdz` (queue),
+  `mlrepro-reject-user-generic-type-var-in-annotation.cdz` (queue)); the any-element-type version is the real
   goal, gated on those.
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
 `cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
 DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
-full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`. A
+full suite doesn't). Kept as `mlrepro-decline-borrow-scope-resolver-test-emit-threshold.cdz` (queue). A
 SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) was withheld at iter 42
 for the same still-live-binding reason (its `let` tests lost the extended scope through the recursion) —
 🎉 now UNBLOCKED (iter 48, the sibling compiler-side dup fix) and PROMOTED to `src/scopecheck.cdz` (all 10
 tests pass).
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
-check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
+check`s clean but currently lives in `mlrepro-blocked-infer-cross-file-hm-borrow.cdz` (queue) — its `@test`s
 DECLINE at emit on the `Map.lookup`-returned-heap-value borrow bug (see the log). It was the port's
 first genuine cross-file module (importing `unify`), which is what drove the `cdz test` import-following
 fix; only the borrow bug — not the linking — keeps it out of the running suite.
@@ -334,520 +335,10 @@ runtime `String.from-bytes` declines, so a Name/Str leaf's CONTENT is a placehol
 faithful decoder against the full `rcdzc/src/codec.rs` container (which is dense with `Name` leaves)
 still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→tree design end to end.
 
-## Language issues found (stress-test log)
+## Language issues found
 
-- **FIXED** (seed `rcdzc` db.rs `scan_type_decl`): a `///` doc comment on a `type` declaration was
-  mis-parsed — the ML reader attaches the doc as a `(doc …)` form after the type name, and the sum scan
-  read it as a bogus `doc` variant (CDZ0201 "declared more than once"). Now the scan skips a leading
-  `(doc …)`, mirroring how a `def`'s leading doc is stripped.
-- **Note (not a bug):** author nested `match` via `sexpr → ml`; the reader resolves nesting by greedy
-  last-arm absorption, so a hand-written inner `match` easily mis-attaches its catch-all to the outer
-  match (CDZ0210 non-exhaustive + CDZ0213 unreachable). The printer's own output round-trips correctly.
-
-- **✅ FIXED (seed `rcdzc`, 2026-07-14): a plain `//`/`///` comment HID the following top-level form.**
-  `repros/reject-line-comment-hides-toplevel-form.cdz` now checks CLEAN. The reader wraps a leading line
-  comment as `(comment "…" <next-form>)`; the top-level scan didn't see through it, so the wrapped
-  `def`/`type`/`export`/`@test`/`effect` was invisible ("unbound name `comment`"). A sibling landed
-  `strip_comments` in `Db::load` (`db.rs`@`1a606980`, peels the wrapper before every scan) fixing all
-  the single-file placements this loop had catalogued (leading/between-defs/trailing-inline/blank-after,
-  `//` and `///` alike). **This iteration extended the fix to the LINK path:** a `//`/`///` comment on
-  an `(import …)` was STILL hidden, because `rcdzc::link` scans imports off the RAW arena BEFORE
-  `Db::load`'s strip — so a documented import was spliced as an unmodeled top-level form ("`import` … not
-  modeled"). Fixed by peeling comments in `compile.rs::link_inputs` (each file's arena, post-decode)
-  + `cdz`'s own `declared_import_paths` closure-detector; regression test
-  `crates/cdz/tests/check_imports_cli.rs::a_comment_on_an_import_is_seen_through_by_the_link_scan`. So a
-  top-level comment (incl. on an import) is now fully supported.
-
-- **✅ FIXED (seed `rcdzc`@`b2bf850d`): a `br_table`-lowered match (≥4 arms) in OPERAND position dropped
-  a RECURSIVE-CALL sibling operand.** Reported by this loop, fixed by a sibling within one iteration
-  ("a br_table match arm branches to the match's own join block, not one block past it"). `go(4)` now
-  returns `"bb"` (was `"b"`); a 10-arm-match `itoa` renders `"12345"` correctly. `src/print.cdz` reverted
-  its if-chain `digit` workaround to a clean 10-arm `match`. Regression witness kept in
-  `repros/miscompile-brtable-match-operand-drops-sibling.sexp`. ORIGINAL: in `(String.concat (go …)
-  (d …))` with `d` a ≥4-arm match, the match's `br_table` arms each `br` to the function-result label,
-  escaping past the `bytes-concat` and discarding the recursive operand (≥4 arms = the br_table
-  threshold; verified on integer `+`; only bit a recursive sibling).
-
-- **OPEN (seed `rcdzc` — MISSING op): `List.map` does not exist.** A `List` value has only
-  `at`/`len`/`push`/`concat`/`update`/`slice` (`prelude.rs` `list_module`); `(List.map xs f)` →
-  CDZ0201 "record has no field `map`". The corpus MENTIONS `(List.map xs f)` but only in a `|>` doc
-  comment (09-functions ~2827) — it is never a realized case. A compiler port maps over lists
-  constantly (transform every AST child, every arg); the workaround is a hand-written recursive map
-  (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
-  O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
-  `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
-
-- **✅ MOSTLY FIXED (iter 48, sibling compiler-side dup landed) — 5 of 6 faces of the still-live-binding
-  family now compute correctly; ONLY the mutual-recursion face remains open.** Re-verified iter 48: the
-  core `let xs=[7] in len(push xs 9)+len(xs)` → **3** ✓, `List.concat`-LHS → **8** ✓, `Map.insert`
-  shadow-interpreter (`let x=1 in (let x=10 in x)+x`) → **11** ✓, the self-recursive shared-param case →
-  **5** ✓, and `Map.insert`-shared-recursive-param → **3** ✓. Their repros are retired to `fixed-*`. The
-  ONE survivor is the MUTUAL-RECURSION face (`repros/miscompile-node-payload-consumed-by-mutual-recursion-
-  corrupts-sibling-read.cdz` → still 1 not 101) — see the "MUTUAL-RECURSION FACE" note at the end of this
-  entry; the sibling pinned its root (`spec@049ae3da`) but the fix is not yet landed. The historical
-  analysis (now mostly resolved) follows. FIX: a general Perceus RETAIN pass in `backend/wasm/select.rs`
-  (`collect_dup_sites`/`mark_binder_dups`) `dup`s each `LocalRef`/`Param` occurrence CONSUMED while its
-  binding has a LATER LIVE USE, so the op path-copies (a single-use consume stays in-place FBIP). The List
-  faces + the Map self-call face are migrated to the GRADED corpus (`spec/semantics/05-compound-types.sexp`:
-  push length, update/concat element, Map self-call) so the gate guards them.
-  🔬 ROOT + MINIMAL form (iter 33)
-  `repros/fixed-consuming-op-mutates-still-live-binding.sexp` — no recursion, no self-call, one
-  `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returned **4**, not 3 —
-  the `List.push` consumes/mutates `xs` in place, so the later `List.len xs` reads `[7,9]`. ORDER-
-  SENSITIVE (the tell): borrowing BEFORE the consume (`(len xs) + (len (push xs 9))`) returns 3
-  (correct). 🔬 WAT-CONFIRMED (iter 34): the body does `call build; local.tee 1; …; vec-push; vec-len;
-  local.get 1; vec-len` — the tee'd stack copy shares the cell with slot 1, `vec-push` consumes it at
-  rc==1 (mutating the trie IN PLACE), and NO `dup` precedes the consume, so the later `local.get 1`
-  observes the mutation. ⚠⚠ SCOPE (iter 34, corrects iters 27–29 — which were BACKWARDS): this is
-  EXCLUSIVELY a **`let`-binding-in-body** defect. A plain PARAMETER used identically computes CORRECTLY
-  (a param is borrowed-from-caller; the call boundary keeps it live), and passing a let-binding ACROSS a
-  call is also correct (the arg is protected — the callee often inlines and re-evaluates it into a fresh
-  list). Only a consuming op applied to a let-binding DIRECTLY in the let body, with a later read of the
-  same binding, miscompiles. So "only a self-recursive shared param fails / let-bound is fine" was
-  exactly reversed. The self-call (`repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`) and
-  interpreter (`repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`) repros are INSTANCES:
-  their consuming op + surviving read both land in a let/arm BODY over one slot — not a recursion or
-  parameter-sharing effect. Reproduces for `Map.insert`/`Set.insert`. Fix locus: the consuming-op emit
-  (`Core::ListPush`/`MapInsert`/`SetInsert` in `backend/wasm/select.rs`) must `dup` its heap operand when
-  the operand is a `LocalRef`/`Param` still READ AGAIN in the enclosing body (a delicate refcount change —
-  over-dup leaks — so a seed-agent job; the repro carries the exact missing dup). Blocks ANY pass building
-  a modified collection while still needing the original (a diff, "with one more binding", a before/after)
-  — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
-  🔬 RECONCILED (iter 41) — a PARAMETER is safe EXCEPT with a sibling SELF-RECURSIVE call: `(def go(xs,n)
-  = if n==0 then len(xs) else len(push(xs,9)) + go(xs, n-1))` → 6 not 5 (the sibling `go(xs,…)` self-call
-  reads `xs` AFTER the sibling operand's `push` consumed it). Threading the consume INTO the recursion
-  (`len(xs) + go(push(xs,9),…)`) is correct; a NON-recursive helper is correct; only a sibling self-call
-  reading a just-consumed param is wrong. So iter-34's "params always safe" holds only WITHOUT a sibling
-  self-call — the self-call arg path omits the caller-side dup an ordinary `Core::Call` gets (the iter-29
-  diagnosis). USER-FACING FACE: a tree-walking env interpreter computes a SHADOWING `let` wrong —
-  `let x=1 in (let x=10 in x) + x` → 20 not 11 (the inner `Map.insert(env,"x",10)` corrupts the env the
-  sibling `Var x` reads); `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`. Inserting
-  a DIFFERENT key is correct — only same-key SHADOW + sibling self-call corrupts.
-  🔬 MUTUAL-RECURSION FACE (iter 42) — `repros/miscompile-node-payload-consumed-by-mutual-recursion-
-  corrupts-sibling-read.cdz`: a `fc(node)` that matches `node` binding its child list `elems`, reads the
-  whole `node` again in one operand (`head-of(node)`), AND passes `elems` to a list-walker `fl` that
-  recurses BACK into `fc` (mutual `fc↔fl`) — the mutual walk consumes the shared `elems` payload,
-  corrupting the sibling `head-of(node)`. `fc (List [Name "a", Int 5])` → 1 not 101 (head reads None). An
-  INLINE walk that does NOT call `fc` back is correct — it is the `fc↔fl` cycle over the shared payload.
-  This is the IDIOMATIC homoiconic-Ast resolver shape (`check`/`check-list`), so a scope-checker over the
-  canonical `Ast` can't be written the natural way — WITHHELD as `repros/blocked-scopecheck-mutual-
-  recursion-scope-loss.cdz` (a `let`-binder resolver whose extended `Set` scope is LOST through the
-  recursion: `free-vars (let ((x 5)) (+ x x))` → 3 not 1, the bound `x`s read as free — even rewritten as
-  a single index-walk fn). Fix locus: dup the aggregate/collection operand of a (mutual-)recursive call
-  whose callee consumes a payload/scope a sibling still reads.
-
-- **✅ FIXED (seed `rcdzc`, 2026-07-15, was iter 37): `List.concat`'s still-live-LHS/RHS element-view face
-  — fixed with the whole still-live-binding family by the general Perceus retain pass above.**
-  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp` now returns 8 (was 3). The
-  retain (`dup` at the consumed occurrence) makes `vec-concat` path-copy a shared operand in either
-  position. Migrated to the graded corpus (`spec/semantics/05-compound-types.sexp`).
-  🔬 ORIGINAL (iter 37): `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i =
-  List.at xs i or -1`) returned **3**, not 8 — after `concat` consumed `xs`, the later `List.at xs 0` read
-  as if `xs` is EMPTY.
-  🔑 DISCRIMINATOR: the IDENTICAL shape with `List.push` instead of `List.concat` computes CORRECTLY (8) —
-  so `push` (`vec-push`) dup-guards its still-live list operand but `concat` (`vec-concat`) does not. SHARP
-  (each necessary): the op is `List.concat`; `xs` is a still-live `let` binding (a param is safe); the
-  survivor is an ELEMENT read via `List.at` reached AFTER the concat (reading `xs`'s LENGTH after is
-  correct; reading `xs[0]` BEFORE the concat is correct — ORDER-SENSITIVE); a SECOND `concat xs …` is also
-  correct (the LHS handle is not freed — its element ARRAY reads empty), so it is an rc/dup-timing bug on
-  the element array, not a use-after-free. Root: the `Core::ListConcat` emit (backend/wasm/select.rs) omits
-  the `dup` of a `LocalRef`/`Param` LHS still read later — same missing-dup defect as the push/insert
-  length face (which `push` was patched for, `concat` not). Repro + its push-twin isolate the exact op.
-
-- **OPEN (seed `rcdzc` — EFFECT DECLINE, iter 38; ⚠ UPGRADED from a silent miscompile to an honest decline
-  iter 43): a self-recursive effectful fn with TWO sibling recursive calls in a match arm does not thread
-  the handler state between the siblings.** `repros/decline-effect-state-across-sibling-recursive-calls.cdz`.
-  ⚠ At iter 38 this SILENTLY returned 0; a sibling's tail-resumptive-fold change now REJECTS the shape
-  ("not yet reducible by the tail-resumptive fold") — a SAFETY IMPROVEMENT (the wrong value is gone).
-  `walk (Node Leaf Leaf)`
-  under `handle Fresh(0) | next(s) => resume(s, s+1)` (arm: `let a = walk(l) in let b = walk(r) in a + b`)
-  should draw id 0 then id 1 → 1; it once RETURNED **0** (both leaves drew id 0 — the second sibling call
-  resumed from the INITIAL state), now DECLINES. SHARP (each necessary): TWO sibling recursive
-  calls in one arm (a SINGLE recursive call threads correctly); a STATE-THREADING handler (a
-  constant-handback `resume(1, s)` counts the draws CORRECTLY — 2 — so the draws happen, only the state
-  threading is lost); a self-call inside a `match` arm (two calls to a SEPARATE effectful fn thread fine,
-  and a single self-recursive draw loop threads fine — `fresh.cdz`). Root: the tail-resumptive
-  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline). WORKAROUND for
-  a linearizer: thread a COUNTER through the RESULT (pure), not a `Fresh` handler — `src/ssa.cdz` does this.
-
-- ✅ **FIXED (iter 43, siblings incl. `@b2af1244`): performing an effect op directly as an ELEMENT of a
-  tuple/list/record constructor.** `repros/fixed-effect-perform-inside-a-compound-constructor.cdz` (was
-  `decline-…`). `let p = (Fresh.next(), Fresh.next())` and the list/record forms now COMPILE and thread the
-  handler state correctly (tuple → (0,1), record fields left-to-right). The tail-resumptive fold's reducible
-  set was extended to `Tuple`/`ListNew`/`Record` elements. A perform still works in an arith operand / call
-  arg / sum-ctor payload as before. (The remaining effect gap is the sibling-recursive-call one above.)
-
-- **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
-  `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =
-  p.0` → CDZ0203 "a parameter's annotation requires a type, but found a non-type": the ML reader lowers a
-  paren-comma form in TYPE position to the VALUE constructor head `("tuple" A B)` (the same node a tuple
-  LITERAL builds), not the tuple TYPE `(Tuple A B)`. So tuple VALUES/PATTERNS use `(a, b)` but a tuple
-  TYPE must use `Tuple(A, B)` — an inconsistency, and the error points at what looks like a type. Ideal:
-  accept `(A, B)` in type position (the RHS of a `:` is unambiguously a type annotation) as `Tuple(A,
-  B)`. Low-severity (a clean workaround exists); the confusing diagnostic is the real cost.
-
-- **OPEN (seed `rcdzc` — ML SURFACE INCONSISTENCY, iter 35): `Record(field: Type, …)` colon-fields parse
-  in a PARAM annotation but NOT in a TYPE DECL.** `repros/reject-ml-record-type-colon-fields-in-type-decl.cdz`.
-  `def f(r: Record(a: Int64)) = r.a` is accepted, but the SAME type in `type R = Record(a: Int64)` →
-  "expected `,`" at the `:`. The paren-field spelling `Record(a(Int64))` — what the ML printer EMITS
-  (`cdz convert … --to ml` renders `Record(x(Int64), y(Int64))`) — parses in BOTH positions, so it is the
-  portable form. The two type-position parsers should agree. Separate related gap: no `{ field: Type }`
-  brace sugar for an inline record type at all (parsed as a record VALUE). A named record type is a
-  newtype over `Record(…)`: `type R = R(Record(a(Int64)))`. Low-severity; parser-consistency + a confusing
-  diagnostic. (Companion of the tuple-type gap above — both are paren-comma-vs-annotation surface
-  mismatches in type position.)
-
-- **OPEN (seed `rcdzc` — DIAGNOSTIC QUALITY, iter 36; diagnostics-`/loop` territory): a lowercase type-var
-  annotation `def id(x: a) = x` gives a bare "unbound name `a`", identical to an unknown uppercase type
-  `Foo`.** Cadenza infers generics from UNANNOTATED params (`def id(x) = x` — HM solves the tyvar; there
-  is no surface `forall`/tyvar-binder, by design — resolve.rs "`a` is an ordinary parameter, not a
-  special type variable"). A programmer from Rust/ML/Haskell reasonably expects a lowercase `a` in a type
-  annotation to be a type variable. Ideal diagnostic: recognize a lowercase (esp. single-letter) type
-  annotation and hint "generics are inferred — drop the annotation" rather than a generic CDZ0101. Not a
-  miscompile — a message-actionability gap. (No repro: it is a message-quality issue, and the diagnostics
-  `/loop` owns this class.) 🔑 the WORKING generic spelling: omit the annotation — `def id(x) = x`,
-  `def swap(p) = (p.1, p.0)` both compile + monomorphize correctly.
-
-- **OPEN (seed `rcdzc` — ML SURFACE PAPERCUT, iter 40): `bin` and `quote` can be DEFINED but not CALLED as
-  function names.** `repros/reject-bin-quote-as-callable-fn-names.cdz`. `bin(…)` is the binary-matching
-  construct and `quote(…)` the metaprogramming reifier, captured by the reader at CALL position before
-  resolution — so `def bin(x) = x+1` then `bin(5)` → CDZ0201 "a bin segment must be (<kind> <slot>…)"
-  (backtick-quoting `` `bin`(5) `` does NOT escape it), and `def quote(x) = x+1` mis-parses the DEFINITION
-  itself (`x` reported unused AND unbound — the body is reified). CONTRAST: the other compound-ctor head
-  words — `list`/`tuple`/`record`/`map`/`set` — DO work as fn names (define + call + run), so the hijack is
-  specific to `bin`/`quote`. Hit organically (a `Bin`-node builder named `bin` in `unparse.cdz`, renamed
-  to `mkb`). Ideal: a "`bin`/`quote` is a reserved construct name — rename" diagnostic, and/or let a
-  backtick-escaped name resolve to the user binding at call position. Low-severity (rename works); the
-  misleading diagnostic is the cost.
-
-- **OPEN (seed `rcdzc` — RESOLVER; ⚠ NARROWED iter 45, a sibling fixed the simpler nestings): a DOTTED
-  nullary-variant arm pattern (`T.LP`) whose ARM BODY nests a match on the SAME sum type mis-resolves as
-  member ACCESS.** `repros/reject-dotted-nullary-arm-with-nested-sametype-match.cdz` (+ the older
-  `reject-nullary-variant-pattern-in-nested-match.cdz`). A sibling FIXED the plain iter-24/25 nestings — a
-  lone nested nullary arm, an intermediate irrefutable arm, a mixed/scalar-scrutinee nest all `cdz check`
-  CLEAN now. RESIDUAL (iter 45): `match tok { T.Num(v) => …  | T.LP => (match tok2 { T.Num(m)=>m | _=>… })
-  | _=>… }` → CDZ0201 "member access requires a record — did you mean `LP`?" on the `T.LP` arm. SHARP: the
-  arm pattern is a DOTTED nullary (`T.LP`) — the BARE name `LP` is CLEAN (the workaround); its BODY nests a
-  match on a value of the SAME sum type `T` — a plain-expr body / a scalar-scrutinee nest / an all-wildcard
-  inner match are CLEAN; and the outer arm is NULLARY — a payload arm `T.Num(v)` is CLEAN. So the resolver,
-  when an arm body opens a same-type sum match, retroactively reads a sibling dotted-nullary arm as `(. T
-  LP)` member access. WORKAROUND: write nullary variant patterns with the BARE name (no `T.` prefix) —
-  `src/parse-checked.cdz` uses bare `TLP`/`TRP`/`End`. (`src/apply-ty.cdz` still uses the `tag`-helper for
-  its own case.)
-
-- **OPEN (seed `rcdzc` — DIAGNOSTIC FALSE POSITIVE, iter 47): a BARE nullary-variant pattern NESTED in an
-  outer pattern draws spurious CDZ0306 "unused binding" + CDZ0213 "unreachable arm".**
-  `repros/false-warning-nested-nullary-match-unused-binding.cdz`. `match a { TInt => (match b { TInt => 1
-  | TBool => 2 }) | TBool => 3 }` warns on the inner `TInt`/`TBool` — the lint mis-reads a bare nullary
-  ctor pattern as an irrefutable BINDING (CDZ0306) which it then thinks shadows the sibling arm (CDZ0213),
-  even though lowering treats it correctly as a ctor (`classify(TInt,TBool)` = 2, not 1). Cosmetic — exit
-  0, code runs right — but a type-checker full of nested nullary matches (`match rt { TInt => … | TBool =>
-  … }`, `Result.Ok(TInt)` patterns) drowns in false warnings. SHARP: the SAME match at TOP LEVEL is CLEAN;
-  it fires ONLY when nested in another match arm / `Result.Ok(…)` pattern. Sibling of the dotted-nullary
-  resolver bug (dotted = hard error, bare = false warning + correct code). WORKAROUND: compare via a
-  scalar `tag` (`match t { TInt => 0 | TBool => 1 }` at top level) so no nullary match is nested —
-  `src/tycheck.cdz` does this throughout. Fix locus: the resolver's pattern-vs-binder lint in a nested arm.
-
-- **OPEN (seed `rcdzc` — BACKEND DECLINE, iter 47): "parameter reference has no local slot" for a
-  MUTUALLY-recursive helper whose `if` condition is a CALL on a match-bound sum payload gating a nested
-  recursive heap-sum match.** `repros/decline-mutual-helper-call-in-if-cond-no-local-slot.cdz`. `cdz check`
-  CLEAN; `cdz compile -t wasm` declines at emit. SHARP — all three jointly required (drop any → compiles):
-  (1) MUTUAL recursion (`check ↔ check-if`; INLINING to self-recursion compiles); (2) the `if` condition
-  is a FUNCTION CALL on the match-bound payload — `if is-bool(ct) then …` where `ct` from `match check(c)
-  { Ok(ct) => … }` (an INLINE `match ct` condition compiles); (3) the then-branch nests another recursive
-  `match check(t)` returning a heap `Result`/sum (an Int64-only analogue compiles). Hit organically
-  factoring a type-checker's `If` rule (`tycheck`'s `check-if`). A slot-allocation gap (`select.rs`) — the
-  call-in-if-condition + mutual-call arg layout hands a `Core::Param`/`LocalRef` a slot the emit never
-  reserved. WORKAROUND: inline the helper (self-recursive) OR make the `if` condition an inline `match` —
-  `src/tycheck.cdz` inlines its checks into one self-recursive `check`.
-
-- **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
-  `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/
-  `take` and `Set` has `of`/`contains`/`insert`/`remove`/`len`/`union`/`intersection`/`difference` — but
-  NEITHER has `keys`/`values`/`entries`/`to-list`/`fold` (all → CDZ0201 "no member"). A program can BUILD
-  and QUERY a collection but cannot VISIT its contents — so a symbol table can't be walked to emit every
-  binding, a free-var set can't be rendered, etc. `collections-and-text.md` §"Map Iteration Is
-  Deterministic" describes iteration as a capability (constraining its order), and the canonical form
-  already renders the entries, but no PROGRAM op exposes it. 🔑 TRACTABLE: the runtime ALREADY has the
-  cursor ops (`map-iter`/`-next`/`-key`/`-val`, `set-iter`/`-next`/`-elem` in `runtime.wit`) used for
-  rendering/equality — the gap is purely a front-end `to-list` field + scheme + a `lower`/backend cursor
-  loop. No new runtime op needed; a dedicated increment.
-
-- **✅ LEAK FIXED (seed `rcdzc`, 2026-07-14 — landed by THIS loop) → now a clean DECLINE (feature still a
-  Todo): a mutually-recursive effectful group where the perform is in a DIFFERENT branch from the mutual
-  call.** `repros/decline-mutually-recursive-effectful-split-branch.sexp`. Was: `cdz compile` leaked
-  `unbound name ev#eff3$s0` (a specialization mangled name). Now `cdz check`/`cdz compile` both decline
-  cleanly: "this handler is not yet reducible by the tail-resumptive fold." FIX
-  (`effects.rs::specialize_recursive`): a syntactic guard `perform_and_mutual_call_in_separate_branches`
-  declines up front for exactly this shape. NOT a blanket decline — the seed still specializes the
-  working same-branch / same-strict-spine mutual shape (`(+ (Ctr.tick) (od …))`); a unit test locks in
-  that the decline doesn't leak the internal name, and the gate's mutual-effect corpus case still passes.
-  BUILDING the separate-branch specialization (tie the memo knot with per-branch state distribution)
-  remains the Todo. A SINGLE self-recursive effectful fn works (see `src/fresh.cdz`).
-
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): two live `String` sum-payloads across a
-  recursion drop a per-node result.** `repros/miscompile-two-live-string-payloads-across-recursion.sexp`.
-  A recursive tree walk where at each node BOTH the node's own `String` key AND its child's key are read
-  (two matched `String` payloads live at once), past a >=3-deep recursion, drops one per-node decision.
-  A parenthesization count that should be 2 returns 1. The IDENTICAL tree with an Int64 key counts
-  correctly (2), and using either key ALONE per node is correct, and a depth-2 tree is correct — so the
-  trigger is precisely two overlapping matched-`String` payloads across depth >= 3. Same borrow/ownership-
-  of-a-matched-heap-payload family as the `Map.lookup`-return and runtime-`String.at` findings, with the
-  depth-threshold sensitivity of the slot-alias family. `src/prec.cdz`'s deep `paren-count` case is
-  withheld for this (its shallow cases pass).
-
-- **✅ FIXED (seed `rcdzc`, 2026-07-14 — was a MISCOMPILE, silent wrong value): runtime `String.at`
-  content equality, INCLUDING the loop-context residual.** `repros/fixed-runtime-string-at-content-
-  equality.sexp` (iter 44: verified `count-a "banana"` → 3 and the 2-iter loop `cnt "aa"` → 2; retired).
-  A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
-  to the same char obtained any other way (a literal, a different-index `String.at`); it equalled only
-  ITSELF at the identical index. A sibling had earlier fixed the STRAIGHT-LINE cases (compacting an OWNED
-  String operand at the `=` site); the surviving failure was LOOP-CONTEXT — `String.at(s,i) == c` in a
-  self-recursive loop threading `s` returned false every iteration, so `count-a "banana"` still returned 0
-  not 3, and `src/lex.cdz` had to lex over char-CODES not a String. **ROOT of the residual:** `String.at`
-  returns `Some(bytes-slice(str, pos, len))` — a ROPE slice (a byte offset INTO the source), and String
-  equality (`champ_eq`) + key hashing compare PHYSICAL bytes, so the slice compared by its offset, never
-  matching a flat twin; the `=`-site owned-compact could not reach it because `SumExpect` extracts the
-  payload as a BORROW from the `Some` wrapper the wrapper still owns. **FIX (in the `Core::StrAt` emit) —
-  NOT the layer-2 ownership reclassification hypothesized** (that double-frees, as the borrow above
-  explains): compact the fresh slice to an INDEPENDENT flat leaf AT THE PRODUCER, right after
-  `bytes-slice`, before wrapping it in `Some`. Doing it there fixes ALL uses (straight-line AND loop, a
-  map/set key, a re-concat) and is cheap (a `String.at` result is ≤4 bytes). It also exposed and fixed a
-  latent bug: `String.at` CONSUMED its string operand (`bytes-slice` consumes) without `dup`ing it — the
-  pre-fix code masked this by LEAKING the un-compacted `Some(slice)` (the leak pinned the source alive but
-  compared wrong); compaction then dropped the source early → a use-after-free the recursive scan hit as a
-  trap. So the fix also `dup`s the borrowed source before the slice consumes it and makes `String.at` a
-  clean BORROW (like `List.at`/`Bytes.at`) — the None branch no longer drops the source, and
-  `binding_escapes` marks the string borrowed. Migrated to the graded corpus (`spec/semantics/13-
-  strings.sexp`: content-equal-to-literal + recursive char-scan) + seed unit tests. (`String.slice` on a
-  runtime string now works too — a sibling landed it iter 39.)
-
-- **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
-  to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.
-  sexp`. The classic `foldl` written idiomatically — `(def (fold-list f acc xs) … (fold-list f (f h acc)
-  t))` with `(fn (x a) (+ a x))` — fails `cdz check`: "a closure's parameter type has no machine
-  representation" + CDZ0203 showing the closure typed `(-> Unit (-> Unit Int64))` (the `Unit`/`_` is the
-  tell — the param tyvars were never solved). NO sum type needed; a bare `List Int64` reproduces. ROOT:
-  at the recursive call `f` is re-passed to a `fold-list` whose own `f` param is not yet solved, so the
-  constraint from the closure's USE (`f h acc`) never flows back to the closure; a NON-recursive HOF
-  solves it from its single application (works). TWO WORKAROUNDS (each compiles + runs): annotate the
-  closure's params, OR annotate the HOF's `f` parameter with the arrow type (`f: Int64 -> Int64 ->
-  Int64`). `src/traverse.cdz` uses the arrow-annotation workaround throughout. Impact: `fold`/`map`/
-  `filter` over inferred closures — the compiler's bread and butter — need an arrow annotation on the fn
-  parameter; the fully-inferred spelling should work.
-
-- **✅ FIXED (seed, by 2026-07-14 — landed by a sibling): a PARAMETERIZED compound-returning export.**
-  Was: an export taking a parameter AND returning a compound compiled clean but TRAPPED at run time
-  ("expected 1 argument(s), got 0") — the resource-escape `make` didn't forward the export's argument.
-  Now `cdz-run … --arg 5` correctly returns the compound (`(: (tuple 5 6) …)`); verified across tuple/
-  record/List/BigInt/Result, and run-gated by corpus cases ("a parameterized export returns a runtime
-  BigInt/Rational/list computed from its argument"). Witness `repros/fixed-parameterized-compound-
-  export.sexp`. ⚠ **PROCESS LESSON:** this loop reported it OPEN for ~14 iterations because the
-  per-iteration finding-check rebuilt `cdz` but NOT `cdz-run` — a stale runner kept reproducing the old
-  trap. Finding-checks that RUN a component now rebuild `cdz-run` too.
-
-- **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines; ⚠ NARROWED iter 46): `String.from-bytes`
-  computes on a compile-time-constant/foldable `Bytes` but a genuinely RUNTIME byte sequence still
-  DECLINES.** ⚠ Re-verified iter 46: `String.from-bytes` now returns `Option String` (total, UTF-8
-  validation) and WORKS for constant Bytes (`Bytes.of([72,105])` → Some "Hi", len 2) AND a param'd Bytes
-  (inlined to a constant). Only a runtime-CONSTRUCTED Bytes (e.g. via a `Bytes.concat` recursion) declines
-  ("String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
-  `lower.rs::lower_str_from_bytes`). `repros/runtime-string-from-bytes-declines.sexp` (uses a runtime
-  builder). A decoder reads a `Name`/`Str` leaf's bytes from a runtime buffer, so it STILL cannot
-  materialize string content — the iter-8 decode-Name blocker persists for the runtime case. The fix
-  looks tractable: a runtime `String` IS the SAME flat UTF-8 byte-leaf as a runtime `Bytes`, so runtime
-  `String.from-bytes` is nearly the IDENTITY on the byte handle + UTF-8 validation. Worth a dedicated
-  increment. (🔑 many string SCANNING passes are now unblocked regardless — `String.at`/`concat`/`slice`/
-  `byte-len`/`==` on runtime strings all work; only from-bytes-of-runtime-bytes remains.)
-
-- **OPEN (seed `rcdzc` — backend MISCOMPILE, silent):** a SELF-TAIL-RECURSIVE function that passes a
-  TUPLE-PROJECTED SUM-HANDLE (`(. r 0)` where `r : (Tuple W …)` and `W` is a boxed sum) as a loop
-  ITERATION ARGUMENT miscompiles — the value is silently wrong (a `match` on it reads 0). `cdz check`
-  is CLEAN → a lowering/codegen bug, not a type error. Root-caused to the SELF-TAIL-CALL LOOP TRANSFORM
-  (`backend/wasm/select.rs::emit_loop_iteration`, the loop back-edge that evaluates the new arg values
-  and stores them into the param slots). Minimal repro (`--arg 0` returns 0, must be 5), in
-  `repros/miscompile-tail-loop-projected-sum-arg.sexp`:
-  ```
-  (do
-    (type W (Atom Int64) (Node (List Int64)))
-    (def (one (: b Bytes) (: pos Int64))
-      (if (= (Option.expect (Bytes.at b pos) "t") 0)
-        (tuple ((. W Atom) (Option.expect (Bytes.at b (+ pos 1)) "v")) (+ pos 2))
-        (tuple ((. W Atom) 99) (+ pos 2))))
-    (def (loop (: b Bytes) (: pos Int64) (: n Int64) (: last W))     ; self-tail-recursive → LOOP
-      (if (= n 0) last (let ((r (one b pos))) (loop b (. r 1) (- n 1) (. r 0)))))  ; (. r 0) : W arg
-    (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Node) ids) 0)))
-    (def (main (: pos Int64)) (wval (loop b"\x00\x05\x00\x07" pos 1 ((. W Atom) 0))))
-    (export main))
-  ```
-  Two CONTROLS both return 5 (in `repros/`): `miscompile-CONTROL-nontail-recursion-ok.sexp` — make the
-  self-call NON-tail (`(+ 0 (loop …))`) so it lowers to an ordinary `Core::Call` instead of the loop
-  transform; and `miscompile-CONTROL-direct-sum-arg-ok.sexp` — pass the sum handle DIRECTLY (`(one b
-  pos)`) rather than projected out of a tuple. So the trigger is precisely the loop back-edge storing a
-  tuple-projected sum handle into a param slot. (`W` needs a compound-payload variant so it is a boxed
-  i32 handle; a single-variant `W` is newtype-erased to its inner scalar and compiles fine — the earlier
-  bisection that fingered "compound variant + if + tuple" was seeing this same loop-transform path.) A
-  SECOND surface of the same defect: two sibling `if`-branches each placing an `if` in one Ast-typed
-  tuple slot emits INVALID wasm ("expected i64, found i32") — `repros/miscompile-two-sibling-ifs-
-  invalid-wasm.sexp`. This is what blocks `decode` today: `read-leaf`/`read-struct` return
-  `(tuple <sum> pos)` and the decode loops thread the projected sum through a self-tail recursion.
-  **SHARPER BOUND (2026-07-14):** the essential ingredient is an `if` INSIDE the function that builds the
-  `(tuple <boxed-sum> pos)`; the projected sum is then mis-typed by the loop-transform. Tail-recursion →
-  silent wrong value; NON-tail recursion → invalid wasm (even when the recursive branch never runs — the
-  base-case compose alone fails to validate, so it's the loop-transform ANALYSIS mis-slotting, not the
-  path executing). Repro `repros/miscompile-if-tuple-sum-nontail-recursion.sexp`. 🔑 **A BARE RECURSIVE
-  SUM (NOT wrapped in a tuple) works perfectly** — a runtime-built recursive `Tree`/`Ast` folds and
-  escapes correctly (verified: `mk`/`sumt` over a depth param, and a `(List Ast)` count). So the decode
-  design should thread POSITION separately (not `(tuple ast pos)`) — e.g. return the sum bare and track
-  the cursor another way — to sidestep this entirely until the loop-transform fix lands.
-  🔬 **ROOT-CAUSED (2026-07-14): it is an i32/i64 SLOT-ALIASING bug in the loop-transform emit**
-  (`backend/wasm/select.rs`). Minimal reproducer `repros/miscompile-slot-alias-i32i64-loop-tupleproj.sexp`
-  (`cdz check` clean → invalid wasm "type mismatch: expected i32, found i64"). In the emitted
-  `read-leaves` loop, ONE wasm local (slot 4 in the WAT) is `local.set` at **i64** for the `pos+1`
-  arithmetic temp AND used as **i32** for the handle returned by the recursive tuple-returning
-  `read-varu` — the loop-transform's scratch allocator reuses a slot across the two widths.
-  ✅ **PARTIALLY FIXED (2026-07-14): the INVALID-WASM face is GONE** — a sibling fixed the slot-typing so
-  `miscompile-slot-alias-i32i64-loop-tupleproj.sexp`, `miscompile-if-tuple-sum-nontail-recursion.sexp`,
-  and `miscompile-two-sibling-ifs-invalid-wasm.sexp` all now COMPILE to valid wasm AND return correct
-  values. ✅ **the SILENT WRONG-VALUE face is now ALSO FIXED (2026-07-14, seed rcdzc)** — repro
-  `repros/miscompile-tail-loop-projected-sum-wrong-value.sexp` (`main 0` now returns 5). The surviving
-  trigger was: (1) a self-tail loop threading a BOXED-SUM handle projected from a tuple (`(. r 0)`) as a
-  param, (2) the loop ALSO advances position from the OTHER projection of the SAME tuple (`(. r 1)`) —
-  advancing via `(+ pos 1)` instead returned 5, (3) an `if` inside the builder (branch need not be
-  taken). **BROADER than the old framing:** the sum need only be a SCALAR-payload boxed sum
-  (`Atom Int64 | Zero`) — a compound-payload variant was NOT required. 🔬 **ROOT CAUSE was NOT
-  slot-aliasing** (that was the invalid-wasm sibling); it was a PERCEUS use-after-free in
-  `backend/wasm/select.rs` `binding_escapes`. `(. r 0)` projects a nested-compound child (the boxed sum)
-  OUT of the `let`-bound tuple and threads it into the recursive call; the escape analysis saw only the
-  SCALAR sibling projection `(. r 1)` (copies its i64 out), judged `r` fully borrowed, and DROPPED it —
-  cascading to FREE the escaped boxed-sum child → garbage 0. FIX: a nested-compound projection ESCAPES
-  its operand, so the aggregate is not reclaimed while its extracted child is live. Migrated to the
-  corpus (`spec/semantics/10-bytes.sexp`) + a seed unit test. 🔑 **`decode` is now fully UNBLOCKED** —
-  both faces of the family are fixed; a decoder may thread a `(node, cursor)` pair with both fields
-  projected directly, no work-around needed.
-
-**Confirmed WORKING (stress-swept 2026-07-14):** recursive sum types (build + fold, const + runtime),
-HOFs (fn args, closures capturing env, curried/partial application, recursive HOF), Map insert/lookup,
-Set of/contains, generic `id` at multiple types, nested generic newtypes, `Result`/`Option` match
-(incl. nested + Option-of-tuple), match guards (`(guard pat cond)`), let shadowing, `Record.with`/
-`extend`/`project`, assoc-list env lookup, BigInt arithmetic, deep tail recursion (5000), mutual
-recursion, bit ops, string equality/ordering, div/mod, big match dispatch, `String.to-bytes`, nullary
-compound-return escape (tuple/record/recursive-sum/list). The compiler is broadly solid; the gaps above
-are the sharp edges.
-
-- **OPEN (seed `rcdzc` — GAP + misleading diagnostic): a polymorphic type annotation with an unbound
-  signature type variable is rejected.** `repros/reject-polymorphic-type-annotation.sexp`: `(def (len
-  (: l (Lst a))) …)` → CDZ0203 "`Lst` is a type, not a function" + CDZ0101 "unbound name `a`". No form
-  binds a signature's type variables, so `(Lst a)` can't be written as a param type. The UNANNOTATED
-  `(def (len l) …)` works and monomorphizes at every element type (the idiomatic spelling); a CONCRETE
-  `(: l (Lst Int64))` works too — only a type-VARIABLE annotation fails. Two asks: (1) bind a
-  signature's type vars so `(: l (Lst a))` resolves; (2) the diagnostic mis-reads `(Lst a)` as a call —
-  it should say "a polymorphic annotation needs `a` bound." Impact: generic passes drop the annotation.
-- More confirmed WORKING (loop iter 1): `quote` building a built-in `Ast` (metaprogramming); effects +
-  handlers (a state counter via `handle E init with | op(a,s) => resume(v,s') in …`); recursive-generic
-  `Lst` length + `Lst of Lst` (unannotated) monomorphized at Int AND String; `Map String → user-sum`
-  lookup+match; `Set` union/difference/contains/len (String-keyed). ⚠ minor: `Set.len` vs `Map.size`
-  (inconsistent op name for the same "count" concept).
-
-- **✅ FIXED (seed `rcdzc` `lower.rs`, 2026-07-14 — landed by THIS loop): a LIST pattern arm may now
-  contain SEVERAL refutable (constructor) elements.** Was: `((list (A.I x) (A.N y) c) …)` declined "more
-  than one refutable constructor element is not yet supported". FIX: the list-refutable-element desugar
-  generalized from ONE ctor position to N — each ctor element gets a fresh binder, all discriminant tests
-  are ANDed into the arm guard, and the body re-matches NEST so every ctor payload is in scope. Corpus
-  `spec/semantics/05-compound-types.sexp` (two-ctor-element case + second-tag fall-through, gate-verified)
-  + updated unit test; witness `repros/fixed-list-arm-multiple-ctor-elements.sexp`. `src/fold.cdz` now
-  uses the natural `[Ast.Name(op), Ast.Int(x), Ast.Int(y)]` arm (three ctor elements) — the
-  bind-all-then-nested-match workaround is gone.
-
-- **OPEN (seed `rcdzc` — DECLINE, now GENERALIZED): a HEAP value read from `Map.lookup`, RETURNED, then
-  CONSUMED in the caller.** "borrowing op operand has an ownership this backend cannot yet prove" (`cdz
-  check` clean, `cdz compile`/`cdz test` decline). Two repros:
-  `repros/decline-borrow-ownership-returned-map-string-eq.sexp` (the original — `String ==` on the
-  returned value) and `repros/decline-borrow-map-lookup-returned-then-matched.cdz` (the GENERALIZATION).
-  **SHARP BOUND (bisected 2026-07-14):** the `==` is NOT essential — a plain `match` on the returned
-  value triggers it too. The essential ingredients are (a) the value ORIGINATES from `Map.lookup`, (b)
-  it is RETURNED across a call boundary (wrapping it in a ctor counts), and (c) a HEAP payload nested in
-  it (a `String`, or a sum carrying one) is then read in the caller. A looked-up value with ONLY SCALAR
-  payloads returns + inspects fine; consuming it INSIDE the lookup arm (never returning it) is fine; and
-  the same extract-and-compare with NO map is fine — so it is specifically a borrowed heap value
-  escaping its lookup scope via a return. An explicit `copy()` in the arm does NOT sidestep it. **This
-  is the single biggest blocker to running a real pass in the port:** `repros/blocked-infer-cross-file-
-  hm-borrow.cdz` (a full HM inference pass) `cdz check`s clean but its tests DECLINE, because its `Ref`
-  arm looks a binding up in a `Map String Ty` env and returns it. `src/subst.cdz` sidesteps the original
-  narrow form by SHAPE-checking (`match … ((Ast.Name _) …)`) but there is no honest sidestep for an
-  env-lookup whose whole purpose is to return the looked-up type. Likely fix locus: the Perceus/borrow
-  analysis — a heap value read out of a persistent collection needs an owned (dup'd) handle when it
-  escapes via a return. A THIRD, threshold-dependent face: `repros/decline-borrow-scope-resolver-test-
-  emit-threshold.cdz` (a scope resolver threading a `Set`+`List` through recursion) `cdz check`s clean
-  and runs correctly when exported singly, but its full `@test` suite DECLINES under the `EmitTests`
-  layout — 1 test compiles, the whole suite doesn't (aggregate/total-locals sensitivity, like the
-  slot-alias bug). So the borrow gap also scales with the test-emit boundary size.
-  A FOURTH face (iter 44): `repros/decline-returned-string-at-compared-in-a-loop.cdz` — a `String`-
-  returning HELPER (body `match String.at(s,i) { Some(c)=>c | None=>"" }`) whose result is `==`-compared
-  INSIDE a self-recursive loop declines identically. SHARP: inlining the `String.at` match in the loop arm
-  computes correctly (the direct-producer form the recent String.at fix supports); two SINGLE (non-loop)
-  helper calls compare fine; only the RETURNED-then-compared-in-a-loop shape declines. So the residual is
-  a call-RETURNED owned String at a `value-eq` on the loop back-edge. WORKAROUND: inline `String.at`'s
-  match rather than factoring a `char-at` helper (`src/strlex.cdz` does this).
-
-- **OPEN (seed `rcdzc` — a `///` doc comment on an `import` HIDES it; extends the line-comment finding).**
-  A `///` doc comment on a `def`/`type`/`module` is stripped by the top-level scan (works), but a `///`
-  on an `(import …)` is NOT — the wrapped import becomes invisible ("unbound name `comment`" + the
-  imported names unbound). Same root as the `//`-line-comment gap (`repros/reject-line-comment-hides-
-  toplevel-form.cdz`): the doc/comment-strip covers `def`/`type`/`module` but not `import`. Workaround:
-  put the `import` FIRST (no leading doc), then a `///` module doc on the first `type`/`def`.
-
-- **OPEN (seed `rcdzc` — GAP/BUG): quasiquote `unquote` of an already-`Ast` value is rejected.**
-  `repros/reject-unquote-of-an-ast-value.sexp`. `(quasiquote (+ (unquote sub) 1))` with `sub : Ast` →
-  CDZ0201 "a variant constructor's payload has declared type Int64, but a value of type Ast was
-  applied". `(unquote n)` where `n` is a plain `Int64`/literal WORKS (wrapped as `Ast.Int`); only an
-  already-`Ast` value fails — `unquote` wraps by the template slot's leaf type instead of splicing an
-  Ast node as-is. metaprogramming.md says `,<expr>` inserts its RESULT at that position; when the result
-  IS an Ast, that should splice the node. Blocks the canonical AST-building macro (embed a computed
-  subtree). Confirmed WORKING otherwise: quote structural `=`, walking a quoted form via own `Ast`
-  match, quoted Ast escaping to host, `unquote-splice` of a list, `(unquote <plain-value>)`.
-
-- **OPEN (seed `rcdzc` — GAP, blocks the ideal lazy thunk): a `Unit`-parameter closure BOXED into a
-  heap sum DECLINES.** `repros/decline-unit-param-closure-boxed-in-sum.cdz`. Storing a `fn(u) => …`
-  (`Unit -> T`) in a sum variant and pulling it back out to call → `error: a closure's parameter type
-  has no machine representation`. **Root-caused:** `backend/wasm/lir.rs valtype_of` returns `None` for
-  `Ty::Unit` (zero-width), and `lower.rs` (~8044) requires every boxed-closure parameter to have a
-  valtype. DISCRIMINATORS: the same `Unit`-param closure called DIRECTLY or passed as a plain ARG works
-  (returns 42); an `Int64`-param closure boxed in the same sum works; a `Unit`-RETURNING boxed closure
-  works — only `Unit` in PARAMETER position at the closure/resource boundary is rejected. This is why
-  the iterators proposal's ideal thunk (`Iter(a) = Susp(Unit -> Option (a, Iter(a)))`) can't be written;
-  `src/iter.cdz` uses a reified encoding instead. SUGGESTED FIX: give `Unit` a zero-info slot at the
-  boxed-closure boundary (elide the param, or lower to a never-read placeholder i32).
-
-- **OPEN (seed `rcdzc` — MONOMORPHIZATION gap, THE blocker to a generic iterator): a composed
-  recursive-generic call declines when specialized at ≥2 element types.**
-  `repros/decline-recursive-generic-producer-drops-element-tie.cdz`. `collect(from-list(xs))` (a
-  recursive-generic producer feeding a recursive-generic consumer) → CDZ0201 "a generic type argument
-  is undetermined" — but ONLY with TWO OR MORE distinct element instantiations in one program. SHARP
-  bisection (2026-07-15, superseding the earlier "composed transformers" framing):
-  - a SINGLE instantiation compiles AND RUNS (verified: `collect(from-list([1,2,3]))` → `[1,2,3]`;
-    `collect(from-list(["a","bb","ccc"]))` → runs). So a generic iterator works for any ONE element
-    type per program; the SECOND concurrent instantiation is what the monomorphizer can't resolve.
-  - CHECK vs COMPILE split: `cdz check` PASSES (inference accepts it); the decline is at LOWERING
-    (`type_specialize`, lower.rs ~8478). The two stages disagree.
-  - ROOT (typing): a recursive-generic PRODUCER's `def_scheme` disconnects its result element from its
-    argument element — `from-list : (-> _ (Iter _))` with two independent vars, verified via
-    `cdz type` — instead of `∀a. List(a) -> Iter(a)`. The self-call's result element isn't unified with
-    the consed element during the connected solve (`apply_type` freshens the self-call arg's vars,
-    severing the tie — the same severing `apply_scheme_to_args` already guards against for generic
-    schemes but the general `apply_type` ctor path does not).
-  - BROADER than user sums: the built-in `List` has it too (`dup-all(copy(xs))` at two instantiations
-    declines identically). A general recursive-generic monomorphization gap for composed calls, not
-    iterator-specific. This is THE blocker to "iterators work for ANY type"; `src/iter.cdz` ships a
-    monomorphic-`Int64` spike until it lands (a seed-inference-agent fix — gate-critical, not a
-    loop-tick edit).
-
-- **OPEN (seed `rcdzc` — surface/diagnostic GAP): a user-generic type var in an annotation is
-  rejected.** `repros/reject-user-generic-type-var-in-annotation.cdz`. `def next(it: Iter(a)) = …` →
-  CDZ0203 + CDZ0101 "unbound name `a`" — a lowercase type var in an annotation on a USER generic type
-  is not treated as an implicit type parameter (though it IS in a `type` DECLARATION's payloads).
-  WORKAROUND (what the working code uses): leave the params UNANNOTATED — inference derives the
-  polymorphism (`def next(it) = …` compiles and monomorphizes). Low-severity (a signature-surface gap,
-  not a blocker): the natural documenting signature can't be written, and the diagnostic points nowhere
-  useful. DESIRED: accept a lowercase name in a user-generic annotation as an implicit ∀-bound var (the
-  same rule `db.rs:453` already applies in declarations), or hint the working spellings.
+Language issues found by this port live in the shared issue **queue**
+(`.claude/fleet/queue/`, archived to `issues/` when resolved) as `mlrepro-*` entries. File a NEW finding
+there (write `.claude/fleet/queue/mlrepro-<slug>.<ext>` and send `corpus-bugfix` an `issue`, or the owning
+vertical a `note`) — do NOT add it here and do NOT create a file under a private `repros/` directory. One
+pipeline for every repro: the queue for open findings, `issues/` for resolved ones.

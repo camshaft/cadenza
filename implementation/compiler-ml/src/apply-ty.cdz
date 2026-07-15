@@ -12,7 +12,7 @@ type Ty =
 
 /// A scalar tag per type constructor. A top-level match maps each variant to an Int64 — used so `ty-eq`
 /// compares nullary types by TAG rather than a NESTED nullary match, which the ML reader currently
-/// mis-parses (`repros/reject-ml-nullary-variant-pattern-in-nested-match.cdz`).
+/// mis-parses (`mlrepro-reject-ml-nullary-variant-pattern-in-nested-match.cdz` (queue)).
 def tag(t: Ty) = match t with
   | Ty.TInt => 0
   | Ty.TBool => 1
