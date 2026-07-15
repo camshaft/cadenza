@@ -396,6 +396,41 @@ fn a_tag_selects_a_subset_and_composes_with_filter() {
     );
 }
 
+/// The ML SURFACE of test tagging: `@tag("slow")` written in `.cdz` (ML) source — the call-style
+/// annotation the front-end reifies to `(@ (tag "slow") def)`, which the runner's `--tag` filter reads.
+/// The sibling test above exercises the sexpr canonical form directly; this pins the whole ML path
+/// (parser reifies `@tag("…")` → the rcdzc recognition records it → `--tag` selects it), so the surface
+/// the operator asked for works end-to-end and stays working.
+#[test]
+fn the_ml_tag_annotation_surface_selects_a_subset() {
+    let d = dir("ml-tag");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@tag(\"slow\")\n\
+         @test def slow_one() = if 1 == 1 then unit else trap(\"s\")\n\
+         @tag(\"fast\")\n\
+         @test def fast_one() = if 2 == 2 then unit else trap(\"f\")\n\
+         @test def untagged() = if 3 == 3 then unit else trap(\"u\")\n",
+    );
+
+    // No `--tag`: all three run.
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(ok, "ML-tagged file passes all: {stdout}{stderr}");
+    assert!(stdout.contains("3 passed, 0 failed"), "{stdout}");
+
+    // `--tag slow`: only the `@tag("slow")` test — proves the ML surface reifies + is filtered.
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "slow"]);
+    assert!(ok, "{stdout}");
+    assert!(
+        stdout.contains("PASS slow_one")
+            && !stdout.contains("fast_one")
+            && !stdout.contains("untagged")
+            && stdout.contains("1 passed, 0 failed"),
+        "the `@tag(\"slow\")` ML surface selects only the slow test: {stdout}"
+    );
+}
+
 /// `cdz test` FOLLOWS the entry file's import closure — a test in a module that imports a sibling type
 /// links against it and runs, the same closure `cdz check` walks. Before this, `cdz test` compiled the
 /// single file alone → `import` was "not modeled" and the imported name was unbound.

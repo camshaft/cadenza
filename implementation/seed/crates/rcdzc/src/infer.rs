@@ -5841,25 +5841,19 @@ fn referenced_binders(db: &mut Db, body: StructId) -> std::collections::HashSet<
     out
 }
 
-/// The diagnostic code for a LIST HOMOGENEITY violation between two element types that do not unify —
-/// the same taxonomy line the numeric operators and `if`-branches draw (05-compound-types §A List Is An
-/// Ordered Homogeneous Sequence). A HOMOGENEITY conflict is CDZ0201 (a MALFORMED list) in exactly two
-/// shapes: two DISTINCT NUMERIC types (`Int64` vs `Float64` — the no-silent-promotion rule), and two
-/// SAME-KIND compounds of DIFFERENT SHAPE (records of different field sets, or tuples of different arity
-/// — the field set / arity IS the type, so they are genuinely different types the list cannot hold
-/// together, which the equality path likewise rejects as incompatible shapes). Every OTHER disagreement
-/// (a cross-KIND scalar clash `Int64` vs `Bool`, or a scalar-vs-compound) keeps the generic structural
-/// mismatch CDZ0203 the unify produced. Mirrors the `if`-branch / connective taxonomy.
-fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
-    let both_numeric =
-        matches!(a, Ty::Int(_) | Ty::Float(_)) && matches!(b, Ty::Int(_) | Ty::Float(_));
-    let both_records = matches!(a, Ty::Record(_)) && matches!(b, Ty::Record(_));
-    let both_tuples = matches!(a, Ty::Tuple(_)) && matches!(b, Ty::Tuple(_));
-    if both_numeric || both_records || both_tuples {
-        Code::Malformed
-    } else {
-        Code::TypeMismatch
-    }
+/// The diagnostic code for a COLLECTION HOMOGENEITY violation between two element types that do not
+/// unify. A HETEROGENEOUS COLLECTION is CDZ0201 (a MALFORMED collection), UNIFORMLY — a list/map/set
+/// whose elements/keys/values do not share one type is ill-formed AS A COLLECTION, regardless of HOW
+/// the element types differ (a cross-kind scalar clash `(list 1 true)`, a no-silent-promotion numeric
+/// mix `(list 1 2.5)`, or two same-kind-different-shape compounds). This is the collection-homogeneity
+/// taxonomy rule (collections-and-text.md §A Collection's Homogeneity Violation Is A Malformed
+/// Collection): the map/set homogeneity checks already code it CDZ0201, and the `List.push`/`update`/
+/// `concat` checks do too, so every collection homogeneity fault agrees. CDZ0203 (`TypeMismatch`) is
+/// reserved for a genuine two-types-must-AGREE UNIFICATION conflict — an `if`'s branches, a value
+/// annotation `(: e T)`, a cross-shape comparison — NOT a collection's internal heterogeneity. Takes
+/// the peer types for signature stability with the call sites, but the code is now uniform.
+fn list_homogeneity_code(_a: &Ty, _b: &Ty) -> Code {
+    Code::Malformed
 }
 
 /// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
@@ -7267,6 +7261,77 @@ fn check_application(
             collect(db, e, out);
         }
         return;
+    }
+    // `List.push`/`List.update`/`List.concat` — the HOMOGENEITY of a functional-construction list op:
+    // the pushed/updated element (or the concatenated list's element) must share the operand list's
+    // element type (collections-and-text.md §A List Is An Ordered Homogeneous Sequence). A disagreement
+    // is a MALFORMED collection → CDZ0201 (uniform with the list-literal + map/set homogeneity checks,
+    // §A Collection's Homogeneity Violation Is A Malformed Collection), NOT the CDZ0203 the generic
+    // scheme-unify (the member-op arm below) would give. We check the ELEMENT disagreement specifically —
+    // the operand IS a `Ty::List(elem)` and the pushed/updated element (or the other list's element)
+    // does not `agrees_with` it — so a wrong LIST-OPERAND (`(List.push 5 true)`, first arg not a list)
+    // falls through to the generic member-op arm's CDZ0203, which is the right code there. On the
+    // homogeneity fault, keep the same operation-naming message the member-op arm produces (so the reader
+    // still sees WHICH op wanted WHAT) but code it CDZ0201, descend into the operands, and stop.
+    {
+        // (expected element/list type, the given element/list type) on a genuine element mismatch.
+        let list_op_mismatch: Option<(Ty, Ty)> = match crate::eval::meta_apply_of(db, head) {
+            // push: args = [list, elem]; the elem must match the list's element type.
+            Some(crate::resolved::Prim::ListPush) if args.len() == 2 => {
+                match type_of(db, args[0]) {
+                    Ty::List(elem) => {
+                        let given = type_of(db, args[1]);
+                        (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given))
+                    }
+                    _ => None,
+                }
+            }
+            // update: args = [list, index, elem]; the elem must match the list's element type.
+            Some(crate::resolved::Prim::ListUpdate) if args.len() == 3 => {
+                match type_of(db, args[0]) {
+                    Ty::List(elem) => {
+                        let given = type_of(db, args[2]);
+                        (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given))
+                    }
+                    _ => None,
+                }
+            }
+            // concat: args = [a, b]; the two lists' element types must agree — name the whole list types.
+            Some(crate::resolved::Prim::ListConcat) if args.len() == 2 => {
+                match (type_of(db, args[0]), type_of(db, args[1])) {
+                    (Ty::List(ea), Ty::List(eb)) if !ea.agrees_with(&eb) => {
+                        Some((Ty::List(ea), Ty::List(eb)))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((expected, given)) = list_op_mismatch {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: a list op's element does not share the list's element type (CDZ0201)");
+            // Name the operation the same way the generic member-op arm does (`List.push` expects …), but
+            // code it CDZ0201 — the uniform collection-homogeneity code, not the member-op arm's CDZ0203.
+            // Append the SAME structural-delta hint that arm carries, so a same-kind compound mismatch
+            // (`(List.push xs (record (y 2)))` for a `List (Record (x Int64))`) names the minimal conflict
+            // (`field `x` is missing (found `y`)`) instead of leaving the reader to diff two rendered types.
+            let message = match member_op_head_name(db, head) {
+                Some((module, member)) => {
+                    let delta = structural_delta_hint(&expected, &given).unwrap_or_default();
+                    format!(
+                        "`{module}.{member}` expects an argument of type {}, but a value of type {} was given{delta}",
+                        expected.render_name(),
+                        given.render_name()
+                    )
+                }
+                None => "list elements must share one type (the operation's element type differs from the list's)"
+                    .to_string(),
+            };
+            out.push(Reject::coded(Code::Malformed, message));
+            for &a in args {
+                collect(db, a, out);
+            }
+            return;
+        }
     }
     // A MAP constructor (`map` alias) applied — its arguments are its ENTRY PAIRS `(key value)`, NOT
     // curried arguments and NOT ordinary sub-expressions (a `(a 1)` entry is the pair a↦1, so it must
@@ -9066,7 +9131,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A list literal is HOMOGENEOUS: every element must share ONE type (collections-and-text.md §A
         // List Is A Homogeneous Sequence). Unify each element's type against the first — a mismatch (a
-        // `(list 1 true)`) is CDZ0203, the same class as `if` branches disagreeing. Then descend into
+        // `(list 1 true)`) is a MALFORMED collection (CDZ0201), UNIFORMLY (collections-and-text.md §A
+        // Collection's Homogeneity Violation Is A Malformed Collection), the same code the `list`
+        // name-alias path, the map/set homogeneity checks, and `List.push`/`update`/`concat` use — NOT
+        // the generic unify's CDZ0203 (reserved for a two-types-must-agree conflict). Then descend into
         // each element for its own faults.
         Resolved::List { elems } => {
             let mut subst = Subst::new();
@@ -9074,9 +9142,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let first_ty = type_of(db, first);
                 for &e in elems.iter().skip(1) {
                     let et = type_of(db, e);
-                    if let Err(reject) = crate::unify::unify(&mut subst, &first_ty, &et) {
-                        trace!(target: "rcdzc::infer", node = id.0, "fault: list elements differ in type (CDZ0203)");
-                        out.push(reject);
+                    if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                        let code = list_homogeneity_code(&first_ty, &et);
+                        trace!(target: "rcdzc::infer", node = id.0, ?code, "fault: list elements differ in type");
+                        out.push(Reject::coded(
+                            code,
+                            format!(
+                                "list elements must share one type: {} and {}",
+                                first_ty.render_name(),
+                                et.render_name()
+                            ),
+                        ));
                     }
                 }
             }

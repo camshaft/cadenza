@@ -14,12 +14,18 @@ of how the fleet is operated, not a product surface.
 It runs in **Socket Mode** — the app dials OUT to Slack over a WebSocket, so there is **no public HTTPS
 endpoint, no tunnel, and no request-signature handling**. You can run it from a laptop behind a NAT.
 
+> **Two implementations, one design.** The bridge began as a Node/`@slack/bolt` prototype (`bridge.js` +
+> `inbox.js` + `format.js`) and is being rewritten in **Rust** (`cadenza-slack-bridge`, this crate, on
+> slack-morphism) for toolchain consistency. Both speak the same fleet protocol and follow
+> [`DESIGN.md`](DESIGN.md); `run.sh` launches either via `BRIDGE_IMPL=node|rust`. Node is the live path
+> until the Rust daemon is proven at live parity, then it's retired.
+
 ## How it works
 
 The bridge is a first-class fleet peer with its own inbox (`slack-bridge` by default). It uses the SAME
 atomic inbox files (`<fleet>/inbox/<agent>/<seq>-<pid>-<kind>.json`) that `cargo xtask fleet send` writes
-and every agent drains — see [`inbox.js`](inbox.js), a faithful JS port of the Rust `deliver`/`drain` in
-`xtask/src/fleet.rs`. So nothing about the fleet changes: the concierge just receives normal messages.
+and every agent drains — the Rust `inbox.rs` / Node `inbox.js` are faithful ports of the `deliver`/`drain`
+in `xtask/src/fleet.rs`. So nothing about the fleet changes: the concierge just receives normal messages.
 
 - **Slack → fleet.** A DM to the bot, or a message in the configured bridge channel, becomes a fleet
   message delivered to the target agent's inbox:
@@ -27,10 +33,15 @@ and every agent drains — see [`inbox.js`](inbox.js), a faithful JS port of the
   - `@agent …` → send to a different agent (e.g. `@pr-sync status`),
   - `!kind …` → set the message kind (`ask`, `backlog`, `status`, `assign`, `note`, …),
   - `@design-jsx !assign build the JSX surface` → both at once.
-- **fleet → Slack.** Any agent reaches you with `cargo xtask fleet send --to slack-bridge --kind note
-  --subject "…" --body "…"`. The bridge polls its own inbox and posts each message into the bridge
-  channel, then archives it to `processed/`. **So the concierge answers you by sending the bridge a
-  message** — configure its human-interface to target `slack-bridge` (or just send there by hand).
+
+  (Agent names are validated to a strict slug — no path-traversal from Slack input, see `DESIGN.md`.)
+- **fleet → Slack.** Two ways: (a) the bridge WATCHES the concierge inbox and mirrors each new `ask`/
+  `backlog` to the channel as a thread, so an operator reply in that thread routes a fleet `answer` back to
+  the original asker; (b) any agent reaches you directly with `cargo xtask fleet send --to slack-bridge …`
+  and the bridge relays it to the channel, then archives it to `processed/`.
+- **Watchdog (reliability backbone).** Because it's a long-lived host process, the bridge ALSO runs
+  `cargo xtask fleet watchdog` every ~4 min out-of-band — re-arming stalled loops / reaping dead windows
+  even if the concierge itself stalls. This runs **even with no Slack tokens** (watchdog-only mode).
 
 ## Setup
 
@@ -52,20 +63,29 @@ and every agent drains — see [`inbox.js`](inbox.js), a faithful JS port of the
 6. Invite the bot to your bridge channel: `/invite @Cadenza fleet`, and copy the channel ID (channel name →
    **View channel details** → bottom, `C0123ABCD…`).
 
-### 2. Run the bridge
+### 2. Provide the tokens (out of repo)
+
+Put the two tokens in `~/.cadenza-env` (a home-dir dotenv file — never committed):
 
 ```
-cd fleet/slack-bridge
-npm install                       # installs @slack/bolt (the only dependency)
-
-export SLACK_BOT_TOKEN=xoxb-…     # Bot User OAuth Token
-export SLACK_APP_TOKEN=xapp-…     # App-Level Token (connections:write)
-export SLACK_BRIDGE_CHANNEL=C0123ABCD   # channel to post agent messages into (DMs work without this)
-npm start                         # node bridge.js
+SLACK_BOT_TOKEN=xoxb-…     # Bot User OAuth Token
+SLACK_APP_TOKEN=xapp-…     # App-Level Token (connections:write)
 ```
 
-It prints `Cadenza fleet↔Slack bridge running (Socket Mode)` and stays up. Leave it running (e.g. under
-`tmux`, `pm2`, or a systemd unit) alongside the fleet.
+`config.rs` reads these in precedence order: process env > `~/.cadenza-env` > `.claude/fleet/slack.toml` >
+defaults. With no tokens the bridge still starts (watchdog-only) and never crashes.
+
+### 3. Run the bridge
+
+From a durable host (a `tmux` window, `pm2`, or a systemd unit) so it survives crashes:
+
+```
+fleet/slack-bridge/run.sh          # auto-restart loop; reads ~/.cadenza-env; BRIDGE_IMPL=node (default) | rust
+```
+
+Or by hand for the Node impl: `cd fleet/slack-bridge && npm install && npm start`. Set
+`SLACK_BRIDGE_CHANNEL` (a channel or DM id) so fleet→Slack posts reach you. It prints
+`… running (Socket Mode)` / `Now connected to Slack` and stays up.
 
 ## Configuration
 
@@ -79,7 +99,10 @@ All via environment variables:
 | `FLEET_DIR`             | no       | `<repo>/.claude/fleet`          | The fleet state dir holding `inbox/`. |
 | `FLEET_DEFAULT_TO`      | no       | `concierge`                     | Recipient when you give no `@agent`. |
 | `SLACK_BRIDGE_AGENT`    | no       | `slack-bridge`                  | The bridge's own fleet agent name / inbox. |
-| `POLL_MS`               | no       | `2000`                          | Fleet→Slack inbox poll interval (ms). |
+| `SLACK_CHANNEL`         | no       | —                               | Alias for `SLACK_BRIDGE_CHANNEL` (dotenv files often use the shorter name). |
+| `CADENZA_ENV_FILE`      | no       | `~/.cadenza-env`                | Dotenv file `run.sh` sources for the tokens. |
+| `BRIDGE_IMPL`           | no       | `node`                          | `run.sh`: which implementation to launch (`node` \| `rust`). |
+| `POLL_MS`               | no       | `2000`                          | (Node) fleet→Slack inbox poll interval (ms). |
 
 ## Use
 
@@ -99,11 +122,15 @@ The concierge's reply (or any agent's message) comes back as a Slack post in the
 ## Test
 
 ```
-npm test        # node smoke.test.js — zero deps, no Slack, no network
+cargo test      # Rust: the pure core (inbox/format/config/sidecar/watchdog) — the primary gate
+npm test        # Node: node smoke.test.js — zero deps, no Slack, no network
 ```
 
-The smoke test is this integration's **gate coverage**: it pins the on-disk inbox message shape (so a
-change to the Rust `deliver` format that this JS port must match can't silently drift), the drain
-ordering + `processed/` archival, and the Slack↔fleet message parsing/rendering. The Socket-Mode wiring in
-[`bridge.js`](bridge.js) is Bolt's concern (a live WebSocket) and is intentionally kept to thin calls into
-the tested [`inbox.js`](inbox.js) + [`format.js`](format.js).
+Both suites are this crate's **gate coverage**: they pin the on-disk inbox message shape (so a change to
+the Rust `deliver` format both ports must match can't silently drift), the drain ordering + `processed/`
+archival, the Slack↔fleet message parsing/rendering, the fail-soft config precedence, the secret redaction,
+and the agent-name path-traversal guard. The Socket-Mode transport (Rust `main.rs`/`runner.rs`, Node
+`bridge.js`) is a live WebSocket and is intentionally kept to thin calls into the tested pure modules — so
+it needs no live-network test. This crate is a **standalone workspace**, so run its gates from this
+directory (`cargo test` / `cargo clippy --all-targets -- -D warnings` / `cargo fmt --check`); it is not
+part of `cargo xtask check`.

@@ -16265,9 +16265,13 @@ mod match_engine {
             "(module m (def (g (: xs (List Int64))) ((. List push) xs true)) (export g))",
         )
         .expect("a wrong-element-type List.push rejects");
+        // A list op's element-type disagreement is a MALFORMED COLLECTION (CDZ0201), the UNIFORM
+        // collection-homogeneity code (collections-and-text.md §A Collection's Homogeneity Violation Is A
+        // Malformed Collection) — but it STILL names the operation + its expected/actual types the way a
+        // generic wrong-arg member-op mismatch (CDZ0203) does, so the phrasing is unchanged, only the code.
         assert_eq!(
             push.code.as_deref(),
-            Some("CDZ0203"),
+            Some("CDZ0201"),
             "got: {}",
             push.message
         );
@@ -19488,13 +19492,17 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
-        // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
-        // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
-        // two SAME-KIND-DIFFERENT-SHAPE compounds (records of different field sets, tuples of different
-        // arity — the field set / arity IS the type), is a MALFORMED list (CDZ0201). A cross-KIND SCALAR
-        // clash (Int64 vs Bool) keeps the generic structural mismatch (CDZ0203).
+    fn a_list_homogeneity_violation_is_cdz0201_uniformly() {
+        // collections-and-text.md §A Collection's Homogeneity Violation Is A Malformed Collection — a list
+        // whose elements do not share one type is a MALFORMED COLLECTION (CDZ0201), UNIFORMLY, regardless
+        // of HOW the element types differ: a cross-KIND scalar clash (Int64 vs Bool), a distinct-NUMERIC
+        // mix (Int64 vs Float64, no silent promotion), or two SAME-KIND-DIFFERENT-SHAPE compounds (records
+        // of different field sets, tuples of different arity). All four take CDZ0201 — the same code the
+        // map/set homogeneity checks and `List.push`/`update`/`concat` use. (CDZ0203 is for a
+        // two-types-must-AGREE unification conflict — an `if`/annotation/cross-shape comparison — not a
+        // collection's internal heterogeneity.)
         for src in [
+            "(module m (def (main) (list 1 true)) (export main))", // Int64 vs Bool — cross-kind scalar
             "(module m (def (main) (list 1 2.5)) (export main))", // Int64 vs Float64 — distinct numeric
             "(module m (def (main) (list (record (a 1)) (record (b 2)))) (export main))", // diff field sets
             "(module m (def (main) (list (tuple 1 2) (tuple 1 2 3))) (export main))", // diff arity
@@ -19502,14 +19510,9 @@ mod match_engine {
             assert_eq!(
                 reject_code(src).as_deref(),
                 Some("CDZ0201"),
-                "a list-homogeneity shape/numeric violation must be CDZ0201: {src}"
+                "a list-homogeneity violation must be CDZ0201 uniformly: {src}"
             );
         }
-        // Int64 vs Bool — a cross-KIND scalar clash — stays the generic CDZ0203.
-        assert_eq!(
-            reject_code("(module m (def (main) (list 1 true)) (export main))").as_deref(),
-            Some("CDZ0203")
-        );
         // A HOMOGENEOUS list still compiles + runs (the guard fires only on a genuine mismatch).
         assert_eq!(
             run_returns::<i64>(
@@ -19528,7 +19531,7 @@ mod match_engine {
         // Int64s; its reported node must be that STRING ATOM, not the list.
         let src = "(module m (def (main) ((. List len) (list 1 2 \"three\" 4 5))) (export main))";
         let d = reject_full(src).expect("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         let node = d.node.expect("the reject carries an anchor node");
         let db = crate::db::Db::load(parse(src));
         // The anchor is the string literal `"three"`, not the `(list …)` form.
@@ -21883,13 +21886,14 @@ mod match_engine {
     #[test]
     fn a_mixed_element_list_is_rejected() {
         // A list is HOMOGENEOUS (collections-and-text.md §A List Is A Homogeneous Sequence): every element
-        // shares one type. `(list 1 true)` mixes Int64 and Bool — a type mismatch (CDZ0203), the same
-        // class as `if` branches disagreeing. Pins the homogeneity check. (Used via `len` so `main`
-        // returns a scalar, not a list — a list result has no boundary form yet, a separate decline.)
+        // shares one type. `(list 1 true)` mixes Int64 and Bool — a MALFORMED COLLECTION (CDZ0201), the
+        // UNIFORM collection-homogeneity code (§A Collection's Homogeneity Violation Is A Malformed
+        // Collection), NOT the CDZ0203 a two-types-must-agree conflict (an `if`/annotation) takes. Pins
+        // the homogeneity check + its uniform code. (Via `len` so `main` returns a scalar.)
         assert_eq!(
             reject_code("(module m (def (main) ((. List len) (list 1 true))) (export main))")
                 .as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
     }
 
@@ -23506,14 +23510,16 @@ mod match_engine {
     #[test]
     fn a_list_push_type_mismatch_is_rejected() {
         // `List.push : ∀a. (List a) → a → (List a)` — the appended element must match the list's element
-        // type. `(List.push (list 1 2) true)` pushes a Bool onto a `List Int64` — a mismatch (CDZ0203),
-        // the same homogeneity class as a mixed literal. Pins the push type lambda's element unification.
+        // type. `(List.push (list 1 2) true)` pushes a Bool onto a `List Int64` — a heterogeneous result,
+        // a MALFORMED COLLECTION (CDZ0201), the same UNIFORM homogeneity code as a mixed literal and the
+        // map/set homogeneity checks (collections-and-text.md §A Collection's Homogeneity Violation Is A
+        // Malformed Collection). Pins the push element-homogeneity check + its uniform code.
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. List len) ((. List push) (list 1 2) true))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
     }
 
@@ -23538,14 +23544,14 @@ mod match_engine {
     fn a_list_update_type_mismatch_is_rejected() {
         // `List.update : ∀a. (List a) → Int64 → a → (List a)` — the replacement element must match the
         // list's element type. `(List.update (list 1 2 3) 1 true)` puts a Bool where an Int64 was — a
-        // non-homogeneous result (CDZ0203), the `List.update` companion of the push mismatch. Pins that
-        // the update type lambda's element unification enforces homogeneity like push does.
+        // non-homogeneous result, a MALFORMED COLLECTION (CDZ0201), the `List.update` companion of the
+        // push mismatch, coded uniformly (§A Collection's Homogeneity Violation Is A Malformed Collection).
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 1 true))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
     }
 
