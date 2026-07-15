@@ -3219,6 +3219,13 @@ mod tests {
             sexpr::print(&parser::read_ml("def m() = t\"x{g(\"}\")}y\"").arenas),
             "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"}\"))))"
         );
+        // A hole's string may contain an ESCAPED quote — `\"` must NOT toggle the hole's string-mode
+        // (PR #409): `g("\"}")` is one hole holding the string `"}` (an escaped-quote char then a brace);
+        // the `}` inside that string must not close the hole. (Source `t"x{g("\"}")}y"`.)
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def m() = t\"x{g(\"\\\"}\")}y\"").arenas),
+            "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"\\\"}\"))))"
+        );
     }
 
     #[test]
