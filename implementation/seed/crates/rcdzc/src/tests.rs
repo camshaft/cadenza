@@ -11066,6 +11066,59 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_refined_list_payload_match_compiles_in_linear_time() {
+        // REGRESSION (perf, S3): a match whose arms each refine a LIST PAYLOAD by literal elements
+        // (`(Some (list 0 0)) … (Some (list N N)) (_ -1)`) compiled `lower::build_tree` in O(2^arms). The
+        // multi-column fix (S1) shares the fall-through only for NON-refining Int/Str probes; a `(list i i)`
+        // arm prepends a `ListLen` REFINING probe before its element lit-tests, and S1 excluded refining
+        // probes → the ListLen `then_` (passed-length world) re-compiled the whole remaining matrix at each
+        // element-test = O(2^arms) (N=20 = 3.2s to `cdz check`). FIX (S3): the ListLen `then_`'s fall-through
+        // is `else_rows` REFINED to the PASSED length (`refine_listlen_to_passed`), compiled ONCE and threaded
+        // as the matched arm's `fallthrough` (S1's mechanism, refined tail); arms length-inconsistent with the
+        // passed length are dropped (provably unmatchable there), so exhaustiveness is preserved.
+        //
+        // NOISE-FREE signal `BUILD_TREE_CALLS`. A 2-element-refined list match with N arms must recurse
+        // O(N), not O(2^N). Correctness (dispatch + the empty/rest-arm exhaustiveness partition) is pinned by
+        // the match_engine suite, which stays byte-identical.
+        fn refined_list_match_src(n: usize) -> String {
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((Some (list {i} {i})) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: o (Option (List Int64)))) (match o {arms}(_ -1))) \
+                 (def (main) (f (Some (list 1 1)))) (export main))"
+            )
+        }
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&refined_list_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a refined-list-payload match compiles with no error diagnostics: {diags:?}"
+        );
+        fn build_tree_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 12→16 (+4): LINEAR ⇒ small additive growth (< 4×); the O(2^arms) blow-up was ~16×. VERIFIED:
+        // reverting S3 (append `else_rows` into the ListLen `then_`) fails here with a ~16× explosion.
+        let n12 = build_tree_calls(&refined_list_match_src(12));
+        let n16 = build_tree_calls(&refined_list_match_src(16));
+        let ratio = n16 as f64 / (n12.max(1)) as f64;
+        assert!(
+            n12 > 0 && ratio < 4.0,
+            "a refined-list-payload match must compile in O(arms) `build_tree` recursions, not O(2^arms) \
+             (a `ListLen` probe's passed-world fall-through must be compiled once via \
+             `refine_listlen_to_passed` and shared): arms 12→16 grew {ratio:.1}× (n12={n12}, n16={n16}); \
+             linear is ~1.3×, the exponential was ~16×"
+        );
+    }
+
+    #[test]
     fn a_deep_nested_let_chain_collects_binding_uses_in_bounded_time() {
         // REGRESSION (perf): `lower::lower_let` collects each binding's use facts by walking its whole `let`
         // REGION (all inits + body) in one pass (fix-44, which fused a WIDE let's per-binding walks). But a

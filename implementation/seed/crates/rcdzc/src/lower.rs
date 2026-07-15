@@ -8363,18 +8363,48 @@ fn build_lit_test(
     //    ordinary way — the matched row APPENDED with `else_rows` — and `els` is the refined tree. No
     //    sharing (a finite refining probe has only 2 / a few branches — no exponential fan-out to dedup).
     let (then_, els) = match probe {
-        crate::core::Probe::Bool(_) | crate::core::Probe::ListLen { .. } => {
-            // Refining: matched arm sees the real tail; els is refined. (No sharing — finite fan-out.)
+        crate::core::Probe::ListLen { len, at_least } => {
+            // A ListLen probe REFINES its else (the failed-length world), so `els` differs from the matched
+            // arm's fall-through — but BOTH the matched arm's fall-through (the PASSED-length world) and the
+            // `els` (the failed-length world) are FIXED matrices, compilable ONCE and shared. Without sharing,
+            // a match refining a LIST payload by literal elements (`(Some (list 0 0))`) re-compiles the whole
+            // remaining matrix at each element-test → O(2^arms) (fire #28). Compile the PASSED-world tail once
+            // (`refine_listlen_to_passed` — arms inconsistent with the passed length dropped) + thread it as
+            // the matched arm's `fallthrough` (S1's mechanism, refined tail), and compile the FAILED-world
+            // `els` once. Exhaustiveness is preserved: the passed-world refinement never drops a reachable
+            // arm (a dropped row is provably unmatchable at the passed length), and the matched arm still
+            // bottoms out on the shared passed tail exactly as `[matched] ++ else_rows` would.
+            let passed = refine_listlen_to_passed(else_rows, &lit_path, len, at_least);
+            // Only compile+share the passed-world tail when it is NON-EMPTY. An empty `passed` (every else
+            // arm is length-inconsistent with the passed length, so dropped) has NO fall-through — building
+            // `build_tree(&[])` would raise a spurious CDZ0210 (empty matrix) that must not propagate, since
+            // the matched arm alone covers the passed world (it is an unconditional leaf after its length
+            // test). Thread the OUTER `fallthrough` unchanged there (identical to the pre-S3 append when the
+            // tail contributes nothing).
+            let then_ = if passed.is_empty() {
+                build_tree_ft(db, scrutinee, matched_rows, path_types, fallthrough)?
+            } else {
+                let passed_tail = std::rc::Rc::new(build_tree_ft(
+                    db,
+                    scrutinee,
+                    &passed,
+                    path_types,
+                    fallthrough,
+                )?);
+                build_tree_ft(db, scrutinee, matched_rows, path_types, Some(&passed_tail))?
+            };
+            let refined = refine_listlen_else_rows(else_rows, &lit_path, len, at_least);
+            let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
+            (std::rc::Rc::new(then_), std::rc::Rc::new(els))
+        }
+        crate::core::Probe::Bool(b) => {
+            // Refining: matched arm sees the real tail; els is refined. (No sharing — a Bool test has only
+            // 2 values, so its fan-out is capped and the exponential is small; the passed-world share is
+            // deferred, unlike the unbounded-length ListLen case above.)
             let mut matched = matched_rows.to_vec();
             matched.extend_from_slice(else_rows);
             let then_ = build_tree_ft(db, scrutinee, &matched, path_types, fallthrough)?;
-            let refined = match probe {
-                crate::core::Probe::Bool(b) => refine_bool_else_rows(db, else_rows, &lit_path, b),
-                crate::core::Probe::ListLen { len, at_least } => {
-                    refine_listlen_else_rows(else_rows, &lit_path, len, at_least)
-                }
-                _ => unreachable!("outer match restricts to Bool/ListLen"),
-            };
+            let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
             let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
             (std::rc::Rc::new(then_), std::rc::Rc::new(els))
         }
@@ -8497,6 +8527,95 @@ fn refine_listlen_else_rows(
             {
                 // The residual guarantees this length test holds → drop it (row unconditional at this path).
                 continue;
+            }
+            kept.push((p.clone(), probe.clone()));
+        }
+        out.push(MatchRow {
+            constraints: row.constraints.clone(),
+            lit_tests: kept,
+            body: row.body,
+            guard: row.guard,
+        });
+    }
+    out
+}
+
+/// Refine `else_rows` for the SUCCEEDING (`then_`) branch of a `ListLen{tested_len, tested_at_least}` test
+/// at `lit_path` — the sub-value there is now known to satisfy the tested length. This is the DUAL of
+/// [`refine_listlen_else_rows`] (which refines the FAILED else): a row whose own `ListLen` test at `lit_path`
+/// is INCONSISTENT with the passed length can never match in this world and is DROPPED entirely; a row whose
+/// test is GUARANTEED by the passed length has that test satisfied → drop the test (leaving the row's deeper
+/// tests). It exists to KILL an O(2^arms) blow-up (fire #28): a match arm refining a LIST payload by literal
+/// elements (`(Some (list 0 0))`) lowers via [`build_lit_test`] to a `ListLen` probe then per-element
+/// `LitTest`s; the ListLen `then_` (this world) is the matched arm's further element-tests, whose fall-through
+/// on a mismatch is exactly these remaining SAME-LENGTH arms — so compiling this refined tail ONCE and
+/// threading it as the arm's `fallthrough` (S1's mechanism, refined tail) makes the element-test chain reuse
+/// it instead of re-compiling the whole `else_rows` matrix per element = O(arms).
+///
+/// The PASSED SET after `ListLen{tlen, t_at_least}` succeeds: `{ len : t_at_least ? len ≥ tlen : len == tlen }`.
+/// A row test `{rlen, r_at_least}` MATCHES `{ len : r_at_least ? len ≥ rlen : len == rlen }`. For each row test
+/// at `lit_path` we decide, over the PASSED set: DROP the whole row (unreachable here) iff the passed set
+/// and the row's matched set are DISJOINT; DROP the test (guaranteed here) iff the passed set is a SUBSET of
+/// the row's matched set; else KEEP the test verbatim (it still discriminates within the passed set).
+///
+/// Conservative on the exact/at-least interval logic — a wrong verdict is only ever "keep the test" (never a
+/// spurious drop/reachability change), so exhaustiveness is preserved (the emitted tree is behavior-identical
+/// to the un-refined `[matched] ++ else_rows`, just without the exponential re-compile).
+fn refine_listlen_to_passed(
+    else_rows: &[MatchRow],
+    lit_path: &[crate::core::PathStep],
+    tested_len: usize,
+    tested_at_least: bool,
+) -> Vec<MatchRow> {
+    // The passed set is `P = { n : tested_at_least ? n ≥ tested_len : n == tested_len }`. Classify a row's
+    // own `ListLen{rlen, r_at_least}` test (matched set `R`) against `P`.
+    #[derive(PartialEq)]
+    enum Verdict {
+        DropRow,  // P ∩ R = ∅ → this row can't match in the passed world
+        DropTest, // P ⊆ R → the row's test is guaranteed; drop it (keep the row's deeper tests)
+        KeepTest, // otherwise → the test still discriminates; keep it verbatim
+    }
+    let classify = |rlen: usize, r_at_least: bool| -> Verdict {
+        // Membership of a point `n` in R.
+        let in_r = |n: usize| if r_at_least { n >= rlen } else { n == rlen };
+        if tested_at_least {
+            // P = { n ≥ tested_len } (infinite). P ⊆ R iff R also contains all n ≥ tested_len: an exact R
+            // ({rlen} — one point) can't → not ⊆; a rest R {≥ rlen} ⊆ holds iff rlen ≤ tested_len.
+            // P ∩ R = ∅ iff no n ≥ tested_len is in R: an exact R disjoint iff rlen < tested_len; a rest R
+            // {≥ rlen} always overlaps P (both are up-rays) → never disjoint.
+            if r_at_least {
+                if rlen <= tested_len {
+                    Verdict::DropTest
+                } else {
+                    Verdict::KeepTest // rlen > tested_len: R ⊊ P, the test still discriminates
+                }
+            } else if rlen < tested_len {
+                Verdict::DropRow // exact rlen below the passed floor — unreachable
+            } else {
+                Verdict::KeepTest // exact rlen ≥ tested_len: a single point inside P, still discriminates
+            }
+        } else {
+            // P = { tested_len } (one point). Membership decides everything.
+            if in_r(tested_len) {
+                Verdict::DropTest // the sole passed length satisfies R → test guaranteed
+            } else {
+                Verdict::DropRow // the sole passed length fails R → row unreachable here
+            }
+        }
+    };
+    let mut out = Vec::with_capacity(else_rows.len());
+    'rows: for row in else_rows {
+        let mut kept: Vec<(std::rc::Rc<[crate::core::PathStep]>, crate::core::Probe)> =
+            Vec::with_capacity(row.lit_tests.len());
+        for (p, probe) in &row.lit_tests {
+            if p.as_ref() == lit_path
+                && let crate::core::Probe::ListLen { len, at_least } = probe
+            {
+                match classify(*len, *at_least) {
+                    Verdict::DropRow => continue 'rows, // row can't match in the passed world
+                    Verdict::DropTest => continue, // test guaranteed → drop it, keep deeper tests
+                    Verdict::KeepTest => {}        // fall through to push it verbatim
+                }
             }
             kept.push((p.clone(), probe.clone()));
         }
