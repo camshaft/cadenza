@@ -270,10 +270,12 @@ let pass = 0;
 const failures = []; // real, unexpected failures — these FAIL the gate.
 const stillBlocked = []; // known-blocked examples that (correctly) still fail — reported, not fatal.
 const recovered = []; // blocklist entries that now PASS — the entry should be removed + the example ships.
+const matchedEntries = new Set(); // blocklist entries that matched ≥1 example (to find stale ones).
 for (const ex of examples) {
   const block = blockedBy(ex);
   const fail = await checkExample(ex);
   if (block) {
+    matchedEntries.add(block);
     // A known-blocked example: it's EXPECTED to fail until its owner fixes the root cause.
     if (fail) stillBlocked.push({ block, ex });
     else recovered.push({ block, ex }); // it started passing — un-block it.
@@ -282,6 +284,9 @@ for (const ex of examples) {
   if (fail) { failures.push(fail); continue; }
   pass++;
 }
+// A blocklist entry that matched NO example is stale — the example was renamed/removed/rewritten so the
+// entry no longer identifies anything. Flag it (loud, not fatal) so the blocklist doesn't rot silently.
+const staleEntries = blocklist.filter((b) => !matchedEntries.has(b));
 
 console.log(
   `\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ` +
@@ -307,6 +312,17 @@ if (recovered.length) {
     "\n✅ BLOCKLIST ENTRY CAN BE REMOVED (these examples now RUN — delete their blocklist entry so they ship):\n" +
       recovered
         .map(({ block, ex }) => `  ✔ ${block.file} [${ex.kind}] "${block.match}" — was: ${block.reason}`)
+        .join("\n"),
+  );
+}
+
+if (staleEntries.length) {
+  // A blocklist entry that identifies no current example — the example was rewritten/renamed/removed.
+  // Loud so the entry gets deleted; NOT fatal (a stale block is harmless, just clutter).
+  console.log(
+    "\n⚠️  STALE BLOCKLIST ENTRY (matches no current example — delete it from example-blocklist.json):\n" +
+      staleEntries
+        .map((b) => `  ⚠ ${b.file} "${JSON.stringify(b.match)}" — ${b.reason}`)
         .join("\n"),
   );
 }
