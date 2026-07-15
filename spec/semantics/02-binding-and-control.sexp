@@ -2714,3 +2714,53 @@
             (def (f (: (tuple a b) (Tuple Int64 Bool))) a)
             (def (main) (f (tuple 3 4))) (export main)))
   (error  CDZ0203))
+
+; --- Jump-table index integrity for HIGH-BIT scrutinees (adversarial guards) ----------------------
+; A dense match lowers to a `br_table` whose index operand is i32. The i64 scrutinee must be
+; range-guarded on its FULL width BEFORE any wrap to i32: a scrutinee whose LOW 32 bits collide with a
+; table index (2^32 + k has low bits k) must take the default, never arm k. The negative case (-1) is
+; pinned above; these pin the wrap-collision faces a truncate-then-guard emit gets wrong.
+
+(case "a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table"
+  (doc    "`(match x (0 10) (1 20) (2 30) (_ 99))` called with x = 2^32 (4294967296): out of the covered
+           range 0..2, so the default arm → 99. The low 32 bits of 2^32 are ZERO — an emit that wrapped
+           the scrutinee to i32 (`i32.wrap_i64`) before the range guard would compute table index 0 and
+           wrongly return 10 (arm 0). Pins that the br_table range guard tests the full i64, not the
+           wrapped index. The wrap-collision companion of the negative-scrutinee default case above.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (_ 99))) (export main)))
+  (call   main (: 4294967296 Int64))
+  (output (: 99 Int64)))
+
+(case "a high-bit scrutinee misses an offset jump table whose bias cancels its low bits"
+  (doc    "The OFFSET-table companion: `(match x (100 10) (101 20) (102 30) (_ 99))` covers 100..102, so
+           the emitted table index is `x - 100`. Called with x = 2^32 + 100 (4294967396): the true index
+           2^32 is out of range → default 99. But the low 32 bits of `x - 100` are ZERO — a wrap before
+           the guard hits arm 100 → 10. Pins the full-width guard survives the bias subtraction.")
+  (input  (do (def (main (: x Int64)) (match x (100 10) (101 20) (102 30) (_ 99))) (export main)))
+  (call   main (: 4294967396 Int64))
+  (output (: 99 Int64)))
+
+(case "the minimum integer scrutinee misses a zero-based jump table"
+  (doc    "`(match x (0 10) (1 20) (2 30) (_ 99))` at x = Int64.min: the sign-extreme scrutinee (low 32
+           bits zero, like 2^32) must default → 99, whether the guard compares signed or unsigned. The
+           extreme companion of the 2^32 and -1 default cases — together they pin the guard at both
+           wrap-collision faces and both sign extremes.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (_ 99))) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: 99 Int64)))
+
+(case "a loop-invariant trapping expression is not evaluated when the loop runs zero iterations"
+  (doc    "`(go 0 0 d 5)` where go's body adds `(+ acc (/ 100 d))` per iteration: the bound n = 0 means
+           ZERO iterations, so the loop-invariant `(/ 100 d)` is NEVER evaluated and the accumulator 5
+           returns unchanged — even at d = 0, where evaluating it would trap. LICM may hoist the invariant
+           out of the loop only BELOW the iteration guard (or guarded by it): a hoist above the `(< i n)`
+           test evaluates `(/ 100 0)` speculatively and traps a program that must return 5. The
+           trap-freedom complement of the hoisted-overflow-bound case above (there the bound itself is
+           evaluated pre-loop and MUST trap; here the invariant belongs to the body and must NOT).")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: d Int64) (: acc Int64))
+              (if (< i n) (go (+ i 1) n d (+ acc (/ 100 d))) acc))
+            (def (main (: d Int64)) (go 0 0 d 5))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))

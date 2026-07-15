@@ -2675,3 +2675,48 @@
   (input  (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
   (call   main (: 1 Int64))
   (output (: 1/3 Rational)))
+
+; --- Runtime overflow guards at exact boundaries the fold never sees (adversarial anchors) --------
+; The `(- 0 min)` negation trap above pins one boundary; these pin the remaining single-input
+; boundaries where a checked op's guard must fire (or hold) at RUN time — operands arrive as
+; parameters, so nothing folds and the emitted guard itself is exercised. Each pairs the largest
+; passing input with the smallest trapping one, so a guard that is off by even one unit fails.
+
+(case "a runtime increment traps exactly at the maximum integer"
+  (doc    "`(+ x 1)` with x a parameter: at x = Int64.max - 1 (9223372036854775806) the sum is Int64.max
+           — the largest representable value, in range → 9223372036854775807; at x = Int64.max the sum
+           +2^63 has no Int64 representation and the emitted add-overflow guard TRAPS (numeric-model.md
+           #Overflow Is Defined). The one-unit pair pins the guard boundary exactly: a guard testing
+           `>= max` (instead of `> max`) breaks the passing call, one testing wraparound-after-the-fact
+           breaks the trapping call.")
+  (input  (do (def (main (: x Int64)) (+ x 1)) (export main)))
+  (call   main (: 9223372036854775806 Int64))
+  (output (: 9223372036854775807 Int64))
+  (call   main (: 9223372036854775807 Int64))
+  (trap   "integer overflow"))
+
+(case "a runtime square multiply traps exactly past the Int64 square-root boundary"
+  (doc    "`(* x x)` at the integer square-root boundary of Int64.max: isqrt(2^63 - 1) = 3037000499,
+           whose square 9223372030926249001 FITS (Int64.max - 5926526806 above it); the next integer
+           3037000500 squares to 9223372037000250000 > Int64.max, so the multiply-overflow guard TRAPS.
+           A multiplication guard built from a 64-bit high-half check (or a division-based check with a
+           truncation bias) is most likely to be wrong within one unit of this boundary — the adjacent
+           pass/trap pair pins it from both sides.")
+  (input  (do (def (main (: x Int64)) (* x x)) (export main)))
+  (call   main (: 3037000499 Int64))
+  (output (: 9223372030926249001 Int64))
+  (call   main (: 3037000500 Int64))
+  (trap   "integer overflow"))
+
+(case "an absolute-value branch traps on the minimum integer it cannot represent"
+  (doc    "The abs idiom `(if (< x 0) (- 0 x) x)`: at x = Int64.min the negative branch is taken and
+           `(- 0 min)` = +2^63 has no Int64 representation → the negation's overflow guard traps, exactly
+           as the direct `(- 0 n)` case above. Pins that the guard survives INSIDE a conditional branch —
+           an if→select conversion that evaluates both arms speculatively, or a branch-local guard
+           elision, would either trap the WRONG inputs or wrap this one. The control x = -5 takes the
+           same branch and yields 5 (the guard holds for every negation but min's).")
+  (input  (do (def (main (: x Int64)) (if (< x 0) (- 0 x) x)) (export main)))
+  (call   main (: -5 Int64))
+  (output (: 5 Int64))
+  (call   main (: -9223372036854775808 Int64))
+  (trap   "integer overflow"))
