@@ -17470,6 +17470,56 @@ mod match_engine {
     }
 
     #[test]
+    fn an_out_of_range_literal_in_a_compound_payload_is_rejected_at_check() {
+        // CHECK-vs-EMIT gap fix (v-inference): a NESTED narrow-width literal — the payload of `(: (Some 999)
+        // (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))` / `(: (list 999) (List Int8))` — was
+        // ACCEPTED by `cdz check` (rc=0) while the EMIT path rejected it CDZ0302. The annotation's `Int8`
+        // propagates into the payload's type, but the literal itself stays a deferred `Int64` (its own
+        // `type_of` reads `Int64`), so the top-level `literal_width_fault` never fired on it. Now
+        // `nested_literal_width_faults` descends the annotation's expected type against the value's
+        // payload/elements and range-checks each nested literal — so `check` agrees with emit.
+        for (src, shape) in [
+            (
+                "(module m (def (main) (: (Some 999) (Option Int8))) (export main))",
+                "Some payload",
+            ),
+            (
+                "(module m (def (main) (: (tuple 999) (Tuple Int8))) (export main))",
+                "tuple element",
+            ),
+            (
+                "(module m (def (main) (: (list 999) (List Int8))) (export main))",
+                "list element",
+            ),
+            (
+                "(module m (def (main) (: (Some (tuple 999)) (Option (Tuple Int8)))) (export main))",
+                "doubly-nested Some/tuple",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| {
+                panic!("{shape}: nested out-of-range literal must be rejected at check")
+            });
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "{shape}: got {}",
+                d.message
+            );
+            assert!(
+                d.message.contains("Int8") && d.message.contains("-128..=127"),
+                "{shape}: names the width + range: {}",
+                d.message
+            );
+        }
+        // NO over-rejection: an IN-RANGE nested literal still type-checks.
+        assert!(
+            reject_full("(module m (def (main) (: (Some 5) (Option Int8))) (export main))")
+                .is_none(),
+            "an in-range nested payload literal must still be accepted"
+        );
+    }
+
+    #[test]
     fn a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch() {
         // An EXPLICITLY-SUFFIXED literal `999…N` types as `BigInt` (a distinct numeric type), so
         // annotating it `Int64` — or passing it to an `Int64` parameter — is a genuine TYPE MISMATCH

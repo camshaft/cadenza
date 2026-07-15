@@ -710,6 +710,125 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     None
 }
 
+/// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
+/// `literal_width_fault` above catches a top-level `(: 999 Int8)`, but a NESTED narrow-width literal — the
+/// payload of `(: (Some 999) (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))`, a list element
+/// of `(: (list 999) (List Int8))` — slipped through: the annotation's `Int8` propagates into the outer
+/// value's type but the literal itself stays a deferred `Int64` (its own `type_of` reads `Int64`), so the
+/// scalar fit-check never fires and `cdz check` ACCEPTED a value the declared type cannot hold (the emit
+/// path DID catch it — a check-vs-emit gap). This walks the ANNOTATION's expected `Ty` (from `typeval_of`)
+/// paired with the value's payload/element NODES, so each nested literal is fit-checked against the width
+/// the annotation gives it — the range-check analogue of the annotation-descends-into-compound-payload
+/// type check. Descends Sum (single-payload variant), Tuple, and List; a non-compound / mismatched shape
+/// (reported by the ordinary type check) or a runtime (non-literal) payload adds nothing. Returns the FIRST
+/// out-of-range nested literal's reject (anchored at that literal, so `cdz fix` targets it).
+fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
+    let expected = crate::eval::typeval_of(db, ty_expr)?;
+    match &expected {
+        // A single-payload variant `(Some 999)` : `(Option Int8)` — drill the payload arg against the
+        // payload type at this sum's instantiation. (A multi-payload variant boxes its payloads as a tuple;
+        // its single ctor arg is that tuple, handled by the Tuple arm once drilled — kept simple here to the
+        // single-payload numeric case, the common one.)
+        Ty::Sum { .. } => {
+            let Resolved::Apply { head, args } = resolved_of(db, value) else {
+                return None;
+            };
+            if crate::eval::variant_disc_of(db, head).is_none() || args.len() != 1 {
+                return None;
+            }
+            let want = payload_ty_at_instantiation(db, head, &expected)?;
+            width_fault_against_ty(db, args[0], &want)
+        }
+        // A tuple `(tuple 999 …)` : `(Tuple Int8 …)` — each element against its element type.
+        Ty::Tuple(elem_tys) => {
+            let elems = positional_value_nodes(db, value, crate::resolved::Prim::TupleNew)?;
+            elem_tys
+                .iter()
+                .zip(elems.iter())
+                .find_map(|(t, &e)| width_fault_against_ty(db, e, t))
+        }
+        // A list `(list 999 …)` : `(List Int8)` — each element against the element type (homogeneous).
+        Ty::List(elem_ty) => {
+            let elems = positional_value_nodes(db, value, crate::resolved::Prim::ListNew)?;
+            let elem_ty = (**elem_ty).clone();
+            elems
+                .iter()
+                .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
+        }
+        _ => None,
+    }
+}
+
+/// Range-check the value node `value` (a literal, a folded constant, or a compound to recurse into)
+/// against the EXPECTED type `want` — the `Ty`-typed core of the nested width check. A narrow-integer
+/// `want` fit-checks a constant `value` (the same fold `literal_width_fault` runs); any other `want`
+/// recurses through the compound if `value` is one. Returns the first out-of-range literal's reject.
+fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Reject> {
+    if let Ty::Int(it) = want
+        && let crate::ty::Width::Fixed(w) = it.width
+        && w != 0
+        && !matches!(type_of(db, value), Ty::BigInt | Ty::Rational)
+    {
+        let v = match resolved_of(db, value) {
+            Resolved::Int(v) => Some(v),
+            _ => match crate::lower::core_of(db, value) {
+                crate::core::Core::ConstInt(v) => Some(v),
+                _ => None,
+            },
+        };
+        if let Some(v) = v
+            && !v.fits_width(it.ground_signed(), w)
+        {
+            // Anchor at the offending literal node; no `ty_expr` for a nested payload (the width came from
+            // the enclosing annotation, not a written sub-annotation), so no retype fix — the message names
+            // the range, which is the actionable fact.
+            return Some(int_out_of_range_reject(
+                want,
+                it.ground_signed(),
+                w,
+                &v,
+                value,
+            ));
+        }
+        return None;
+    }
+    // Not a narrow int `want` — recurse if the value is itself a compound whose expected shape is `want`.
+    // (A nested `(Some (tuple 999))` : `(Option (Tuple Int8))` descends Sum → Tuple.)
+    nested_width_fault_by_ty(db, value, want)
+}
+
+/// The `Ty`-driven twin of `nested_literal_width_faults`'s descent (which is `ty_expr`-driven at the top):
+/// descend a compound `value` against an already-solved expected `Ty`. Sum/Tuple/List, single-payload.
+fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Reject> {
+    match want {
+        Ty::Sum { .. } => {
+            let Resolved::Apply { head, args } = resolved_of(db, value) else {
+                return None;
+            };
+            if crate::eval::variant_disc_of(db, head).is_none() || args.len() != 1 {
+                return None;
+            }
+            let inner = payload_ty_at_instantiation(db, head, want)?;
+            width_fault_against_ty(db, args[0], &inner)
+        }
+        Ty::Tuple(elem_tys) => {
+            let elems = positional_value_nodes(db, value, crate::resolved::Prim::TupleNew)?;
+            elem_tys
+                .iter()
+                .zip(elems.iter())
+                .find_map(|(t, &e)| width_fault_against_ty(db, e, t))
+        }
+        Ty::List(elem_ty) => {
+            let elems = positional_value_nodes(db, value, crate::resolved::Prim::ListNew)?;
+            let elem_ty = (**elem_ty).clone();
+            elems
+                .iter()
+                .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
+        }
+        _ => None,
+    }
+}
+
 /// The CDZ0302 reject for an integer literal `v` that overflows the `(signed, width)` type `annot_ty`,
 /// carrying — when possible — a retype fix: replace the annotation `ty_expr` with the SMALLEST aliased
 /// width ({8,16,32,64}) that DOES fit `v`, the rustc-style "value doesn't fit; use a type that holds it"
@@ -10765,6 +10884,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // fine with `Float32`, so the mismatch path never fires), via the shared `literal_width_fault`
             // (the same fit-check the let-binder runs), so a value annotation surfaces it in `cdz check`.
             if let Some(reject) = literal_width_fault(db, expr, ty_expr) {
+                out.push(reject);
+            }
+            // The nested twin: a narrow-width literal in a COMPOUND payload/element — `(: (Some 999)
+            // (Option Int8))`, `(: (tuple 999) (Tuple Int8))`, `(: (list 999) (List Int8))` — where the
+            // annotation's width propagates into the payload but the literal itself stays a deferred
+            // `Int64`, so the scalar check above never fires. Descend the annotation's expected type against
+            // the value's payload/elements and range-check each nested literal (the emit path already
+            // rejects these; this makes `cdz check` agree). Only when the scalar check found nothing (a
+            // top-level literal is not a compound).
+            else if let Some(reject) = nested_literal_width_faults(db, expr, ty_expr) {
                 out.push(reject);
             }
             collect(db, expr, out);
