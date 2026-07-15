@@ -1741,6 +1741,15 @@ impl Db {
         // spliced-in source resolves like hand-written code). A non-constant/runtime AST argument is left
         // untouched for `resolve` to decline (the compiler does not execute a dynamically-built AST).
         crate::eval_ast::desugar_eval(&mut ast);
+        // Expand every `(tagged-template <tag> (chunks …) (holes …))` (the reader's canonical form for the
+        // ML surface `tag"…{expr}…"`) into the binding-dispatched application `(<tag> (list …) (list …))`.
+        // The `tag` resolves in the ordinary environment to a compile-time `List String -> List Ast -> Ast`
+        // function; applying it is an ordinary call the one-tier evaluator β-reduces (`eval::apply_lambda`),
+        // splicing the returned `Ast` and folding it through the same path as generics / `(eval (quote …))`
+        // — so an embedded DSL grows at the AST level through a library function, the reader stays fixed.
+        // Runs AFTER quote/eval desugar and BEFORE the parent index (so the emitted call resolves like
+        // source). A malformed node is left untouched for `resolve` (an unbound-name error on the head).
+        crate::tagged_template::expand(&mut ast);
         // Every expansion above (handle desugar, quote reification, eval reconstruction) runs HERE at
         // load, BEFORE resolve/type/lower/compile — it produces ordinary AST the rest of the pipeline then
         // type-checks, capability-checks (the manifest is `collect_host_imports` over the EXPANDED AST, so

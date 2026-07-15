@@ -77,9 +77,9 @@
 //!
 //! ## Scope of this increment
 //!
-//! The built-in `Ast` sum currently has three variants — `Int`/`Name`/`List` — so only a form built
-//! from integers, names, and lists is reifiable. A quote whose body mentions any OTHER leaf (a string,
-//! float, bool, char, symbol, bytes literal — no `Ast` variant carries it yet) is LEFT UNTOUCHED here:
+//! The built-in `Ast` sum has the full spec variant set — `Int`/`Float`/`Bool`/`Str`/`Name`/`List` — so a
+//! form built from integers, floats, booleans, strings, names, and lists is reifiable. A quote whose body
+//! mentions a leaf NO `Ast` variant carries yet (a char, symbol, or bytes literal) is LEFT UNTOUCHED here:
 //! it flows to `resolve::resolve_quote`, which DECLINES (a Todo, never a miscompile). Likewise an
 //! arity-≠1 `(quote …)` is left for `resolve_quote` to reject CDZ0201. This pass only ever rewrites a
 //! quote/quasiquote it can reify COMPLETELY — partial reification is never emitted.

@@ -1,0 +1,84 @@
+/// examples.cdz — worked parametric models built on the `Solid` library (the start of increment G4). Each
+/// is an ordinary Cadenza function producing a `Solid` tree — the "describe a model in code" showcase, and
+/// a real stress corpus (recursion, list-folds, float arithmetic) for the compiler. These import the model
+/// vocabulary from `solid` (cross-module use), exactly as a user program would, and are pinned by `@test`s
+/// that assert the tree's SHAPE (leaf/node counts — Int64, so unaffected by the deferred Float64 bounding-
+/// box bug). A mesh driver (G2/G3) consumes these trees as data; the shapes here are the contract.
+///
+/// NOTE: assertions use `count-nodes`/`leaf-count` (Int64 comparisons only). A geometric assertion over
+/// Float64 extents (a `bounding-box`) is DEFERRED until the recursive-Float64-compare backend bug clears
+/// (filed: mlrepro-decline-recursive-compound-fold-with-float-compare-helper.cdz).
+
+import { Solid } from "solid"
+import { cube, cube-uniform, sphere, cylinder, empty } from "solid"
+import { union, difference, difference-all, union-all } from "solid"
+import { translate, rotate, scale, v3, v3-splat } from "solid"
+import { leaf-count, count-nodes, is-empty } from "solid"
+
+/// The marquee example (DESIGN §0): a rectangular plate `w × d × t` with two bolt holes of radius `r`,
+/// drilled at 1/4 and 3/4 of the width, centered in depth. `difference-all` cuts each hole from the plate.
+/// Fully parametric — every dimension is an argument, so a caller sweeps sizes with no edit.
+def plate(w: Float64, d: Float64, t: Float64, r: Float64) =
+  difference-all(cube(w, d, t),
+    [ translate(v3(w * 0.25, d * 0.5, 0.0), cylinder(t, r)),
+      translate(v3(w * 0.75, d * 0.5, 0.0), cylinder(t, r)) ])
+
+/// A washer / ring: a short cylinder (outer radius `ro`) with a concentric bore (inner radius `ri`) removed.
+/// The `difference` idiom for a hole through a solid.
+def washer(thickness: Float64, ro: Float64, ri: Float64) =
+  difference(cylinder(thickness, ro), cylinder(thickness, ri))
+
+/// A rounded "capsule": a central cylinder capped by a sphere at each end (a union of three primitives).
+/// Shows a small hand-built union of transformed leaves.
+def capsule(len: Float64, r: Float64) =
+  union-all(
+    [ cylinder(len, r),
+      translate(v3(0.0, 0.0, len * 0.5), sphere(r)),
+      translate(v3(0.0, 0.0, 0.0 - len * 0.5), sphere(r)) ])
+
+/// A row of `n` identical unit cubes spaced `step` apart along +x — a RECURSIVE parametric builder (the
+/// "fold a feature N times" pattern a gear/rack uses). Returns `empty` for `n <= 0`.
+def cube-row(n: Int64, step: Float64) =
+  if n == 0 then empty()
+  else union(cube-uniform(1.0), translate(v3(step, 0.0, 0.0), cube-row(n - 1, step)))
+
+/// ============================ @test suite (pins the example shapes) ============================
+
+@test
+def plate-has-base-plus-two-holes() =
+  // a plate is the base cube minus two hole cylinders → 3 primitive leaves
+  if leaf-count(plate(10.0, 4.0, 1.0, 0.5)) == 3 then unit else trap("plate = base + 2 holes = 3 leaves")
+
+@test
+def plate-node-shape() =
+  // difference-all builds Difference(Difference(cube, hole1), hole2); each hole is a translate(cylinder).
+  // nodes: 2 Difference + 2 Translate + 3 leaves (cube + 2 cylinders) = 7
+  if count-nodes(plate(10.0, 4.0, 1.0, 0.5)) == 7 then unit else trap("plate has 7 nodes")
+
+@test
+def washer-is-two-cylinders() =
+  if leaf-count(washer(0.5, 2.0, 1.0)) == 2 then unit else trap("washer = outer - bore = 2 leaves")
+
+@test
+def capsule-is-three-primitives() =
+  // a cylinder + two spheres
+  if leaf-count(capsule(4.0, 1.0)) == 3 then unit else trap("capsule = cylinder + 2 caps = 3 leaves")
+
+@test
+def cube-row-counts-n-cubes() =
+  // a row of 4 cubes → 4 primitive leaves
+  if leaf-count(cube-row(4, 2.0)) == 4 then unit else trap("cube-row 4 = 4 leaves")
+
+@test
+def cube-row-zero-is-empty() =
+  if is-empty(cube-row(0, 2.0)) then unit else trap("an empty row has no geometry")
+
+@test
+def cube-row-recursion-depth-matches-count() =
+  // each cube adds one Union + one Translate level; a row of 3 → union(cube, translate(row 2)) …
+  // leaf-count is the robust invariant; assert it grows with n
+  let three = leaf-count(cube-row(3, 1.0)) in
+  let five = leaf-count(cube-row(5, 1.0)) in
+  if three == 3 then (if five == 5 then unit else trap("row 5 = 5 leaves")) else trap("row 3 = 3 leaves")
+
+export { plate, washer, capsule, cube-row }

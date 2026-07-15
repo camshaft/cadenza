@@ -397,8 +397,9 @@ pub enum FleetCmd {
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
-    /// presumed dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter`
-    /// — the same recovery an operator does by hand). The `--stale-cap` bound is what keeps a
+    /// presumed dead and this nudges the window back to life (`tmux send-keys continue Enter` — makes
+    /// the idle agent run its next tick; NOT `/loop <interval>`, which the loop skill treats as an
+    /// empty-prompt no-op and never actually revives anything). The `--stale-cap` bound is what keeps a
     /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
     /// tmux window, agents mid-tick
     /// ("esc to interrupt" — real work in flight), and agents re-armed within `--grace-secs`
@@ -1283,8 +1284,8 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
             stamp_rearm(fleet, &a.name);
             rearmed += 1;
             println!(
-                "  + re-armed '{}' (idle {age}s > {stale_after}s; sent `/loop {}`)",
-                a.name, a.interval
+                "  + re-armed '{}' (idle {age}s > {stale_after}s; nudged `continue` to run a tick)",
+                a.name
             );
         } else {
             eprintln!("  ! failed to send-keys to '{}'", a.name);
@@ -1442,26 +1443,17 @@ fn window_is_working(session: &str, agent: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Re-arm a stalled agent's loop by typing `/loop <interval>` + Enter into its idle pane — exactly
-/// the manual recovery an operator does. Two send-keys calls: the literal text (`-l`, so the slash
-/// isn't interpreted as a tmux command), then `Enter` to submit. Returns whether both keystrokes were
-/// delivered.
-fn rearm_window(session: &str, agent: &str, interval: &str) -> bool {
-    let target = format!("{session}:{agent}");
-    let text = format!("/loop {interval}");
-    let sent = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", &text])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !sent {
-        return false;
-    }
-    Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Re-arm a stalled agent by nudging its idle pane to run a tick NOW — by typing `continue` + Enter,
+/// the SAME proven primitive as [`nudge_tick`]. NOTE: this deliberately does NOT send `/loop
+/// <interval>`. That was the original re-arm, but it is a NO-OP: the `/loop` skill treats an interval
+/// with no prompt as an empty prompt and does nothing (a stalled concierge literally printed "`/loop
+/// 30m` — empty prompt, nothing to schedule. No-op"), so the watchdog's re-arm never actually revived
+/// anything. The recurring `/loop` schedule already exists on a stalled agent; what it needs is a
+/// keystroke that makes it run its next tick, and `continue` does exactly that (the idle agent's
+/// context still holds its role + `/loop` cadence). The `_interval` arg is kept for signature/logging
+/// compatibility but no longer used to build the keystroke.
+fn rearm_window(session: &str, agent: &str, _interval: &str) -> bool {
+    nudge_tick(session, agent)
 }
 
 // ── archive ────────────────────────────────────────────────────────────────────────────────────

@@ -5097,6 +5097,53 @@ fn a_multishot_continuation_reaching_an_outer_handler_effect_declines_not_double
     );
 }
 
+/// The CONDITIONAL-path companion of the outer-handler test above: a multi-shot arm whose re-run
+/// continuation reaches an outer-handler effect through an `if` BRANCH (not a strict operand) must also
+/// decline. `(if (< (Amb.flip) 5) (Ctr.tick) 99)` — re-running the continuation per `Amb.flip` resume would
+/// re-issue the outer `Ctr.tick` in the taken branch, advancing the outer state more than once. Exercises a
+/// DIFFERENT fold path (the `if`/branch threading) than the strict-operand shape, so it is a distinct
+/// regression guard on the host-composition invariant — the multi-shot fold is miscompile-prone here.
+#[test]
+fn a_multishot_continuation_reaching_an_outer_effect_via_an_if_branch_declines() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 0 ((tick (u) c (resume c (+ c 1)))) \
+                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                     (if (< (Amb.flip) 5) (Ctr.tick) 99)))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "a multi-shot continuation reaching an outer effect via an if branch must decline",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
+/// The DO-SEQUENCE companion: a multi-shot arm whose continuation spans a HOST call inside a `(do …)` must
+/// decline. `(do (Log.emit (Amb.flip)) 7)` under a multi-shot `flip` arm — re-running the continuation per
+/// resume would emit the delegated `Log.emit` host call more than once, violating the host-composition
+/// invariant (§4.4: a re-run/reified continuation must not span a boundary call — a re-deriving host cannot
+/// reconstruct run-local state). Exercises the `Core::Seq`/do path, distinct from the strict-operand host
+/// test, so a separate guard against a doubled host call.
+#[test]
+fn a_multishot_continuation_spanning_a_host_call_in_a_do_declines() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Log (op emit (-> Int64 Unit))) \
+               (def (main) \
+                 (host (Log) \
+                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                     (do (Log.emit (Amb.flip)) 7)))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("a multi-shot continuation spanning a host call in a do must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// A handler arm that RETURNS its continuation as an escaping value (`k` reified and applied OUTSIDE the
 /// handle) must be REFUSED, never run to a value. `(flip (u) s (fn (x) (resume x s)))` yields the resume
 /// as a lambda; the handle value is that lambda, applied as `(k 5)` after the handle closes. This is the
@@ -25713,6 +25760,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_on_a_ctor_list_element_reads_its_payload_binder() {
+        // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a REFUTABLE
+        // CTOR whose payload binder the guard cond reads — `(guard (list (Op.Add n) .. r) (> n 3))` — falsely
+        // reported CDZ0101 "unbound name `n`" (at BOTH check and compile). ROOT: the ctor-element desugar
+        // deferred the payload binding to a BODY re-match (after the guard) and ANDed the user cond at the
+        // OUTER level, where `n` is not in scope. FIX: fold the user cond into the INNERMOST disc-test's
+        // matched arm (using the real ctor pattern so payloads bind) — `(match __lc ((Op.Add n) <user-cond>)
+        // (_ false))` — so `n` is in scope for the guard, and a disc mismatch / false cond falls through.
+        let Some(v) = run_heap_value(
+            "(module m (type Op (Add Int64) (Neg Int64)) \
+               (def (f (: xs (List Op))) (match xs ((guard (list (Op.Add n) .. r) (> n 3)) n) (_ -1))) \
+               (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+            vec!["5".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guard-reads-ctor-payload run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the guard reads the ctor payload binder n=5, (> 5 3) holds → returns n"
+        );
+        // The guard FALSE → falls through to the catch-all.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) (match xs ((guard (list (Op.Add n) .. r) (> n 3)) n) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "(> 2 3) is false → the guarded arm falls through to the catch-all"
+        );
+        // A MULTI-PAYLOAD ctor: the guard reads BOTH payloads.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Bin Int64 Int64) (Nil Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((guard (list (Op.Bin a b) .. r) (> (+ a b) 10)) (+ a b)) (_ -1))) \
+                   (def (main) (f (list (Op.Bin 7 8)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "15",
+            "a multi-payload ctor guard reads both payloads: 7+8=15 > 10 → 15"
+        );
+    }
+
+    #[test]
     fn a_nullary_variant_list_element_dispatches_by_discriminant() {
         // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
         // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary
@@ -30398,6 +30494,66 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tagged_template_expands_via_its_binding_dispatched_tag_function() {
+        use crate::testkit::parse;
+        // Inc 2 — tagged-template expansion (`crate::tagged_template::expand`). A `(tagged-template <tag>
+        // (chunks c…) (holes h…))` node (the reader's form for the ML `tag"…{expr}…"`) rewrites to the
+        // application `(<tag> (list c…) (list h…))`; the tag resolves BY BINDING to a compile-time
+        // `List String -> List Ast -> Ast` function the one-tier evaluator β-reduces, splicing its `Ast`
+        // (metaprogramming.md §A Tagged Template Is A Binding-Dispatched Compile-Time Macro…). The echo
+        // macro returns `(Ast.Str <first chunk>)`, so the template folds to `(Ast.Str "hi")` → byte-len 2.
+        let echo = "(module m \
+            (def (id chunks holes) (match chunks ((list c) (Ast.Str c)) (_ (Ast.Str \"\")))) \
+            (def (main) (match (tagged-template id (chunks \"hi\") (holes)) \
+                          ((Ast.Str s) (String.byte-len s)) (_ 0))) \
+            (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(echo))).expect("compile"),
+                "main"
+            ),
+            2,
+            "a tagged template expands via its tag function and splices the returned Ast"
+        );
+        // A hole reaches the tag function and is spliced at its position: `wrap` builds `(f <hole0>)`.
+        let hole = "(module m \
+            (def (wrap chunks holes) (match holes ((list h) (Ast.List (list (Ast.Name \"f\") h))) \
+                                       (_ (Ast.List (list))))) \
+            (def (main) (= (tagged-template wrap (chunks \"\" \"\") (holes (Ast.Int 7))) \
+                           (Ast.List (list (Ast.Name \"f\") (Ast.Int 7))))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(hole))).expect("compile"),
+                "main"
+            ),
+            "a hole is spliced into the tag function's expansion"
+        );
+        // The spliced result folds through the ordinary path (one-tier / fixpoint): `two` returns
+        // `(Ast.Int 2)`, and `(+ 40 (…2…))` reduces to 42.
+        let fixpoint = "(module m \
+            (def (two chunks holes) (Ast.Int 2)) \
+            (def (main) (match (tagged-template two (chunks \"\") (holes)) \
+                          ((Ast.Int n) (+ 40 n)) (_ 0))) \
+            (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(fixpoint))).expect("compile"),
+                "main"
+            ),
+            42,
+            "a tagged template's spliced Ast folds through the ordinary compile-time path"
+        );
+        // An unbound tag is the ordinary scope error at the (rewritten) call site — dispatch by binding.
+        assert_eq!(
+            reject_code("(module m (def (main) (tagged-template nope (chunks \"x\") (holes))) (export main))")
+                .as_deref(),
+            Some("CDZ0101"),
+            "a tagged template whose tag is unbound is CDZ0101 (binding dispatch)"
+        );
+    }
+
+    #[test]
     fn an_ast_float_folds_through_reify_eval_and_round_trips() {
         use crate::testkit::parse;
         // The `Ast.Float` leaf variant end-to-end — the LAST of the spec's six Ast forms (type-system.md
@@ -31881,6 +32037,25 @@ mod match_engine {
             ),
             1,
             "1/40 meter < 127/5000 meter (Rational inner) folds to true"
+        );
+    }
+
+    #[test]
+    fn unit_in_over_a_bigint_quantity_converts_and_unwraps() {
+        // `lower_unit_in` gained a BigInt-inner arm: `(Unit.in meter (Qty.of (BigInt.of v) kilometer))`
+        // converts `value * 1000` in unbounded bigint arithmetic and UNWRAPS to a bare BigInt. Previously
+        // it declined ("ownership cannot prove") — only float/rational arms existed. Uses the FULL runtime
+        // (bigint ops); skips if absent. A CONSTANT bigint-quantity conversion (folds via IntValue bignum).
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) ((. BigInt of) 3) ((. Unit of) #\"kilometer\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate covers the runtime form e2e
+        };
+        assert!(
+            rendered.contains("3000"),
+            "3 km (BigInt) in meters unwraps to the bare BigInt 3000: {rendered}"
         );
     }
 
@@ -64582,6 +64757,84 @@ mod cross_component_oracle {
         assert!(
             !msg.contains("cadenza:math/api"),
             "the well-matched peer M must NOT be implicated: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL13 — the signature check spans a MULTI-HOP CHAIN (U11: A→B→C). A middle peer B is both a
+    // consumer (of A) and a provider (to C); B's binding of A is a peer-into-peer import the top-level
+    // check would MISS (it only checks the consumer C's imports). A mismatch there (B binds A's `base`
+    // as 2-arg, A exports it 1-arg) would trap opaquely; the extended check validates each peer against
+    // the EARLIER peers and catches it, attributing to the importer (peer cadenza:mid/api) + provider
+    // (peer cadenza:base/api). Also confirms a VALID chain still runs (no false positive).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_peer_signature_check_spans_a_multi_hop_chain() {
+        use crate::testkit::parse;
+        // A: base(x) = x*2, published cadenza:base/api (1-arg).
+        let a = compile_provider(
+            "(do (def (base (: x Int64)) (* x 2)) (export base))",
+            "cadenza:base/api",
+        );
+        // C (top consumer): binds Mid.mid, performs it.
+        let src = "(do (effect Mid (op mid (-> Int64 Int64))) (bind Mid \"cadenza:mid/api\") \
+            (def (main (: x Int64)) (host (Mid) (Mid.mid x))) (export main))";
+        let c = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let opts = |()| cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        // (a) VALID chain: B binds A's base correctly (1-arg), mid(x) = base(x)+1. main(5)=base(5)+1=11.
+        let b_ok = compile_provider(
+            "(do (effect Base (op base (-> Int64 Int64))) (bind Base \"cadenza:base/api\") \
+             (def (mid (: x Int64)) (host (Base) (+ (Base.base x) 1))) (export mid))",
+            "cadenza:mid/api",
+        );
+        let peers_ok = vec![
+            cdz_run::Peer {
+                bytes: a.clone(),
+                interface: "cadenza:base/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: b_ok,
+                interface: "cadenza:mid/api".to_string(),
+            },
+        ];
+        match cdz_run::run_with_peers(&c, &peers_ok, &opts(())).expect("valid A→B→C chain composes")
+        {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "11", "base(5)*2+1 down the chain"),
+            cdz_run::Outcome::Trap(t) => panic!("valid chain trapped: {t}"),
+        }
+        // (b) B's binding of A is arity-mismatched (binds base as 2-arg; A exports 1-arg). The chain check
+        // catches it at compose time — attributed to the mid importer + base provider — not an opaque trap.
+        let b_bad = compile_provider(
+            "(do (effect Base (op base (-> Int64 Int64 Int64))) (bind Base \"cadenza:base/api\") \
+             (def (mid (: x Int64)) (host (Base) (Base.base x x))) (export mid))",
+            "cadenza:mid/api",
+        );
+        let peers_bad = vec![
+            cdz_run::Peer {
+                bytes: a,
+                interface: "cadenza:base/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: b_bad,
+                interface: "cadenza:mid/api".to_string(),
+            },
+        ];
+        let err = cdz_run::run_with_peers(&c, &peers_bad, &opts(()))
+            .expect_err("a mismatched peer-into-peer (chain) binding must be rejected, not trap");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("signature mismatch")
+                && msg.contains("cadenza:base/api")
+                && msg.contains("cadenza:mid/api")
+                && msg.contains("base"),
+            "the chain error must name the base op, the mid importer, and the base provider: {msg}"
         );
     }
 

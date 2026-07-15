@@ -4734,38 +4734,48 @@ fn desugar_refutable_ctor_list_elements(
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The DISCRIMINANT-TEST guard, ANDed over every ctor binder: each is
-        // `(match __lc_k (<ctor-with-wildcard-payloads> true) (_ false))` — testing ONLY the discriminant
-        // (no payload binding in the guard). Fold them (plus any author guard) with `and`.
+        // The DISCRIMINANT-TEST guard over every ctor binder. Each ctor binder `__lc_k` is tested by a
+        // `(match __lc_k (<ctor-pat> <inner>) (_ false))`: the matched arm carries the ctor pattern so a
+        // discriminant mismatch → `_ → false` (the arm falls through). Two shapes:
+        //   - NO user guard: the matched arm is `(<ctor-with-wildcard-payloads> true)` — a pure disc test
+        //     (payloads wildcarded; nothing reads them here, the body re-match binds them).
+        //   - WITH a user guard reading a ctor PAYLOAD binder (`(guard (list (Op.Add n) .. r) (> n 3))`):
+        //     the payload MUST be in scope for the user cond. So the INNERMOST disc-test's matched arm uses
+        //     the REAL ctor pattern (binders live) and returns the USER COND (not `true`); enclosing
+        //     disc-tests also use the real pattern so EVERY ctor's payload is in scope for the user cond.
+        //     This binds `n` for the guard — the fix for the CDZ0101 false-reject on that idiom. (Before, the
+        //     user cond was ANDed at the OUTER level where no payload binder is in scope.)
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let mut guard_cond: Option<StructId> = existing_guard;
-        for (bname, ctor_pat) in &ctor_binders {
+        // Nest the disc-tests INSIDE-OUT: the innermost matched arm holds the user cond (or `true`), each
+        // enclosing disc-test binds its ctor's payload for the arm within. So every ctor payload binder is in
+        // scope for the user cond, and any disc mismatch short-circuits to `false`.
+        let mut inner_result = existing_guard.unwrap_or(true_node);
+        for (bname, ctor_pat) in ctor_binders.iter().rev() {
             let disc_scrut = db.push_name(bname);
-            let disc_pat = ctor_pattern_with_wildcard_payloads(db, *ctor_pat);
+            // Use the REAL ctor pattern when a user guard is present (bind payloads for the cond); a pure
+            // wildcard pattern otherwise (byte-identical to the pre-fix disc test — no payload binding).
+            let matched_pat = if existing_guard.is_some() {
+                clone_refutable_payload(db, *ctor_pat)
+            } else {
+                ctor_pattern_with_wildcard_payloads(db, *ctor_pat)
+            };
             // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
             // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
-            let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+            let disc_true_arm = db.push_list(vec![matched_pat, inner_result]);
             let wild = db.push_name("_");
             let disc_false_arm = db.push_list(vec![wild, false_node]);
             let disc_match_head = db.push_name("match");
-            let disc_test = db.push_list(vec![
+            inner_result = db.push_list(vec![
                 disc_match_head,
                 disc_scrut,
                 disc_true_arm,
                 disc_false_arm,
             ]);
-            guard_cond = Some(match guard_cond {
-                None => disc_test,
-                Some(g) => {
-                    let and_head = db.push_name("and");
-                    db.push_list(vec![and_head, g, disc_test])
-                }
-            });
         }
+        let guard_cond = inner_result;
         let guard_head = db.push_name("guard");
-        // `guard_cond` is `Some` here — `ctor_binders` is non-empty (ctor_positions non-empty).
-        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond.unwrap()]);
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
         // The BODY re-match, NESTED from the INNERMOST ctor binder out: the innermost match holds the
         // original `body` (all ctor payloads in scope); each enclosing match binds its own ctor's payloads
         // and its body is the next-inner match. Building inside-out means each step wraps the accumulator.
@@ -9506,16 +9516,34 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                 }
             }
             None => {
-                // `type_specialize` returns `None` only when a `const` argument does NOT fold to a
-                // compile-time value (or a generic scheme's type arg is undetermined). For a `const`
-                // param this is a CONTRACT VIOLATION the author declared — a coded compile error, NOT a
-                // silent runtime fallback (Addendum 3: the author says the arg is compile-time; a runtime
-                // arg is rejected). `type_specialize` reported the specific coded reject; surface it.
-                trace!(target: "rcdzc::lower", head = head.0, callee, "specialization declined (a const arg is not compile-time-known / a type arg is undetermined)");
-                Core::Poison(Reject::coded(
-                    Code::Malformed,
-                    "an argument to a `const` parameter must be compile-time-known (it depends on runtime data), or a generic type argument is undetermined",
-                ))
+                // `type_specialize` returns `None` for TWO very different causes; name the one that
+                // actually applies rather than the conflated message that sent iterator authors down a
+                // dead end. (a) The callee declares a `const` param whose argument does not fold to a
+                // compile-time value — a CONTRACT VIOLATION (Addendum 3). (b) The callee has NO `const`
+                // param: it is a purely-inferred recursive-generic whose scheme carries an UNDETERMINED
+                // type variable the monomorphizer cannot bind — the classic being a recursive-generic
+                // PRODUCER (`from-list : List a -> Iter a`) whose result element var is NOT tied to its
+                // argument's (inferred `∀a b. List a -> Iter b`), so a call at ≥2 element types has no
+                // single value to bind `b` to. That is a known inference limitation, NOT a `const` issue;
+                // pointing at `const` is actively misleading. Distinguish by whether the callee declares a
+                // `const` param.
+                let callee_has_const = db.defs[callee].params.iter().any(|&p| {
+                    db.const_params
+                        .contains(&crate::eval::param_name_occ(db, p))
+                });
+                trace!(target: "rcdzc::lower", head = head.0, callee, callee_has_const, "specialization declined (const contract / undetermined generic type arg)");
+                let message = if callee_has_const {
+                    "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
+                } else {
+                    // The recursive-generic (producer) case: name the real cause + the workarounds an
+                    // author can act on now (the tie fix is a tracked inference follow-up).
+                    "this generic function's type variable is undetermined at this call — a recursive-generic \
+                     function whose RESULT type is not tied to its argument (e.g. a producer `List a -> Iter a` \
+                     whose element type is only inferred) cannot be monomorphized at more than one type in one \
+                     program. Use it at a single element type, annotate the result type, or make the type \
+                     concrete (a monomorphic definition)"
+                };
+                Core::Poison(Reject::coded(Code::Malformed, message))
             }
         };
     }
@@ -12203,6 +12231,45 @@ fn convert_operand_ast(
     Some(node)
 }
 
+/// The runtime BigInt analogue of [`convert_operand_ast`]: synthesize `value * (BigInt.of num) /
+/// (BigInt.of den)` for a `Unit.in` over a BigInt-magnitude quantity. The value occurrence is q's erased
+/// BigInt magnitude (a heap handle); the scale factors are `(BigInt.of …)` so the `*`/`/` see a BigInt
+/// operand and route to the runtime `bigint-*` ops (`bigint_operand` dispatch). Division TRUNCATES toward
+/// zero (integer/bigint division), matching the fixed-Int arm. `None` if q's value occurrence is not
+/// recoverable (a non-`Qty.of` runtime magnitude — a later increment).
+fn convert_operand_ast_bigint(
+    db: &mut Db,
+    operand: StructId,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    let value = crate::eval::qty_value_occ(db, operand)?;
+    // `(BigInt.of <n>)` — a bigint scale literal. `BigInt.of` is member access `(. BigInt of)`.
+    let bigint_of = |db: &mut Db, n: i128| -> StructId {
+        let dot = db.push_name(".");
+        let bigint = db.push_name("BigInt");
+        let of = db.push_name("of");
+        let head = db.push_list(vec![dot, bigint, of]);
+        let lit = db.push_atom(crate::ast::Leaf::Int {
+            value: IntValue::from_i128(n),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![head, lit])
+    };
+    let mut node = value;
+    if num != 1 {
+        let n_big = bigint_of(db, num);
+        let mul_head = db.push_name("*");
+        node = db.push_list(vec![mul_head, node, n_big]);
+    }
+    if den != 1 {
+        let d_big = bigint_of(db, den);
+        let div_head = db.push_name("/");
+        node = db.push_list(vec![div_head, node, d_big]);
+    }
+    Some(node)
+}
+
 /// A synthesized numeric literal node for a machine integer `v` — a float decimal `v.0` when `is_float`,
 /// else an integer literal. Used for the constant scale factors a runtime conversion multiplies by.
 fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
@@ -12324,6 +12391,45 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
         return Core::Poison(Reject::decline(
             "Unit.in over a runtime Rational magnitude (not yet emitted)",
         ));
+    }
+    // A BIGINT magnitude converts as `value * num / den` in UNBOUNDED bigint arithmetic — the value is a
+    // heap handle, so the scale factors are materialized as `BigInt.of` and the `*`/`/` route to the
+    // runtime bigint ops (`quantity_inner_is_bigint`/`bigint_operand` dispatch). `Unit.in` UNWRAPS, so the
+    // result is a bare BigInt. A CONSTANT bigint folds via `IntValue` bignum (exact mul + truncating
+    // divmod); a runtime one emits the bigint ops. A non-whole ratio TRUNCATES (integer division, the
+    // same rule the fixed-Int arm uses). Scale 1/1 (reference→reference) is the identity — the value
+    // unchanged.
+    let inner_is_bigint = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::BigInt)
+    );
+    if inner_is_bigint {
+        if num == 1 && den == 1 {
+            // Identity conversion — the erased BigInt value unchanged (still a bare BigInt).
+            return qc;
+        }
+        if let Core::ConstInt(v) = &qc {
+            // CONSTANT bigint — fold `v * num / den` exactly over IntValue bignum (mul is exact; div
+            // truncates toward zero). Stays a BigInt-typed ConstInt (the emit choke-point materializes it).
+            let scaled = v.mul(&IntValue::from_i128(num));
+            return match scaled.divmod(&IntValue::from_i128(den)) {
+                Some((quotient, _rem)) => Core::ConstInt(quotient),
+                None => Core::Poison(Reject::coded(
+                    Code::ConstTrap,
+                    "Unit.in conversion divides by zero",
+                )),
+            };
+        }
+        // RUNTIME bigint — synthesize `(/ (* value (BigInt.of num)) (BigInt.of den))` and re-lower; the
+        // `*`/`/` see a BigInt operand and route to the runtime bigint ops.
+        match convert_operand_ast_bigint(db, q, num, den) {
+            Some(node) => return core_of(db, node),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "Unit.in over a runtime non-Qty.of BigInt magnitude (not yet emitted)",
+                ));
+            }
+        }
     }
     if inner_is_float {
         if let Some(v) = float_of_core(&qc) {

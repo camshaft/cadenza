@@ -317,8 +317,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     //    FOLD compares the payload's constant type to `t`: agree → `(Ok payload)`, mismatch →
     //    `(Err (DecodeError unit))`, NEVER a trap. The result type `(Result t DecodeError)` recovers `t`
     //    from the schema, so `(decode Int64-schema …)` types as `(Result Int64 DecodeError)`.
-    //= spec/capabilities/type-system.md#an-open-sums-payload-may-be-schema-typed
-    //# An open sum's payload MUST be decodable against a schema resolved at run time to a typed result, and a payload that does not match its schema MUST yield a typed failure result rather than a trap.
+    //= spec/capabilities/type-system.md#an-open-sum-s-payload-may-be-schema-typed
+    //# A program MUST be able to decode an open sum variant's payload against a schema resolved at run time, yielding a typed result rather than raw bytes, so that an extensible-vocabulary value carries a payload the program can use after a checked decode.
+    //= spec/capabilities/type-system.md#an-open-sum-s-payload-may-be-schema-typed
+    //# A payload decode that does not match its schema MUST yield a typed failure result rather than a trap, so that a program folding an open vocabulary handles a malformed or unknown payload as data rather than halting.
     {
         let int64_schema_lambda = schema_witness_type(ast, "Int64");
         names.insert(
