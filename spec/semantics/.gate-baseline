@@ -1677,6 +1677,7 @@ pass	an all-nullary enum nested in a tuple carries its discriminant through the 
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
 pass	an all-owned-arms match operand compares correctly through the ownership join
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
+pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
@@ -2397,6 +2398,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
@@ -2454,6 +2456,7 @@ pass	the minimum integer scrutinee misses a zero-based jump table
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the mismatched-pair rejection is order-independent
 pass	the module entrypoint is the def named main regardless of its position
+pass	the multiply-by-zero annihilator does not discard a trapping runtime operand
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
 pass	the new map from a runtime-key take has the key removed
