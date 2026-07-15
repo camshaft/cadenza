@@ -396,6 +396,7 @@ pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
+pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
 pass	a capturing closure export tracks both the captured value and the call argument

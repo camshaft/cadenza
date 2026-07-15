@@ -1613,6 +1613,45 @@
             (export main)))
   (output (: 101 Int64)))
 
+; A capture-free BETA-REDUCTION over a nameless (de Bruijn) term — the evaluator core of a self-hosted
+; λ-calculus front end (the compiler-ml port's beta/normalize passes). A `Tm` is `Ix index` / `Lam body`
+; / `App f x` (nameless: a binder carries no name; a bound variable is its de Bruijn index). `shift` raises
+; free indices under binders; `subst` replaces a free index, shifting the substituted term up under each
+; binder; `contract` reduces `(App (Lam body) arg)` = `shift -1 (subst 0 (shift 1 arg) body)`. This pins
+; the index calculus three recursive functions over a recursive sum implement — the shape that has NO
+; capture problem precisely because the term is nameless. Reducing `(App (Lam (App (Ix 1) (Ix 0))) (Ix 7))`
+; gives `(App (Ix 0) (Ix 7))`: the bound `Ix 1` refers past the reduced binder so it shifts DOWN to `Ix 0`
+; (lhs), and `Ix 0` is replaced by the arg `Ix 7` (rhs). Encodes as lhs*100 + rhs = 0*100 + 7 = 7.
+(case "a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly"
+  (doc    "`shift`/`subst`/`contract` implement β-reduction over a nameless `Tm` (Ix/Lam/App) — three
+           mutually-shaped recursions over a recursive sum, the self-hosted λ-evaluator's core. Reducing
+           `(App (Lam (App (Ix 1) (Ix 0))) (Ix 7))`: the redex's body is `(App (Ix 1) (Ix 0))`; `Ix 0` is
+           replaced by the arg (shifted to survive crossing, then the binder consumed) → `Ix 7`, and the
+           free `Ix 1` shifts DOWN by one when the binder is dropped → `Ix 0`. Result `(App (Ix 0) (Ix 7))`;
+           read as lhs*100 + rhs = 0*100 + 7 = 7. Pins the de Bruijn index calculus (shift-under-binder,
+           subst, drop-binder) that capture-free substitution — and hence a correct λ-calculus normalizer —
+           depends on.")
+  (input  (do
+            (type Tm (Ix Int64) (Lam Tm) (App Tm Tm))
+            (def (shift (: d Int64) (: c Int64) (: t Tm))
+              (match t
+                ((Ix k) (if (>= k c) (Ix (+ k d)) (Ix k)))
+                ((Lam b) (Lam (shift d (+ c 1) b)))
+                ((App f x) (App (shift d c f) (shift d c x)))))
+            (def (subst (: j Int64) (: s Tm) (: t Tm))
+              (match t
+                ((Ix k) (if (= k j) s (Ix k)))
+                ((Lam b) (Lam (subst (+ j 1) (shift 1 0 s) b)))
+                ((App f x) (App (subst j s f) (subst j s x)))))
+            (def (contract (: body Tm) (: arg Tm)) (shift (- 0 1) 0 (subst 0 (shift 1 0 arg) body)))
+            (def (rhs (: t Tm)) (match t ((App _ x) (match x ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
+            (def (lhs (: t Tm)) (match t ((App f _) (match f ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
+            (def (main)
+              (+ (* 100 (lhs (contract (App (Ix 1) (Ix 0)) (Ix 7))))
+                 (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
            1, `Map.lookup 1` returns `(Option.Some (C.R))`, and the nested match deconstructs the stored
