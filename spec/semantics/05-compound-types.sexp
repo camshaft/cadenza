@@ -1446,11 +1446,11 @@
 ; folds the child `fc`s (`Name` → 1, `Int` → 0) and the sibling head-read (Some "a" → 100) is independent,
 ; so `fc (List [Name "a", Int 5])` = 100 + 1 = 101. Pins the correct mutual `fc↔fl` tree walk — a
 ; scope-checker / resolver / free-var pass written the natural way over the canonical AST. (The DISTINCT
-; failing shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand
-; WHILE `fl(elems)` consumes the shared payload alias — is a backend Perceus limit tracked outside the
-; corpus: a `SumPayload` binder consumed by a mutual-recursive call while its scrutinee is still read needs
-; a `dup` the retain analysis does not yet place for payload aliases. This case pins the reading-from-elems
-; idiom that AVOIDS it, so a refcount change in the payload-read path cannot silently break the walker.)
+; shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand WHILE
+; `fl(elems)` consumes the shared payload alias — was a backend Perceus miscompile, now FIXED and pinned in
+; the very next case: the retain analysis `dup`s a `SumPayload` binder consumed while its scrutinee is still
+; live, extending the still-live-binding retain from `LocalRef`/`Param` to payload aliases. This case pins
+; the reading-from-elems idiom; the next pins the re-extract-from-node idiom — both must stay green.)
 
 (case "a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read"
   (doc    "The idiomatic homoiconic-AST walk: `fc` (node) and `fl` (child list) mutually recurse over a
@@ -1469,6 +1469,46 @@
                 (((. Ast Name) _) 1)
                 (((. Ast List) elems)
                   (+ (match (head-e elems) ((Some _) 100) ((None _) 0)) (fl elems)))
+                (_ 0)))
+            (def (fl (: elems (List Ast)))
+              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (export main)))
+  (output (: 101 Int64)))
+
+; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
+; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
+; SAME heap array `node`'s `List` payload holds (a borrowed `sum-payload` alias, no rc++), so passing it to
+; the consuming mutual call `fl` used to free the array that the sibling `head-of node` re-reads — the walk
+; returned 1 (head read `None`) instead of 101. The backend now emits a Perceus RETAIN (`dup`) for a
+; `SumPayload` binder consumed while its scrutinee is still live in the arm (extending the still-live-binding
+; retain from `LocalRef`/`Param` to payload aliases), so both paths to the child array stay valid and the
+; walk returns 101. This is the LAST face of the still-live-binding family and the shape a scope-checker
+; that dispatches on a node's head WHILE recursing its children takes — pinning it green locks the fix so a
+; future refcount change cannot re-introduce the shared-payload free.
+
+(case "a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it"
+  (doc    "The now-fixed sibling of the read-from-elems case above: `fc`'s `List` arm reads the head by
+           RE-EXTRACTING `node`'s payload — `head-of node` matches `node` again and pulls the child list —
+           in one operand, WHILE the other operand passes the arm-bound `elems` (the SAME payload array) to
+           `fl`, which recurses back into `fc` and consumes it. Because `elems` is a borrowed `sum-payload`
+           alias of `node`'s payload, the consuming mutual call used to free the shared array and the
+           sibling `head-of node` read `None` → the walk returned 1. The backend now `dup`s a `SumPayload`
+           binder consumed while its scrutinee stays live, so `head-of node` = Some \"a\" → 100 and
+           `fl [Name \"a\", Int 5]` = 1, giving `fc (List [Name \"a\", Int 5])` = 101. Pins the fix for the
+           payload-alias face of the still-live-binding family — the natural head-dispatch-while-recursing
+           resolver shape over the canonical AST.")
+  (input  (do
+            (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+            (def (head-of (: node Ast))
+              (match node
+                (((. Ast List) (list ((. Ast Name) n) .. _)) (Some n))
+                (_ (None unit))))
+            (def (fc (: node Ast))
+              (match node
+                (((. Ast Name) _) 1)
+                (((. Ast List) elems)
+                  (+ (match (head-of node) ((Some _) 100) ((None _) 0)) (fl elems)))
                 (_ 0)))
             (def (fl (: elems (List Ast)))
               (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
