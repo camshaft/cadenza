@@ -1,4 +1,15 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14, seed rcdzc). MINIMAL, SHARPENED form of the
+;; ✅ FIXED (2026-07-15, seed rcdzc). `main 0` now returns 3. ROOT CAUSE was NOT the self-call arg emit as
+;; originally guessed — it is a GENERAL Perceus RETAIN gap: a heap binding/param CONSUMED (by `List.push`/
+;; `Map.insert`/a call arg) while it has a LATER live use on the same eval path got no `dup`, so the
+;; consuming op's in-place FBIP reuse (uniquely-owned handle) mutated the value the later use read. It
+;; reproduces in STRAIGHT-LINE non-recursive code too (`(let ((e L)) (+ (List.len (List.push e 9))
+;; (List.len e)))`), so it was never self-call-specific. FIX: `backend/wasm/select.rs` `collect_dup_sites`/
+;; `mark_binder_dups` marks each consuming occurrence with a later use, and `emit_binder_ref` emits a `dup`
+;; there (the FBIP single-use fast path is untouched — no later use ⇒ no dup). Corpus witnesses in
+;; `spec/semantics/05-compound-types.sexp` ("a runtime list/map/set … consumed … is unchanged/not
+;; mutated"). KEPT as a regression repro; run `cdz compile` and check `main 0` == 3.
+;;
+;; ORIGINAL REPORT (2026-07-14, seed rcdzc). MINIMAL, SHARPENED form of the
 ;; shared-recursive-param collection-mutation bug (`miscompile-map-insert-mutates-shared-recursive-param`
 ;; is the interpreter-shaped version). `cdz check` CLEAN; `cdz compile` SUCCEEDS; runs WRONG.
 ;;

@@ -21730,6 +21730,22 @@ mod match_engine {
         }
     }
 
+    /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
+    /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
+    fn component_imports_op(bytes: &[u8], op: &str) -> bool {
+        use wasmparser::{Parser, Payload, TypeRef};
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Ok(Payload::ImportSection(reader)) = payload {
+                for import in reader.into_iter().flatten() {
+                    if matches!(import.ty, TypeRef::Func(_)) && import.name == op {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn a_list_push_extends_and_its_runtime_length_counts() {
         // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. To exercise
@@ -21745,6 +21761,75 @@ mod match_engine {
             return;
         };
         assert_eq!(out, "4", "push then runtime length");
+    }
+
+    #[test]
+    fn a_shared_list_binding_consumed_then_reused_is_retained_not_mutated() {
+        // Perceus RETAIN placement (the shared-heap-binding-consume-then-use miscompile): a `let` list `e`
+        // is CONSUMED by `List.push` in the LEFT operand of `+` AND read again by `List.len` in the RIGHT
+        // operand. `List.push` produces a NEW list and must leave `e` unchanged, so the right `List.len e`
+        // reads the ORIGINAL length. `build 0 2 (list)` = `[0 1]` (length 2); left = `len([0 1 9])` = 3,
+        // right = `len([0 1])` = 2, sum = 5. Before the retain fix the consuming push mutated `e` in place
+        // (FBIP, rc==1) and the right read saw the grown list → 6 (a silent wrong value). The dup at the
+        // consuming occurrence (`collect_dup_sites`/`emit_binder_ref`) gives the push its own reference.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((e (build 0 2 (list)))) \
+                             (+ ((. List len) ((. List push) e 9)) ((. List len) e)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "5",
+            "the push must not mutate the shared binding read again"
+        );
+    }
+
+    #[test]
+    fn a_shared_list_param_consumed_in_a_recursive_call_sibling_is_retained() {
+        // The self-hosting face: a PARAMETER `xs` consumed by `List.push` in one operand and passed to a
+        // self-recursive call `(f 0 xs)` in the sibling operand — both read the same param. `f 1 [0 1]` =
+        // `len(push [0 1] 9)` (3) + `f 0 [0 1]` (= `len [0 1]` = 2) = 5. The push must retain the shared
+        // parameter so the self-call sees the original list; before the fix it returned 6 (and, once the
+        // dup was emitted, INVALID wasm until `dup` was added to the import set for a param retain site).
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (f n xs) (if (= n 0) ((. List len) xs) \
+                                (+ ((. List len) ((. List push) xs 9)) (f 0 xs)))) \
+               (def (main) (f 1 (build 0 2 (list)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "5",
+            "the push must retain the param shared with the self-call"
+        );
+    }
+
+    #[test]
+    fn a_single_use_list_consume_stays_on_the_fbip_fast_path_no_dup() {
+        // The FBIP fast path MUST be preserved: a list bound and consumed EXACTLY once (no later use) needs
+        // NO retain — the single `List.push` spends the sole reference in place. `build 0 2` = `[0 1]`,
+        // pushed to `[0 1 9]`, length 3. The emitted body must import NO `dup` (a single-use consume
+        // produces no retain site; a spurious dup+drop pair would regress the allocation bench). Pins that
+        // `collect_dup_sites` marks only a consume WITH a later use, and that the result is correct.
+        let src = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((e (build 0 2 (list)))) ((. List len) ((. List push) e 9)))) (export main))";
+        let bytes = component(src);
+        assert!(
+            !component_imports_op(&bytes, "dup"),
+            "a single-use consume must not import `dup` (FBIP fast path — no retain site)"
+        );
+        let Some(out) = run_on_heap(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "3", "single-use push then length");
     }
 
     #[test]

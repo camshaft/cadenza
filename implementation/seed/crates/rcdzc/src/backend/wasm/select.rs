@@ -32,7 +32,7 @@ use crate::layout::Layout;
 use crate::lower::core_of;
 use crate::resolved::Prim;
 use crate::ty::{IntTy, Ty};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::trace;
 
 /// The emit buffer — the flat `Vec<Lir>` a body linearizes into, PLUS a per-construct source-line map
@@ -74,6 +74,12 @@ pub struct Emit {
     /// all BORROWING `Elem` reads — sound because `op_sum-payload` is TOTAL (never traps) and BORROWING (no
     /// refcount change), so computing it once when the arm is entered matches per-element re-walks exactly.
     payload_prefix_slots: HashMap<(StructId, usize), u32>,
+    /// Perceus RETAIN sites (`collect_dup_sites`): the `Core::LocalRef`/`Core::Param` OCCURRENCE ids whose
+    /// reference is consumed while the binding has a later live use — a `dup` is emitted after the
+    /// `LocalGet` at each so the consumer gets its own reference and the later use reads the original.
+    /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
+    /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
+    dup_sites: HashSet<StructId>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -611,6 +617,574 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
     }
 }
 
+/// Perceus RETAIN placement: the set of `Core::LocalRef`/`Core::Param` OCCURRENCES (keyed by their own
+/// node id) whose reference is CONSUMED at that occurrence while the binding has a LATER live use on the
+/// same control-flow path — so the occurrence must be `dup`'d (rc++) before the consuming op runs, or the
+/// op's in-place FBIP reuse (a uniquely-owned `vec-push`/`map-insert`/… mutates its operand) corrupts the
+/// value the later use reads.
+///
+/// The single closing `drop` a `Core::Let` emits (gated by `!binding_escapes`) reclaims a binding whose
+/// LAST use borrows; it does NOT account for a binding consumed EARLY and read again. Without a dup there,
+/// `(let ((e L)) (+ (List.len (List.push e 9)) (List.len e)))` mutates `e` through the push and the right
+/// `List.len e` reads the grown list — a silent wrong value (the same defect for `Map.insert`/`Set.insert`
+/// and for a shared PARAMETER across two recursive-call operands). A dup at the consuming occurrence gives
+/// the consumer its OWN reference and leaves the binding's reference intact for the later use; the existing
+/// escape-gated drop still reclaims the survivor exactly once. The single-use consume (the FBIP fast path,
+/// `(List.len (List.push e 9))` with `e` used once) is untouched — no later use, so no dup.
+//= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+//# A value MUST NOT be observably mutated through one reference while it is read through another in a way the executable semantics leaves unspecified.
+fn collect_dup_sites(
+    db: &mut Db,
+    body: StructId,
+    binders: &[StructId],
+    sites: &mut HashSet<StructId>,
+) {
+    for &binder in binders {
+        // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
+        // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
+        mark_binder_dups(db, body, binder, true, false, sites);
+    }
+}
+
+/// Collect every HEAP-typed binder whose multi-use inside `id` could need a retain: each `Core::Let`
+/// BINDER declared in the subtree, and each PARAMETER referenced by a `Core::Param` occurrence (a scalar
+/// binding owns no heap cell, so its multi-use needs no dup — a scalar is re-read from its slot freely).
+/// De-dups a parameter referenced more than once. Used to seed `collect_dup_sites` — from `select_function`
+/// (which then emits the dups) AND from `collect_used_ops` (which must import `OP_DUP` iff a dup site
+/// exists), so the two agree on the retain set. Walks every child (a binding/reference nests anywhere).
+fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<StructId>) {
+    match core_of(db, id) {
+        Core::Let { bindings, .. } => {
+            for (binder, _) in &bindings {
+                if is_heap_type(&type_of(db, *binder)) {
+                    out.push(*binder);
+                }
+            }
+        }
+        Core::Param { binder } if is_heap_type(&type_of(db, binder)) && !out.contains(&binder) => {
+            out.push(binder);
+        }
+        _ => {}
+    }
+    for child in core_child_ids(db, id) {
+        collect_retain_candidate_binders(db, child, out);
+    }
+}
+
+/// Every immediate child NODE id of a Core node (all sub-expression occurrences, regardless of position).
+/// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here.
+fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
+    let mut cs: Vec<StructId> = Vec::new();
+    match core_of(db, id) {
+        Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::BytesCompact { operand }
+        | Core::MapSize { map: operand }
+        | Core::SetLen { set: operand }
+        | Core::Proj { operand, .. }
+        | Core::SumPayload {
+            scrutinee: operand, ..
+        }
+        | Core::SumExpect {
+            scrutinee: operand, ..
+        }
+        | Core::BigIntOfI64 { value: operand }
+        | Core::RationalOfIntWiden { value: operand }
+        | Core::BigIntToI64 { operand }
+        | Core::BinIntRead { bytes: operand, .. }
+        | Core::BinRestRead { bytes: operand, .. }
+        | Core::Convert { operand, .. }
+        | Core::Not { operand } => cs.push(operand),
+        Core::ListAt {
+            list: a, index: b, ..
+        }
+        | Core::BytesAt {
+            bytes: a, index: b, ..
+        }
+        | Core::StrAt {
+            string: a,
+            index: b,
+            ..
+        }
+        | Core::BigIntBinOp { lhs: a, rhs: b, .. }
+        | Core::BigIntCmp { lhs: a, rhs: b, .. }
+        | Core::RationalBinOp { lhs: a, rhs: b, .. }
+        | Core::RationalCmp { lhs: a, rhs: b, .. }
+        | Core::RationalOfInts { num: a, den: b }
+        | Core::ValueEq { lhs: a, rhs: b }
+        | Core::BytesConcat { lhs: a, rhs: b }
+        | Core::ListConcat { lhs: a, rhs: b }
+        | Core::ListPush { list: a, elem: b }
+        | Core::MapLookup { map: a, key: b, .. }
+        | Core::MapRemove { map: a, key: b, .. }
+        | Core::SetInsert {
+            set: a, elem: b, ..
+        }
+        | Core::SetRemove {
+            set: a, elem: b, ..
+        }
+        | Core::SetContains {
+            set: a, elem: b, ..
+        }
+        | Core::SetAlgebra { lhs: a, rhs: b, .. }
+        | Core::Arith { lhs: a, rhs: b, .. }
+        | Core::Compare { lhs: a, rhs: b, .. }
+        | Core::And { lhs: a, rhs: b, .. } => {
+            cs.push(a);
+            cs.push(b);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            cs.push(bytes);
+            cs.push(start);
+            cs.push(len);
+        }
+        Core::ListUpdate { list, index, elem } => {
+            cs.push(list);
+            cs.push(index);
+            cs.push(elem);
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            cs.push(map);
+            cs.push(key);
+            cs.push(val);
+        }
+        Core::Tuple { elems }
+        | Core::ListNew { elems }
+        | Core::BytesOf { elems }
+        | Core::SetOf { elems, .. } => cs.extend(elems),
+        Core::SumNew { payloads, .. } => cs.extend(payloads),
+        Core::Record { fields } => cs.extend(fields.values().copied()),
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                cs.push(k);
+                cs.push(v);
+            }
+        }
+        Core::BinBuild { segs } => cs.extend(segs.iter().map(|s| s.value)),
+        Core::BinBitsBuild { fields } => cs.extend(fields.iter().map(|f| f.value)),
+        Core::Call { args, .. } | Core::HostCall { args, .. } => cs.extend(args),
+        Core::CallClosure { closure, args } => {
+            cs.push(closure);
+            cs.extend(args);
+        }
+        Core::Closure { captures, .. } => cs.extend(captures),
+        Core::Seq { stmts, tail } => {
+            cs.extend(stmts);
+            cs.push(tail);
+        }
+        Core::Let { bindings, body } => {
+            cs.extend(bindings.iter().map(|(_, v)| *v));
+            cs.push(body);
+        }
+        Core::If { cond, then_, else_ } => {
+            cs.push(cond);
+            cs.push(then_);
+            cs.push(else_);
+        }
+        Core::Match { scrutinee, arms } => {
+            cs.push(scrutinee);
+            for a in &arms {
+                if let Some(g) = a.guard {
+                    cs.push(g);
+                }
+                cs.push(a.body);
+            }
+        }
+        Core::MatchList { scrutinee, arms } => {
+            cs.push(scrutinee);
+            for a in &arms {
+                if let Some(g) = a.guard {
+                    cs.push(g);
+                }
+                cs.push(a.body);
+            }
+        }
+        Core::MatchSum { scrutinee, root } => {
+            cs.push(scrutinee);
+            cont_child_ids(&root, &mut cs);
+        }
+        Core::LocalRef { .. }
+        | Core::Param { .. }
+        | Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::Unit
+        | Core::Trap
+        | Core::Captured { .. }
+        | Core::Poison(_) => {}
+    }
+    cs
+}
+
+/// Collect the body/guard/`cond` occurrence ids of a sum-match continuation (the arms `core_child_ids`
+/// reaches through a `MatchSum`). The `path` steps carry no occurrence.
+fn cont_child_ids(cont: &crate::core::SumCont, cs: &mut Vec<StructId>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => cs.push(*body),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            cs.push(*cond);
+            cs.push(*body);
+            cont_child_ids(els, cs);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_child_ids(then_, cs);
+            cont_child_ids(els, cs);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms.iter() {
+                cont_child_ids(&a.cont, cs);
+            }
+        }
+    }
+}
+
+/// Walk `id` in EVALUATION order marking dup sites for `binder` (see [`collect_dup_sites`]), and RETURN
+/// whether `binder` occurs anywhere in the subtree. `consuming` is whether the reference reaching `id` is
+/// in a consuming position (a constructor element, a call argument, a persistent-collection operand, the
+/// escaping result) vs a borrow (a `Proj`/`ListLen`/`Map.size`/… read operand); `live_after` is whether
+/// `binder` has a use AFTER `id` completes on the current path. A consuming `LocalRef`/`Param` occurrence
+/// of `binder` with `live_after` is a dup site. Sequential operands are processed RIGHT-TO-LEFT, folding
+/// each returned "occurred" into `live_after` for its earlier siblings (so an earlier consuming operand
+/// sees a later sibling's use); branches (`if`/`match` arms) are independent paths, each processed with
+/// the SAME incoming `live_after` (a use in a sibling arm is not "later" on this arm's path). The position
+/// (borrow-vs-consume) of each child mirrors [`binding_escapes`] exactly (its `tail_borrowed` = borrow).
+fn mark_binder_dups(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    consuming: bool,
+    live_after: bool,
+    sites: &mut HashSet<StructId>,
+) -> bool {
+    // A borrowing child position — recurse borrowing, threading `live_after` unchanged.
+    let borrow = |db: &mut Db, c: StructId, la: bool, s: &mut HashSet<StructId>| {
+        mark_binder_dups(db, c, binder, false, la, s)
+    };
+    // A consuming child position — recurse consuming.
+    let consume = |db: &mut Db, c: StructId, la: bool, s: &mut HashSet<StructId>| {
+        mark_binder_dups(db, c, binder, true, la, s)
+    };
+    // A SEQUENTIAL group of (child, is_borrow) evaluated left-to-right, all simultaneously live before the
+    // enclosing op runs. Process RIGHT-TO-LEFT so an earlier child's `live_after` includes a later
+    // sibling's use. Returns whether `binder` occurred in any of them.
+    let seq = |db: &mut Db,
+               children: &[(StructId, bool)],
+               mut la: bool,
+               s: &mut HashSet<StructId>|
+     -> bool {
+        let mut occurred = false;
+        for &(c, is_borrow) in children.iter().rev() {
+            let here = mark_binder_dups(db, c, binder, !is_borrow, la, s);
+            la = la || here;
+            occurred = occurred || here;
+        }
+        occurred
+    };
+    // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
+    // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
+    // arm's use (an arm runs after the prefix). Returns whether `binder` occurred anywhere.
+    match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => {
+            if b == binder {
+                if consuming && live_after {
+                    sites.insert(id);
+                }
+                return true;
+            }
+            false
+        }
+        // Borrowing reads: the operand is borrowed (a scalar element `Proj`, a length, a lookup's map, …).
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::BytesCompact { operand } => {
+            borrow(db, operand, live_after, sites)
+        }
+        Core::Proj { operand, .. } => {
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            mark_binder_dups(db, operand, binder, !scalar_element, live_after, sites)
+        }
+        Core::MapSize { map } => borrow(db, map, live_after, sites),
+        Core::SetLen { set } => borrow(db, set, live_after, sites),
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            borrow(db, scrutinee, live_after, sites)
+        }
+        // `List.at`/`Bytes.at` BORROW the sequence; the index is a scalar (consume position, no heap).
+        Core::ListAt { list, index, .. } => {
+            seq(db, &[(list, true), (index, false)], live_after, sites)
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            seq(db, &[(bytes, true), (index, false)], live_after, sites)
+        }
+        // `String.at` CONSUMES its string (the Some branch slices out of it); the index is scalar.
+        Core::StrAt { string, index, .. } => {
+            seq(db, &[(string, false), (index, false)], live_after, sites)
+        }
+        // BigInt/Rational arith/cmp BORROW their handle operands (`tail_borrowed: true` in `binding_escapes`).
+        Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalBinOp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => {
+            seq(db, &[(lhs, true), (rhs, true)], live_after, sites)
+        }
+        Core::BigIntOfI64 { value } | Core::RationalOfIntWiden { value } => {
+            consume(db, value, live_after, sites)
+        }
+        Core::BigIntToI64 { operand } => borrow(db, operand, live_after, sites),
+        Core::RationalOfInts { num, den } => {
+            seq(db, &[(num, false), (den, false)], live_after, sites)
+        }
+        // `value-eq` BORROWS both operands.
+        Core::ValueEq { lhs, rhs } => seq(db, &[(lhs, true), (rhs, true)], live_after, sites),
+        // Consuming constructors / ops: every operand is consumed into the result.
+        Core::BytesConcat { lhs, rhs } | Core::ListConcat { lhs, rhs } => {
+            seq(db, &[(lhs, false), (rhs, false)], live_after, sites)
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => seq(
+            db,
+            &[(bytes, false), (start, false), (len, false)],
+            live_after,
+            sites,
+        ),
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            let cs: Vec<(StructId, bool)> = elems.iter().map(|&e| (e, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::SumNew { payloads, .. } => {
+            let cs: Vec<(StructId, bool)> = payloads.iter().map(|&p| (p, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::Record { fields } => {
+            let cs: Vec<(StructId, bool)> = fields.values().map(|&v| (v, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::BinBuild { segs } => {
+            let cs: Vec<(StructId, bool)> = segs.iter().map(|s| (s.value, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::BinBitsBuild { fields } => {
+            let cs: Vec<(StructId, bool)> = fields.iter().map(|f| (f.value, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            consume(db, bytes, live_after, sites)
+        }
+        Core::ListPush { list, elem } => {
+            seq(db, &[(list, false), (elem, false)], live_after, sites)
+        }
+        Core::ListUpdate { list, index, elem } => seq(
+            db,
+            &[(list, false), (index, false), (elem, false)],
+            live_after,
+            sites,
+        ),
+        Core::MapNew { entries, .. } => {
+            let mut cs: Vec<(StructId, bool)> = Vec::with_capacity(entries.len() * 2);
+            for &(k, v) in entries.iter() {
+                cs.push((k, false));
+                cs.push((v, false));
+            }
+            seq(db, &cs, live_after, sites)
+        }
+        Core::MapInsert { map, key, val, .. } => seq(
+            db,
+            &[(map, false), (key, false), (val, false)],
+            live_after,
+            sites,
+        ),
+        // `Map.lookup` BORROWS the map; the key is consumed into an owned temporary.
+        Core::MapLookup { map, key, .. } => {
+            seq(db, &[(map, true), (key, false)], live_after, sites)
+        }
+        Core::MapRemove { map, key, .. } => {
+            seq(db, &[(map, false), (key, false)], live_after, sites)
+        }
+        Core::SetOf { elems, .. } => {
+            let cs: Vec<(StructId, bool)> = elems.iter().map(|&e| (e, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+            seq(db, &[(set, false), (elem, false)], live_after, sites)
+        }
+        // `Set.contains` BORROWS the set; the element is consumed into an owned temporary.
+        Core::SetContains { set, elem, .. } => {
+            seq(db, &[(set, true), (elem, false)], live_after, sites)
+        }
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            seq(db, &[(lhs, false), (rhs, false)], live_after, sites)
+        }
+        // Arithmetic / logical: both operands consumed positions (scalars anyway; a heap binding can only
+        // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::And { lhs, rhs, .. } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            consume(db, operand, live_after, sites)
+        }
+        // A runtime call / host call CONSUMES each argument (callee-owns-args). Args evaluate left-to-right.
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+            let cs: Vec<(StructId, bool)> = args.iter().map(|&a| (a, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        Core::CallClosure { closure, args } => {
+            let mut cs: Vec<(StructId, bool)> = Vec::with_capacity(args.len() + 1);
+            cs.push((closure, false));
+            cs.extend(args.iter().map(|&a| (a, false)));
+            seq(db, &cs, live_after, sites)
+        }
+        Core::Closure { captures, .. } => {
+            let cs: Vec<(StructId, bool)> = captures.iter().map(|&c| (c, false)).collect();
+            seq(db, &cs, live_after, sites)
+        }
+        // A sequencing block: statements then the tail, all sequential (each statement's value is dropped,
+        // so a bare consuming statement is a consume position).
+        Core::Seq { stmts, tail } => {
+            let mut cs: Vec<(StructId, bool)> = stmts.iter().map(|&s| (s, false)).collect();
+            cs.push((tail, false));
+            seq(db, &cs, live_after, sites)
+        }
+        // A `let`: the initializers are sequential-before the body (a `let*` later init may name an earlier
+        // one). The body's position is the enclosing `consuming` (the let's value flows to where the let is
+        // used). NOTE the INNER binder shadows nothing here — we track ONE outer `binder`; an inner binding
+        // with the same id is impossible (each binder is a distinct node).
+        Core::Let { bindings, body } => {
+            let body_occurs = mark_binder_dups(db, body, binder, consuming, live_after, sites);
+            // Each initializer is evaluated before the body; the body (and later inits) may use `binder`.
+            let mut la = live_after || body_occurs;
+            let mut any = body_occurs;
+            for (_, v) in bindings.iter().rev() {
+                let here = mark_binder_dups(db, *v, binder, false, la, sites);
+                la = la || here;
+                any = any || here;
+            }
+            any
+        }
+        // `if`: the condition is evaluated first (borrow — a bool test never consumes a heap ref into the
+        // result); the two branches are INDEPENDENT paths, each with the incoming `live_after`.
+        Core::If { cond, then_, else_ } => {
+            let then_occurs = mark_binder_dups(db, then_, binder, consuming, live_after, sites);
+            let else_occurs = mark_binder_dups(db, else_, binder, consuming, live_after, sites);
+            let cond_la = live_after || then_occurs || else_occurs;
+            let cond_occurs = mark_binder_dups(db, cond, binder, false, cond_la, sites);
+            cond_occurs || then_occurs || else_occurs
+        }
+        // A scalar `match`: the scrutinee is evaluated first; each arm (guard + body) is an independent
+        // path. A guard is evaluated before its body (both on the arm's path), so within an arm the guard's
+        // `live_after` includes the body's use.
+        Core::Match { scrutinee, arms } => {
+            let mut arms_occur = false;
+            for a in arms.iter() {
+                let body_occurs =
+                    mark_binder_dups(db, a.body, binder, consuming, live_after, sites);
+                if let Some(g) = a.guard {
+                    let g_occurs =
+                        mark_binder_dups(db, g, binder, false, live_after || body_occurs, sites);
+                    arms_occur = arms_occur || g_occurs;
+                }
+                arms_occur = arms_occur || body_occurs;
+            }
+            let scrutinee_occurs = mark_binder_dups(
+                db,
+                scrutinee,
+                binder,
+                false,
+                live_after || arms_occur,
+                sites,
+            );
+            scrutinee_occurs || arms_occur
+        }
+        // A LIST match: the scrutinee is consumed (a rest arm's `vec-split` consumes the handle); each arm
+        // body/guard is an independent path.
+        Core::MatchList { scrutinee, arms } => {
+            let mut arms_occur = false;
+            for a in arms.iter() {
+                let body_occurs =
+                    mark_binder_dups(db, a.body, binder, consuming, live_after, sites);
+                if let Some(g) = a.guard {
+                    let g_occurs =
+                        mark_binder_dups(db, g, binder, false, live_after || body_occurs, sites);
+                    arms_occur = arms_occur || g_occurs;
+                }
+                arms_occur = arms_occur || body_occurs;
+            }
+            let scrutinee_occurs =
+                mark_binder_dups(db, scrutinee, binder, true, live_after || arms_occur, sites);
+            scrutinee_occurs || arms_occur
+        }
+        // A SUM match: the scrutinee is evaluated first; the continuation's arms are independent paths.
+        Core::MatchSum { scrutinee, root } => {
+            let cont_occurs = mark_cont_dups(db, &root, binder, consuming, live_after, sites);
+            let scrutinee_occurs = mark_binder_dups(
+                db,
+                scrutinee,
+                binder,
+                false,
+                live_after || cont_occurs,
+                sites,
+            );
+            scrutinee_occurs || cont_occurs
+        }
+        // Leaves / non-binding nodes.
+        Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::Unit
+        | Core::Trap
+        | Core::Captured { .. }
+        | Core::Poison(_) => false,
+    }
+}
+
+/// Mark dup sites through a sum-match CONTINUATION (mirrors `cont_binding_escapes`): every leaf body /
+/// guarded arm / literal-test / nested switch is an independent path, each processed with the incoming
+/// `consuming`/`live_after`. The `path` steps (`Payload`/`Elem`) are heap reads carrying no binding.
+/// Returns whether `binder` occurs anywhere in the continuation.
+fn mark_cont_dups(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    binder: StructId,
+    consuming: bool,
+    live_after: bool,
+    sites: &mut HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            mark_binder_dups(db, *body, binder, consuming, live_after, sites)
+        }
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            let body_occurs = mark_binder_dups(db, *body, binder, consuming, live_after, sites);
+            let els_occurs = mark_cont_dups(db, els, binder, consuming, live_after, sites);
+            // The guard is evaluated before the guarded body (same path); the fall-through `els` is a
+            // separate path. The guard only reads (never consumes into the result).
+            let cond_occurs =
+                mark_binder_dups(db, *cond, binder, false, live_after || body_occurs, sites);
+            body_occurs || els_occurs || cond_occurs
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            let then_occurs = mark_cont_dups(db, then_, binder, consuming, live_after, sites);
+            let els_occurs = mark_cont_dups(db, els, binder, consuming, live_after, sites);
+            then_occurs || els_occurs
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            let mut occurs = false;
+            for a in arms.iter() {
+                occurs =
+                    mark_cont_dups(db, &a.cont, binder, consuming, live_after, sites) || occurs;
+            }
+            occurs
+        }
+    }
+}
+
 /// The runtime op that BOXES the node at `id` (a tuple/record element) into a u32 heap handle, by its
 /// solved type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A COMPOUND element (a
 /// nested tuple/record) is ALREADY a u32 handle — it is `arr-set` into the parent array as-is, with no
@@ -909,11 +1483,34 @@ pub fn select_body(db: &mut Db, body: StructId, layout: &Layout) -> Result<Selec
 /// This mirrors `emit`'s op choices EXACTLY (the same `box_op`/`get_op` per element/projection type), so
 /// the program's per-program import set is precisely the ops it calls — no more, no less. Run over every
 /// reachable body BEFORE selection, so the used-set (hence `layout.import_base` and the import section)
-/// is fixed before a `Lir::CallImport` is resolved to an index. Descends every sub-position (both `if`
-/// branches, every arm body — an op used only under a branch is still imported, since the branch may
-/// run). A box/get op that would decline (a non-scalar element) is simply not added here; the decline
-/// surfaces at `emit`.
+/// is fixed before a `Lir::CallImport` is resolved to an index.
+///
+/// The entry point ALSO imports `dup` iff the body has any Perceus RETAIN site (`collect_dup_sites` — a
+/// heap binding/param consumed while it has a later live use, emitted by `emit_binder_ref`). Computed ONCE
+/// over the whole body here, not per-node in the recursive walk, so a PARAM retain site (whose scope is the
+/// whole function, not one `let`) is covered — the emit places its `dup` and the import must match.
 pub fn collect_used_ops(
+    db: &mut Db,
+    id: StructId,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    // The retain-site `dup` import: mirror `select_function_of`'s `collect_dup_sites` over ALL heap binders
+    // (params + `let`s) reachable in this body, and import `dup` if any occurrence needs a retain. Precise —
+    // the FBIP single-use consume produces no site, so a body that never shares-then-consumes imports no dup.
+    let mut retain_binders: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(db, id, &mut retain_binders);
+    let mut sites: HashSet<StructId> = HashSet::new();
+    collect_dup_sites(db, id, &retain_binders, &mut sites);
+    if !sites.is_empty() {
+        out.insert(OP_DUP);
+    }
+    collect_used_ops_into(db, id, out);
+}
+
+/// The recursive worker of [`collect_used_ops`] — descends every sub-position (both `if` branches, every
+/// arm body — an op used only under a branch is still imported, since the branch may run). A box/get op
+/// that would decline (a non-scalar element) is simply not added here; the decline surfaces at `emit`.
+fn collect_used_ops_into(
     db: &mut Db,
     id: StructId,
     out: &mut std::collections::BTreeSet<&'static str>,
@@ -929,7 +1526,7 @@ pub fn collect_used_ops(
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
                 }
-                collect_used_ops(db, *elem, out);
+                collect_used_ops_into(db, *elem, out);
             }
         }
         Core::Proj { operand, .. } => {
@@ -950,7 +1547,7 @@ pub fn collect_used_ops(
                     out.insert(OP_DUP);
                 }
             }
-            collect_used_ops(db, operand, out);
+            collect_used_ops_into(db, operand, out);
         }
         // A list construction is a BULK build: a flat `arr` (`arr-alloc` + a boxed `arr-set` per element,
         // like a tuple) then one `vec-of-arr`. So it imports the arr ops + `vec-of-arr`, not the old
@@ -963,13 +1560,13 @@ pub fn collect_used_ops(
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
                 }
-                collect_used_ops(db, *elem, out);
+                collect_used_ops_into(db, *elem, out);
             }
         }
         // `List.len` uses `vec-len` and evaluates its operand.
         Core::ListLen { operand } => {
             out.insert(OP_VEC_LEN);
-            collect_used_ops(db, operand, out);
+            collect_used_ops_into(db, operand, out);
         }
         // `Bytes.of` uses `bytes-alloc` + a `bytes-set` per element (each element is a raw byte — an
         // i32 in `0..=255`, NOT boxed to a handle, unlike a list element). Evaluate each element.
@@ -977,7 +1574,7 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for elem in &elems {
-                collect_used_ops(db, *elem, out);
+                collect_used_ops_into(db, *elem, out);
             }
         }
         // A runtime `(bin …)` build allocs the byte buffer + writes each segment byte with `bytes-set`.
@@ -985,7 +1582,7 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for s in &segs {
-                collect_used_ops(db, s.value, out);
+                collect_used_ops_into(db, s.value, out);
             }
         }
         // A runtime bit-field run allocs the buffer + writes each packed byte with `bytes-set`.
@@ -993,13 +1590,13 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for f in &fields {
-                collect_used_ops(db, f.value, out);
+                collect_used_ops_into(db, f.value, out);
             }
         }
         // A `BinIntRead` reads its segment bytes with `bytes-get`.
         Core::BinIntRead { bytes, .. } => {
             out.insert(OP_BYTES_GET);
-            collect_used_ops(db, bytes, out);
+            collect_used_ops_into(db, bytes, out);
         }
         // A `BinRestRead` slices the tail: `dup` the shared scrutinee, then `bytes-slice(bytes, off,
         // bytes-len - off)` on the copy.
@@ -1007,12 +1604,12 @@ pub fn collect_used_ops(
             out.insert(OP_DUP);
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_SLICE);
-            collect_used_ops(db, bytes, out);
+            collect_used_ops_into(db, bytes, out);
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
             out.insert(OP_BYTES_LEN);
-            collect_used_ops(db, operand, out);
+            collect_used_ops_into(db, operand, out);
         }
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
         Core::ListPush { list, elem } => {
@@ -1020,13 +1617,13 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op(db, elem) {
                 out.insert(op);
             }
-            collect_used_ops(db, list, out);
-            collect_used_ops(db, elem, out);
+            collect_used_ops_into(db, list, out);
+            collect_used_ops_into(db, elem, out);
         }
         Core::ListConcat { lhs, rhs } => {
             out.insert(OP_VEC_CONCAT);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // `List.update` uses `vec-update` (the replacement element boxed by its type, like a push).
         Core::ListUpdate { list, index, elem } => {
@@ -1034,9 +1631,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op(db, elem) {
                 out.insert(op);
             }
-            collect_used_ops(db, list, out);
-            collect_used_ops(db, index, out);
-            collect_used_ops(db, elem, out);
+            collect_used_ops_into(db, list, out);
+            collect_used_ops_into(db, index, out);
+            collect_used_ops_into(db, elem, out);
         }
         // A RUNTIME `List.at` reads the length (`vec-len`) for the bounds test and, in bounds, the
         // element (`vec-get`, which BORROWS → `dup` before the `Some` consumes it), then builds
@@ -1049,8 +1646,8 @@ pub fn collect_used_ops(
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
-            collect_used_ops(db, list, out);
-            collect_used_ops(db, index, out);
+            collect_used_ops_into(db, list, out);
+            collect_used_ops_into(db, index, out);
         }
         // A map construction is `map-empty` then a `map-insert` per entry (each key/value boxed by its
         // type). Mirrors the emit arm's op choices.
@@ -1073,8 +1670,8 @@ pub fn collect_used_ops(
                 if key_needs_compaction(db, *k) {
                     out.insert(OP_BYTES_COMPACT);
                 }
-                collect_used_ops(db, *k, out);
-                collect_used_ops(db, *v, out);
+                collect_used_ops_into(db, *k, out);
+                collect_used_ops_into(db, *v, out);
             }
         }
         // `Map.insert` = `map-insert`, boxing the key and value by their types.
@@ -1095,9 +1692,9 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, map, out);
-            collect_used_ops(db, key, out);
-            collect_used_ops(db, val, out);
+            collect_used_ops_into(db, map, out);
+            collect_used_ops_into(db, key, out);
+            collect_used_ops_into(db, val, out);
         }
         // A RUNTIME `Map.lookup`: box the key, `map-lookup` (→ the stored value handle, or NULL when
         // absent), then build `Some(value)` / `None` (`sum-new`, `arr-alloc(0)` for None's unit). The
@@ -1118,8 +1715,8 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, map, out);
-            collect_used_ops(db, key, out);
+            collect_used_ops_into(db, map, out);
+            collect_used_ops_into(db, key, out);
         }
         // `Map.remove` = `map-remove`, boxing the key by its type.
         Core::MapRemove { map, key, key_ty } => {
@@ -1130,13 +1727,13 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, map, out);
-            collect_used_ops(db, key, out);
+            collect_used_ops_into(db, map, out);
+            collect_used_ops_into(db, key, out);
         }
         // `Map.size` = `map-size` (→ u32, extended to i64) — reads the map operand.
         Core::MapSize { map } => {
             out.insert(OP_MAP_SIZE);
-            collect_used_ops(db, map, out);
+            collect_used_ops_into(db, map, out);
         }
         // A set construction is `set-empty` then a `set-insert` per element (each boxed by its type).
         Core::SetOf { elems, elem_ty } => {
@@ -1151,7 +1748,7 @@ pub fn collect_used_ops(
                 if key_needs_compaction(db, e) {
                     out.insert(OP_BYTES_COMPACT);
                 }
-                collect_used_ops(db, e, out);
+                collect_used_ops_into(db, e, out);
             }
         }
         // `Set.contains` = `set-contains` (→ bool), boxing the element (an owned temporary the emit drops).
@@ -1164,8 +1761,8 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, set, out);
-            collect_used_ops(db, elem, out);
+            collect_used_ops_into(db, set, out);
+            collect_used_ops_into(db, elem, out);
         }
         // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type.
         Core::SetInsert { set, elem, elem_ty } => {
@@ -1176,8 +1773,8 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, set, out);
-            collect_used_ops(db, elem, out);
+            collect_used_ops_into(db, set, out);
+            collect_used_ops_into(db, elem, out);
         }
         Core::SetRemove { set, elem, elem_ty } => {
             out.insert(OP_SET_REMOVE);
@@ -1187,13 +1784,13 @@ pub fn collect_used_ops(
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, set, out);
-            collect_used_ops(db, elem, out);
+            collect_used_ops_into(db, set, out);
+            collect_used_ops_into(db, elem, out);
         }
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
         Core::SetLen { set } => {
             out.insert(OP_SET_SIZE);
-            collect_used_ops(db, set, out);
+            collect_used_ops_into(db, set, out);
         }
         // A set-algebra op = the matching runtime op (consumes both operand sets).
         Core::SetAlgebra { op, lhs, rhs } => {
@@ -1202,8 +1799,8 @@ pub fn collect_used_ops(
                 crate::core::SetAlgebraOp::Intersection => OP_SET_INTERSECTION,
                 crate::core::SetAlgebraOp::Difference => OP_SET_DIFFERENCE,
             });
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
@@ -1214,8 +1811,8 @@ pub fn collect_used_ops(
             out.insert(OP_BOX_INT);
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
-            collect_used_ops(db, bytes, out);
-            collect_used_ops(db, index, out);
+            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into(db, index, out);
         }
         // `String.at` on a runtime string walks the UTF-8 buffer (`bytes-len`/`bytes-get`), slices the
         // scalar span (`bytes-slice`, which CONSUMES the string handle → the borrowed scan `dup`s first,
@@ -1232,20 +1829,20 @@ pub fn collect_used_ops(
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
-            collect_used_ops(db, string, out);
-            collect_used_ops(db, index, out);
+            collect_used_ops_into(db, string, out);
+            collect_used_ops_into(db, index, out);
         }
         // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
         // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
         Core::BytesConcat { lhs, rhs } => {
             out.insert(OP_BYTES_CONCAT);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop.
         Core::BigIntOfI64 { value } => {
             out.insert(OP_BIGINT_OF_I64);
-            collect_used_ops(db, value, out);
+            collect_used_ops_into(db, value, out);
         }
         // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
         // the borrowing call — see the `emit_bigint_borrow_*` helpers), plus `bigint-of-i64` when an
@@ -1254,7 +1851,7 @@ pub fn collect_used_ops(
             out.insert(OP_BIGINT_TO_I64_CHECKED);
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, operand, out);
-            collect_used_ops(db, operand, out);
+            collect_used_ops_into(db, operand, out);
         }
         Core::BigIntBinOp { op, lhs, rhs } => {
             out.insert(match op {
@@ -1267,8 +1864,8 @@ pub fn collect_used_ops(
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, lhs, out);
             insert_const_bigint_materialize_ops(db, rhs, out);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // A BigInt comparison imports `bigint-cmp` (the three-way primitive) AND `drop` (to reclaim an
         // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper),
@@ -1278,21 +1875,21 @@ pub fn collect_used_ops(
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, lhs, out);
             insert_const_bigint_materialize_ops(db, rhs, out);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // `Rational.of n d` on runtime ints — widen each to a BigInt (`bigint-of-i64`) then `rational-of`.
         Core::RationalOfInts { num, den } => {
             out.insert(OP_BIGINT_OF_I64);
             out.insert(OP_RATIONAL_OF);
-            collect_used_ops(db, num, out);
-            collect_used_ops(db, den, out);
+            collect_used_ops_into(db, num, out);
+            collect_used_ops_into(db, den, out);
         }
         // `Rational.of-int n` — widen `n` + the constant `1` to BigInt, then `rational-of`.
         Core::RationalOfIntWiden { value } => {
             out.insert(OP_BIGINT_OF_I64);
             out.insert(OP_RATIONAL_OF);
-            collect_used_ops(db, value, out);
+            collect_used_ops_into(db, value, out);
         }
         // The borrowing Rational arithmetic ops import their op + `drop` (reclaim an owned-temporary
         // operand after the borrowing call — the `emit_rational_borrow_binary` helper).
@@ -1304,14 +1901,14 @@ pub fn collect_used_ops(
                 crate::core::RationalOp::Div => OP_RATIONAL_DIV,
             });
             out.insert(OP_DROP);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         Core::RationalCmp { lhs, rhs, .. } => {
             out.insert(OP_RATIONAL_CMP);
             out.insert(OP_DROP);
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         Core::BytesSlice {
             bytes, start, len, ..
@@ -1321,44 +1918,46 @@ pub fn collect_used_ops(
             out.insert(OP_DROP); // the None branch drops the un-consumed bytes reference
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
-            collect_used_ops(db, bytes, out);
-            collect_used_ops(db, start, out);
-            collect_used_ops(db, len, out);
+            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into(db, start, out);
+            collect_used_ops_into(db, len, out);
         }
         Core::BytesCompact { operand } => {
             out.insert(OP_BYTES_COMPACT);
-            collect_used_ops(db, operand, out);
+            collect_used_ops_into(db, operand, out);
         }
         Core::If { cond, then_, else_ } => {
-            collect_used_ops(db, cond, out);
-            collect_used_ops(db, then_, out);
-            collect_used_ops(db, else_, out);
+            collect_used_ops_into(db, cond, out);
+            collect_used_ops_into(db, then_, out);
+            collect_used_ops_into(db, else_, out);
         }
         Core::Match { scrutinee, arms } => {
-            collect_used_ops(db, scrutinee, out);
+            collect_used_ops_into(db, scrutinee, out);
             for arm in arms {
                 if let Some(g) = arm.guard {
-                    collect_used_ops(db, g, out);
+                    collect_used_ops_into(db, g, out);
                 }
-                collect_used_ops(db, arm.body, out);
+                collect_used_ops_into(db, arm.body, out);
             }
         }
         Core::Let { bindings, body } => {
             for (binder, value) in &bindings {
                 // A HEAP-typed binding is `drop`'d after the body (Perceus) — so the program imports
-                // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.)
+                // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.) The `dup` a
+                // consumed-then-reused binding needs is imported ONCE at the `collect_used_ops` entry
+                // (over the whole body, covering params too), not per-binding here.
                 if is_heap_type(&type_of(db, *binder)) {
                     out.insert(OP_DROP);
                 }
-                collect_used_ops(db, *value, out);
+                collect_used_ops_into(db, *value, out);
             }
-            collect_used_ops(db, body, out);
+            collect_used_ops_into(db, body, out);
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
         // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
         // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING operand is
@@ -1370,15 +1969,17 @@ pub fn collect_used_ops(
             if operand_is_string(db, lhs) || operand_is_string(db, rhs) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops(db, lhs, out);
-            collect_used_ops(db, rhs, out);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
         }
-        Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            collect_used_ops_into(db, operand, out)
+        }
         Core::Call { args, .. } => {
             // A CONSTANT-BigInt argument to a BigInt param materializes via `bigint-of-i64` in the
             // `Core::ConstInt` collect arm (matching its emit) — no per-call special-case needed here.
             for arg in args {
-                collect_used_ops(db, arg, out);
+                collect_used_ops_into(db, arg, out);
             }
         }
         // A HOST CALL: mirror the `emit` arm's arg handling EXACTLY. A `Ty::String` argument is marshalled
@@ -1392,15 +1993,15 @@ pub fn collect_used_ops(
             for arg in args {
                 match crate::infer::type_of(db, arg) {
                     Ty::String | Ty::Unit => {}
-                    _ => collect_used_ops(db, arg, out),
+                    _ => collect_used_ops_into(db, arg, out),
                 }
             }
         }
         Core::Seq { stmts, tail } => {
             for s in stmts {
-                collect_used_ops(db, s, out);
+                collect_used_ops_into(db, s, out);
             }
-            collect_used_ops(db, tail, out);
+            collect_used_ops_into(db, tail, out);
         }
         Core::Record { fields } => {
             // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
@@ -1412,7 +2013,7 @@ pub fn collect_used_ops(
                 if let Ok(Some(op)) = box_op(db, *value) {
                     out.insert(op);
                 }
-                collect_used_ops(db, *value, out);
+                collect_used_ops_into(db, *value, out);
             }
         }
         // A sum construction always calls `sum-new`; the payload build mirrors `emit`'s `Core::SumNew`:
@@ -1435,7 +2036,7 @@ pub fn collect_used_ops(
                     if let Ok(Some(op)) = box_op(db, payloads[0]) {
                         out.insert(op);
                     }
-                    collect_used_ops(db, payloads[0], out);
+                    collect_used_ops_into(db, payloads[0], out);
                 }
                 _ => {
                     out.insert(OP_ARR_ALLOC);
@@ -1444,7 +2045,7 @@ pub fn collect_used_ops(
                         if let Ok(Some(op)) = box_op(db, *p) {
                             out.insert(op);
                         }
-                        collect_used_ops(db, *p, out);
+                        collect_used_ops_into(db, *p, out);
                     }
                 }
             }
@@ -1454,7 +2055,7 @@ pub fn collect_used_ops(
         // scrutinee + the root continuation are emitted (any op reachable in the tree must be imported) —
         // `collect_cont_ops` recurses switches/guards, inserting each switch's disc + walk ops.
         Core::MatchSum { scrutinee, root } => {
-            collect_used_ops(db, scrutinee, out);
+            collect_used_ops_into(db, scrutinee, out);
             collect_cont_ops(db, scrutinee, &root, out);
         }
         // A list match reads `vec-len` to dispatch by length; arm bodies' element/rest binders bring in
@@ -1462,12 +2063,12 @@ pub fn collect_used_ops(
         // emitted (its ops must be collected too).
         Core::MatchList { scrutinee, arms } => {
             out.insert(OP_VEC_LEN);
-            collect_used_ops(db, scrutinee, out);
+            collect_used_ops_into(db, scrutinee, out);
             for arm in &arms {
                 if let Some(g) = arm.guard {
-                    collect_used_ops(db, g, out);
+                    collect_used_ops_into(db, g, out);
                 }
-                collect_used_ops(db, arm.body, out);
+                collect_used_ops_into(db, arm.body, out);
             }
         }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
@@ -1495,7 +2096,7 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
-            collect_used_ops(db, scrutinee, out);
+            collect_used_ops_into(db, scrutinee, out);
         }
         // `expect` probes the discriminant (`sum-disc`) and, on the present arm, reads the payload
         // (`sum-payload`) then unboxes by the result type (`get-*`); the absent arm traps (no op). It also
@@ -1506,7 +2107,7 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
-            collect_used_ops(db, scrutinee, out);
+            collect_used_ops_into(db, scrutinee, out);
         }
         // A closure VALUE is a heap CELL — `arr-alloc(1 + captures)` then `arr-set` of `box-int(code)`
         // (slot 0) and each boxed capture. So it uses `arr-alloc`/`arr-set`/`box-int` always, plus the
@@ -1520,15 +2121,15 @@ pub fn collect_used_ops(
                 if let Ok(Some(op)) = box_op(db, c) {
                     out.insert(op);
                 }
-                collect_used_ops(db, c, out);
+                collect_used_ops_into(db, c, out);
             }
         }
         Core::CallClosure { closure, args } => {
             out.insert(OP_ARR_GET); // read the code slot from the cell
             out.insert(OP_GET_INT); // unbox it to the table index
-            collect_used_ops(db, closure, out);
+            collect_used_ops_into(db, closure, out);
             for arg in args {
-                collect_used_ops(db, arg, out);
+                collect_used_ops_into(db, arg, out);
             }
         }
         // A CAPTURED-variable read: `arr-get(env, 1+index)` then unbox by the captured value's type.
@@ -1759,6 +2360,17 @@ pub fn select_function_of(
         ret = Ty::Unit;
     }
     let mut code = Emit::new();
+    // Perceus RETAIN placement (soundness): find every occurrence that CONSUMES a heap binding (a param or
+    // a nested `let`) while that binding has a LATER live use, and record it so the emit `dup`s it. Without
+    // this a value consumed by `List.push`/`Map.insert`/… in one operand and read again in a later operand
+    // (or shared across two recursive-call operands) is mutated in place by the consuming op — a silent
+    // wrong value. Computed ONCE here over all heap binders; the set is empty for the common single-use
+    // body, so the FBIP fast path is unchanged. (See `collect_dup_sites`.)
+    {
+        let mut heap_binders: Vec<StructId> = Vec::new();
+        collect_retain_candidate_binders(db, body, &mut heap_binders);
+        collect_dup_sites(db, body, &heap_binders, &mut code.dup_sites);
+    }
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
     // scratch slot's VALUE TYPE (i32 for a ≤32-bit op, i64 otherwise) — a slot must be DECLARED at the
@@ -3945,6 +4557,21 @@ fn push_discriminant(
     Ok(())
 }
 
+/// Emit a reference to the binder at wasm `slot` (a `Core::Param`/`Core::LocalRef` occurrence `id`). Reads
+/// the persistent slot with `local.get`. If `id` is a RETAIN site (`collect_dup_sites` — this occurrence
+/// CONSUMES the binding while it has a later live use), a `dup` (rc++) is emitted FIRST so the consuming op
+/// spends a fresh reference and the binding's own reference survives for the later use. `dup` POPS its
+/// argument and returns nothing, so it reads the slot itself (`local.get slot; dup`) — leaving the stack
+/// unchanged — then the value is pushed for the consumer (`local.get slot`). A non-retain occurrence emits
+/// the single `local.get`, byte-identical to before (the common case; `dup_sites` is empty for most bodies).
+fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
+    if out.dup_sites.contains(&id) {
+        out.push(Lir::LocalGet(slot));
+        out.push(Lir::CallImport(OP_DUP)); // rc++ — pops this copy, returns nothing
+    }
+    out.push(Lir::LocalGet(slot));
+}
+
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
 /// name occurrence to its wasm local slot; `base` is the next free SCRATCH slot (a guarded op claims
 /// `[base, base+1, base+2]` and recurses operands at `base+3`); `high` is the running high-water mark of
@@ -6012,7 +6639,7 @@ fn emit(
         // decline rather than emit a wrong `local.get`.
         Core::Param { binder } => match slots.get(&binder) {
             Some(&slot) => {
-                out.push(Lir::LocalGet(slot));
+                emit_binder_ref(id, slot, out);
                 Ok(())
             }
             None => Err(Reject::decline("parameter reference has no local slot")),
@@ -6113,7 +6740,7 @@ fn emit(
         // compiler bug (a ref lowered as `LocalRef` without its binding kept), so decline.
         Core::LocalRef { binder } => match slots.get(&binder) {
             Some(&slot) => {
-                out.push(Lir::LocalGet(slot));
+                emit_binder_ref(id, slot, out);
                 Ok(())
             }
             None => Err(Reject::decline("let-binding reference has no local slot")),
