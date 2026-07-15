@@ -152,6 +152,8 @@ pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
 pass	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
+pass	Unit.in over a runtime Rational quantity keeps a fractional scale exact
+pass	Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
@@ -303,6 +305,11 @@ pass	a UInt32 addition that overflows the 32-bit width is rejected at compile ti
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a Unit element between two Int64s in a tuple, a later element read
+pass	a Unit element in a multi-payload sum variant compiles to valid wasm
+pass	a Unit projected from a function-returned tuple (owned-reclaim path)
+pass	a Unit projected out of a multi-payload sum and bound to a name
+pass	a Unit record field beside an Int64 field, the Int64 read
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` result is usable mid-body, not only in tail position
@@ -337,6 +344,8 @@ pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
+pass	a binding consumed in the left call arg while read in the right is retained
+pass	a binding consumed in the right call arg while read in the left is retained
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
@@ -689,6 +698,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflo
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
+pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order
@@ -1050,6 +1060,7 @@ pass	a nested chain of function calls compiles in linear time and folds to a con
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
+pass	a nested constant multiply preserves the inner overflow rather than combining the factors
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
 pass	a nested constructor pattern dispatches a RUNTIME two-sum value
@@ -1281,6 +1292,7 @@ pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
 pass	a recursive generic function called at one type twice shares a single instantiation
+pass	a recursive generic function is instantiated at three distinct machine shapes
 pass	a recursive generic function is instantiated at two different types
 pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument
@@ -1611,7 +1623,10 @@ pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template weaves a hole into its expansion
+pass	a tagged template whose tag is not a function is rejected
 pass	a tagged template whose tag is unbound is a scope error
+pass	a tagged template whose tag returns a non-Ast is a type error at the spliced site
+pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
@@ -2060,6 +2075,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
@@ -2573,6 +2589,7 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	stacked line comments on a top-level form are all seen through
+pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string concatenation
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
@@ -2736,6 +2753,7 @@ pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements are evaluated left to right
+pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region

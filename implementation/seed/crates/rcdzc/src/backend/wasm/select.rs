@@ -1482,6 +1482,57 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     }
 }
 
+/// Push the inline-unit sentinel a UNIT value occupies when it crosses into a value-heap slot. A `Unit`
+/// has NO machine slot (`valtype_of(Unit) = None`), so the value itself (`Core::Unit`) emits NOTHING — but
+/// a heap slot (a tuple/record element, a sum payload, a collection key/value/element, a closure capture)
+/// still needs SOME handle to keep its positional index aligned, so it holds `IMM_UNIT`: a low-bit-tagged
+/// immediate (RC-noop, no runtime import), the SAME sentinel a nullary/Unit-payload sum uses (see the
+/// `Core::SumNew` single-payload arm). Without this a Unit element pushed nothing and the following
+/// `arr-set`/`sum-new` underflowed the stack → an INVALID module.
+fn emit_unit_slot(out: &mut Emit) {
+    out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
+}
+
+/// Emit the heap-STORE tail AFTER a value node has been emitted (its machine slot is on the stack, or —
+/// for a `Unit` — NOTHING was pushed). Leaves exactly ONE handle for the following `arr-set`/`sum-new`/
+/// insert: a SCALAR boxes (extending a narrow int i32→i64 first, as `box-int` takes an i64 cell); a
+/// COMPOUND is already a u32 handle, left as-is; a UNIT substitutes the inline-unit sentinel (the value
+/// pushed nothing). `boxed` is the caller's `box_op`/`box_op_for` classification — passed, not recomputed,
+/// because a collection slot's box type may come from a DECLARED type, not the node — and both a compound
+/// handle AND a Unit map to `None`, so the Unit case is distinguished by the node's own solved type
+/// (stripping a nominal, exactly as `box_op_ty`'s recursion does). Any rope compaction the caller applies
+/// stays AFTER this call (compaction is String/Bytes-only, never a Unit).
+fn emit_heap_store_tail(db: &mut Db, node: StructId, boxed: Option<&'static str>, out: &mut Emit) {
+    match boxed {
+        Some(op) => {
+            emit_box_i32_to_i64_extend(db, node, out);
+            out.push(Lir::CallImport(op));
+        }
+        None if matches!(type_of(db, node).strip_nominal(), Ty::Unit) => emit_unit_slot(out),
+        None => {}
+    }
+}
+
+/// Emit the heap-READ tail AFTER `arr-get`/`sum-payload`/`vec-get` has pushed the slot's handle — the dual
+/// of [`emit_heap_store_tail`]. A SCALAR unboxes (`get-int`/`get-bool`/…, then a narrow int narrows
+/// i64→i32); a COMPOUND handle is used as-is; a UNIT DROPS the sentinel handle the read yielded, because a
+/// projected `Unit` leaves NO machine value (`valtype_of(Unit) = None`). Without the drop the `IMM_UNIT`
+/// handle stayed on the stack where nothing was expected → a stack-type mismatch (an INVALID module).
+/// `unboxed` is the caller's `get_op`/`get_op_ty` result (`None` for BOTH a compound and a Unit; the Unit
+/// case is distinguished by `id`'s solved type).
+fn emit_heap_read_tail(db: &mut Db, id: StructId, unboxed: Option<&'static str>, out: &mut Emit) {
+    match unboxed {
+        Some(op) => {
+            out.push(Lir::CallImport(op));
+            if needs_get_int_narrow(db, id) {
+                out.push(Lir::I32WrapI64);
+            }
+        }
+        None if matches!(type_of(db, id).strip_nominal(), Ty::Unit) => out.push(Lir::Drop),
+        None => {}
+    }
+}
+
 // The heap stores an integer as an i64 cell (`box-int` takes `s64`, `get-int` returns `s64`), but a
 // NARROW-width integer (`Int8`/`Int16`/`Int32`/`UInt8`…) lives in an i32 machine slot. So a narrow
 // element must be EXTENDED i32→i64 before `box-int`, and a narrow projection NARROWED i64→i32 after
@@ -1714,6 +1765,15 @@ fn collect_used_ops_into(
         // `List.len` uses `vec-len` and evaluates its operand.
         Core::ListLen { operand } => {
             out.insert(OP_VEC_LEN);
+            // RECLAMATION: a `vec-len` over an OWNED-temporary list drops it after the borrowing read
+            // (mirror the emit's reclaim condition so `drop` is imported). A borrowed param/local is not
+            // dropped (its owner reclaims).
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, operand, out);
         }
         // `Bytes.of` uses `bytes-alloc` + a `bytes-set` per element (each element is a raw byte — an
@@ -1757,6 +1817,14 @@ fn collect_used_ops_into(
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
             out.insert(OP_BYTES_LEN);
+            // RECLAMATION: a `bytes-len` over an OWNED-temporary bytes drops it after the borrow (mirror the
+            // emit); a borrowed param/local is not dropped (its owner reclaims).
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, operand, out);
         }
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
@@ -5193,11 +5261,10 @@ fn emit(
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, value, slots, field_base, high, scratch_ty, layout, out)?; // [arr, i, value]
                 // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
-                // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly.
-                if let Some(op) = box_op(db, value)? {
-                    emit_box_i32_to_i64_extend(db, value, out);
-                    out.push(Lir::CallImport(op)); // [arr, i, handle]
-                }
+                // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly;
+                // a UNIT field pushed nothing → its slot holds the inline-unit sentinel.
+                let boxed = box_op(db, value)?;
+                emit_heap_store_tail(db, value, boxed, out); // [arr, i, handle]
                 // Canonicalize a rope-capable String/Bytes field to a flat leaf on construction (see the
                 // `Core::Tuple` arm) — a record IS a tuple at run time, so the same nested-rope face.
                 if elem_needs_rope_compaction(db, value) {
@@ -5228,11 +5295,10 @@ fn emit(
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
-                // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box.
-                if let Some(op) = box_op(db, elem)? {
-                    emit_box_i32_to_i64_extend(db, elem, out);
-                    out.push(Lir::CallImport(op)); // [arr, i, handle]
-                }
+                // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box; a UNIT element
+                // pushed nothing → its slot holds the inline-unit sentinel.
+                let boxed = box_op(db, elem)?;
+                emit_heap_store_tail(db, elem, boxed, out); // [arr, i, handle]
                 // CANONICALIZE a rope-capable String/Bytes element to a flat leaf on construction (the
                 // nested-leaf twin of the `op_box_float` normalize-on-construct + the top-level `=`
                 // compaction), so the tagless `champ_eq`/`champ_hash` walk compares a nested string by
@@ -5261,10 +5327,8 @@ fn emit(
                 let elem_base = *high;
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
-                if let Some(op) = box_op(db, elem)? {
-                    emit_box_i32_to_i64_extend(db, elem, out);
-                    out.push(Lir::CallImport(op)); // [arr, i, handle]
-                }
+                let boxed = box_op(db, elem)?;
+                emit_heap_store_tail(db, elem, boxed, out); // [arr, i, handle]
                 // Canonicalize a rope-capable String/Bytes element to a flat leaf on construction (see
                 // the `Core::Tuple` arm) — a list element nested in a value-eq'd/keyed compound is the
                 // same nested-rope face.
@@ -5284,6 +5348,32 @@ fn emit(
         // ("expected i64, found i32"). A folded `List.len` over a literal never reaches here (it becomes
         // a `ConstInt`), which is why the constant control validated while the runtime case did not.
         Core::ListLen { operand } => {
+            // RECLAMATION (mirror the scalar-element `Core::Proj` reclaim): `vec-len` only BORROWS the list
+            // and returns a scalar COUNT, retaining nothing from the sequence. If the operand is a fresh
+            // OWNED TEMPORARY (a call result, a constructor — `heap_operand_ownership == Owned`) rather than
+            // a BORROW of a live binding (a param/local the owner reclaims), nothing else drops it, so it
+            // LEAKS one heap cell per call (`(List.len (build …))`). Stash it in a scratch slot across the
+            // borrowing `vec-len`, then `drop` it — the count is already a scalar on the stack. A BORROWED
+            // operand is left to its owner (declines to Owned only on a proven-fresh producer, else Borrowed
+            // — leak-safe: an unproven ownership just leaves it un-dropped, never double-frees).
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let list_slot = base;
+                if list_slot + 1 > *high {
+                    *high = list_slot + 1;
+                }
+                scratch_ty.insert(list_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [list]
+                out.push(Lir::LocalTee(list_slot)); // [list], list_slot = the owned list
+                out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32] (borrows the list)
+                out.push(Lir::LocalGet(list_slot)); // [len, list]
+                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
             out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
@@ -5576,6 +5666,27 @@ fn emit(
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.
         Core::BytesLen { operand } => {
+            // RECLAMATION (same as `Core::ListLen`): `bytes-len` BORROWS the bytes and returns a scalar
+            // count, so an OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell.
+            // A BORROWED param/local is left to its owner (leak-safe: Owned only on a proven-fresh producer).
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let bytes_slot = base;
+                if bytes_slot + 1 > *high {
+                    *high = bytes_slot + 1;
+                }
+                scratch_ty.insert(bytes_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+                out.push(Lir::LocalTee(bytes_slot)); // [bytes], bytes_slot = the owned bytes
+                out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32] (borrows the bytes)
+                out.push(Lir::LocalGet(bytes_slot)); // [len, bytes]
+                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
@@ -5587,10 +5698,8 @@ fn emit(
         Core::ListPush { list, elem } => {
             emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
-            if let Some(op) = box_op(db, elem)? {
-                emit_box_i32_to_i64_extend(db, elem, out);
-                out.push(Lir::CallImport(op)); // [list, handle]
-            }
+            let boxed = box_op(db, elem)?;
+            emit_heap_store_tail(db, elem, boxed, out); // [list, handle]
             out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list']
             Ok(())
         }
@@ -5629,10 +5738,8 @@ fn emit(
             out.push(Lir::LocalGet(idx_slot)); // [list, index:i64]
             out.push(Lir::I32WrapI64); // [list, index:i32] — now known to fit u32
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, index, elem]
-            if let Some(op) = box_op(db, elem)? {
-                emit_box_i32_to_i64_extend(db, elem, out);
-                out.push(Lir::CallImport(op)); // [list, index, handle]
-            }
+            let boxed = box_op(db, elem)?;
+            emit_heap_store_tail(db, elem, boxed, out); // [list, index, handle]
             out.push(Lir::CallImport(OP_VEC_UPDATE)); // → [list']
             Ok(())
         }
@@ -5668,38 +5775,31 @@ fn emit(
                     // `Ty::Nominal { inner: Unit }`, so a `(Result A E)`'s `Err` carries an `E` payload whose
                     // value is `Core::Unit` (it EMITS NOTHING — `valtype_of(Unit) = None`). This is the SAME
                     // shape as the 0-payload case above (a genuinely nullary variant): the payload handle is
-                    // the inline-unit constant `IMM_UNIT`. Push it directly so `sum-new` gets its payload arg,
-                    // rather than emitting the value (nothing) + a box (declined). Without this the payload
-                    // was absent and `sum-new` underflowed the stack (invalid wasm). This is reached only for
-                    // a value-carrying variant whose payload TYPE is Unit — the degenerate single-variant sum
-                    // as a boxed payload; a truly nullary variant took the `0 =>` arm.
-                    if matches!(type_of(db, p).strip_nominal(), Ty::Unit) {
-                        out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc, unit]
-                    } else {
-                        emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value]
-                        if let Some(op) = box_op(db, p)? {
-                            emit_box_i32_to_i64_extend(db, p, out);
-                            out.push(Lir::CallImport(op)); // [disc, payload-handle]
-                        }
-                        // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction
-                        // (see the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`)
-                        // is the sum-payload face of the nested-rope value-eq/key miss.
-                        if elem_needs_rope_compaction(db, p) {
-                            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, flat-leaf]
-                        }
+                    // the inline-unit sentinel `IMM_UNIT`, which `emit_heap_store_tail` substitutes when the
+                    // value pushed nothing. A SCALAR boxes; a compound payload is already a handle. Without
+                    // this the payload was absent and `sum-new` underflowed the stack (invalid wasm).
+                    emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value | nothing]
+                    let boxed = box_op(db, p)?;
+                    emit_heap_store_tail(db, p, boxed, out); // [disc, payload-handle]
+                    // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction (see
+                    // the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`) is the
+                    // sum-payload face of the nested-rope value-eq/key miss.
+                    if elem_needs_rope_compaction(db, p) {
+                        out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, flat-leaf]
                     }
                 }
                 n => {
-                    // Multiple payloads: build a tuple `arr` and box each into its position.
+                    // Multiple payloads: build a tuple `arr` and box each into its position. A UNIT payload
+                    // occupies its slot with the inline-unit sentinel (`emit_heap_store_tail`), keeping the
+                    // positional indices aligned — this is the `(A Int64 Unit)` shape whose Unit slot pushed
+                    // NOTHING before, underflowing the per-payload `arr-set` into invalid wasm.
                     out.push(Lir::ConstI32(n as i32)); // [disc, n]
                     out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, arr]
                     for (i, &p) in payloads.iter().enumerate() {
                         out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
                         emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
-                        if let Some(op) = box_op(db, p)? {
-                            emit_box_i32_to_i64_extend(db, p, out);
-                            out.push(Lir::CallImport(op)); // [disc, arr, i, handle]
-                        }
+                        let boxed = box_op(db, p)?;
+                        emit_heap_store_tail(db, p, boxed, out); // [disc, arr, i, handle]
                         // Canonicalize a rope-capable payload element on construction (see above).
                         if elem_needs_rope_compaction(db, p) {
                             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, arr, i, flat-leaf]
@@ -5816,18 +5916,14 @@ fn emit(
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-                if let Some(op) = box_op_for(db, k, &key_ty)? {
-                    emit_box_i32_to_i64_extend(db, k, out);
-                    out.push(Lir::CallImport(op)); // [map, key-handle]
-                }
+                let key_boxed = box_op_for(db, k, &key_ty)?;
+                emit_heap_store_tail(db, k, key_boxed, out); // [map, key-handle]
                 if key_needs_compaction(db, k) {
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-                if let Some(op) = box_op_for(db, v, &val_ty)? {
-                    emit_box_i32_to_i64_extend(db, v, out);
-                    out.push(Lir::CallImport(op)); // [map, key, val-handle]
-                }
+                let val_boxed = box_op_for(db, v, &val_ty)?;
+                emit_heap_store_tail(db, v, val_boxed, out); // [map, key, val-handle]
                 out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
             }
             Ok(()) // leaves [map] — the map handle
@@ -5844,18 +5940,14 @@ fn emit(
         } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_for(db, key, &key_ty)? {
-                emit_box_i32_to_i64_extend(db, key, out);
-                out.push(Lir::CallImport(op)); // [map, key-handle]
-            }
+            let key_boxed = box_op_for(db, key, &key_ty)?;
+            emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-            if let Some(op) = box_op_for(db, val, &val_ty)? {
-                emit_box_i32_to_i64_extend(db, val, out);
-                out.push(Lir::CallImport(op)); // [map, key, val-handle]
-            }
+            let val_boxed = box_op_for(db, val, &val_ty)?;
+            emit_heap_store_tail(db, val, val_boxed, out); // [map, key, val-handle]
             out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
             Ok(())
         }
@@ -5873,10 +5965,8 @@ fn emit(
             scratch_ty.insert(key_slot, ValType::I32);
             emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 1, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_for(db, key, &key_ty)? {
-                emit_box_i32_to_i64_extend(db, key, out);
-                out.push(Lir::CallImport(op)); // [map, key-handle]
-            }
+            let key_boxed = box_op_for(db, key, &key_ty)?;
+            emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
                 // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
@@ -5910,10 +6000,8 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in &elems {
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-                if let Some(op) = box_op_for(db, e, &elem_ty)? {
-                    emit_box_i32_to_i64_extend(db, e, out);
-                    out.push(Lir::CallImport(op)); // [set, elem-handle]
-                }
+                let elem_boxed = box_op_for(db, e, &elem_ty)?;
+                emit_heap_store_tail(db, e, elem_boxed, out); // [set, elem-handle]
                 if key_needs_compaction(db, e) {
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
                 }
@@ -5926,10 +6014,8 @@ fn emit(
         Core::SetInsert { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
-                emit_box_i32_to_i64_extend(db, elem, out);
-                out.push(Lir::CallImport(op)); // [set, elem-handle]
-            }
+            let elem_boxed = box_op_for(db, elem, &elem_ty)?;
+            emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
@@ -5949,10 +6035,8 @@ fn emit(
             scratch_ty.insert(elem_slot, ValType::I32);
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
-                emit_box_i32_to_i64_extend(db, elem, out);
-                out.push(Lir::CallImport(op)); // [set, elem-handle]
-            }
+            let elem_boxed = box_op_for(db, elem, &elem_ty)?;
+            emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
                 // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
@@ -6058,10 +6142,8 @@ fn emit(
             scratch_ty.insert(elem_slot, ValType::I32);
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
-                emit_box_i32_to_i64_extend(db, elem, out);
-                out.push(Lir::CallImport(op)); // [set, elem-handle]
-            }
+            let elem_boxed = box_op_for(db, elem, &elem_ty)?;
+            emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
                 // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
@@ -6115,10 +6197,8 @@ fn emit(
             scratch_ty.insert(val_slot, ValType::I32);
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_for(db, key, &key_ty)? {
-                emit_box_i32_to_i64_extend(db, key, out);
-                out.push(Lir::CallImport(op)); // [map, key-handle]
-            }
+            let key_boxed = box_op_for(db, key, &key_ty)?;
+            emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
                 // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
@@ -6735,6 +6815,12 @@ fn emit(
             // `heap_operand_ownership` declines an operand whose ownership it cannot prove, so an unhandled
             // shape rejects (Owned only on a proven-fresh producer), never leaks wrongly or double-frees.
             let scalar_elem = get_op(db, id)?;
+            // A UNIT element: `arr-get` yields the inline-unit sentinel, but a `Unit` projection leaves NO
+            // machine value (`valtype_of(Unit) = None`), so the sentinel must be DROPPED. Distinguished
+            // from a nested-compound element (both classify as `None`) by this node's solved type — and a
+            // Unit is never a live-compound FBIP target, so it skips the child-dup/retain logic below.
+            let unit_elem =
+                scalar_elem.is_none() && matches!(type_of(db, id).strip_nominal(), Ty::Unit);
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -6750,6 +6836,13 @@ fn emit(
                 out.push(Lir::ConstI32(index as i32)); // [handle, i]
                 out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle] (BORROWS the aggregate)
                 match scalar_elem {
+                    _ if unit_elem => {
+                        // Unit element: discard the sentinel `arr-get` yielded, then release the owned
+                        // aggregate — the projection leaves NOTHING on the stack.
+                        out.push(Lir::Drop); // [] (drop the inline-unit sentinel)
+                        out.push(Lir::LocalGet(agg_slot));
+                        out.push(Lir::CallImport(OP_DROP)); // [] (aggregate reclaimed)
+                    }
                     Some(op) => {
                         out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
                         if needs_get_int_narrow(db, id) {
@@ -6790,6 +6883,10 @@ fn emit(
                 if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
+            } else if unit_elem {
+                // A Unit element: drop the inline-unit sentinel `arr-get` yielded — the projection leaves
+                // NO machine value. (Never an FBIP-retained child, so it never reaches the dup branch.)
+                out.push(Lir::Drop);
             } else if out.dup_sites.contains(&id) {
                 // PERCEUS RETAIN of the projected CHILD (`collect_dup_sites`/`mark_binder_dups` marked this
                 // consuming nested-compound projection of a still-live binder): the `arr-get` returned the
@@ -6918,12 +7015,10 @@ fn emit(
                     }
                 }
             }
-            if let Some(op) = get_op(db, id)? {
-                out.push(Lir::CallImport(op)); // → [scalar]
-                if needs_get_int_narrow(db, id) {
-                    out.push(Lir::I32WrapI64);
-                }
-            }
+            // A scalar leaf unboxes; a compound handle is used as-is; a UNIT payload binder drops the
+            // inline-unit sentinel the walk landed on (a `Unit` binder holds no machine value).
+            let unboxed = get_op(db, id)?;
+            emit_heap_read_tail(db, id, unboxed, out); // → [scalar | handle | nothing]
             Ok(())
         }
         // `Option.expect` / `Result.expect` on a RUNTIME sum — probe the discriminant; on the PRESENT
@@ -7000,15 +7095,14 @@ fn emit(
                 out.push(Lir::I32Eq); // [present?]
             }
             out.push(Lir::If(block_ty));
-            // THEN — the present payload: sum-payload + unbox by result type.
+            // THEN — the present payload: sum-payload + unbox by result type. A scalar unboxes; a compound
+            // is used as-is; a UNIT result drops the inline-unit sentinel so the THEN leaves NOTHING —
+            // matching the `BlockType::Empty` a Unit result selects above (else a stray handle would defy
+            // the block's declared type).
             out.push(Lir::LocalGet(handle_slot));
             out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload-handle]
-            if let Some(op) = get_op(db, id)? {
-                out.push(Lir::CallImport(op)); // [scalar]
-                if needs_get_int_narrow(db, id) {
-                    out.push(Lir::I32WrapI64);
-                }
-            }
+            let unboxed = get_op(db, id)?;
+            emit_heap_read_tail(db, id, unboxed, out); // [scalar | handle | nothing]
             out.push(Lir::Else);
             // ELSE — absent variant: trap. `unreachable` leaves the stack polymorphic, so the block's
             // declared result type validates without a produced value.
@@ -7860,10 +7954,10 @@ fn emit(
             for (k, &cap) in captures.iter().enumerate() {
                 out.push(Lir::ConstI32(1 + k as i32)); // index
                 emit(db, cap, slots, base, high, scratch_ty, layout, out)?;
-                if let Some(op) = box_op(db, cap)? {
-                    emit_box_i32_to_i64_extend(db, cap, out);
-                    out.push(Lir::CallImport(op));
-                }
+                // A scalar capture boxes; a compound is stored as-is; a UNIT capture holds the inline-unit
+                // sentinel in its cell slot (the value pushed nothing).
+                let boxed = box_op(db, cap)?;
+                emit_heap_store_tail(db, cap, boxed, out);
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
             }
             Ok(())
@@ -7946,12 +8040,10 @@ fn emit(
             out.push(Lir::LocalGet(0)); // the env cell (lifted fn's 1st param)
             out.push(Lir::ConstI32(1 + index as i32));
             out.push(Lir::CallImport(OP_ARR_GET));
-            if let Some(op) = get_op(db, id)? {
-                out.push(Lir::CallImport(op));
-                if needs_get_int_narrow(db, id) {
-                    out.push(Lir::I32WrapI64);
-                }
-            }
+            // A scalar capture unboxes; a compound is used as-is; a UNIT capture drops the inline-unit
+            // sentinel the cell slot held (a `Unit`-typed captured variable has no machine value).
+            let unboxed = get_op(db, id)?;
+            emit_heap_read_tail(db, id, unboxed, out);
             Ok(())
         }
         // A HOST CALL — a perform delegated to the component boundary. Emit each scalar argument (in

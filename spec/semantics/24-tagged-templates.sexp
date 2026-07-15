@@ -89,3 +89,46 @@
                           (_           0)))
             (export main)))
   (output (: 42 Int64)))
+
+; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
+; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
+; strings and a list of the hole expressions to an abstract syntax tree." A tag bound to a NON-FUNCTION
+; is the ordinary "not a function" application error (CDZ0201) on the rewritten call; a tag whose result
+; type is NOT `Ast` is caught downstream at the spliced site (the design's "checked at the spliced site" —
+; Increment 1 needs no typed quotes). These pin that a mis-typed tag is rejected, not silently expanded.
+
+(case "a tagged template whose tag is not a function is rejected"
+  (doc    "`notfn` is bound to an Int64, not a function. `(tagged-template notfn …)` rewrites to the
+           application `(notfn (list …) (list …))`, which cannot apply a non-function — CDZ0201. Pins that
+           a tag must resolve to a FUNCTION (dispatch by binding requires the right kind).")
+  (input  (do
+            (def notfn 5)
+            (def (main) (tagged-template notfn (chunks "x") (holes)))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a tagged template whose tag returns a non-Ast is a type error at the spliced site"
+  (doc    "`wrongsig` returns an Int64, not an `Ast`. Its expansion is spliced where an `Ast` is expected
+           (here matched as a sum), so the mismatch is caught downstream — CDZ0203 (a variant pattern
+           cannot match an Int64 scrutinee). Pins the design's 'checked at the spliced site': a tag that
+           produces the wrong type is rejected as ordinary ill-typed code, not silently accepted.")
+  (input  (do
+            (def (wrongsig chunks holes) 5)
+            (def (main) (match (tagged-template wrongsig (chunks "x") (holes))
+                          ((Ast.Str s) 1)
+                          (_           0)))
+            (export main)))
+  (error  CDZ0203))
+
+(case "a tagged template's hole is threaded to the tag function and read"
+  (doc    "A `{expr}` hole is carried in `(holes …)` and reaches the tag function positionally. `first`
+           returns hole 0 unchanged; `(tagged-template first (chunks \"\" \"\") (holes (Ast.Int 7)))`
+           expands to `(Ast.Int 7)`, read here as 7. Pins that holes flow to the tag function (the
+           companion of the earlier weave case, isolating a bare pass-through hole).")
+  (input  (do
+            (def (first chunks holes) (match holes ((list h) h) (_ (Ast.Int 0))))
+            (def (main) (match (tagged-template first (chunks "" "") (holes (Ast.Int 7)))
+                          ((Ast.Int n) n)
+                          (_           0)))
+            (export main)))
+  (output (: 7 Int64)))

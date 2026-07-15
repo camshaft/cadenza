@@ -1,0 +1,29 @@
+# cdz-cad — the NATIVE mesh driver for Cadenza CAD (GH #400, increment G2).
+#
+# A Cadenza program describes a solid as a recursive `Solid` value (the `implementation/cad` library); its
+# single export crosses the component boundary ALREADY RENDERED to canonical s-expr text (the B1
+# "render-tree-as-data" seam — a compound result's `encode` yields text, see cdz-run). This crate is the
+# per-surface DRIVER that consumes that tree AS DATA: it PARSES the rendered `Solid` s-expr into a CSG tree,
+# then (a later sub-slice) walks it into the `manifold-csg` geometry kernel to produce a watertight mesh and
+# writes 3MF/glTF/STL. manifold is NOT a Cadenza WIT peer — it binds here, host-side, as an external kernel.
+#
+# cdz-cad is its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace, and the root
+# Cargo.toml `exclude`s this path — the SAME isolation cdz-smith uses. Reason: the mesh backend links
+# `manifold-csg`, whose `-sys` crate builds the C++ manifold3d library via cmake; keeping it out of the seed
+# workspace means a plain `cargo build --workspace` / the corpus gate never pays that C++/cmake build. A
+# dedicated CI job (like `cad-tests`/`gate`) builds+tests this crate on demand. This first sub-slice has NO
+# manifold dep yet (the parser + CSG tree are pure Rust), so it builds instantly; the dep joins with the
+# meshing sub-slice.
+[workspace]
+
+[package]
+name = "cdz-cad"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[lib]
+name = "cdz_cad"
+path = "src/lib.rs"

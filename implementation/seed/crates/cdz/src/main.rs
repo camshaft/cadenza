@@ -42,6 +42,10 @@ mod lsp;
 mod fix;
 use fix::{FileTree, OriginPaths, apply_fix_to_source, fix_edits};
 
+// The import-closure loader, shared by `cdz check`/… and `cdz lsp` (cross-file analysis).
+mod closure;
+use closure::{declared_import_paths, load as load_import_closure_with};
+
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
@@ -688,7 +692,7 @@ fn run_test_file(
     // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
     // `cdz check FILE` does. A file that imports nothing loads as a lone file, byte-identical to a
     // standalone single-file test compile; only a file carrying an `(import …)` pulls its siblings in.
-    let closure = match load_import_closure(file) {
+    let closure = match load_import_closure_with(file, &|_| None) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
@@ -1910,7 +1914,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     // A file that imports nothing loads as a lone file, byte-identical to a standalone check; only a file
     // carrying an `(import …)` pulls its transitively-imported siblings in. A diagnostic that lands in an
     // imported library is reported at THAT library's own `path:line:col` via the `link-map` demux below.
-    let files = match load_import_closure(&args.file) {
+    let files = match load_import_closure_with(&args.file, &|_| None) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
@@ -2845,56 +2849,6 @@ fn is_ml_source(file: &str) -> bool {
     file.ends_with(".cdz") || file.ends_with(".ml")
 }
 
-/// One source file loaded for a package check — its on-disk path, its package NAME (the stem an
-/// `(import "name" …)` resolves it by), and its parsed program (source text + arenas + span table).
-/// A cross-file diagnostic's GLOBAL node id demuxes (via the `link-map`) to one of these files, then
-/// its local id maps through THIS file's own `spans` to a `path:line:col`.
-struct LoadedFile {
-    /// On-disk path (what a diagnostic's `path:line:col` prints, and what the reporter's fixes edit).
-    path: String,
-    /// Package name = file stem — the identifier an `(import "stem" …)` names it by, and the `ast`
-    /// artifact name `link()` indexes it under.
-    name: String,
-    source: String,
-    arenas: cadenza_syntax::Arenas,
-    spans: cadenza_syntax::spans::SpanTable,
-    /// Count of RECOVERED parse errors (the ML reader never aborts — it prints each syntax error, then
-    /// returns a truncated arena of `<error>` placeholders). Nonzero means this file did not fully parse,
-    /// so `cdz check` must report FAILURE even when the recovered arena carries no semantic fault, and
-    /// suppress the `<error>`-placeholder cascade. Always `0` for an s-expr file (its reader hard-errors).
-    parse_errors: usize,
-}
-
-/// The IMPORT PATHS a top-level program declares — the `"path"` string of each `(import "path" …)`
-/// clause at the program's root. Used to walk a check's import closure (only the files the entry
-/// TRANSITIVELY imports are pulled in, not every sibling in the directory). Reads the arenas directly
-/// (the same shape `link::resolve_import_clause` parses): a root that is a `(do …)` has one item per
-/// child; a bare single top-level form is its own root. A malformed/aliased import (no string path)
-/// contributes nothing here — `link()` reports it as a diagnostic once the file is pulled in.
-fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
-    // Peel a leading `(comment/doc …)` off the root before matching `(do …)` — a doc'd program root is
-    // wrapped, and we must see the `(do …)` inside it to find the imports.
-    let root = unwrap_comment(arenas, arenas.root);
-    // The items to scan: a `(do …)` root's children, else the single root form itself.
-    let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
-        Some(tail) => tail.to_vec(),
-        None => vec![root],
-    };
-    let mut paths = Vec::new();
-    for item in items {
-        // A `//` line comment / `///` doc on an import wraps it as `(comment "…" (import …))`; peel the
-        // wrapper so the import is detected (else the closure walk misses it and `import` looks unmodeled).
-        let item = unwrap_comment(arenas, item);
-        if let Some(tail) = arenas.as_form(item, "import")
-            && let Some(&path_id) = tail.first()
-            && let Some(path) = arenas.as_str(path_id)
-        {
-            paths.push(path.to_string());
-        }
-    }
-    paths
-}
-
 // ── Project.cdz — the project manifest, written in Cadenza itself ──────────────────────────────────
 
 /// A project manifest read from a `Project.cdz` — the Cadenza-authored description of a project's
@@ -3147,78 +3101,6 @@ fn find_manifest_upward() -> Option<PathBuf> {
     }
 }
 
-/// Resolve an `(import "name" …)` path to a sibling source file in `dir`, trying each source
-/// extension in a fixed order (`.cdz`/`.ml`/`.sexp`/`.sexpr`). Returns the first that exists. `None`
-/// if no sibling file matches (the import is unresolved — `link()` will report the missing module).
-fn resolve_import_file(dir: &std::path::Path, name: &str) -> Option<String> {
-    for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
-        let candidate = dir.join(format!("{name}{ext}"));
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
-
-/// Load `entry` and the transitive closure of the files it `(import …)`s (resolved as siblings in the
-/// entry's directory). The entry is element 0; the rest are its imported libraries in
-/// breadth-first discovery order (deterministic). A file that fails to load, or an import naming no
-/// sibling file, is SKIPPED here (not fatal) — the compiler then reports the unresolved import as a
-/// normal diagnostic, so `cdz check` still surfaces a helpful error rather than aborting. Dedups by
-/// package name (the import target key), so a diamond or a cycle terminates.
-fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
-    let (source, arenas, spans, parse_errors) = load_program_spanned_counted(entry)?;
-    let dir = std::path::Path::new(entry)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-
-    let mut files = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // A work queue of import paths still to resolve; seed it from the entry's own imports.
-    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    let entry_name = program_name(entry);
-    seen.insert(entry_name.clone());
-    for p in declared_import_paths(&arenas) {
-        queue.push_back(p);
-    }
-    files.push(LoadedFile {
-        path: entry.to_string(),
-        name: entry_name,
-        source,
-        arenas,
-        spans,
-        parse_errors,
-    });
-
-    while let Some(name) = queue.pop_front() {
-        if !seen.insert(name.clone()) {
-            continue; // already loaded (dedup diamonds / break cycles)
-        }
-        let Some(path) = resolve_import_file(&dir, &name) else {
-            continue; // unresolved import — the compiler reports it as a diagnostic
-        };
-        let (source, arenas, spans, parse_errors) = match load_program_spanned_counted(&path) {
-            Ok(t) => t,
-            // An imported file that itself fails to parse: skip it (its importer will fault on the
-            // missing name). Don't abort the whole check on a library's parse error.
-            Err(_) => continue,
-        };
-        for p in declared_import_paths(&arenas) {
-            queue.push_back(p);
-        }
-        files.push(LoadedFile {
-            path,
-            name,
-            source,
-            arenas,
-            spans,
-            parse_errors,
-        });
-    }
-    Ok(files)
-}
-
 /// Read + parse a program file into its arenas AND span table. Format inferred from the extension
 /// (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr). The parse is the WHOLE-program form (`read_all_*`),
 /// matching how the gate normalizes a corpus program to an export shape.
@@ -3256,6 +3138,27 @@ fn load_program_spanned_counted(
     String,
 > {
     let source = std::fs::read_to_string(file).map_err(|e| format!("reading {file}: {e}"))?;
+    parse_program_spanned_counted(file, source)
+}
+
+/// Parse an already-read program `source` (whose surface is inferred from `file`'s extension) into its
+/// arenas + span table + recovered-parse-error count — the pure-parse core of
+/// [`load_program_spanned_counted`], split out so a caller holding the source by other means (an editor's
+/// in-memory buffer, via `cdz lsp`'s overlay) parses it WITHOUT a disk read. `file` names the surface and
+/// prefixes diagnostics; `source` is its text. Behaviour is byte-identical to the disk path (the disk
+/// wrapper is just `read_to_string` + this).
+pub(crate) fn parse_program_spanned_counted(
+    file: &str,
+    source: String,
+) -> Result<
+    (
+        String,
+        cadenza_syntax::Arenas,
+        cadenza_syntax::spans::SpanTable,
+        usize,
+    ),
+    String,
+> {
     // An EMPTY (or whitespace-only) source has NO top-level form — an "empty program" error on BOTH
     // surfaces (exits nonzero, `file:1:1: error: empty program`). Checked BEFORE the surface split so
     // both agree: the s-expr `read_all_spanned` fallback would otherwise build a rootless synthetic

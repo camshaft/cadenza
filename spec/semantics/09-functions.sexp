@@ -3390,6 +3390,28 @@
             (export main)))
   (output (: 42 Int64)))
 
+; The same generic recursive `loopn`, now instantiated at THREE distinct machine shapes in one program —
+; Int64 (an i64 slot), String (an i32 heap handle), and Bool (an i32 discriminant). Each is monomorphized
+; into its own function with the matching valtypes; the three copies coexist. Extends the two-type case to
+; confirm the per-type specialization count is not capped at two and that a heap-handle (String) and a
+; discriminant (Bool) instantiation live alongside the scalar one. `loopn 2 k = k`; `byte-len(loopn 1
+; "ab") = 2`; `loopn 1 true` is true → the `if` takes 100. So `k + 2 + 100 = k + 102`.
+
+(case "a recursive generic function is instantiated at three distinct machine shapes"
+  (doc    "`loopn` (threads its second arg unchanged, so it is generic) is called at Int64, String, AND
+           Bool in one program — three distinct machine shapes (i64 slot / i32 heap handle / i32
+           discriminant), each monomorphized into its own function. `loopn 2 k = k`; `byte-len(loopn 1
+           \"ab\") = 2`; `loopn 1 true` → true so the `if` takes 100. With runtime `k`: `k + 2 + 100`.
+           Pins that recursive-generic monomorphization scales past two instantiations and that a
+           heap-handle and a discriminant copy coexist with the scalar one.")
+  (input  (do
+            (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
+            (def (main (: k Int64))
+              (+ (loopn 2 k) (+ (String.byte-len (loopn 1 "ab")) (if (loopn 1 true) 100 0))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 107 Int64))
+  (call   main (: 40 Int64)) (output (: 142 Int64)))
+
 ; TRANSITIVE recursive-generic monomorphization — a generic recursive function that CALLS another
 ; generic recursive function, threading its own generic parameter, is itself generic (its result type is
 ; the callee's, which is the threaded param's). Genericity propagates through the call graph: the inner

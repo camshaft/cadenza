@@ -1509,6 +1509,24 @@ fn cdz_render_at(
         let groups = vec!["({} {})"; fields.len()].join(" ");
         return format!("format!(\"(record {groups})\", {})", args.join(", "));
     }
+    // A `(List T)` value is the Rust `Vec<T>` the backend emits — render it as cdz-run's canonical
+    // `(list e0 e1 …)` (empty → `(list)`), each element rendered as its own type `T`. Emit a Rust block
+    // that folds the elements into a `String`: iterate `&<path>` (borrow — the value may be read only
+    // here), render each element via a FRESH binder, and join under the `(list …)` wrapper. The element
+    // binder `__e{depth}` (keyed on path length) avoids a shadow-capture when the element is itself a
+    // list/sum. `.iter()` yields `&T`; the recursive render reads the binder, and default ref binding
+    // makes a `&i64`/`&(…)` `Display`/index fine, exactly as the Option/Result payload render relies on.
+    let ebind = format!("__e{}", path.len());
+    if let Some(args) = parse_head_type(ty, "List") {
+        let elem_ty = args.first().map(String::as_str).unwrap_or("");
+        let inner = cdz_render_at(
+            elem_ty, &ebind, sums, newtypes, sum_params, helpers, on_path,
+        );
+        // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
+        return format!(
+            "{{ let mut __s = String::from(\"(list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push(')'); __s }}"
+        );
+    }
     // The BUILT-IN `Option`/`Result` map to Rust's OWN `Option`/`Result`, so a value of one is rendered by
     // MATCHING it — the driver knows both variant shapes (`Some`/`None`, `Ok`/`Err`) and cdz-run's canonical
     // BARE form for a built-in variant (`(Some <p>)`, `(None unit)`, `(Ok <p>)`, `(Err <p>)`). The payload

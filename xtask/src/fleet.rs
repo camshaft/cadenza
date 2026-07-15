@@ -322,7 +322,10 @@ pub enum FleetCmd {
         /// Free-form detail (may be multiline).
         #[arg(long, default_value = "")]
         body: String,
-        /// Sender name (defaults to `$FLEET_AGENT` if the caller is itself an agent, else `unknown`).
+        /// Sender name. If omitted: falls back to `$FLEET_AGENT`, then to the current worktree's
+        /// `fleet/<agent>` branch (so a forgotten `--from` still routes), then `unknown`. A
+        /// reply-expecting kind (merge-request/ask/issue) is REFUSED if the sender resolves to
+        /// `unknown` (its reply would dead-letter).
         #[arg(long)]
         from: Option<String>,
         /// Deliver without nudging the recipient's window awake (it will pick the message up on its
@@ -825,9 +828,31 @@ fn send(
     from: Option<String>,
     no_wake: bool,
 ) {
+    // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it
+    // from the current worktree's branch (`fleet/<agent>` → `<agent>`). The derivation is the key
+    // hardening: an agent that forgets `--from` (and whose env lacks FLEET_AGENT) still sends under its
+    // real name, instead of `from=unknown` — which dead-letters pr-sync's merged/reject reply and
+    // silently loses the sender's knowledge that its MR landed/bounced (a confirmed fleet-wide drop
+    // amplifier). Only if NONE of those resolve do we fall to `unknown`.
     let from = from
-        .or_else(|| std::env::var("FLEET_AGENT").ok())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("FLEET_AGENT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| sender_from_branch(fleet))
         .unwrap_or_else(|| "unknown".to_string());
+    // A reply-EXPECTING message (the sender waits for a merged/reject/answer) MUST have a real sender,
+    // or the reply dead-letters and the sender idles forever. Refuse rather than send into the void.
+    if from == "unknown" && matches!(kind, "merge-request" | "ask" | "issue") {
+        eprintln!(
+            "fleet send: REFUSING a `{kind}` from an UNRESOLVED sender (would dead-letter the reply). \
+             Pass `--from <your-agent-name>` explicitly (or run from your agent worktree so it derives \
+             from the `fleet/<agent>` branch). A merge-request/ask/issue needs a routable sender."
+        );
+        std::process::exit(1);
+    }
     // A `merge-request` with no `--ref` is malformed: pr-sync integrates by the commit sha in `ref`,
     // and an empty one forces it to parse the body / guess — which has caused a premature merged-ack
     // against the WRONG commit. Warn loudly (still deliver — non-fatal) so the sender fixes it.
@@ -1728,6 +1753,33 @@ fn next_seq() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
     SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Derive the sending agent's name from the current worktree's git branch, which is `fleet/<agent>`
+/// for every non-pr-sync agent (pr-sync's is `trunk`). Returns `<agent>` for a `fleet/…` branch, or
+/// `pr-sync` when on `trunk` (that's pr-sync's worktree), else `None`. The worktree root is the parent
+/// of `fleet.src` (`<worktree>/fleet`). This is the `--from` fallback so a forgotten flag doesn't
+/// produce `from=unknown`.
+fn sender_from_branch(fleet: &Fleet) -> Option<String> {
+    let worktree = fleet.src.parent()?;
+    let out = Command::new("git")
+        .current_dir(worktree)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if branch.is_empty() {
+        None
+    } else if let Some(agent) = branch.strip_prefix("fleet/") {
+        Some(agent.to_string())
+    } else if branch == TRUNK {
+        Some("pr-sync".to_string())
+    } else {
+        None
+    }
 }
 
 /// The hub (main) repo root as an ABSOLUTE path, resolved from any worktree via the shared common

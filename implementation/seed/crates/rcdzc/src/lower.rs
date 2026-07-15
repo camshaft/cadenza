@@ -12271,6 +12271,40 @@ fn convert_operand_ast_bigint(
     Some(node)
 }
 
+/// The runtime Rational analogue: synthesize `value * (Rational.of num den)` for a `Unit.in` over a
+/// Rational-magnitude quantity. The value occurrence is q's erased Rational handle; the scale is a SINGLE
+/// exact rational literal `(Rational.of num den)`, so the `*` is one runtime `rational-mul` (routed by
+/// `rational_operand`, which peels Qty) — EXACT, no rounding and no separate divide (a rational carries
+/// its own denominator). `Unit.in` UNWRAPS → a bare Rational. Scale 1/1 is the identity (value unchanged).
+/// `None` if q's value occurrence is not recoverable (a non-`Qty.of` runtime magnitude — a later increment).
+fn convert_operand_ast_rational(
+    db: &mut Db,
+    operand: StructId,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    let value = crate::eval::qty_value_occ(db, operand)?;
+    if num == 1 && den == 1 {
+        return Some(value);
+    }
+    // `(Rational.of <num> <den>)` — an exact rational scale literal. `Rational.of` is member access.
+    let dot = db.push_name(".");
+    let rational = db.push_name("Rational");
+    let of = db.push_name("of");
+    let head = db.push_list(vec![dot, rational, of]);
+    let n_lit = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i128(num),
+        radix: crate::ast::Radix::Dec,
+    });
+    let d_lit = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i128(den),
+        radix: crate::ast::Radix::Dec,
+    });
+    let scale = db.push_list(vec![head, n_lit, d_lit]);
+    let mul_head = db.push_name("*");
+    Some(db.push_list(vec![mul_head, value, scale]))
+}
+
 /// A synthesized numeric literal node for a machine integer `v` — a float decimal `v.0` when `is_float`,
 /// else an integer literal. Used for the constant scale factors a runtime conversion multiplies by.
 fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
@@ -12389,9 +12423,19 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
             let scaled_den = vd.mul(&IntValue::from_i128(den));
             return normalized_rational(scaled_num, scaled_den);
         }
-        return Core::Poison(Reject::decline(
-            "Unit.in over a runtime Rational magnitude (not yet emitted)",
-        ));
+        // RUNTIME Rational — synthesize `value * (Rational.of num den)` and re-lower; the `*` sees a
+        // Rational operand and routes to the runtime `rational-*` op (`quantity_inner_is_rational` /
+        // `rational_operand` dispatch, both peel Qty). EXACT (rational multiply, no rounding); `Unit.in`
+        // UNWRAPS → a bare Rational. Scale 1/1 is the identity (the value unchanged). Mirrors the BigInt
+        // runtime arm.
+        match convert_operand_ast_rational(db, q, num, den) {
+            Some(node) => return core_of(db, node),
+            None => {
+                return Core::Poison(Reject::decline(
+                    "Unit.in over a runtime non-Qty.of Rational magnitude (not yet emitted)",
+                ));
+            }
+        }
     }
     // A BIGINT magnitude converts as `value * num / den` in UNBOUNDED bigint arithmetic — the value is a
     // heap handle, so the scale factors are materialized as `BigInt.of` and the `*`/`/` route to the
@@ -17123,12 +17167,28 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
 }
 
 /// Lower `(Set.to-list set)` → `Core::SetToList`. Always emits the runtime op (no const-fold): the
-/// canonical element ORDER is the runtime's sorted walk, so even a constant set must go through the
-/// runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
+/// canonical element ORDER is the runtime's sorted walk, so even a NON-EMPTY constant set must go through
+/// the runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
 /// comes from the operand set's solved `Ty::Set`, and bakes the shape descriptor the runtime orders by.
+///
+/// The ONE compile-time fold: a provably-EMPTY constant set (`Core::SetOf` with no elements) folds to the
+/// empty `Core::ListNew` — its canonical enumeration is `[]` regardless of element type, so no ordering
+/// descriptor is needed. This is also SOUNDNESS-load-bearing: an empty set LITERAL (`Set.of([])`) leaves
+/// its element type UNDETERMINED (a free `Ty::Var` — no element ever constrained it), and a var has no
+/// orderable shape descriptor. Without this fold `Set.to-list` on such a set declined at the BACKEND
+/// ("no orderable descriptor") though the type-checker accepted the program — a check/compile divergence.
+/// Folding it here (the element type is irrelevant to an empty enumeration) keeps the emit total.
 fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, set) {
         return Core::Poison(r);
+    }
+    // A compile-time-visible EMPTY constant set enumerates to the empty list — no descriptor, no element
+    // type needed. (A non-empty `SetOf` must still run the runtime op to observe canonical order.)
+    if let Core::SetOf { elems, .. } = core_of(db, set)
+        && elems.is_empty()
+    {
+        trace!(target: "rcdzc::fold", node = set.0, "Set.to-list folds an empty constant set to the empty list");
+        return Core::ListNew { elems: vec![] };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
         return Core::Poison(Reject::decline(

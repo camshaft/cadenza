@@ -776,6 +776,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let t = emit(db, operand, env, ctx)?;
             Ok(format!("({t}).{index}"))
         }
+        // A runtime LIST construction `(list e0 e1 …)` → the Rust `vec![e0, e1, …]` macro (an owned
+        // `Vec<T>`, the native map for `List T`). Elements are lowered on demand; a homogeneous element
+        // type, so no per-element boxing (unlike the wasm backend's typed `vec-push`). The empty list
+        // `(list)` → `vec![]` (its element type comes from the surrounding annotation, which the emitted
+        // `Vec<T>` signature fixes). A NEW `Vec` per construction — matching Cadenza's persistent
+        // list value semantics.
+        Core::ListNew { elems } => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                parts.push(emit(db, e, env, ctx)?);
+            }
+            Ok(format!("vec![{}]", parts.join(", ")))
+        }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
         // discriminant IS the variant's declaration-order position). A nullary variant is the bare
@@ -848,8 +861,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        Core::ListNew { .. }
-        | Core::ListLen { .. }
+        Core::ListLen { .. }
         | Core::ListPush { .. }
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }

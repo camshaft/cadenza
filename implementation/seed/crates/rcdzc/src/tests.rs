@@ -3826,6 +3826,64 @@ fn set_to_list_enumerates_in_canonical_order() {
     );
 }
 
+/// `Set.to-list` of a provably-EMPTY constant set folds to the empty list — no ordering descriptor, no
+/// element type needed. An empty `Set.of (list)` LITERAL has an UNDETERMINED element type (no element
+/// ever constrained it), so no shape descriptor can be baked; but an empty set enumerates to `[]`
+/// regardless of element type, so the compiler folds it straight to `Core::ListNew { elems: [] }`. This
+/// is a reject-don't-diverge fix: before the fold the type-checker ACCEPTED the program while the backend
+/// declined at emit ("no orderable descriptor") — a check/compile divergence. The FOLD unit needs no
+/// runtime; the wasmtime run (`#[ignore]`, needs the store) confirms the empty list has length 0.
+#[test]
+fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // FOLD unit: `(Set.to-list (Set.of (list)))` — an empty set literal, element type undetermined — folds
+    // to the empty `Core::ListNew` (NOT a `SetToList` needing a descriptor, NOT a decline).
+    let fold = |body: &str| -> Core {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main has a body");
+        core_of(&mut db, m_body)
+    };
+    match fold("(Set.to-list (Set.of (list)))") {
+        Core::ListNew { elems } => assert!(
+            elems.is_empty(),
+            "an empty set's to-list must fold to the EMPTY list, got {} elements",
+            elems.len()
+        ),
+        other => panic!(
+            "Set.to-list of an empty set must fold to an empty ListNew (no descriptor needed), got {other:?}"
+        ),
+    }
+    // The fold also fires through an inlined nullary call whose body is the empty-set literal — the
+    // element type is undetermined at the call site too, so the descriptor-free fold is what saves it.
+    match fold("(Set.to-list (Set.of (list 1 2)))") {
+        Core::SetToList { .. } => {} // a NON-empty constant set still emits the runtime op (canonical order)
+        other => panic!("a non-empty Set.to-list must emit the runtime op, got {other:?}"),
+    }
+}
+
+/// The wasmtime run for the empty-set fold: `(List.len (Set.to-list (Set.of (list))))` is 0, and the fold
+/// sees through an inlined nullary `(def (es) (Set.of (list)))` — the exact seed shape. Because the whole
+/// expression const-folds to `0`, the program imports NO runtime (`run_returns`, not `ComposedRuntime`),
+/// so no store is needed and this need not be `#[ignore]`.
+#[test]
+fn set_to_list_of_an_empty_set_runs_to_the_empty_list() {
+    use crate::testkit::parse;
+    // Through an inlined nullary call whose element type is undetermined — the exact seed shape.
+    let src = "(module m (def (es) (Set.of (list))) \
+               (def (main) (List.len (Set.to-list (es)))) (export main))";
+    let comp =
+        compile_component(&crate::codec::encode(&parse(src))).expect("empty Set.to-list compiles");
+    assert_eq!(
+        run_returns::<i64>(&comp, "main"),
+        0,
+        "Set.to-list of an empty set is the empty list — length 0"
+    );
+}
+
 /// `Map.to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order — the map
 /// companion of `Set.to-list`, realizing collections-and-text.md §A Map Renders As Its Entries In
 /// Canonical Key Order. Runs under wasmtime: the first entry's KEY is the smallest (canonical, not
@@ -24027,6 +24085,41 @@ mod match_engine {
     }
 
     #[test]
+    fn list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner() {
+        // LEAK reclamation (mirror the scalar-element `Core::Proj` reclaim): `vec-len` BORROWS the list and
+        // returns a scalar count, so an OWNED-TEMPORARY operand (`List.len (build …)` — a fresh list used
+        // once) must be dropped after the borrow, or it leaks one heap cell per call. The emit imports
+        // `drop` for that case and NOT for a borrowed param/local (whose owner reclaims).
+        let owned = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) (build 0 3 (list)))) (export main))";
+        assert!(
+            component_imports_op(&component(owned), "drop"),
+            "List.len over an owned-temporary list must import `drop` (reclaim the temporary — leak fix)"
+        );
+        if let Some(out) = run_on_heap(owned) {
+            assert_eq!(
+                out, "3",
+                "the value is unchanged by the reclaim (leak-only fix)"
+            );
+        }
+        // A BORROWED list — bound to a `let` and ALSO consumed later (so it is a kept binding the owner
+        // reclaims, NOT an owned temporary of the `List.len`) — must NOT be dropped by the len (that would
+        // free it before the later use → double-free/UAF). Value stays correct: len xs (3) + len(push) (4)
+        // = 7. This guards the reclaim gate against firing on a borrowed operand.
+        let borrowed = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                             (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main))";
+        if let Some(out) = run_on_heap(borrowed) {
+            assert_eq!(
+                out, "7",
+                "a borrowed list read by List.len must not be freed early (owner reclaims)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
@@ -25805,6 +25898,54 @@ mod match_engine {
             .unwrap(),
             "15",
             "a multi-payload ctor guard reads both payloads: 7+8=15 > 10 → 15"
+        );
+    }
+
+    #[test]
+    fn a_guard_on_a_tuple_arm_reads_its_element_binders() {
+        // REGRESSION (false CDZ0101): a user `(guard …)` on a TUPLE-match arm reading the tuple's element
+        // binders — `(guard (tuple a b) (> (+ a b) 5))` — falsely reported CDZ0101 "unbound name `a`" (at
+        // BOTH check and compile). ROOT: no guard-cond resolution case handled a tuple pattern —
+        // `guard_cond_variant_binds` uses `find_binder_in_pattern`, which EXCLUDES the `tuple`/`list`/… heads,
+        // and only `guard_cond_list_binds` covered the list case. FIX: a new `guard_cond_tuple_binds` (Case
+        // 6tg) routes a `(guard (tuple …) cond)` to `find_binder_in_tuple`, so an element binder resolves to
+        // a `SumPayload` at its `Elem(i)` path — the tuple analogue of Inc-5's list-guard support.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: t (Tuple Int64 Int64))) \
+               (match t ((guard (tuple a b) (> (+ a b) 5)) (+ a b)) (_ -1))) \
+             (def (main (: k Int64)) (f (tuple k 4))) (export main))",
+            vec!["3".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping tuple-guard-binder run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "the tuple guard reads a=3,b=4; (> 7 5) holds → a+b = 7"
+        );
+        // Guard FALSE → falls through.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: t (Tuple Int64 Int64))) \
+                   (match t ((guard (tuple a b) (> (+ a b) 5)) (+ a b)) (_ -1))) \
+                 (def (main (: k Int64)) (f (tuple k 1))) (export main))",
+                vec!["1".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a=1,b=1 → (> 2 5) false → falls through to the catch-all"
+        );
+        // A NESTED ctor binder inside the tuple: `(guard (tuple (Some n) m) …)` reads `n` AND `m`.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+                   (match t ((guard (tuple (Some n) m) (> (+ n m) 5)) (+ n m)) (_ -1))) \
+                 (def (main) (f (tuple (Some 3) 4))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "7",
+            "the tuple guard reads a NESTED ctor payload binder n plus the element binder m: 3+4=7 > 5 → 7"
         );
     }
 
@@ -31265,6 +31406,91 @@ mod match_engine {
     }
 
     #[test]
+    fn a_unit_element_in_a_heap_compound_compiles_to_valid_wasm_and_runs() {
+        // REGRESSION (Copilot PR #402): a `Ty::Unit` element in a HEAP-STORED compound — a multi-payload
+        // sum variant, a tuple, a record — produced INVALID wasm. `box_op`/`get_op` returned `Ok(None)`
+        // for a Unit exactly as for a nested-compound handle, so the Unit element (whose value emits
+        // NOTHING) pushed no handle → the following `arr-set`/`sum-new` underflowed the stack, failing wasm
+        // validation. A Unit now occupies its slot with the inline-unit sentinel (`emit_heap_store_tail`)
+        // and a Unit projection drops it (`emit_heap_read_tail`). Each case both VALIDATES (component
+        // instantiates against the runtime) and RUNS to its value. These import the value heap, so they run
+        // through the composed runtime (`find_runtime_wasm` + `cdz_run::run`), not the empty-linker path.
+        let cases = [
+            // A sum variant `(A Int64 Unit)`: construct with a Unit 2nd payload, match out the Int64 → 5.
+            // This is the seed reproducer — before the fix its Unit payload underflowed `sum-new`.
+            (
+                "(module m \
+                   (type T (A Int64 Unit) (B)) \
+                   (def (get (: t T)) (match t (((. T A) n _) n) (((. T B)) 0))) \
+                   (def (main) (get ((. T A) 5 unit))) (export main))",
+                "5",
+            ),
+            // A Unit BETWEEN two Int64s in a tuple, projecting the element AFTER it — the Unit slot must
+            // keep the positional layout so slot 2 is still the third element → 7.
+            (
+                "(module m (def (main) (. (tuple 5 unit 7) 2)) (export main))",
+                "7",
+            ),
+            // A Unit RECORD field beside an Int64 field, the Int64 read → 5 (a record IS a positional array).
+            (
+                "(module m (def (main) (. (record (a 5) (u unit)) a)) (export main))",
+                "5",
+            ),
+            // The READ side: bind the Unit payload of a multi-payload sum (its projection drops the
+            // sentinel), materialize it via a `let`, and return the Int64 → 8.
+            (
+                "(module m \
+                   (type T (A Int64 Unit)) \
+                   (def (get (: t T)) (match t (((. T A) n u) (let ((x u)) n)))) \
+                   (def (main) (get ((. T A) 8 unit))) (export main))",
+                "8",
+            ),
+            // The owned-reclaim projection path: project the Unit slot of a FRESH function-returned tuple —
+            // the read drops the sentinel AND reclaims the owned aggregate without derailing on the Unit → 11.
+            (
+                "(module m \
+                   (def (mk) (tuple 5 unit)) \
+                   (def (main) (let ((u (. (mk) 1))) 11)) (export main))",
+                "11",
+            ),
+        ];
+        let runtime = super::find_runtime_wasm();
+        for (src, want) in cases {
+            // The whole point of the regression: this MUST produce a valid component (before the fix a
+            // Unit element failed wasm validation, so `compile_component` itself surfaced the invalid
+            // module downstream). A case that imports the value heap (the sum constructions) runs through
+            // the composed runtime; a case that folds its Unit compound to a constant runs on the empty
+            // linker. Drive by whether the runtime is actually imported.
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .expect("a Unit-in-heap compound must compile to a valid component");
+            if cdz_run::required_runtime(&bytes).expect("valid").is_none() {
+                // A constant-folded compound (`(. (tuple 5 unit 7) 2)`): no heap import, empty linker runs it.
+                assert_eq!(
+                    run_returns::<i64>(&bytes, "main"),
+                    want.parse::<i64>().unwrap(),
+                    "folded: {src}"
+                );
+                continue;
+            }
+            let Some(runtime) = runtime.clone() else {
+                eprintln!("runtime wasm not found; skipping composed Unit-in-heap run");
+                continue;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: Vec::new(),
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "case: {src}"),
+                cdz_run::Outcome::Trap(t) => panic!("Unit-in-heap compound trapped: {t} — {src}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_map_pattern_nested_in_a_tuple_binds_its_value_binder() {
         // 05-compound-types "a map pattern nested in a tuple binds its value binder". A `(map (k v) …)`
         // key-directed pattern NESTED inside a tuple pattern binds its value at the map's sub-path of the
@@ -32079,6 +32305,27 @@ mod match_engine {
         assert!(
             rendered.contains("3000"),
             "3 km (BigInt) in meters unwraps to the bare BigInt 3000: {rendered}"
+        );
+    }
+
+    #[test]
+    fn unit_in_over_a_rational_quantity_converts_exactly_and_unwraps() {
+        // `lower_unit_in` gained a runtime Rational arm: `(Unit.in meter (Qty.of (Rational.of 1 1) inch))`
+        // converts by the exact scale (inch = 127/5000 m) via a runtime `rational-mul` and UNWRAPS to a
+        // bare Rational — 127/5000, EXACT (no rounding, unlike Int/BigInt which truncate a non-whole
+        // ratio). Previously the runtime Rational case declined ("not yet emitted"). Uses the FULL runtime;
+        // skips if absent. Here the magnitude is narrowed from a runtime BigInt so it does not fold.
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) ((. Rational of-int) ((. Int64 of) ((. BigInt of) 1))) \
+                                 ((. Unit of) #\"inch\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate covers the runtime form e2e
+        };
+        assert!(
+            rendered.contains("127/5000"),
+            "1 inch (Rational) in meters unwraps to the exact bare Rational 127/5000: {rendered}"
         );
     }
 
@@ -37252,6 +37499,41 @@ mod stage1 {
         )))
         .expect("a recursive generic at one type twice dedups to one instantiation");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
+    fn a_recursive_generic_is_instantiated_at_three_distinct_machine_shapes() {
+        // COVERAGE (v-inference): recursive-generic monomorphization scales past TWO instantiations. `loopn`
+        // (threads its 2nd arg unchanged → generic) is called at Int64, String, AND Bool in one program —
+        // three distinct machine shapes (i64 slot / i32 heap handle / i32 discriminant), each monomorphized
+        // into its own function; the three copies coexist. `loopn 2 k = k`; `byte-len(loopn 1 "ab") = 2`;
+        // `loopn 1 true` → true so the `if` takes 100. With a runtime boundary `k`: `k + 2 + 100`. Uses the
+        // value heap (the String), so SKIPS when the runtime store is absent. Pins that the per-type
+        // specialization count is not capped at two and a heap-handle + discriminant copy coexist with the
+        // scalar one.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main (: k Int64)) \
+                 (+ (loopn 2 k) (+ (String.byte-len (loopn 1 \"ab\")) (if (loopn 1 true) 100 0)))) \
+               (export main))",
+        )))
+        .expect("a recursive generic at Int64+String+Bool compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping three-shape recursive-generic run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(v, "107", "5 + byte-len(ab)=2 + 100"),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
     }
 
     #[test]
