@@ -71,3 +71,5 @@ the template — same `first_diff` + `pairs[..diff_idx]` trap-free scan.
 ## Verified
 Built `cdz`+`cdz-run` at trunk `3ba79db6b`, compiled + RAN both the buggy and control programs above;
 trap kinds are as stated. This is a genuine miscompile, not a hunch.
+
+<!-- RESOLVED 2026-07-15 (trunk@00f7d341e): hoist_common_arith order guard added (covers Arith + Compare + Convert via the shared guard point). A trapping shared operand no longer preempts a trapping cond — the overflow-cond case now traps overflow (cond-first), not the shared ÷0. Compare-head face pinned too. -->

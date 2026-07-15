@@ -14,10 +14,11 @@
 //!
 //! Capabilities implemented so far: the `initialize`/`shutdown` handshake, full-document sync
 //! (`didOpen`/`didChange`/`didClose`), `textDocument/publishDiagnostics` (← the `Diagnostics` query),
-//! `textDocument/hover` (← the `TypeAt` query), and `textDocument/semanticTokens/full` (← the
-//! `Highlight` query). Go-to-definition (← `ResolveOf`), references (← `UsesOf`), completion (←
-//! `ScopeAt`), and code actions (← the `Diagnostics` fix columns) are the next increments — each a
-//! read of a column the query engine already exposes, wired to its LSP request.
+//! `textDocument/hover` (← the `TypeAt` query), `textDocument/semanticTokens/full` (← the `Highlight`
+//! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`), and
+//! `textDocument/completion` (← `ScopeAt` + `Symbols`). Code actions (← the `Diagnostics` fix columns)
+//! are the next increment — each a read of a column the query engine already exposes, wired to its LSP
+//! request.
 
 use std::collections::HashMap;
 
@@ -26,13 +27,18 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
     PublishDiagnostics,
 };
-use lsp_types::request::{HoverRequest, Request as _, SemanticTokensFullRequest, Shutdown};
+use lsp_types::request::{
+    Completion, GotoDefinition, HoverRequest, References, Request as _, SemanticTokensFullRequest,
+    Shutdown,
+};
 use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, MarkedString, Position, PublishDiagnosticsParams, Range,
-    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
+    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
     TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
@@ -47,22 +53,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
     // stray `println!` would corrupt the stream). Diagnostic logging, if any, goes to stderr.
     let (connection, io_threads) = Connection::stdio();
 
-    // The initialize handshake: advertise the capabilities this server supports, then serve until exit.
-    let server_capabilities = serde_json::to_value(capabilities())?;
-    let init_params = connection.initialize(server_capabilities)?;
+    // The initialize handshake, done in two steps so the response carries the FULL `InitializeResult` —
+    // NOT just the capabilities. The convenience `Connection::initialize(caps)` replies with only the
+    // capabilities value, so a client never learns the server's name/version; `initialize_start` +
+    // `initialize_finish` let us send `serverInfo` alongside the capabilities (some clients surface the
+    // server name/version in their UI and logs, which is how an editor confirms it is talking to `cdz`).
+    let (init_id, init_params) = connection.initialize_start()?;
     let _init: InitializeParams = serde_json::from_value(init_params)?;
-
-    // Announce our name/version in the InitializeResult too — some clients surface it. `initialize`
-    // already replied with the capabilities value; this is informational and folded into the same reply
-    // by `lsp_server`, so we only need to have supplied the capabilities above. (Kept for clarity of
-    // what the server reports; `InitializeResult` is constructed to document the shape.)
-    let _ = InitializeResult {
-        capabilities: capabilities(),
-        server_info: Some(ServerInfo {
-            name: "cdz-lsp".to_string(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        }),
-    };
+    connection.initialize_finish(init_id, serde_json::to_value(initialize_result())?)?;
 
     // Serve until the client shuts the connection down. `serve` takes the connection BY VALUE and drops
     // it on return — this is load-bearing: `io_threads.join()` waits for the writer thread, which only
@@ -80,12 +78,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// document on each change — simplest correct model; incremental sync is a later refinement),
 /// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
 /// capability flag beyond sync is required for the classic push model), `hover` (the "type at
-/// cursor" read, backed by the `TypeAt` query), and `semanticTokens/full` (colour-by-meaning,
-/// backed by the `Highlight` query — the token legend is `semantic_token_legend`).
+/// cursor" read, backed by the `TypeAt` query), `definition` (go-to, backed by `ResolveOf`),
+/// `references` (find-all-uses, backed by `UsesOf`), `completion` (scope bindings + top-level symbols,
+/// backed by `ScopeAt` + `Symbols`), and `semanticTokens/full` (colour-by-meaning, backed by the
+/// `Highlight` query — the token legend is `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        // Completion with no trigger characters — the client invokes it on the usual identifier typing /
+        // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
+        // filter by the typed prefix (the standard "server offers, client filters" model).
+        completion_provider: Some(CompletionOptions::default()),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -97,6 +103,20 @@ fn capabilities() -> ServerCapabilities {
             },
         )),
         ..Default::default()
+    }
+}
+
+/// The full `InitializeResult` the server replies to `initialize` with — its `capabilities` PLUS its
+/// `serverInfo` (name/version). Sent via `initialize_finish` (NOT the convenience `Connection::
+/// initialize`, which would drop everything but the capabilities), so a client learns which server and
+/// version it is talking to.
+fn initialize_result() -> InitializeResult {
+    InitializeResult {
+        capabilities: capabilities(),
+        server_info: Some(ServerInfo {
+            name: "cdz-lsp".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
     }
 }
 
@@ -218,6 +238,21 @@ impl Server {
                 let result = self.semantic_tokens(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            GotoDefinition::METHOD => {
+                let (id, params) = cast_request::<GotoDefinition>(req)?;
+                let result = self.goto_definition(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            References::METHOD => {
+                let (id, params) = cast_request::<References>(req)?;
+                let result = self.references(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            Completion::METHOD => {
+                let (id, params) = cast_request::<Completion>(req)?;
+                let result = self.completion(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -253,6 +288,45 @@ impl Server {
             result_id: None,
             data: tokens,
         }))
+    }
+
+    /// Answer a `textDocument/definition`: resolve the cursor's reference to its DEFINING occurrence
+    /// (backed by the `ResolveOf` query — a def name, a `let` initializer, a parameter binder), returned
+    /// as a `Location` in the same document. `None` when the document is not open, the position is not a
+    /// navigable reference, or the target has no source span (a prelude/built-in binding) — total.
+    fn goto_definition(&self, params: &GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let loc = definition_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
+        Some(GotoDefinitionResponse::Scalar(loc))
+    }
+
+    /// Answer a `textDocument/references`: every occurrence that references the SAME definition as the
+    /// name under the cursor (backed by the `UsesOf` query, keyed by the cursor's name). Honors the
+    /// client's `include_declaration` flag — when set, the definition's own name occurrence is added.
+    /// `None`/empty when the cursor is not on a name or the name has no references — total.
+    fn references(&self, params: &ReferenceParams) -> Option<Vec<Location>> {
+        let pos = &params.text_document_position;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let include_decl = params.context.include_declaration;
+        Some(references_at(
+            &doc.text,
+            doc.is_ml,
+            pos.position,
+            &pos.text_document.uri,
+            include_decl,
+        ))
+    }
+
+    /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
+    /// `ScopeAt`, with their types) plus the module's top-level declarations (backed by `Symbols`),
+    /// deduped by name (a local shadows a top-level of the same name). The client filters this candidate
+    /// set by the typed prefix. `None` when the document is not open; an empty list otherwise (total).
+    fn completion(&self, params: &CompletionParams) -> Option<CompletionResponse> {
+        let pos = &params.text_document_position;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let items = completions_at(&doc.text, doc.is_ml, pos.position);
+        Some(CompletionResponse::Array(items))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -463,7 +537,15 @@ fn parse_surface(
 > {
     if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(text);
-        Ok((parsed.arenas, parsed.spans, parsed.errors))
+        // CANONICALIZE the ML arena and remap the spans — the SAME normalization `load_program_spanned`
+        // (the one-shot subcommands' loader) applies before handing the program to the compiler. This is
+        // load-bearing for every NODE-ID-keyed query (definition/references/hover/tokens): the compiler
+        // resolves + types over the CANONICAL arena, so a raw `read_ml` arena's node ids would not line up
+        // with the ids the queries answer in — a go-to-definition would then jump to the wrong node. The
+        // remapped span table keeps `node_at_offset` and each answer id pointing at the right source range.
+        let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
+        let spans = parsed.spans.remap(&id_map, arenas.structure.len());
+        Ok((arenas, spans, parsed.errors))
     } else {
         // The s-expr surface: a single top-level form stays bare (mirrors the ML root convention), else
         // wrap in `(do …)`. `read_spanned` succeeds iff there is exactly one form; fall back to the
@@ -630,6 +712,198 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
         contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
         range,
     })
+}
+
+// ── the analysis: cursor → definition / references, via the `ResolveOf` / `UsesOf` queries ───────────
+
+/// Run a single sidecar `query` over `arenas` and return its answer artifact of `kind` as text, or
+/// `None` if the compile produced no such artifact. Shared by the query-backed analyses.
+fn run_query_text(
+    arenas: &cadenza_syntax::Arenas,
+    query: rcdzc::sidecar::Query,
+    kind: &str,
+) -> Option<String> {
+    let ast_bytes = cadenza_syntax::codec::encode(arenas);
+    let sidecar_bytes = rcdzc::sidecar::encode(&[rcdzc::Request::Query(query)]);
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
+    ];
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    compiled
+        .artifact(kind)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+}
+
+/// The `Location` (in `uri`) of a node id in `spans`, or `None` if the node has no recorded span (a
+/// prelude/built-in/synthesized node — nothing to navigate to).
+fn node_location(
+    text: &str,
+    spans: &cadenza_syntax::spans::SpanTable,
+    uri: &Uri,
+    node: u32,
+) -> Option<Location> {
+    let span = spans.get(cadenza_syntax::StructId(node))?;
+    Some(Location {
+        uri: uri.clone(),
+        range: byte_range_to_range(text, span.start, span.end),
+    })
+}
+
+/// Go-to-definition: resolve the reference under `pos` to its defining occurrence (the `ResolveOf`
+/// query) and return its `Location`. `None` when the buffer does not parse, the position maps to no
+/// node, the node is not a navigable reference, or the target has no source span — total.
+fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Location> {
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    let byte = position_to_byte(text, pos);
+    let node = spans.node_at_offset(byte)?;
+    let answer = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::ResolveOf { node: node.0 },
+        rcdzc::sidecar::KIND_RESOLVE,
+    )?;
+    // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
+    let target: u32 = answer.trim().parse().ok()?;
+    node_location(text, &spans, uri, target)
+}
+
+/// Find-references: every occurrence that references the SAME definition as the NAME under `pos`
+/// (the `UsesOf` query, keyed by that name). When `include_declaration`, the definition the name
+/// resolves to (via `ResolveOf`) is added so its own site appears in the list. Returns an empty vec
+/// when the cursor is not on a name or the name has no references — total, never a panic.
+fn references_at(
+    text: &str,
+    is_ml: bool,
+    pos: Position,
+    uri: &Uri,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let byte = position_to_byte(text, pos);
+    let Some(node) = spans.node_at_offset(byte) else {
+        return Vec::new();
+    };
+    // The name under the cursor: `UsesOf` is by NAME, so the cursor node must be a name atom. A cursor
+    // on a non-name (a literal, a list form) has no name to find references of → empty.
+    let Some(name) = arenas.as_name(node).map(str::to_string) else {
+        return Vec::new();
+    };
+
+    let mut locations: Vec<Location> = Vec::new();
+    if let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::UsesOf { name: name.clone() },
+        rcdzc::sidecar::KIND_USES,
+    ) {
+        for line in answer.lines() {
+            if let Ok(id) = line.trim().parse::<u32>()
+                && let Some(loc) = node_location(text, &spans, uri, id)
+            {
+                locations.push(loc);
+            }
+        }
+    }
+
+    // Optionally include the DECLARATION site (the def's name occurrence the cursor's name resolves to).
+    // `UsesOf` excludes the defining occurrence by design, so `include_declaration` adds it back.
+    if include_declaration
+        && let Some(answer) = run_query_text(
+            &arenas,
+            rcdzc::sidecar::Query::ResolveOf { node: node.0 },
+            rcdzc::sidecar::KIND_RESOLVE,
+        )
+        && let Ok(target) = answer.trim().parse::<u32>()
+        && let Some(loc) = node_location(text, &spans, uri, target)
+        && !locations.contains(&loc)
+    {
+        locations.push(loc);
+    }
+
+    locations
+}
+
+// ── the analysis: cursor → completion candidates, via the `ScopeAt` + `Symbols` queries ──────────────
+
+/// Compute the completion candidates at `pos` — the names available to type there. Two sources, both
+/// reads of columns the compiler fills: LOCAL bindings in scope (the `ScopeAt` query, keyed by the
+/// cursor node — `let`s, parameters, match binders, each with its inferred type as the item detail),
+/// and the module's TOP-LEVEL declarations (the `Symbols` query — defs / types / effects / modules).
+///
+/// Deduped by name — a local binding SHADOWS a top-level of the same name (the local wins), matching how
+/// resolution itself would bind the name. The client filters this set by the prefix the user has typed.
+/// TOTAL: a buffer that does not parse yields whatever partial set the queries produce, never a panic.
+fn completions_at(text: &str, is_ml: bool, pos: Position) -> Vec<CompletionItem> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    // A name → item map; INSERT top-level first, then locals OVERWRITE (a local shadows a top-level).
+    let mut items: std::collections::BTreeMap<String, CompletionItem> =
+        std::collections::BTreeMap::new();
+
+    // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
+    if let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::Symbols,
+        rcdzc::sidecar::KIND_SYMBOLS,
+    ) {
+        for line in answer.lines() {
+            let mut cols = line.splitn(3, '\t');
+            if let (Some(name), Some(kind)) = (cols.next(), cols.next()) {
+                items.insert(
+                    name.to_string(),
+                    CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(symbol_kind_to_completion_kind(kind)),
+                        detail: Some(kind.to_string()),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    // Local bindings in scope at the cursor (name<TAB>type<TAB>binder) — overwrite to shadow a top-level.
+    let byte = position_to_byte(text, pos);
+    if let Some(node) = spans.node_at_offset(byte)
+        && let Some(answer) = run_query_text(
+            &arenas,
+            rcdzc::sidecar::Query::ScopeAt { node: node.0 },
+            rcdzc::sidecar::KIND_SCOPE,
+        )
+    {
+        for line in answer.lines() {
+            let mut cols = line.splitn(3, '\t');
+            if let (Some(name), Some(ty)) = (cols.next(), cols.next()) {
+                items.insert(
+                    name.to_string(),
+                    CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        detail: Some(ty.to_string()),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    items.into_values().collect()
+}
+
+/// Map a `Symbols`-query kind spelling to the LSP `CompletionItemKind`. `value`→CONSTANT, `function`→
+/// FUNCTION, `type`→CLASS (LSP has no "sum type"; CLASS is the nearest a theme colours as a type),
+/// `effect`→EVENT, `module`→MODULE. An unknown kind → TEXT (a plain candidate).
+fn symbol_kind_to_completion_kind(kind: &str) -> CompletionItemKind {
+    match kind {
+        "value" => CompletionItemKind::CONSTANT,
+        "function" => CompletionItemKind::FUNCTION,
+        "type" => CompletionItemKind::CLASS,
+        "effect" => CompletionItemKind::EVENT,
+        "module" => CompletionItemKind::MODULE,
+        _ => CompletionItemKind::TEXT,
+    }
 }
 
 // ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
@@ -942,5 +1216,152 @@ mod tests {
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(d.code, None);
         assert_eq!(d.message, "something is unused");
+    }
+
+    #[test]
+    fn initialize_result_carries_server_info_and_capabilities() {
+        // The initialize response must include BOTH the capabilities AND serverInfo (name/version) — a
+        // regression guard for the bug where the InitializeResult was built then discarded so only the
+        // capabilities reached the client (PR #391). We assert on the SERIALIZED JSON, which is exactly
+        // what `initialize_finish` sends over the wire.
+        let value = serde_json::to_value(initialize_result()).expect("serializes");
+        let info = value
+            .get("serverInfo")
+            .expect("the initialize result must carry serverInfo");
+        assert_eq!(info.get("name").and_then(|n| n.as_str()), Some("cdz-lsp"));
+        assert!(
+            info.get("version").and_then(|v| v.as_str()).is_some(),
+            "serverInfo must carry a version"
+        );
+        assert!(
+            value.get("capabilities").is_some(),
+            "the initialize result must still carry capabilities"
+        );
+    }
+
+    /// A throwaway document URI for the position-based analyses.
+    fn test_uri() -> Uri {
+        use std::str::FromStr;
+        Uri::from_str("file:///t.cdz").unwrap()
+    }
+
+    /// The line/character of a `Position`, as a tuple, for terse assertions.
+    fn lc(p: Position) -> (u32, u32) {
+        (p.line, p.character)
+    }
+
+    #[test]
+    fn definition_jumps_from_a_use_to_the_defining_name() {
+        // `helper` is defined on line 0 and used on line 1; go-to-definition from the USE lands on the
+        // DEFINITION's name occurrence (line 0), not the use.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef main = helper(1)";
+        // Cursor on the `helper` call in `main` (line 1). "def main = " is 11 chars, so `helper` at col 11.
+        let loc =
+            definition_at(text, true, Position::new(1, 11), &test_uri()).expect("a definition");
+        assert_eq!(
+            loc.range.start.line, 0,
+            "definition is on line 0, got {loc:?}"
+        );
+        // It points at the `helper` name (col 4 of `def helper…`), not its body.
+        assert_eq!(lc(loc.range.start), (0, 4), "should land on the def name");
+    }
+
+    #[test]
+    fn definition_off_a_reference_is_none() {
+        // A cursor on a literal (not a navigable reference) yields no definition — total, never a panic.
+        let text = "def answer = 42";
+        // Cursor on the `42` literal.
+        assert!(definition_at(text, true, Position::new(0, 13), &test_uri()).is_none());
+        // Cursor past the end.
+        assert!(definition_at(text, true, Position::new(9, 9), &test_uri()).is_none());
+    }
+
+    #[test]
+    fn references_finds_every_use_of_the_name_under_the_cursor() {
+        // `helper` is used twice (lines 1 and 2). References from any occurrence finds both uses;
+        // excluding the declaration by default (UsesOf excludes the defining occurrence).
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)\n\
+                    def b = helper(2)";
+        // Cursor on the `helper` use in `a` (line 1, col 8: "def a = " = 8 chars).
+        let refs = references_at(text, true, Position::new(1, 8), &test_uri(), false);
+        assert_eq!(refs.len(), 2, "two uses expected, got {refs:?}");
+        let lines: Vec<u32> = refs.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            lines.contains(&1) && lines.contains(&2),
+            "uses on lines 1 and 2: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn references_include_declaration_adds_the_definition_site() {
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)";
+        // With include_declaration, the def's own name occurrence (line 0) is added to the one use (line 1).
+        let refs = references_at(text, true, Position::new(1, 8), &test_uri(), true);
+        let lines: Vec<u32> = refs.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            lines.contains(&0),
+            "declaration (line 0) should be included: {lines:?}"
+        );
+        assert!(
+            lines.contains(&1),
+            "the use (line 1) should be present: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn references_off_a_name_is_empty() {
+        // A cursor not on a name (a literal) yields no references — total.
+        let text = "def answer = 42";
+        let refs = references_at(text, true, Position::new(0, 13), &test_uri(), false);
+        assert!(refs.is_empty(), "expected no references, got {refs:?}");
+    }
+
+    #[test]
+    fn completion_offers_top_level_symbols() {
+        // The candidate set at any point includes the module's top-level declarations, each with a kind.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef answer = 42\ndef main = answer";
+        // Cursor in main's body (line 2, after `def main = `).
+        let items = completions_at(text, true, Position::new(2, 11));
+        let by_name: std::collections::HashMap<_, _> =
+            items.iter().map(|i| (i.label.as_str(), i)).collect();
+        assert!(by_name.contains_key("helper"), "helper missing: {items:?}");
+        assert!(by_name.contains_key("answer"), "answer missing: {items:?}");
+        assert_eq!(
+            by_name["helper"].kind,
+            Some(CompletionItemKind::FUNCTION),
+            "helper is a function"
+        );
+        assert_eq!(
+            by_name["answer"].kind,
+            Some(CompletionItemKind::CONSTANT),
+            "answer is a nullary value"
+        );
+    }
+
+    #[test]
+    fn completion_includes_local_bindings_with_their_types() {
+        // Inside a function body, the parameter is a completion candidate, shown as a VARIABLE with its
+        // inferred type as the detail.
+        let text = "def double(x: Int64) -> Int64 = x + x";
+        // Cursor at the `x + x` body (line 0, char ~32).
+        let items = completions_at(text, true, Position::new(0, 33));
+        let x = items.iter().find(|i| i.label == "x");
+        let x =
+            x.unwrap_or_else(|| panic!("param `x` should be a completion candidate: {items:?}"));
+        assert_eq!(x.kind, Some(CompletionItemKind::VARIABLE));
+        assert!(
+            x.detail.as_deref().is_some_and(|d| d.contains("Int")),
+            "the local's detail should show its type, got {:?}",
+            x.detail
+        );
+    }
+
+    #[test]
+    fn completion_is_total_on_malformed_source() {
+        // A buffer that does not parse yields a defined (possibly empty) candidate set, never a panic.
+        let _ = completions_at("def (f x = (", true, Position::new(0, 5));
+        let _ = completions_at("", true, Position::new(0, 0));
     }
 }

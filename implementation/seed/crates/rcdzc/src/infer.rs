@@ -6627,11 +6627,58 @@ fn check_application(
         let a0 = type_of(db, args[0]);
         let b0 = type_of(db, args[1]);
         let any_qty = matches!(a0, Ty::Qty { .. }) || matches!(b0, Ty::Qty { .. });
-        // `*`/`/` on a quantity is ALWAYS well-formed dimensionally (the dimensions compose, not required
+        // `*`/`/` on a quantity is ALWAYS well-formed DIMENSIONALLY (the dimensions compose, not required
         // equal), so it must NOT reach the generic scheme-unify below (which would unify a `Ty::Qty`
-        // against `(Int a)` → a spurious CDZ0203). Skip the fault check, descend for operand faults, and
-        // return — the result unit is computed in `apply_type`.
+        // against `(Int a)` → a spurious CDZ0203). But the INNER NUMERIC TYPES must still agree: scaling a
+        // `(Qty Float64 meter)` by a bare `Int64` `1` is the SAME no-silent-promotion error a bare
+        // `(* 5.0 1)` gets (CDZ0301), NOT a silent success — without this check the mismatch reached
+        // `lower`, which emitted the `1` as an `i64` into an `f64` multiply → INVALID wasm (a miscompile:
+        // `cdz check` passed, wasm-tools rejected it). Unify the two operands' inner numeric types (a
+        // quantity contributes its `inner`, a bare number contributes itself) and report a mismatch as
+        // CDZ0301 with the same one-shot coercion fix the additive arm offers (`1` → `1.0`), applied to
+        // the offending operand's inner value. Then skip the generic path (dimensions handled in
+        // `apply_type`), descend for operand faults, and return.
         if is_multiplicative && any_qty {
+            let inner_ty = |t: &Ty| -> Ty {
+                match t {
+                    Ty::Qty { inner, .. } => (**inner).clone(),
+                    other => other.clone(),
+                }
+            };
+            let ia = inner_ty(&a0);
+            let ib = inner_ty(&b0);
+            let mut subst = Subst::new();
+            if let Err(mut reject) = crate::unify::unify(&mut subst, &ia, &ib) {
+                // Retype whichever operand's inner value the coercion bridges — a quantity operand's inner
+                // value is its `Qty.of`'s first arg (`qty_of_value_arg`); a bare operand's inner value is
+                // the operand node itself. Mirrors the additive arm's numeric-coercion repair.
+                let inner_val = |db: &mut Db, arg: StructId, t: &Ty| -> Option<StructId> {
+                    if matches!(t, Ty::Qty { .. }) {
+                        qty_of_value_arg(db, arg)
+                    } else {
+                        Some(arg)
+                    }
+                };
+                let na = inner_val(db, args[0], &a0);
+                let nb = inner_val(db, args[1], &b0);
+                // Prefer the WIDENING repair — coerce the INT operand UP to the FLOAT operand's type
+                // (`1` → `1.0`), matching the bare `(* 5.0 1)` fix, regardless of operand order. Whichever
+                // operand's inner is a Float is the `expected` type; the OTHER operand's inner value node
+                // is the one to retype. `numeric_text_coercion_fix(expected=Float, actual=Int, node)`
+                // fires the `node → node.0` widening. Falls back to the generic bridge if neither is Float.
+                let fix = if matches!(ia, Ty::Float(_)) {
+                    nb.and_then(|n| numeric_text_coercion_fix(db, &ia, &ib, n))
+                } else if matches!(ib, Ty::Float(_)) {
+                    na.and_then(|n| numeric_text_coercion_fix(db, &ib, &ia, n))
+                } else {
+                    na.and_then(|n| numeric_text_coercion_fix(db, &ib, &ia, n))
+                        .or_else(|| nb.and_then(|n| numeric_text_coercion_fix(db, &ia, &ib, n)))
+                };
+                if let Some(fix) = fix {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
+            }
             for &arg in args {
                 collect(db, arg, out);
             }
