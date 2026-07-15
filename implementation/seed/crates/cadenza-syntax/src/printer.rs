@@ -423,6 +423,20 @@ impl<'a> Printer<'a> {
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);
             }
+            // ---- prefix unary minus `(- e)` -> `-e` ----
+            // The arity-1 subtraction is negation (the parser's prefix `-<expr>` desugar; `lower` reads
+            // it as a type-directed negation). Render the operand at PREC_MEMBER so it stays tight — a
+            // compound operand (`-(x + 1)`, `-(a - b)`) re-wraps itself, while a name / call / member
+            // chain prints bare (`-x`, `-(f x)` → `-f(x)`, `-x.field`). A `-` glued to a numeric literal
+            // is a SIGNED LITERAL, never this form, so `-e` never abuts a digit ambiguously. Checked
+            // before the binary-infix arm (which requires exactly 2 args, so it never matched arity-1).
+            if head == "-" && args.len() == 1 {
+                self.doc.ibox(0);
+                self.doc.word("-");
+                self.expr(args[0], PREC_MEMBER);
+                self.doc.end();
+                return;
+            }
             // ---- infix binary operator ----
             if let Some(prec) = infix_prec(&head)
                 && args.len() == 2
@@ -2661,6 +2675,30 @@ mod tests {
             assert_roundtrip("fn(x, y) => x + y", 80),
             "fn(x, y) => x + y"
         );
+    }
+
+    #[test]
+    fn prefix_unary_minus_round_trips() {
+        // `-<expr>` (prefix negation applied to a NAME / call / member / paren) parses to the arity-1
+        // subtraction `(- e)` and prints back to `-e`, tight over its operand. A `-<digit>` is a signed
+        // LITERAL (a separate leaf), unaffected. The independent s-expr reader is the oracle for shape.
+        assert_eq!(assert_roundtrip("-x", 80), "-x");
+        assert_eq!(assert_roundtrip("-f(x)", 80), "-f(x)");
+        assert_eq!(assert_roundtrip("-x.field", 80), "-x.field");
+        // Negation binds TIGHTER than binary `+`: `-x + 1` is `(+ (- x) 1)`, printed back the same.
+        assert_eq!(assert_roundtrip("-x + 1", 80), "-x + 1");
+        // A parenthesized operand keeps its parens (the whole sum is negated): `(- (+ x 1))`.
+        assert_eq!(assert_roundtrip("-(x + 1)", 80), "-(x + 1)");
+        // A negative literal stays a literal (no `(- …)` wrapper), and `3 * -2` is binary `*` of two
+        // literals — round-trips unchanged.
+        assert_eq!(assert_roundtrip("-1", 80), "-1");
+        assert_eq!(assert_roundtrip("3 * -2", 80), "3 * -2");
+        // The s-expr reader is the oracle: `(- x)` (arity-1) prints as the ML prefix `-x`.
+        let a = sexpr::read("(- x)").unwrap();
+        assert_eq!(print(&a, 80), "-x");
+        // Arity-2 `(- a b)` stays binary subtraction.
+        let b = sexpr::read("(- a b)").unwrap();
+        assert_eq!(print(&b, 80), "a - b");
     }
 
     #[test]

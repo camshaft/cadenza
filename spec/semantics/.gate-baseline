@@ -2573,6 +2573,17 @@ pass	two sum types whose names differ only by punctuation stay DISTINCT types
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
+pass	unary negation binds tighter than binary addition
+pass	unary negation in a lambda body negates the argument
+pass	unary negation of a bound integer name yields its opposite
+pass	unary negation of a float flips the sign, preserving signed zero
+pass	unary negation of a non-numeric value is a type error
+pass	unary negation of a nonzero float
+pass	unary negation of a parenthesized sum negates the whole expression
+pass	unary negation of a quantity preserves its unit
+pass	unary negation of a runtime integer parameter negates at run time
+pass	unary negation of an arbitrary-precision integer
+pass	unary negation of an exact rational negates the numerator
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	union cardinality with a runtime-element operand
 pass	union is commutative

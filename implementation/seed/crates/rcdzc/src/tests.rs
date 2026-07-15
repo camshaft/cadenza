@@ -34728,6 +34728,76 @@ mod stage1 {
         assert_eq!(run_main("(let ((x 10)) x)"), 10);
     }
 
+    /// UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>`). It is `0 - e` at the
+    /// operand's numeric type, so a constant folds and a runtime operand emits the checked subtract with
+    /// the `x == MIN` overflow trap. The fold unit + the wasmtime run + the MIN trap in one test, plus the
+    /// non-numeric reject, cover the whole negation path (06-numeric-model pins the same at corpus level).
+    #[test]
+    fn a_unary_minus_negates_its_operand() {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use wasmtime::component::Val;
+        // FOLD unit: a constant operand folds to its negation — `(- (+ 2 3))` → `Core::ConstInt(-5)`, no
+        // runtime subtract emitted.
+        let fold = |body: &str| -> Option<i64> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let mut db = Db::load(parse(&src));
+            let d = db.def_by_name("main")?;
+            let m_body = db.defs[d].body?;
+            match core_of(&mut db, m_body) {
+                Core::ConstInt(v) => v.to_i64(),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            fold("(- (+ 2 3))"),
+            Some(-5),
+            "constant negation folds to -5"
+        );
+        assert_eq!(fold("(- (- 4))"), Some(4), "double negation folds to +4");
+
+        // BEHAVIOR run: negate a runtime parameter — `(- n)` returns -n, and `n == Int64.min` TRAPS
+        // (its negation +2^63 has no Int64 representation), exactly as the binary `(- 0 n)` does.
+        let src = "(module m (def (f (: n Int64)) (- n)) (export f))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(7)]), -7);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(-42)]), 42);
+        // Int64.min negation traps (the run panics inside `run_returns_with`'s `.expect`) — assert the
+        // overflow trap via a caught call rather than the helper (which unwraps).
+        let engine = wasmtime::Engine::default();
+        let component = wasmtime::component::Component::from_binary(&engine, &bytes).expect("load");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::new(&engine);
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let func = instance
+            .get_func(&mut store, "f")
+            .expect("export f present");
+        let typed = func
+            .typed::<(i64,), (i64,)>(&store)
+            .expect("f : (s64) -> s64");
+        let err = typed
+            .call(&mut store, (i64::MIN,))
+            .expect_err("negating Int64.min must trap");
+        assert!(
+            format!("{err:?}").contains("integer overflow"),
+            "negating Int64.min traps with an integer-overflow, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_unary_minus_of_a_non_numeric_operand_is_rejected() {
+        // Negation is defined only over numeric types; `(- s)` on a String is a type error (CDZ0201),
+        // the unary twin of arithmetic-on-a-non-number — never a silent coercion to a number.
+        let msg = expect_decline("(let ((s \"hi\")) (- s))");
+        assert!(
+            msg.contains("negation is not defined on"),
+            "a non-numeric negation is rejected with the negation message, got: {msg}"
+        );
+    }
+
     #[test]
     fn name_resolves_to_nearest_enclosing_binding() {
         // (let ((x 1)) (let ((x 2)) x)) = 2 — inner shadows outer.
