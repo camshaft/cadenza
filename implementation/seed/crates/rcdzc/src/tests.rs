@@ -1043,6 +1043,64 @@ fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
     );
 }
 
+/// The common-OPERATOR hoist (the arith sibling of the constructor hoist): `(if c (+ a 1) (+ b 1))`
+/// applies the checked add + its overflow guard ONCE over the SELECTED operand — `(+ (if c a b) 1)` —
+/// instead of duplicating the add+guard in both `if`/`else` arms. Structurally, exactly ONE `i64.add`
+/// reaches the module (the differing operand becomes a branchless `select`). Behaviorally it must be
+/// operand SELECTION, not eager evaluation of both: the trap fires iff the TAKEN arm's add overflows, so
+/// (a) values round-trip in both directions, (b) c=true with a=Int64.max TRAPS (the taken `(+ a 1)`
+/// overflows), and (c) c=false with the SAME a=Int64.max does NOT trap (the untaken arm's overflow is
+/// never evaluated — `(if c a b)` selects b) — a hoist that eagerly added both operands would wrongly
+/// trap here.
+#[test]
+fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Int64) (: b Int64)) (if c (+ a 1) (+ b 1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one checked add survives (the differing operand is a `select`, not a second add).
+    let adds = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Add));
+    assert_eq!(
+        adds, 1,
+        "the common-operator hoist applies the add once over the selected operand, got {adds} adds"
+    );
+    use wasmtime::component::Val;
+    // Value parity, both directions.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5), Val::S64(9)]),
+        6,
+        "c=true → (+ a 1) = 6"
+    );
+    assert_eq!(
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[Val::Bool(false), Val::S64(5), Val::S64(9)]
+        ),
+        10,
+        "c=false → (+ b 1) = 10"
+    );
+    // Trap parity: the TAKEN arm's overflow traps; the UNTAKEN arm's does not (operand selection, not
+    // eager evaluation of both). a = Int64.max.
+    assert!(
+        call_traps(
+            &bytes,
+            "main",
+            &[Val::Bool(true), Val::S64(i64::MAX), Val::S64(9)]
+        ),
+        "c=true with a=Int64.max: the taken (+ a 1) overflows → must trap"
+    );
+    assert!(
+        !call_traps(
+            &bytes,
+            "main",
+            &[Val::Bool(false), Val::S64(i64::MAX), Val::S64(9)]
+        ),
+        "c=false with a=Int64.max: the untaken arm's overflow must NOT be evaluated (selects b) → no trap"
+    );
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole

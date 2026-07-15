@@ -788,6 +788,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c (K …p) (K …q)) → (K …(if c pᵢ qᵢ)) — common-constructor hoist");
                     core
                 }
+                // COMMON-OPERATOR HOIST: both arms apply the same arith/convert op, so apply it ONCE over
+                // the selected operands — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b) 1)`, one checked add +
+                // guard instead of two. See `hoist_common_arith` for soundness.
+                _ if let Some(core) = hoist_common_arith(db, cond, then_, else_) => {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c (op …p) (op …q)) → (op …(if c pᵢ qᵢ)) — common-operator hoist");
+                    core
+                }
                 _ => Core::If { cond, then_, else_ },
             }
         }
@@ -13941,6 +13948,98 @@ fn hoist_common_ctor(
         Shape::List => Core::ListNew { elems: vals },
         Shape::Record(keys) => Core::Record {
             fields: std::rc::Rc::new(keys.into_iter().zip(vals).collect()),
+        },
+    })
+}
+
+/// Hoist a COMMON OPERATOR out of both `if` arms — the arithmetic/conversion sibling of
+/// `hoist_common_ctor`. When both branches apply the SAME operator to operands that mostly agree, the
+/// operator (and its overflow guard, for checked arith) is DUPLICATED across the two branches:
+///   `(if c (+ a 1) (+ b 1))`  → `(+ (if c a b) 1)`          — one checked add + one guard, not two
+///   `(if c (* a k) (* b k))`  → `(* (if c a b) k)`
+///   `(if c (wrap a) (wrap b))`→ `(wrap (if c a b))`         — a unary `Convert`
+/// Each DIFFERING operand position is pushed into its own `(if c pᵢ qᵢ)`; a `core_equiv` position is
+/// shared directly, so the operator applies to exactly the operand tuple the taken arm would have used.
+///
+/// SOUND for ANY operator, INCLUDING a trapping checked op: the hoisted form applies the operator ONCE to
+/// the SELECTED operands — the identical operand values the taken arm passed it — so it computes the same
+/// result and traps under exactly the same condition (this is operand SELECTION under the op, NOT
+/// reassociation: no operand ever crosses the operator or combines with a different partner). A shared
+/// operand is `core_equiv` (a pure scalar — const/param/local/arith/compare/convert/proj) evaluated once,
+/// reproducing the taken arm's single evaluation. `cond` is evaluated once per DIFFERING operand: exactly
+/// one differing operand matches the original's single `cond` eval (unconditionally sound); 0 or ≥2
+/// require a TRAP-FREE `cond` (the same guard `hoist_common_ctor` uses). Returns `None` unless both arms
+/// are the same `Arith` operator (over 2 operands) or the same `Convert` op (1 operand) — a poison arm
+/// has neither core, so it never matches.
+fn hoist_common_arith(
+    db: &mut Db,
+    cond: StructId,
+    then_: StructId,
+    else_: StructId,
+) -> Option<Core> {
+    enum Head {
+        Arith(Prim),
+        Convert(Prim),
+    }
+    let (head, pairs): (Head, Vec<(StructId, StructId)>) =
+        match (core_of(db, then_), core_of(db, else_)) {
+            (
+                Core::Arith {
+                    op: ot,
+                    lhs: lt,
+                    rhs: rt,
+                },
+                Core::Arith {
+                    op: oe,
+                    lhs: le,
+                    rhs: re,
+                },
+            ) if ot == oe => (Head::Arith(ot), vec![(lt, le), (rt, re)]),
+            (
+                Core::Convert {
+                    op: ot,
+                    operand: pt,
+                },
+                Core::Convert {
+                    op: oe,
+                    operand: pe,
+                },
+            ) if ot == oe => (Head::Convert(ot), vec![(pt, pe)]),
+            _ => return None,
+        };
+    let mut diff = 0usize;
+    for &(a, b) in &pairs {
+        if !core_equiv(db, a, b) {
+            diff += 1;
+        }
+    }
+    // All operands identical → the two arms are already `core_equiv`; the identical-branches fold handles
+    // that (and would have fired first). Nothing to hoist here.
+    if diff == 0 {
+        return None;
+    }
+    // `cond` evaluated once per differing operand; only ONE differing operand matches the original's single
+    // evaluation. Any other count must not duplicate/drop a cond trap or effect.
+    if diff != 1 && !is_trap_free(db, cond) {
+        return None;
+    }
+    let mut operands: Vec<StructId> = Vec::with_capacity(pairs.len());
+    for &(a, b) in &pairs {
+        operands.push(if core_equiv(db, a, b) {
+            a
+        } else {
+            synth_if(db, cond, a, b)
+        });
+    }
+    Some(match head {
+        Head::Arith(op) => Core::Arith {
+            op,
+            lhs: operands[0],
+            rhs: operands[1],
+        },
+        Head::Convert(op) => Core::Convert {
+            op,
+            operand: operands[0],
         },
     })
 }
