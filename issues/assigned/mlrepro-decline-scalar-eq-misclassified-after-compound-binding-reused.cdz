@@ -24,6 +24,10 @@
 ///     SAME scope, at the point a sibling scalar comparison is lowered.
 ///   • a TUPLE reused via `.0`/`.1` (`let p=(1.0,2.0) in p.0==1.0 && p.1==2.0`) COMPILES — so it is specific
 ///     to a SUM/record binding reused via `match` projection, not all compounds.
+///   • it is FLOAT-SPECIFIC. The identical shape with `Int64` fields + an `Int64` compare
+///     (`Box.B(1,2)`, `bx(v)==1 && by(v)==2`) COMPILES + runs. Only the Float64 comparison
+///     (`==`, `<`, `>` — all reproduce) after a reused compound binding declines. So the misclassification
+///     is in the FLOAT comparison lowering path specifically (fcmp), not the integer one.
 ///
 /// LIKELY LOCUS: backend/wasm — the `value-eq` / comparison lowering (select.rs) decides scalar-vs-compound
 /// from a liveness/ownership fact about nearby compound bindings rather than from the compared operand's OWN
