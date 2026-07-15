@@ -196,6 +196,25 @@ def range-down(hi, lo) = Iter.DownRangeI((hi, lo))
 /// (iter.cdz is Int64), matching the iterator's element type.
 def iter-set(s) = Iter.FromList(Set.to-list(s))
 
+// project the keys / values out of a `List (Tuple Int64 Int64)` (what `Map.to-list` yields) into a
+// bare `List Int64` the monomorphic-Int64 iterator can carry. Preserves canonical KEY order.
+def map-keys-list(pairs: List(Tuple(Int64, Int64))) = match pairs with
+  | [] => []
+  | [h, .. t] => (match h with | (k, _v) => List.concat([k], map-keys-list(t)))
+
+def map-vals-list(pairs: List(Tuple(Int64, Int64))) = match pairs with
+  | [] => []
+  | [h, .. t] => (match h with | (_k, v) => List.concat([v], map-vals-list(t)))
+
+/// Iterate a MAP's KEYS in CANONICAL key order. Bridges a map into the Int64 iterator via
+/// `Map.to-list` (canonical-key-order entries) + a key projection, so map keys drop into every
+/// transformer/consumer. (A full pair-element `iter-map` needs a generic/tuple-element iterator —
+/// gated on the recursive-generic tie fix; keys/values are the Int64-typed halves available today.)
+def iter-map-keys(m) = Iter.FromList(map-keys-list(Map.to-list(m)))
+
+/// Iterate a MAP's VALUES in CANONICAL key order (each value paired with its key's sort position).
+def iter-map-values(m) = Iter.FromList(map-vals-list(Map.to-list(m)))
+
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
 /// Map `f` over every element.
@@ -1048,5 +1067,37 @@ def iter-set-composes-with-transformers() =
 def iter-set-sum-canonical() =
   // sum over an iterated set = sum of its distinct elements: {10,20,30} -> 60
   if sum(iter-set(Set.of([10, 20, 30, 10]))) == 60 then unit else trap("iter-set sum = 60")
+
+// ── iter-map-keys / iter-map-values: a Map's keys/values bridge into the iterator ────────────────
+
+@test
+def iter-map-keys-canonical-order() =
+  // keys of {5:50, 2:20, 8:80} in canonical KEY order -> [2, 5, 8]
+  let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
+  if int-list-eq(collect-list(iter-map-keys(m)), [2, 5, 8]) then unit else trap("keys = [2,5,8]")
+
+@test
+def iter-map-values-in-key-order() =
+  // values of {5:50, 2:20, 8:80} paired to canonical key order (2,5,8) -> [20, 50, 80]
+  let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
+  if int-list-eq(collect-list(iter-map-values(m)), [20, 50, 80]) then unit else trap("values = [20,50,80]")
+
+@test
+def iter-map-keys-sum() =
+  // keys drop into the consumers: sum of keys {1,2,3} = 6
+  let m = Map.insert(Map.insert(Map.insert(Map.empty(), 1, 10), 2, 20), 3, 30) in
+  if sum(iter-map-keys(m)) == 6 then unit else trap("key sum = 6")
+
+@test
+def iter-map-values-compose() =
+  // values compose with transformers: doubled values of {1:2, 2:4} -> [4, 8], sum 12
+  let m = Map.insert(Map.insert(Map.empty(), 1, 2), 2, 4) in
+  if sum(map(iter-map-values(m), fn(x) => x * 2)) == 12 then unit else trap("2*(2+4) = 12")
+
+@test
+def iter-map-keys-empty() =
+  // a map with its sole entry removed yields no keys
+  let m = Map.remove(Map.insert(Map.empty(), 1, 10), 1) in
+  if count(iter-map-keys(m)) == 0 then unit else trap("empty map has no keys")
 
 export { Iter.* }
