@@ -1733,7 +1733,7 @@ fn lambda_param_ty_from_context(db: &mut Db, binder: StructId) -> Option<Ty> {
         .iter()
         .position(|&p| crate::eval::param_name_occ(db, p) == binder)?;
     // Peel the lambda's expected arrow to its idx-th parameter type; use it only if concrete (an arrow
-    // that runs out of parameters, or an `Any` at this slot, recovers nothing).
+    // that runs out of parameters, or an `Any`/unsolved-`Var` at this slot, recovers nothing).
     let mut cur = expected_arrow_for_lambda(db, lambda)?;
     for _ in 0..idx {
         match cur {
@@ -1742,7 +1742,14 @@ fn lambda_param_ty_from_context(db: &mut Db, binder: StructId) -> Option<Ty> {
         }
     }
     match cur {
-        Ty::Fn(p, _) if !matches!(*p, Ty::Any) => Some(*p),
+        // Only a DETERMINED domain wins here. A HOLE at this slot — `Any` OR a free `Var` (the
+        // context is a fully-generic HOF param like `f : (-> _ (-> _ _))`, whose domains are unsolved
+        // vars, not `Any`) — recovers NOTHING, so `type_of(p)` falls to `Any` and `lower_lambda_value`
+        // reaches its body-solve (`solve_lambda_param_ty`). Returning the hole instead would preempt
+        // that solve with an unsolvable `Var` and decline "no machine representation" — the exact bug a
+        // bare closure passed to a recursive HOF hit (`fold-list (fn (x a) (+ a x)) …`): the closure's
+        // OWN body (`(+ a x)` → Int64) pins its params, but only if the context hole doesn't shadow it.
+        Ty::Fn(p, _) if !matches!(*p, Ty::Any) && !p.has_free_var() => Some(*p),
         _ => None,
     }
 }

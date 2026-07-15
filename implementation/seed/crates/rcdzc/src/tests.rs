@@ -46984,6 +46984,33 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unannotated_closure_infers_through_an_unannotated_recursive_hof_param() {
+        // INFERENCE regression (issue mlrepro-reject-inferred-closure-param-through-recursive-hof): an
+        // UNANNOTATED closure passed to a SELF-RECURSIVE higher-order function whose function parameter
+        // is ALSO unannotated must infer the closure's parameter type from the closure's OWN body — it
+        // was wrongly DECLINED "a closure's parameter type has no machine representation". Root: the
+        // closure's storage context is a fully-generic HOF param `g : (-> _ Int64)`, whose domain is an
+        // unsolved `Var` (a HOLE, not `Any`); `lambda_param_ty_from_context` returned that hole, which
+        // preempted `lower_lambda_value`'s body-solve (`solve_lambda_param_ty`) with an unsolvable var.
+        // The fix rejects a free-`Var` context domain (like `Any`), so the closure body's own numeric use
+        // (`(+ x 1)` → Int64) pins its param. `mapsum g acc xs = acc + Σ g(xᵢ)`, with a BOUNDARY `acc = n`
+        // so nothing folds (a real `call_indirect` over the runtime closure): `n + Σ (xᵢ+1)` over 5,7,30
+        // = `n + 6 + 8 + 31 = n + 45`.
+        let src = "(module m \
+            (def (mapsum f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (mapsum f (+ acc (f h)) t)))) \
+            (def (main (: n Int64)) (mapsum (fn (x) (+ x 1)) n (list 5 7 30))) (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "45"); // 0 + (5+1)+(7+1)+(30+1) = 45
+        assert_eq!(run_closure(src, 100).unwrap(), "145"); // 100 + 45
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted

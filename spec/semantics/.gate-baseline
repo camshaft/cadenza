@@ -1760,6 +1760,7 @@ pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
+pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
