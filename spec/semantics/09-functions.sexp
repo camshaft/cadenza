@@ -1165,6 +1165,53 @@
   (call   main (: 0 Int64)) (output (: 42 Int64))
   (call   main (: 100 Int64)) (output (: 142 Int64)))
 
+; The same monomorphized fold, but the two closure parameters have DISTINCT types — the accumulator is
+; `Int64` and the element is `String`. The closure `(fn (acc s) (+ acc (String.byte-len s)))` must solve
+; BOTH params from its body (`acc : Int64` from `(+ acc …)`, `s : String` from `(String.byte-len s)`), so
+; the monomorphized copy's `f` is `(-> Int64 (-> String Int64))` — proving the closure-arg param-solve is
+; per-parameter and type-directed, not a single uniform type smeared across the slots. Folds each string's
+; byte length into the accumulator: `n + 2 + 4 + 1 = n + 7`.
+
+(case "an unannotated closure with distinct-typed params is inferred through a generic recursive HOF"
+  (doc    "A two-argument fold callback whose params have DIFFERENT types — `(fn (acc s) (+ acc
+           (String.byte-len s)))`, `acc : Int64` and `s : String` — passed unannotated to the generic
+           recursive `foldstr`. Each closure param is solved from its OWN use in the body, so the
+           monomorphized copy gets `f : (-> Int64 (-> String Int64))`; a uniform-type solve would mistype
+           one slot. With runtime `acc = n` the fold sums the byte lengths of `ab`,`abcd`,`x`:
+           `n + 2 + 4 + 1 = n + 7`. Pins that closure-argument inference is per-parameter and type-directed
+           through monomorphization.")
+  (input  (do
+            (def (foldstr f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (foldstr f (f acc h) t))))
+            (def (main (: n Int64)) (foldstr (fn (acc s) (+ acc (String.byte-len s))) n (list "ab" "abcd" "x")))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 100 Int64)) (output (: 107 Int64)))
+
+; A single-argument unannotated closure whose RESULT is Bool — a predicate threaded through a recursive
+; HOF that counts how many elements satisfy it. `(fn (x) (< x 10))` solves `x : Int64` from `(< x 10)` and
+; its result is `Bool`; the recursive `countif` uses that boolean to drive an `if`. Confirms the inferred
+; closure's result type (not just its params) crosses the runtime `call_indirect` correctly for a
+; non-numeric result. Over `5,20,7` two elements are `< 10`, so `n + 2`.
+
+(case "an unannotated predicate closure is inferred through a recursive counting HOF"
+  (doc    "A bare predicate `(fn (x) (< x 10))` — result type `Bool`, param solved `Int64` from the
+           comparison — passed unannotated to the recursive `countif`, which increments an accumulator when
+           the predicate holds. `5` and `7` are `< 10` (`20` is not), so with runtime `acc = n` the count is
+           `n + 2`. Pins that an inferred closure with a BOOLEAN result applies via call_indirect and drives
+           the HOF's branch, the result-type companion of the arithmetic-callback fold cases above.")
+  (input  (do
+            (def (countif f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (countif f (if (f h) (+ acc 1) acc) t))))
+            (def (main (: n Int64)) (countif (fn (x) (< x 10)) n (list 5 20 7)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: 100 Int64)) (output (: 102 Int64)))
+
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and
