@@ -292,6 +292,7 @@ pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
+pass	a bind directive with a malformed peer interface name is rejected
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
@@ -1082,6 +1083,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a projected trapping element of a hoisted same-constructor if traps
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
@@ -1723,6 +1725,7 @@ pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
+pass	an escaping tuple evaluates its trapping element
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
@@ -2407,6 +2410,7 @@ pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
+pass	the left payload of the taken arm traps before the right payload
 pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a fixed-width construction is the sum of its segment widths
