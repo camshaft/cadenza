@@ -39,7 +39,7 @@ def capsule(len: Float64, r: Float64) =
 /// A row of `n` identical unit cubes spaced `step` apart along +x — a RECURSIVE parametric builder (the
 /// "fold a feature N times" pattern a gear/rack uses). Returns `empty` for `n <= 0`.
 def cube-row(n: Int64, step: Float64) =
-  if n == 0 then empty()
+  if n <= 0 then empty()
   else union(cube-uniform(1.0), translate(v3(step, 0.0, 0.0), cube-row(n - 1, step)))
 
 /// Int64 → Float64, for computing an angle from a loop index (`Float64.of-int`).
@@ -48,8 +48,12 @@ def i2f(i: Int64) = Float64.of-int(i)
 /// A radial pattern: `n` copies of `part`, each rotated `i × 360/n` degrees about +z and pushed out to
 /// radius `r` along +x. The general "arrange N features in a circle" combinator — the recursion + float
 /// angle arithmetic (`i2f(i) × (360/n)`) that a gear, a bolt-circle, or a fan blade-set is built from.
-/// `part` is any `Solid`; the caller supplies the feature to repeat. Returns `empty` for `n <= 0`.
-def radial-pattern(n: Int64, r: Float64, part: Solid) = radial-from(n, 0, r, part)
+/// `part` is any `Solid`; the caller supplies the feature to repeat. Returns `empty` for `n <= 0` (the
+/// `n <= 0` guard is on `radial-pattern` itself — `radial-from` counts UP from 0 to `n`, so a negative `n`
+/// would never reach the `i == n` base case AND `360/n` would divide by a non-positive count).
+def radial-pattern(n: Int64, r: Float64, part: Solid) =
+  if n <= 0 then empty()
+  else radial-from(n, 0, r, part)
 
 def radial-from(n: Int64, i: Int64, r: Float64, part: Solid) =
   if i == n then empty()
@@ -101,6 +105,12 @@ def cube-row-zero-is-empty() =
   if is-empty(cube-row(0, 2.0)) then unit else trap("an empty row has no geometry")
 
 @test
+def cube-row-negative-is-empty() =
+  // regression (Copilot PR #412): a negative count must TERMINATE as empty, not recurse forever
+  // (the guard is `n <= 0`, not `n == 0`).
+  if is-empty(cube-row(0 - 1, 2.0)) then unit else trap("a negative-count row is empty, not infinite")
+
+@test
 def cube-row-recursion-depth-matches-count() =
   // each cube adds one Union + one Translate level; a row of 3 → union(cube, translate(row 2)) …
   // leaf-count is the robust invariant; assert it grows with n
@@ -116,6 +126,12 @@ def radial-pattern-counts-n-copies() =
 @test
 def radial-pattern-zero-is-empty() =
   if is-empty(radial-pattern(0, 2.0, cube-uniform(1.0))) then unit else trap("empty radial pattern")
+
+@test
+def radial-pattern-negative-is-empty() =
+  // regression (Copilot PR #412 sibling): radial-from counts UP to n, so a negative n would never hit the
+  // `i == n` base case (and `360/n` would divide by a non-positive count) — the `n <= 0` guard prevents both.
+  if is-empty(radial-pattern(0 - 1, 2.0, cube-uniform(1.0))) then unit else trap("a negative radial count is empty")
 
 @test
 def radial-pattern-repeats-a-compound-part() =
