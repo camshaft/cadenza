@@ -60,3 +60,8 @@
             (def (main (: d Int64)) (let ((q (/ 100 d))) 1))
             (export main)))
   (trap "integer divide by zero"))
+
+;; ADDENDUM 2026-07-15: also manifests through TUPLE-PROJECTION folding — (. (tuple (/ 10 d) 1) 1) at d=0
+;; returns 1 (both backends), same root as the 0-use let; composes with the if-hoist/match-sink shapes.
+;; Whatever the strict-let spec ruling decides MUST cover projection-discard too. (Face, not a new filing.)
+;; STATUS: fix agent STOOD DOWN pending the §283-vs-operator-ruling reconciliation (escalated to concierge).

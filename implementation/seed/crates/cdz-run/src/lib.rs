@@ -12,6 +12,9 @@ use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker, Type, Val};
 use wasmtime::{Config, Engine, OptLevel, Store};
 
+/// The command surface (`RunArgs` + `run`), embeddable so the unified `cdz` binary can mount `cdz run`.
+pub mod cli;
+
 /// The wasmtime engine for a run. `cdz-run` is a ONE-SHOT tool: it JIT-compiles the component, invokes
 /// an export ONCE, and exits — so Cranelift's optimizing backend (the `Engine::default()` `OptLevel::
 /// Speed`) spends compile time that the single execution never repays. `OptLevel::None` skips the

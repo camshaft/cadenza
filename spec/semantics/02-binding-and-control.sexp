@@ -3040,14 +3040,18 @@
   (output (: 121 Int64)))
 
 (case "a trapping payload in a non-taken arm of a same-constructor match does not trap"
-  (doc    "`(match k (0 (Some (/ 100 k))) (1 (Some 20)) (_ (Some 30)))` at k = 1: every arm builds
-           `Some`, the sink's target; the taken arm yields 20 and arm 0's payload `(/ 100 0)` — which
-           WOULD trap for this k had it been evaluated — stays behind its probe. Pins that sinking the
-           payload into a per-position match keeps each alternative guarded by its arm's probe, the
-           match analogue of the if-hoist untaken-arm pins above.")
+  (doc    "`(match k (0 (Some (/ 100 (- k 1)))) (1 (Some 20)) (_ (Some 30)))` at k = 1: every arm builds
+           `Some`, the sink's target; arm 1 is taken → 20, and arm 0's payload `(/ 100 (- k 1))` = `(/
+           100 0)` at this k WOULD trap had it been evaluated, but stays behind its probe. The divisor is
+           `(- k 1)` — a RUNTIME expression that is 0 exactly at the k this case calls — NOT a literal `(/
+           100 0)`, which is a compile-time divide-by-zero poison (CDZ0304) that would reject the whole
+           program before any sink. So a sink that eagerly evaluated arm 0's payload would TRAP at k = 1
+           instead of yielding 20 — the test now genuinely exercises the guard (an earlier version used
+           `(/ 100 k)`, which at k = 1 is `(/ 100 1)` = 100 and never traps, making the pin vacuous — PR
+           #381 review). The match analogue of the if-hoist untaken-arm pins above.")
   (input  (do
             (def (main (: k Int64))
-              (match (match k (0 (Option.Some (/ 100 k))) (1 (Option.Some 20)) (_ (Option.Some 30)))
+              (match (match k (0 (Option.Some (/ 100 (- k 1)))) (1 (Option.Some 20)) (_ (Option.Some 30)))
                 ((Option.Some v) v)
                 (_ -1)))
             (export main)))
@@ -3207,3 +3211,48 @@
   (output (: 99 Int64))
   (call   main (: 2 Int64))
   (output (: 20 Int64)))
+
+; --- Evaluation-order anchors around the hoist/sink rewrites (which trap fires) --------------------
+; 06dadcb75 pinned that a trapping SHARED payload must not preempt a trapping COND. These anchor the
+; rest of the order contract the rewrites must preserve: strict left-to-right within the taken arm,
+; and the projected-vs-unprojected distinction (a projection that discards a trapping element is the
+; OPEN dead-trap spec question — not graded here; the PROJECTED trapping element is, and must trap).
+
+(case "the left payload of the taken arm traps before the right payload"
+  (doc    "`(tuple (/ 10 d) (+ x 1))` in the taken arm with BOTH elements trapping for these inputs
+           (d = 0 → divide by zero; x = Int64.max → overflow): elements evaluate left-to-right, so the
+           DIVIDE trap fires — a rewrite (hoist, sink, or per-element select) that reorders payload
+           evaluation surfaces the wrong trap. The projection reads element 0, so the trapping element
+           is also the demanded one (no dead-trap ambiguity).")
+  (input  (do
+            (def (main (: x Int64) (: d Int64))
+              (. (if (< x 5) (tuple (/ 10 d) (+ x 1)) (tuple 0 0)) 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a projected trapping element of a hoisted same-constructor if traps"
+  (doc    "`(. (if (< x 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2)) 0)` — the arms share the trapping
+           element at position 0 (a hoist builds it once, outside the per-position select) and the
+           projection DEMANDS that position. At x = 1, d = 0 the taken arm's `(/ 10 0)` must trap. Pins
+           that a shared-and-hoisted payload keeps its trap when demanded — the demanded-element
+           complement of the shared-payload-vs-cond order case (the UNdemanded-element face is the open
+           dead-trap-on-discard spec question, deliberately not graded).")
+  (input  (do
+            (def (main (: x Int64) (: d Int64))
+              (. (if (< x 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2)) 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an escaping tuple evaluates its trapping element"
+  (doc    "`(tuple (/ 10 d) 1)` RETURNED whole (no projection): every element is demanded by the
+           escape, so the d = 0 divide trap must fire — no fold may discard it. The escape control the
+           projection-discard question is measured against: whatever the strict-let/dead-trap ruling
+           decides for a DISCARDED element, a demanded one is unambiguous.")
+  (input  (do
+            (def (main (: d Int64))
+              (tuple (/ 10 d) 1))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))

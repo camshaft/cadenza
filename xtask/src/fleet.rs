@@ -340,24 +340,29 @@ pub enum FleetCmd {
         #[arg(long)]
         no_commit: bool,
     },
-    /// Self-heal the fleet: re-arm any ACTIVE agent whose `/loop` has stalled. Each agent stamps a
-    /// heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every tick; if that
-    /// file is older than `--stale-mult` × the agent's interval, its loop is presumed dead and this
-    /// nudges the window back to life (`tmux send-keys "/loop <interval>" Enter` — the same recovery
-    /// an operator does by hand). Skips: stopped agents, agents with no live tmux window, agents
-    /// mid-tick (their pane shows "esc to interrupt" — real work in flight), and agents re-armed
-    /// within `--grace-secs` (anti-thrash). Meant to run from a short cron (~every 4 min); one pass
-    /// then exit. This is the fleet's reliability backbone — a fleet-wide `/loop` stall froze every
-    /// agent once, so the watchdog exists to catch it without a human babysitting 25+ windows.
+    /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
+    /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
+    /// tick; if that file is older than `--stale-mult` × the agent's interval, its loop is presumed
+    /// dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter` — the
+    /// same recovery an operator does by hand). Skips: agents with no live tmux window, agents mid-tick
+    /// ("esc to interrupt" — real work in flight), and agents re-armed within `--grace-secs`
+    /// (anti-thrash). REAP: any genuinely-DONE agent (registry status=stopped AND a stop-file present)
+    /// whose tmux window is still live gets that window killed — role-agnostic, so it catches design/
+    /// self-removed agents the PM's `remove --close` reaper never gets a note about. The registry row
+    /// is kept (history/archive); only the panel goes away, and a `--grace-secs` window off the stop
+    /// keeps a just-stopped agent's final scrollback glanceable for one cycle. Meant to run from a
+    /// short cron (~every 4 min); one pass then exit. This is the fleet's reliability backbone — a
+    /// fleet-wide `/loop` stall froze every agent once, and stopped windows otherwise pile up.
     Watchdog {
-        /// Report what WOULD be re-armed, but send no keys (safe to run anytime).
+        /// Report what WOULD be re-armed/reaped, but send no keys and kill no windows (safe anytime).
         #[arg(long)]
         dry_run: bool,
         /// Presume a loop stalled once its heartbeat is older than this multiple of its interval.
         #[arg(long, default_value_t = 2)]
         stale_mult: u32,
-        /// Don't re-arm an agent re-armed within this many seconds (gives a freshly-nudged loop time
-        /// to tick and refresh its heartbeat before we judge it stale again).
+        /// Grace window (seconds), used two ways: don't re-arm an agent re-armed this recently (gives
+        /// the nudge time to land), and don't reap a window whose agent stopped this recently (keeps
+        /// its final scrollback glanceable for one cycle).
         #[arg(long, default_value_t = 120)]
         grace_secs: u64,
     },
@@ -859,8 +864,60 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
         }
     }
 
+    // ── Reaping pass: close a genuinely-done agent's lingering tmux window ────────────────────────
+    // A stopped agent's window otherwise piles up: the PM-verified reaper (`remove --close`) only
+    // reaps FIX agents it gets a note from — design/self-removed agents have no reaper, and a busy PM
+    // tick misses some. This pass is role-agnostic and automatic: any agent that is BOTH registry
+    // status=stopped AND has a stop-file (belt-and-suspenders: its loop has genuinely been told to
+    // exit — never close a merely-idle active agent) and STILL has a live window gets its window
+    // killed. The registry row is kept (history/archive), only the panel goes away. A short grace off
+    // the stop-file mtime keeps a just-stopped agent's final scrollback glanceable for one cycle.
+    let mut reaped = 0usize;
+    for a in &reg.agents {
+        if a.status != "stopped" {
+            continue;
+        }
+        let stopfile = fleet.stopfile(&a.name);
+        if !stopfile.exists() {
+            continue; // status stopped but no stop-file → not confirmed done; leave it.
+        }
+        if !live.iter().any(|w| w == &a.name) {
+            continue; // window already gone (reaped, or never launched) — nothing to do.
+        }
+        // Grace: leave a freshly-stopped agent's window open for one cycle so its final scrollback is
+        // glanceable. Reuse the stop-file mtime as the stop time; reap once it's older than grace_secs.
+        if let Some(stopped_ago) = file_mtime_unix(&stopfile).map(|m| now.saturating_sub(m))
+            && stopped_ago < grace_secs
+        {
+            println!(
+                "  ~ {} stopped {stopped_ago}s ago (< {grace_secs}s grace) — leaving window one more cycle",
+                a.name
+            );
+            continue;
+        }
+        if dry_run {
+            println!(
+                "  DRY-RUN would reap '{}' (stopped; window still live)",
+                a.name
+            );
+            reaped += 1;
+            continue;
+        }
+        match kill_window(&session, &a.name) {
+            KillOutcome::Killed => {
+                reaped += 1;
+                println!(
+                    "  ⌫ reaped '{}' (stopped agent's window killed; registry row kept)",
+                    a.name
+                );
+            }
+            KillOutcome::NotFound => {} // raced with another close — fine.
+            KillOutcome::TmuxError => eprintln!("  ! tmux error reaping '{}'", a.name),
+        }
+    }
+
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed.",
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped.",
         if dry_run { "DRY-RUN: " } else { "" }
     );
 }

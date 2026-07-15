@@ -47558,6 +47558,53 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unannotated_closure_with_distinct_param_types_infers_through_a_generic_recursive_hof() {
+        // COVERAGE (v-inference): the closure-arg param-solve through monomorphization must be
+        // PER-PARAMETER and type-directed, not a single uniform type smeared across the slots. A two-arg
+        // fold callback whose params have DISTINCT types — `(fn (acc s) (+ acc (String.byte-len s)))`,
+        // `acc : Int64` (from `(+ acc …)`) and `s : String` (from `(String.byte-len s)`) — passed
+        // unannotated to the generic recursive `foldstr`. The monomorphized copy's `f` must be
+        // `(-> Int64 (-> String Int64))`; a uniform-type solve would mistype one slot. Sums the byte
+        // lengths of `ab`,`abcd`,`x` into a runtime accumulator: `n + 2 + 4 + 1 = n + 7`. Pins the
+        // multi-param fix (`solved_lambda_arrow` in `type_specialize`) for a non-uniform closure.
+        let src = "(module m \
+            (def (foldstr f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (foldstr f (f acc h) t)))) \
+            (def (main (: n Int64)) (foldstr (fn (acc s) (+ acc (String.byte-len s))) n (list \"ab\" \"abcd\" \"x\"))) \
+            (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "7"); // 0 + 2 + 4 + 1
+        assert_eq!(run_closure(src, 100).unwrap(), "107"); // 100 + 7
+    }
+
+    #[test]
+    fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
+        // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
+        // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
+        // — param solved `Int64` from `(< x 10)`, result `Bool` — threaded through the recursive `countif`,
+        // whose `if (f h)` drives on the boolean. `5` and `7` are `< 10` (`20` is not), so `n + 2`. The
+        // result-type companion of the arithmetic-callback folds; pins the single-param fix
+        // (`lambda_param_ty_from_context` free-`Var` guard) for a Bool-result closure.
+        let src = "(module m \
+            (def (countif f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (countif f (if (f h) (+ acc 1) acc) t)))) \
+            (def (main (: n Int64)) (countif (fn (x) (< x 10)) n (list 5 20 7))) (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "2"); // 5 and 7 satisfy `< 10`
+        assert_eq!(run_closure(src, 100).unwrap(), "102"); // 100 + 2
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted

@@ -195,6 +195,22 @@ def contains(it, target) = match next(it) with
   | Option.None(_) => false
   | Option.Some(p) => (match p with | (v, rest) => if v == target then true else contains(rest, target))
 
+// zero-based position of the first element equal to `target`, threading the running index
+def position-from(it, target, i) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (v, rest) => if v == target then Option.Some(i) else position-from(rest, target, i + 1))
+
+/// The zero-based INDEX of the first element equal to `target`, or `None` (the index counterpart of
+/// `contains`; short-circuits on the first match).
+def position(it, target) = position-from(it, target, 0)
+
+/// Drive the pull for its effect: apply `f` to every element in order, returning `unit`. This is the
+/// imperative consumer a future `for x in it` form desugars to. Diverges on an infinite source, so
+/// bound one with `take` first.
+def for-each(it, f: Int64 -> Unit) = match next(it) with
+  | Option.None(_) => unit
+  | Option.Some(p) => (match p with | (v, rest) => let _ = f(v) in for-each(rest, f))
+
 /// Materialize the iterator back into a list (the bridge from computation back to data).
 def collect-list(it) = match next(it) with
   | Option.None(_) => []
@@ -572,5 +588,31 @@ def range-down-composes-with-map() =
     unit
   else
     trap("doubled countdown")
+
+@test
+def position-hits() = match position(from-list([10, 20, 30, 40]), 30) with
+  | Option.Some(i) => if i == 2 then unit else trap("30 is at index 2")
+  | Option.None(_) => trap("should find 30")
+
+@test
+def position-first-of-duplicates() = match position(from-list([5, 7, 5, 7]), 5) with
+  | Option.Some(i) => if i == 0 then unit else trap("first 5 is at index 0")
+  | Option.None(_) => trap("should find 5")
+
+@test
+def position-misses() = match position(range(0, 5), 9) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("9 is not in 0..5")
+
+@test
+def for-each-visits-every-element() =
+  // f traps if it ever sees a value OUTSIDE 0..5, so a clean return proves for-each visited exactly
+  // the range's elements (and none beyond it)
+  let _ = for-each(range(0, 5), fn(x) => if x >= 0 then (if x < 5 then unit else trap("visited too high")) else trap("visited too low")) in
+  unit
+
+@test
+def for-each-over-empty-is-a-noop() =
+  let _ = for-each(empty(), fn(_x) => trap("empty should never call f")) in unit
 
 export { Iter.* }

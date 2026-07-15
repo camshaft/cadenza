@@ -22,7 +22,10 @@
 //! keeps only matches whose binding has the asked-for type. Shape ∧ meaning in one command — the thing
 //! neither library can do alone, unblocked because they share the byte-identical `StructId` space.
 //!
-//! `cdz-run` stays a SEPARATE bin — it pulls in wasmtime + the runtime store, a different concern.
+//! `cdz run` is MOUNTED here too (from the `cdz-run` lib) — one binary on the PATH is the operator's
+//! headline requirement, so the wasmtime + runtime-store weight rides along rather than living in a
+//! separate `cdz-run` bin the user must also install. The standalone `cdz-run` bin remains as a thin
+//! shim over the same `cdz_run::cli` code (so existing call sites keep working); both share one impl.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -68,6 +71,13 @@ enum Cmd {
     // ── compiler (rcdzc) ────────────────────────────────────────────────────────────────────────
     /// Compile binary-AST artifacts to one or more backend targets (wasm/rust). The `rcdzc` surface.
     Compile(compiler_cli::CompileArgs),
+
+    // ── run (cdz-run) ───────────────────────────────────────────────────────────────────────────
+    /// Run a finished wasm component: link it (resolving its value-heap runtime by content address from
+    /// the store), call an export (the sole function export by default), and print the rendered result.
+    /// A trap or error goes to stderr with a non-zero exit. Folded in from the `cdz-run` bin so a single
+    /// `cdz` on the PATH both compiles and runs (`cdz compile foo.cdz -o - | cdz run -`).
+    Run(cdz_run::cli::RunArgs),
 
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
@@ -145,6 +155,8 @@ fn main() -> ExitCode {
         // SOURCE file directly — parsing it in-process to the `ast` artifact, and (for a debug target)
         // the `spans` artifact too — rather than requiring a pre-built binary AST.
         Cmd::Compile(a) => run_compile(a),
+        // `cdz run` — mounted from the `cdz-run` lib; the same code the standalone `cdz-run` bin runs.
+        Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),

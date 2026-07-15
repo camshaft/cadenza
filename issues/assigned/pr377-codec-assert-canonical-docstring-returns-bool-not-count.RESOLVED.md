@@ -14,3 +14,5 @@ Confirmed against trunk: `fn assert_canonical_fixed_point(bytes: &[u8]) -> bool`
 last sentence claims it "Returns the accepted count" but the signature returns `bool`. Genuine
 doc/code contract mismatch in `cadenza-syntax` territory (`v-syntax`). Comment-level fix; route as a
 note to the syntax vertical.
+
+<!-- RESOLVED 2026-07-15: fixed on trunk in fb141f13 (v-syntax depth-cap slice, merged @06dadcb7). Docstring now states the real bool contract + panic-on-violation. -->
