@@ -484,18 +484,35 @@ impl<'a> Printer<'a> {
             // (the Rust `#[attr]\nfn …` convention — an attribute reads as a modifier of the item below,
             // not part of its first line), via a `hardbreak` inside a consistent box, exactly like a
             // `// comment` above a node (`print_comment`). A nested `(@ …)` recurses here, so stacked
-            // `@a @b def …` prints one annotation per line. The name is a plain leaf, via `emit_name`.
-            if head == "@"
-                && args.len() == 2
-                && let Some(name) = self.a.as_name(args[0])
-            {
-                self.doc.cbox(0);
-                self.doc.word("@");
-                self.doc.word(emit_name(name));
-                self.doc.hardbreak();
-                self.expr(args[1], parent_prec);
-                self.doc.end();
-                return;
+            // `@a @b def …` prints one annotation per line.
+            //
+            // The name slot is EITHER a bare name (`@test`) OR a call-style application `(tag "slow")`
+            // for a parameterized annotation (`@tag("slow")` — the argument surface). The bare case
+            // prints `@name` via `emit_name`; the application case renders the application itself
+            // (`tag("slow")`) after the `@`, so `(@ (tag "slow") form)` round-trips to `@tag("slow")`.
+            if head == "@" && args.len() == 2 {
+                if let Some(name) = self.a.as_name(args[0]) {
+                    self.doc.cbox(0);
+                    self.doc.word("@");
+                    self.doc.word(emit_name(name));
+                    self.doc.hardbreak();
+                    self.expr(args[1], parent_prec);
+                    self.doc.end();
+                    return;
+                }
+                // A parameterized annotation: the name slot is an application `(tag "slow")`. Render
+                // `@` glued to that application (which prints as `tag("slow")`), so the reader re-reads
+                // the glued `(` as the annotation argument. `PREC_MEMBER` keeps the application tight (a
+                // bare call/member, never wrapped) so the `@`-glued form round-trips.
+                if matches!(self.a.get(args[0]), Struct::List(_)) {
+                    self.doc.cbox(0);
+                    self.doc.word("@");
+                    self.expr(args[0], PREC_MEMBER);
+                    self.doc.hardbreak();
+                    self.expr(args[1], parent_prec);
+                    self.doc.end();
+                    return;
+                }
             }
             // ---- pragma `(pragma key arg)` -> `@!key arg` (the inner-attribute sugar) ----
             // The pragma-directive sugar, the `@` twin: `@!default-float Float32` reads as a modifier of
@@ -2950,6 +2967,40 @@ mod tests {
         assert_eq!(
             assert_roundtrip("@a @b def f(x) = x", 80),
             "@a\n@b\ndef f(x) = x"
+        );
+    }
+
+    #[test]
+    fn parameterized_annotation_round_trips() {
+        // `@tag("slow")` — a CALL-STYLE annotation ARGUMENT (the operator's `@tag` surface): the `@`
+        // name slot is an APPLICATION glued to the name, canonically `(@ (tag "slow") form)`. It prints
+        // on its own line above the form, like a bare annotation, and re-reads to the same head form.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@tag(\"slow\")\ndef f() = 1").arenas),
+            "(@ (tag \"slow\") (def (f) 1))"
+        );
+        assert_eq!(
+            assert_roundtrip("@tag(\"slow\") def f() = 1", 80),
+            "@tag(\"slow\")\ndef f() = 1"
+        );
+        // The canonical s-expr application-name shape prints back to the `@name(arg)` surface.
+        assert_eq!(
+            print(&sexpr::read("(@ (tag \"slow\") (def (f) 1))").unwrap(), 80),
+            "@tag(\"slow\")\ndef f() = 1"
+        );
+        // A parameterized annotation STACKS with a bare one, each on its own line.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@test\n@tag(\"foo\")\ndef f() = 1").arenas),
+            "(@ test (@ (tag \"foo\") (def (f) 1)))"
+        );
+        assert_eq!(
+            assert_roundtrip("@test @tag(\"foo\") def f() = 1", 80),
+            "@test\n@tag(\"foo\")\ndef f() = 1"
+        );
+        // Multiple args round-trip too (the name slot is a general application).
+        assert_eq!(
+            assert_roundtrip("@cfg(\"a\", \"b\") def f() = 1", 80),
+            "@cfg(\"a\", \"b\")\ndef f() = 1"
         );
     }
 
