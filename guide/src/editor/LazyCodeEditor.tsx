@@ -7,13 +7,15 @@
 
 import { lazy, Suspense } from "react";
 import type { ComponentProps } from "react";
-import type { CodeEditor as CodeEditorType } from "./CodeEditor.tsx";
 
 const CodeEditor = lazy(() =>
   import("./CodeEditor.tsx").then((m) => ({ default: m.CodeEditor })),
 );
 
-type CodeEditorProps = ComponentProps<typeof CodeEditorType>;
+// Props of the real CodeEditor, via a TYPE QUERY on the dynamic import — no separate `import type`
+// value binding (which `typeof` can't legally reference; the erased binding only worked by tsc's
+// leniency). This keeps the module lazy (a `typeof import(...)` is types-only, emits no runtime import).
+type CodeEditorProps = ComponentProps<typeof import("./CodeEditor.tsx")["CodeEditor"]>;
 
 /// A plain-text stand-in shown while the CodeMirror chunk loads — same monospace look + padding as the
 /// editor's content, so the example reads identically and there's no layout jump when it upgrades.
