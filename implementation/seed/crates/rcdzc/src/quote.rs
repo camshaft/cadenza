@@ -346,6 +346,13 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Int", payload))
             }
+            // A boolean literal -> `(Ast.Bool b)`. `Ast.Bool` carries a `Bool` payload (`type-system.md`
+            // §The Abstract Syntax Tree Is An Ordinary Sum Type — "a boolean" is a syntactic form), so the
+            // reified `true`/`false` reads back identically. The payload REUSES the literal's leaf.
+            leaf @ Leaf::Bool(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Bool", payload))
+            }
             // A bare name -> `(Ast.Name "foo")`. The name TEXT becomes a String payload (`Ast.Name`
             // carries the identifier as a String — `type-system.md`), so the identifier is captured as
             // data, not resolved as a reference.
@@ -353,7 +360,7 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
                 let payload = push_atom(ast, Leaf::Str(name));
                 Some(ast_ctor(ast, "Name", payload))
             }
-            // Any other leaf kind (Str/Float/Bool/Char/Sym/Bytes/…) has no `Ast` variant yet: not
+            // Any other leaf kind (Str/Float/Char/Sym/Bytes/…) has no `Ast` variant yet: not
             // reifiable — bail so the whole quote declines rather than miscompiling.
             _ => None,
         },

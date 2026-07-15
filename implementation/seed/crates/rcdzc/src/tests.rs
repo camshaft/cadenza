@@ -3061,6 +3061,100 @@ fn a_runtime_string_rope_map_key_is_found_and_adds_no_leak() {
     );
 }
 
+/// `Map.remove` BORROWS its key (the runtime `op_map_remove` reads it via `champ_hash`/`champ_eq` and
+/// drops only the map's OWN stored columns, never the passed-in key), so an OWNED-TEMPORARY key handle
+/// materialized at the emit — here a LARGE-int key that `op_box_int` heap-allocates (`!fixnum_fits`) —
+/// must be `drop`ped by the emit after the borrow. Before the ownership gate landed on the remove emit
+/// (the twin of the `map-lookup`/`set-contains` gate), that boxed key LEAKED on every `Map.remove`.
+/// Differential probe: a LARGE-int-key program (owned box, leaks the temporary before the fix) vs a
+/// byte-for-byte SMALL-int-key baseline (a fixnum, boxed INLINE — no heap key at all). Both build the
+/// identical champ shell (insert one entry, remove it), so the shared map-temporary baseline cancels;
+/// the ONLY difference is the remove's boxed-key temporary, which must net to 0 (leak-neutral) once the
+/// emit drops the owned key. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn map_remove_owned_key_leaves_no_extra_leak() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[map-remove] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // LARGE-int key `100000000000` (> FIXNUM_MAX) → `op_box_int` heap-allocs an owned key temporary the
+    // borrowing `map-remove` must NOT reclaim, so the emit drops it. `main` returns a scalar so nothing
+    // else survives beyond the (identical, cancelled) champ shell.
+    let big_src = "(module m (def (main) \
+                    (Map.size (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000))) \
+                    (export main))";
+    let big = compile_component(&crate::codec::encode(&parse(big_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&big, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(0),
+        "removing the sole key yields an empty map (size 0)"
+    );
+    let big_live = rt.live_objects();
+
+    // SMALL-int (fixnum) key baseline: `5` boxes INLINE (no heap key), so no owned key temporary exists.
+    let small_src = "(module m (def (main) \
+                    (Map.size (Map.remove (Map.insert (Map.empty) 5 1) 5))) (export main))";
+    let small = compile_component(&crate::codec::encode(&parse(small_src))).expect("compile");
+    let mut rt_small = ComposedRuntime::new(&small, &runtime_bytes);
+    assert_eq!(rt_small.call("main", &[]), Val::S64(0));
+    let small_live = rt_small.live_objects();
+
+    assert_eq!(
+        big_live, small_live,
+        "Map.remove owned-key leak: the large-int-key program leaves {big_live} live cells vs the \
+         fixnum-key baseline's {small_live} — `map-remove` BORROWS the key, so the emit must drop the \
+         owned box after the borrow (any difference is the un-dropped boxed key temporary)"
+    );
+}
+
+/// `Set.remove` BORROWS its element exactly like `Map.remove` borrows its key — the twin leak. A
+/// LARGE-int element `op_box_int` heap-allocs is an owned temporary the borrowing `set-remove` never
+/// reclaims, so the emit must drop it (mirrors the `set-contains` ownership gate). Same differential
+/// shape: large-int element (owned box) vs fixnum element (inline, no heap) — both build the identical
+/// set shell, so the difference is exactly the leaked element temporary, which must net to 0.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn set_remove_owned_elem_leaves_no_extra_leak() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-remove] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    let big_src = "(module m (def (main) \
+                    (Set.len (Set.remove (Set.insert (Set.of (list)) 100000000000) 100000000000))) \
+                    (export main))";
+    let big = compile_component(&crate::codec::encode(&parse(big_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&big, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(0),
+        "removing the sole element yields an empty set (len 0)"
+    );
+    let big_live = rt.live_objects();
+
+    let small_src = "(module m (def (main) \
+                    (Set.len (Set.remove (Set.insert (Set.of (list)) 5) 5))) (export main))";
+    let small = compile_component(&crate::codec::encode(&parse(small_src))).expect("compile");
+    let mut rt_small = ComposedRuntime::new(&small, &runtime_bytes);
+    assert_eq!(rt_small.call("main", &[]), Val::S64(0));
+    let small_live = rt_small.live_objects();
+
+    assert_eq!(
+        big_live, small_live,
+        "Set.remove owned-elem leak: the large-int-elem program leaves {big_live} live cells vs the \
+         fixnum-elem baseline's {small_live} — `set-remove` BORROWS the element, so the emit must drop \
+         the owned box after the borrow (any difference is the un-dropped boxed element temporary)"
+    );
+}
+
 /// A HEAP-HANDLE element inserted into an EMPTY set (`(Set.of (list))`) compiles + runs — the empty
 /// collection's element type is an unresolved `Var`, and the backend must box the element by its OWN
 /// concrete type, not default the var to `box-int`. `Set.insert (Set.of (list)) <String>` (a flat string
@@ -19054,6 +19148,29 @@ mod match_engine {
             "an int value inserted into a Float-valued map offers the retype: {}",
             f.message
         );
+        // M184 audit: when the inserted VALUE and the map's value type are SAME-KIND compounds that differ
+        // structurally (a record field-set diff here), the Map.insert arm appends the minimal-conflict
+        // delta the map-LITERAL peer-join arm already carries — it names the field rather than leaving the
+        // reader to diff `(Record (x Int64))` against `(Record (y Int64))`.
+        let cd = reject_full(
+            "(module m (def (f (: mm (Map String (Record (x Int64))))) \
+             ((. Map insert) mm \"k\" (record (y 2)))) (export f))",
+        )
+        .expect("a Map.insert compound value-type clash must reject");
+        assert!(
+            cd.message.contains("this value's type differs")
+                && cd.message.contains("field `x`")
+                && cd.message.contains('y'),
+            "names the field-level delta on a compound value clash: {}",
+            cd.message
+        );
+        // NO spurious delta on a SCALAR key clash — the earlier String-vs-Int64 key case carries no
+        // structural-delta tail (structural_delta_hint is None for two scalars).
+        assert!(
+            !key.message.contains(" — "),
+            "a scalar key clash carries no structural-delta tail: {}",
+            key.message
+        );
     }
 
     #[test]
@@ -28555,12 +28672,79 @@ mod match_engine {
             Some("CDZ0003"),
             "a stray unquote under a plain quote is CDZ0003, not silently reified"
         );
+        // A BOOLEAN literal reifies to `(Ast.Bool b)` — the boolean is a syntactic form, so the `Ast` sum
+        // carries it (type-system.md §The Abstract Syntax Tree Is An Ordinary Sum Type: "an integer, a
+        // float, a string, a boolean, a name, and a list"). `(quote true)` equals the hand-built node.
+        assert!(
+            reject_code("(module m (def (main) (= (quote true) (Ast.Bool true))) (export main))")
+                .is_none(),
+            "a quoted boolean equals the same Ast.Bool node"
+        );
+        // A boolean nested in a compound reifies as an `Ast.Bool` element (structural, like `Ast.Int`).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quote (f false)) \
+                      (Ast.List (list (Ast.Name \"f\") (Ast.Bool false))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quoted compound with a boolean reifies with an Ast.Bool element"
+        );
+        // `Ast.Bool`'s payload is type-checked like any variant ctor: a non-Bool payload is CDZ0201.
+        assert_eq!(
+            reject_code("(module m (def (main) (Ast.Bool 5)) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "Ast.Bool applied to a non-Bool payload is a type error"
+        );
         // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
-        // `Ast.Str` variant this increment) is NOT reified: it DECLINES (a Todo), never a miscompile.
+        // `Ast.Str` variant this increment; Int/Bool/Name/List are realized) is NOT reified: it DECLINES
+        // (a Todo), never a miscompile.
         assert_eq!(
             reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
             None,
             "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
+        );
+    }
+
+    #[test]
+    fn an_ast_bool_folds_through_reify_eval_and_the_encode_decode_round_trip() {
+        use crate::testkit::parse;
+        // The `Ast.Bool` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
+        // Sum Type — a boolean is one of the syntactic forms). `(eval (quote true))` reconstructs the
+        // boolean literal and folds to `true`; the encode/decode and print/read round-trips see an
+        // `Ast.Bool` as one canonical value.
+        let quoted_true = "(module m (def (main) (eval (quote true))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(quoted_true))).expect("compile"),
+                "main"
+            ),
+            "(eval (quote true)) executes the reconstructed boolean literal to true"
+        );
+        // encode → decode round-trips an `Ast.Bool` (bijection over the whole tree, Ast.decode total).
+        let round_trip = "(module m (def (main) \
+            (match (Ast.decode (Ast.encode (Ast.Bool true))) \
+              ((Ok a) (= a (Ast.Bool true))) \
+              ((Err _) false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
+                "main"
+            ),
+            "encode/decode round-trips an Ast.Bool to an equal value"
+        );
+        // print renders the bare word and read inverts it — `read(print v) == v` over the boolean leaf.
+        let print_read = "(module m (def (main) \
+            (= (read (print (Ast.Bool false))) (Ast.Bool false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
+                "main"
+            ),
+            "print/read round-trips an Ast.Bool (bare word true/false)"
         );
     }
 
@@ -31026,6 +31210,10 @@ mod match_engine {
         );
         assert_eq!(run(&tail, 1), 20);
         assert_eq!(run(&tail, 9), 40);
+        // The HEAP-operand face of this escape — a ≥4-arm String match consumed by `String.concat` beside a
+        // RECURSIVE-CALL sibling — needs the value-heap runtime to execute (String.concat allocates), so it
+        // is pinned in the corpus instead: 02-binding-and-control.sexp "a many-arm string match consumed by
+        // concat beside a recursive call keeps both operands" (go(4)=concat("b","b")→byte-len 2, not 1).
     }
 
     #[test]

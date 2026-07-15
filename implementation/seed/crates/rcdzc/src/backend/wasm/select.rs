@@ -1718,9 +1718,11 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, map, out);
             collect_used_ops_into(db, key, out);
         }
-        // `Map.remove` = `map-remove`, boxing the key by its type.
+        // `Map.remove` = `map-remove`, boxing the key by its type. `map-remove` BORROWS the key, so the
+        // emit drops an OWNED-TEMPORARY key after the borrow (the ownership gate) — hence `drop`.
         Core::MapRemove { map, key, key_ty } => {
             out.insert(OP_MAP_REMOVE);
+            out.insert(OP_DROP);
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
@@ -1776,8 +1778,11 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
         }
+        // `set-remove` BORROWS the element, so the emit drops an OWNED-TEMPORARY element after the borrow
+        // (the ownership gate) — hence `drop`.
         Core::SetRemove { set, elem, elem_ty } => {
             out.insert(OP_SET_REMOVE);
+            out.insert(OP_DROP);
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
@@ -5393,19 +5398,38 @@ fn emit(
             Ok(())
         }
         // `Map.remove(m, k)` — emit the map handle, the key boxed by its type, then `map-remove` (RETURNS
-        // the new map; consumes the map, borrows the key — the boxed key is an owned temporary dropped
-        // inside the op). Removing an absent key yields a map equal to the operand (total).
+        // the new map; consumes the map, BORROWS the key). Removing an absent key yields a map equal to the
+        // operand (total). The op only reads the key (via hash/eq) and drops the map's OWN stored columns,
+        // never the passed-in key — so an OWNED-TEMPORARY key (boxed scalar / compacted rope / const-String
+        // leaf) must be `drop`ped by the emit after the borrow, exactly like `MapLookup`. Scratch: the key
+        // handle (i32), teed before the op and dropped after when owned.
         Core::MapRemove { map, key, key_ty } => {
-            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
-            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            let key_slot = base;
+            if key_slot + 1 > *high {
+                *high = key_slot + 1;
+            }
+            scratch_ty.insert(key_slot, ValType::I32);
+            emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base + 1, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             if key_needs_compaction(db, key) {
+                // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
-            out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
+            // OWNERSHIP GATE (mirrors `MapLookup`): `map-remove` BORROWS the key, so drop it AFTER only when
+            // it is an OWNED TEMPORARY. A BORROWED String/compound key (param / kept-local / a live
+            // sum-payload projection) is left to its owner — dropping it would free a live reference.
+            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?;
+            out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
+            out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map'] (consumes map, borrows key)
+            if key_owned {
+                // Drop the owned key temporary now that the borrow-remove is done.
+                out.push(Lir::LocalGet(key_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(())
         }
         // `Map.size(m)` — emit the map handle, `map-size` (→ u32, an i32 slot), then extend to i64 (a
@@ -5451,19 +5475,37 @@ fn emit(
             Ok(())
         }
         // `Set.remove(s, e)` — emit the set handle, the element boxed by its type, then `set-remove`
-        // (RETURNS the new set; consumes the set, borrows the element — the boxed element is dropped inside
-        // the op). Removing an absent element yields an equal set (total).
+        // (RETURNS the new set; consumes the set, BORROWS the element). Removing an absent element yields an
+        // equal set (total). Like `map-remove`, the op only reads the element and drops the set's OWN stored
+        // columns, never the passed-in element — so an OWNED-TEMPORARY element must be `drop`ped by the emit
+        // after the borrow, exactly like `SetContains`. Scratch: the element handle (i32).
         Core::SetRemove { set, elem, elem_ty } => {
-            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
-            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+            let elem_slot = base;
+            if elem_slot + 1 > *high {
+                *high = elem_slot + 1;
+            }
+            scratch_ty.insert(elem_slot, ValType::I32);
+            emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
+            emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
             if key_needs_compaction(db, elem) {
+                // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
-            out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set']
+            // OWNERSHIP GATE (mirrors `SetContains`): `set-remove` BORROWS the element, so drop it AFTER only
+            // when it is an OWNED TEMPORARY. A BORROWED element (param / kept-local / a live sum-payload
+            // projection) is left to its owner — dropping it would free a live reference.
+            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?;
+            out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
+            out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set'] (consumes set, borrows elem)
+            if elem_owned {
+                // Drop the owned element temporary now that the borrow-remove is done.
+                out.push(Lir::LocalGet(elem_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(())
         }
         // `Set.len(s)` — emit the set handle, `set-size` (→ u32), extend to i64 (`Set.len : Int64`).

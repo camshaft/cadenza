@@ -2676,6 +2676,34 @@
   (call   main (: 1 Int64))
   (output (: 1/3 Rational)))
 
+(case "a RUNTIME-built Rational is usable as a map key, matched by its exact value"
+  (doc    "The runtime companion of the constant Rational-map-key case: `(Rational.of a 2)` with a
+           RUNTIME `a` builds the key via the `rational-of` runtime op (widen `a`+`2` to BigInt, then
+           `rational-of`) rather than the constant-fold path, so the key is a live handle threaded into
+           `Map.insert`/`Map.lookup`. `main(1)` inserts `1/2 -> 10`, looks up `1/2`, finds `Some 10` —
+           the CHAMP still hashes/compares it by descending the two BigInt children. Pins that the
+           RUNTIME materialization (distinct lowering from the constant `ConstRational`) also lands in
+           a map-key slot as a proper heap handle.")
+  (input  (do (def (main (: a Int64))
+                (match (Map.lookup (Map.insert Map.empty (Rational.of a 2) 10) (Rational.of a 2))
+                       ((Some v) v)
+                       ((None) 0)))
+              (export main)))
+  (call   main (: 1 Int64))
+  (output (: 10 Int64)))
+
+(case "a RUNTIME-built Rational set deduplicates by exact value"
+  (doc    "The runtime companion of the constant Rational-set case: with a RUNTIME `a`, the three
+           elements `(Rational.of a 2)`/`(Rational.of a 4)`/`(Rational.of a 3)` are built via the
+           `rational-of` op (not folded). `main(2)` = `{2/2, 2/4, 2/3}` = `{1/1, 1/2, 2/3}`, three
+           distinct normalized rationals, so `Set.len` = 3 — confirming a runtime-materialized Rational
+           set element deduplicates by its normalized value through the CHAMP's two-BigInt-child walk.")
+  (input  (do (def (main (: a Int64))
+                (Set.len (Set.of (list (Rational.of a 2) (Rational.of a 4) (Rational.of a 3)))))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64)))
+
 ; --- Runtime overflow guards at exact boundaries the fold never sees (adversarial anchors) --------
 ; The `(- 0 min)` negation trap above pins one boundary; these pin the remaining single-input
 ; boundaries where a checked op's guard must fire (or hold) at RUN time — operands arrive as

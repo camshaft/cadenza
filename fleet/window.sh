@@ -16,7 +16,8 @@
 set -euo pipefail
 
 AGENT="${1:?usage: window.sh <agent-name>}"
-# The hub root: this script sits at <hub>/.claude/fleet/window.sh → ../../.. is the hub.
+# The hub root: this script sits at <hub>/.claude/fleet/window.sh, so dirname is <hub>/.claude/fleet
+# and ../.. climbs the two levels (fleet → .claude → <hub>) up to the hub.
 HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the

@@ -679,23 +679,24 @@ fn remove(fleet: &Fleet, name: &str, close: bool) {
     fleet.save(&reg);
     if close {
         // Reap the tmux window too (the PM does this after verifying a fix landed). The registry row
-        // stays `stopped` — only the panel goes away, so history/archive survive. If we're not in a
-        // tmux session (or the window is already gone) this is a harmless no-op.
-        let killed = if in_tmux() {
-            kill_window(&tmux_current_session(), name)
+        // stays `stopped` — only the panel goes away, so history/archive survive. Report the exact
+        // reason when nothing was killed, so "already gone" isn't confused with "tmux errored".
+        let prefix = format!("fleet remove --close: '{name}' marked stopped");
+        if !in_tmux() {
+            println!("{prefix}; not in a tmux session, so no window to kill. Registry row kept.");
         } else {
-            false
-        };
-        if killed {
-            println!(
-                "fleet remove --close: '{name}' marked stopped AND its tmux window killed (panel \
-                 reaped; registry row kept)."
-            );
-        } else {
-            println!(
-                "fleet remove --close: '{name}' marked stopped; no live tmux window to kill (already \
-                 closed, or not in a tmux session). Registry row kept."
-            );
+            match kill_window(&tmux_current_session(), name) {
+                KillOutcome::Killed => println!(
+                    "{prefix} AND its tmux window killed (panel reaped; registry row kept)."
+                ),
+                KillOutcome::NotFound => println!(
+                    "{prefix}; no live tmux window by that name (already closed). Registry row kept."
+                ),
+                KillOutcome::TmuxError => eprintln!(
+                    "{prefix}, but `tmux kill-window` FAILED (tmux missing or errored) — the window \
+                     may still be open; close it by hand. Registry row kept."
+                ),
+            }
         }
     } else {
         println!(
@@ -1247,20 +1248,36 @@ fn ensure_window(fleet: &Fleet, session: &str, a: &Agent) {
     }
 }
 
-/// Kill the tmux window named `agent` in `session` (reaping a dead agent's panel). Returns whether a
-/// window was actually killed — `false` if it didn't exist (already closed) or tmux errored, so the
-/// caller can report accurately. Targets `session:agent` by NAME, so it never hits the wrong window.
-fn kill_window(session: &str, agent: &str) -> bool {
+/// The outcome of trying to kill a tmux window — distinguished so the caller can report the real
+/// reason rather than lumping "already gone" together with "tmux failed".
+enum KillOutcome {
+    /// The window existed and was killed.
+    Killed,
+    /// No window by that name — already closed (or never launched). Not an error.
+    NotFound,
+    /// The window existed but `tmux kill-window` failed (tmux missing, or errored).
+    TmuxError,
+}
+
+/// Kill the tmux window named `agent` in `session` (reaping a dead agent's panel). Returns a
+/// [`KillOutcome`] so the caller can tell "already closed" from "tmux errored". Targets
+/// `session:agent` by NAME, so it never hits the wrong window.
+fn kill_window(session: &str, agent: &str) -> KillOutcome {
     // Only kill a window that actually exists — `kill-window` on a missing target errors noisily.
     if !tmux_windows(session).iter().any(|w| w == agent) {
-        return false;
+        return KillOutcome::NotFound;
     }
     let target = format!("{session}:{agent}");
-    Command::new("tmux")
+    let ok = Command::new("tmux")
         .args(["kill-window", "-t", &target])
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if ok {
+        KillOutcome::Killed
+    } else {
+        KillOutcome::TmuxError
+    }
 }
 
 fn shell_quote(s: &str) -> String {

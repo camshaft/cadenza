@@ -68,3 +68,5 @@
   (output (: 1 Int64)))
 
 ;; ASSIGNED 2026-07-15: claimed by v-runtime (rope-canonicalization design). NOT a fix-agent job.
+
+;; RESOLVED 2026-07-15 (trunk@ea55e284d): fixed by 9f1fbf6c. Corrected diagnosis: NOT a runtime compaction gap — lower.rs Set.contains/insert/remove folded against a non-const SetOf; gated on is_const_value(set).

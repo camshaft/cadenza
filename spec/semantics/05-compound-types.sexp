@@ -4892,6 +4892,46 @@
   (call   main (: 0 Int64)) (output (: -1 Int64))
   (call   main (: 60 Int64)) (output (: -2 Int64)))
 
+; The pipeline above short-circuits a Result through a LINEAR chain of steps. The fallible recursive-descent
+; PARSER threads a Result through MUTUAL recursion instead: `pe` (expr) and `pf` (factor) are mutually
+; recursive, each returning `Result((value, cursor), String)` — an Ok carrying a (value, next-index) tuple,
+; or an Err carrying a diagnostic message. `pe` matches `pf`'s Result: on Ok it PROJECTS the (value,cursor)
+; tuple and threads the cursor into the next `pf`; on Err it propagates the message unchanged (short-circuit
+; — the mutual partner is not entered). This is the parse-checked spine of a self-hosted front end (an
+; unexpected token aborts the parse with a position-carrying error), combining the mutual-recursion cursor
+; thread, tuple projection, and Result short-circuit in one shape. Pins that a compound Ok payload survives
+; projection + re-threading across the mutual edge AND that an Err propagates through it — the compiler's
+; fallible-parser carrier, distinct from the linear pass pipeline above.
+
+(case "a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err"
+  (doc    "`pe`/`pf` mutually recurse over a token list `[0,3,4]`, each returning `Result((value, cursor),
+           String)`. `pf` at cursor i reads the token: `0` opens a group (recurse `pe(i+1)`), `t>0` is a
+           literal `Ok((t, i+1))`, out-of-range is `Err(\"eof\")`. `pe` parses a factor then, if a second
+           factor follows, sums them (`Ok((a.0 + b.0, b.1))`), else returns the first — projecting each
+           Ok's (value,cursor) tuple and threading the cursor `a.1` into the next `pf`, propagating an Err
+           unchanged. From start=0: `pf(0)` sees 0 → `pe(1)` sums `pf(1)`=Ok(3,2) and `pf(2)`=Ok(4,3) →
+           Ok(7,3), so the whole parse is Ok value 7. From start=5 (past the tokens): `pf(5)` is None →
+           Err(\"eof\"), which short-circuits out of `pe`; `run` reads the message length (3) and negates
+           it → -3. Pins the fallible-parser carrier: a compound Ok payload projected and re-threaded across
+           the mutual `pe<->pf` edge stays correct, and a String-carrying Err propagates through the mutual
+           recursion — the parse-checked spine of a self-hosted front end.")
+  (input  (do
+            (def (toks) (list 0 3 4))
+            (def (pf (: i Int64))
+              (match (List.at (toks) i)
+                ((Some t) (if (= t 0) (pe (+ i 1)) (Ok (tuple t (+ i 1)))))
+                ((None _) (Err "eof"))))
+            (def (pe (: i Int64))
+              (match (pf i)
+                ((Ok a)
+                  (match (pf (. a 1)) ((Ok b) (Ok (tuple (+ (. a 0) (. b 0)) (. b 1)))) ((Err _) (Ok a))))
+                ((Err e) (Err e))))
+            (def (run (: start Int64))
+              (match (pe start) ((Ok r) (. r 0)) ((Err e) (- 0 (String.byte-len e)))))
+            (export run)))
+  (call   run (: 0 Int64)) (output (: 7 Int64))
+  (call   run (: 5 Int64)) (output (: -3 Int64)))
+
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
            (> n 0) (Ok n) (Err \"neg\"))` — n=5 → `(Ok 5)` → 5; n=0 → `(Err \"neg\")`, whose message is read

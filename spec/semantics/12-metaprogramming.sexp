@@ -185,6 +185,77 @@
   (input  (= (quote foo) (Ast.Name "foo")))
   (output (: true Bool)))
 
+; --- The Ast.Bool leaf variant --------------------------------------------------------------------
+; The built-in `Ast` is an ordinary sum type with "a variant per syntactic form (an integer, a float, a
+; string, a BOOLEAN, a name, and a list of child nodes)" (type-system.md #The Abstract Syntax Tree Type
+; Is An Ordinary Sum Type). A BOOLEAN literal is one such form, so `(quote true)` is the `Ast` sum value
+; `(Ast.Bool true)` — the boolean companion of `(quote 42)`=`(Ast.Int 42)` and `(quote foo)`=`(Ast.Name
+; "foo")`. It carries a `Bool` payload (a single-arity variant constructor whose argument is type-checked,
+; like every other `Ast.*`), it destructures by pattern match binding that payload, it round-trips through
+; `Ast.encode`/`Ast.decode` and `print`/`read`, and `eval` executes it (a boolean form evaluates to itself).
+
+(case "a quoted boolean equals the same node built by the Ast.Bool constructor"
+  (doc    "The boolean companion of the Int/Name equality cases: `(quote true)` is the `Ast` sum value
+           `(Ast.Bool true)` (metaprogramming.md #Quote Produces An AST Value; type-system.md #The Abstract
+           Syntax Tree Type Is An Ordinary Sum Type — a boolean is a syntactic form). `(= (quote true)
+           (Ast.Bool true))` MUST be true (core-semantics.md #Equality Is Structural), exactly as
+           `(= (quote 42) (Ast.Int 42))` is — the quote result and the constructor-built node are ONE value.")
+  (input  (= (quote true) (Ast.Bool true)))
+  (output (: true Bool)))
+
+(case "a match binds an Ast.Bool payload"
+  (doc    "The `Ast` sum is deconstructible by pattern matching like any other sum (type-system.md #The
+           Abstract Syntax Tree Type Is An Ordinary Sum Type), so a match over `(quote false)` binds the
+           `Ast.Bool` payload. The arm returns the bound boolean; the catch-all covers the other variants
+           (the match is exhaustive against the sum's variant set). Yields false.")
+  (input  (match (quote false)
+            ((Ast.Bool b) b)
+            (_            true)))
+  (output (: false Bool)))
+
+(case "a built-in Ast.Bool constructor applied to a wrong-type payload is a type error"
+  (doc    "`Ast.Bool`'s payload type is Bool (a variant per syntactic form — type-system.md #The Abstract
+           Syntax Tree Type Is An Ordinary Sum Type), so `(Ast.Bool 5)` applies it to an Int64 — a type
+           mismatch the compiler MUST reject (CDZ0201), exactly as `(Ast.Int \"x\")` (a String where Int64
+           is declared) is. Pins that the built-in `Ast.Bool` constructor type-checks its declared payload
+           like any user sum variant.")
+  (input  (Ast.Bool 5))
+  (error  CDZ0201))
+
+(case "a quoted compound form containing a boolean reifies with an Ast.Bool element"
+  (doc    "A boolean nested inside a quoted compound reifies as an `Ast.Bool` element, exactly as an
+           integer reifies as `Ast.Int`. `(quote (f true))` is `(Ast.List (list (Ast.Name \"f\") (Ast.Bool
+           true)))`, so comparing it against that hand-built node MUST be true — the leaf reification is
+           structural and covers the boolean form.")
+  (input  (= (quote (f true)) (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
+  (output (: true Bool)))
+
+(case "eval of a quoted boolean executes it to the boolean value"
+  (doc    "eval executes an AST value as code (metaprogramming.md #Eval Is Optional For Macros And
+           Interactive Use); a boolean form evaluates to itself, so `(eval (quote true))` runs to true.
+           The boolean companion of `(eval (quote (+ 1 2)))`=3 — `eval` reconstructs the source the
+           `Ast.Bool` denotes (the `true` literal) and folds it through the ordinary path.")
+  (input  (do (def (main) (eval (quote true))) (export main)))
+  (output (: true Bool)))
+
+(case "encoding and decoding an Ast.Bool round-trips to an equal value"
+  (doc    "`(Ast.Bool true)` is an AST value; encoding then decoding it MUST yield an equal AST
+           (ast-encoding.md #The Encoding Is A Bijection — decode(encode t) is t), exactly as the Int/Name/
+           List round-trips do. `Ast.decode : Bytes → Result<Ast, _>` is total, so the round-trip matches
+           the `Ok` arm and equates its payload.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Bool true)))
+            ((Ok a)  (= a (Ast.Bool true)))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "print of an Ast.Bool renders the bare word and read inverts it"
+  (doc    "`print : Ast → String` renders an `Ast.Bool` as the bare word `true`/`false` — the canonical
+           re-readable spelling — and `read : String → Ast` parses it back, so `read(print v) == v`
+           (compiler-pipeline.md — the printer and reader are inverse over the AST value). A boolean word
+           is unambiguously a boolean literal (never a name), so the round-trip is exact.")
+  (input  (= (read (print (Ast.Bool false))) (Ast.Bool false)))
+  (output (: true Bool)))
+
 (case "a quoted compound form equals the same AST built by the Ast.List constructor"
   (doc    "The list companion, and the sharpest case: `(quote (+ 1 2))` is
            `(Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2)))` — the very value form the FIRST
