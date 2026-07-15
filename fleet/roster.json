@@ -1,23 +1,19 @@
 {
-  "//": "The STANDING fleet — tracked so it reproduces on any machine. `cargo xtask fleet up` seeds the machine-local runtime registry (.claude/fleet/registry.json) from this, creating each agent's worktree off trunk and its tmux window. Ephemeral agents (per-issue `fix`, on-demand `design`) are NOT here — they are minted at runtime by the PM / concierge. Edit this file to change the standing fleet; `fleet up` reconciles.",
-  "//model": "Short aliases resolve to full model ids in one place (xtask fleet's resolve_model): `opus` -> Opus 4.8 with the 1M-token context, `fable` -> Fable 5 with the 1M context. The breaker runs on fable (the hardest reasoning job); everyone else on opus. `interval` is the /loop cadence.",
-  "agents": [
-    { "name": "concierge",     "role": "concierge",     "model": "opus",  "interval": "30m" },
-    { "name": "pr-sync",        "role": "pr-sync",       "model": "opus",  "interval": "10m" },
-    { "name": "corpus-bugfix",  "role": "corpus-bugfix", "model": "opus",  "interval": "10m" },
-    { "name": "breaker",        "role": "breaker",       "model": "fable", "interval": "10m" },
-    { "name": "fuzzer",         "role": "fuzzer",        "model": "opus",  "interval": "10m" },
-
-    { "name": "v-iterators",       "role": "vertical", "vertical": "iterators",       "area": "rcdzc",       "model": "opus", "interval": "10m" },
-    { "name": "v-effects",         "role": "vertical", "vertical": "effects",         "area": "rcdzc",       "model": "opus", "interval": "10m" },
-    { "name": "v-binary-matching", "role": "vertical", "vertical": "binary-matching", "area": "rcdzc",       "model": "opus", "interval": "10m" },
-    { "name": "v-patterns",        "role": "vertical", "vertical": "patterns",        "area": "rcdzc",       "model": "opus", "interval": "10m" },
-    { "name": "v-diagnostics",     "role": "vertical", "vertical": "diagnostics",     "area": "rcdzc",       "model": "opus", "interval": "10m" },
-
-    { "name": "v-compiler-perf",   "role": "vertical", "vertical": "compiler-perf",   "area": "rcdzc",       "model": "opus", "interval": "10m" },
-    { "name": "v-wasm-opt",        "role": "vertical", "vertical": "wasm-opt",        "area": "rcdzc",       "model": "opus", "interval": "10m" },
-
-    { "name": "v-guide",           "role": "vertical", "vertical": "guide",           "area": "guide",       "model": "opus", "interval": "10m" },
-    { "name": "v-compiler-ml",     "role": "vertical", "vertical": "compiler-ml",     "area": "compiler-ml", "model": "opus", "interval": "10m" }
+  "//": "The STANDING fleet — tracked so it reproduces on any machine. Synced from the live registry by `cargo xtask fleet archive` (pr-sync runs it each tick) and read back by `fleet up`. Ephemeral fix/design agents are not listed. Edit by hand or via `fleet add/remove`; the next archive persists the change.",
+"agents": [
+    { "name": "pr-sync", "role": "pr-sync", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "concierge", "role": "concierge", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "corpus-bugfix", "role": "corpus-bugfix", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "breaker", "role": "breaker", "model": "fable", "effort": "high", "interval": "10m" },
+    { "name": "fuzzer", "role": "fuzzer", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-iterators", "role": "vertical", "vertical": "iterators", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-effects", "role": "vertical", "vertical": "effects", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-binary-matching", "role": "vertical", "vertical": "binary-matching", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-patterns", "role": "vertical", "vertical": "patterns", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-diagnostics", "role": "vertical", "vertical": "diagnostics", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-compiler-perf", "role": "vertical", "vertical": "compiler-perf", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-wasm-opt", "role": "vertical", "vertical": "wasm-opt", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-guide", "role": "vertical", "vertical": "guide", "area": "guide", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-compiler-ml", "role": "vertical", "vertical": "compiler-ml", "area": "compiler-ml", "model": "opus", "effort": "high", "interval": "10m" }
   ]
 }
