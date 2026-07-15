@@ -411,7 +411,12 @@ pub fn copy_structural_pub(
     // `arg_of` SUBSTITUTES a param's references with a replacement node — used to bind a TYPE-VALUED
     // parameter to its CONCRETE type expression at monomorphization (`(Lst t)` → `(Lst Int64)`), so the
     // erased type param needs no binder in the specialized copy (empty for the ordinary value-param case).
-    beta_reduce(db, body, arg_of)
+    // Record the COPY ROOT so the capture-share exception copies (not shares) a pinned pattern binder
+    // whose scrutinee lies WITHIN this body (see `Db::reduction_root`).
+    let saved = db.reduction_root.replace(body);
+    let reduced = beta_reduce(db, body, arg_of);
+    db.reduction_root = saved;
+    reduced
 }
 
 /// Pin (memoize the resolution of) every SELF-CALL name occurrence in `node` — a reference resolving to a
@@ -508,9 +513,21 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // and, on a deep nested-call chain, re-resolve exponentially — the stack-overflow regression).
     if db.ast.as_name(body).is_some() && db.resolved_subtrees.contains(&body) {
         if let Resolved::SumPayload { scrutinee, .. } = resolved_of(db, body)
-            && scrutinee_is_substituted(db, scrutinee, arg_of)
+            && (scrutinee_is_substituted(db, scrutinee, arg_of)
+                || db
+                    .reduction_root
+                    .is_some_and(|root| db.is_within(scrutinee, root)))
         {
-            // Fall through to `copy_structural` — re-resolve against the copied, substituted scrutinee.
+            // Fall through to `copy_structural` — re-resolve against the copied scrutinee. Two cases need
+            // this: (a) the scrutinee IS a substituted param (a lambda whose param is the match scrutinee,
+            // applied through a nested inline); (b) the scrutinee is an EXPRESSION WITHIN the body being
+            // copied — `(match (f c) ((Ok ct) …))` in a monomorphized def, where the scrutinee `(f c)` is
+            // itself copied (a fresh occurrence re-resolving its own `c` against the specialized sig). In
+            // both, SHARING the pinned binder would leave its `SumPayload` reading the ORIGINAL, now-orphaned
+            // scrutinee — whose param references (`c`) have no slot in the copied function, the "parameter
+            // reference has no local slot" backend decline. A scrutinee OUTSIDE the copy root is a genuine
+            // capture (an enclosing match's binder read by an inner lambda) and keeps sharing (copying it
+            // would break its resolution and, on a deep call chain, re-resolve exponentially).
         } else {
             return body;
         }
@@ -849,7 +866,11 @@ fn apply_lambda_uncached(
     // here — pinning them would wrongly SHARE a param ref that must be replaced by its argument).
     let own_params: Vec<StructId> = params.iter().map(|&p| param_name_occ(db, p)).collect();
     pin_free_vars(db, body, body, &own_params);
+    // Record the COPY ROOT so the capture-share exception copies (not shares) a pinned pattern binder
+    // whose scrutinee lies WITHIN this body (see `Db::reduction_root`).
+    let saved = db.reduction_root.replace(body);
     let reduced = beta_reduce(db, body, &arg_of);
+    db.reduction_root = saved;
     // A do-local RECURSIVE function inside `body` was COPIED by the reduction (fresh occurrences); its
     // recursive self-call now resolves to the COPY's lambda, whose body is not yet in `def_by_body`. So a
     // helper `(def (helper x) (do (def (fac n) …) (fac x)))` inlined at its call site would decline "needs

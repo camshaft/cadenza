@@ -1353,6 +1353,7 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         // than declining the dead arm's phantom-typed payload read. (A LIVE value never has a free-var
         // type here — inference would have solved it — so this cannot mask a real unresolved-type bug.)
         Ty::Var(_) | Ty::Any => Ok(Some(OP_BOX_INT)),
+        Ty::Unit => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -1413,6 +1414,7 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         // value of this type ever flows), so the op only needs to be VALID, not value-correct. This lets a
         // total match on a partly-un-built sum (`(Result C ?)` only ever `Ok`) compile its dead `Err` arm.
         Ty::Var(_) | Ty::Any => Ok(Some(OP_GET_INT)),
+        Ty::Unit => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -5556,16 +5558,29 @@ fn emit(
                 }
                 1 => {
                     let p = payloads[0];
-                    emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value]
-                    if let Some(op) = box_op(db, p)? {
-                        emit_box_i32_to_i64_extend(db, p, out);
-                        out.push(Lir::CallImport(op)); // [disc, payload-handle]
-                    }
-                    // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction
-                    // (see the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`)
-                    // is the sum-payload face of the nested-rope value-eq/key miss.
-                    if elem_needs_rope_compaction(db, p) {
-                        out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, flat-leaf]
+                    // A UNIT-TYPED single payload — a single-variant nullary sum (`(type E EX)`) erases to
+                    // `Ty::Nominal { inner: Unit }`, so a `(Result A E)`'s `Err` carries an `E` payload whose
+                    // value is `Core::Unit` (it EMITS NOTHING — `valtype_of(Unit) = None`). This is the SAME
+                    // shape as the 0-payload case above (a genuinely nullary variant): the payload handle is
+                    // the inline-unit constant `IMM_UNIT`. Push it directly so `sum-new` gets its payload arg,
+                    // rather than emitting the value (nothing) + a box (declined). Without this the payload
+                    // was absent and `sum-new` underflowed the stack (invalid wasm). This is reached only for
+                    // a value-carrying variant whose payload TYPE is Unit — the degenerate single-variant sum
+                    // as a boxed payload; a truly nullary variant took the `0 =>` arm.
+                    if matches!(type_of(db, p).strip_nominal(), Ty::Unit) {
+                        out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc, unit]
+                    } else {
+                        emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value]
+                        if let Some(op) = box_op(db, p)? {
+                            emit_box_i32_to_i64_extend(db, p, out);
+                            out.push(Lir::CallImport(op)); // [disc, payload-handle]
+                        }
+                        // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction
+                        // (see the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`)
+                        // is the sum-payload face of the nested-rope value-eq/key miss.
+                        if elem_needs_rope_compaction(db, p) {
+                            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, flat-leaf]
+                        }
                     }
                 }
                 n => {

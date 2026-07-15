@@ -322,6 +322,23 @@
   (input  (* (Qty.of 5.0 (Unit.base #"meter")) 1))
   (error  CDZ0301))
 
+(case "scaling a quantity by a bare number of its own numeric type keeps its dimension"
+  (doc    "`(Qty.value (* (Qty.of 2.0 meter) 3.0))` = 6.0: multiplying a `(Qty Float64 meter)` by a bare
+           dimensionless Float64 keeps the dimension — the bare operand contributes `Unit.one`, so the
+           result is a `(Qty Float64 meter)` and `Qty.value` recovers 6.0. Pins that a `(Qty T u) * <bare
+           T>` is well-formed scaling that preserves the unit; before the apply_type reorder the Float
+           operand-type arm preempted the quantity arm and the result mis-inferred as a bare `Float64`
+           (the unit silently dropped, so `Qty.value` of it declined).")
+  (input  (Qty.value (* (Qty.of 2.0 (Unit.base #"meter")) 3.0)))
+  (output (: 6.0 Float64)))
+
+(case "scaling an integer quantity by a bare integer of its own type keeps its dimension"
+  (doc    "`(Qty.value (* (Qty.of 5 meter) 2))` = 10: the Int64 companion — a `(Qty Int64 meter)` scaled
+           by a bare `Int64` stays a `(Qty Int64 meter)`, value 10. Pins the same unit-preserving scaling
+           over the integer numeric type.")
+  (input  (Qty.value (* (Qty.of 5 (Unit.base #"meter")) 2)))
+  (output (: 10 Int64)))
+
 (case "a unit multiplied by its own inverse cancels to the dimensionless unit"
   (doc    "`(/ (Qty.of 6.0 meter) (Qty.of 2.0 meter))` derives meter/meter = Unit.one — the base cancels
            its inverse (the free-abelian-group law) — leaving a dimensionless `(Qty Float64 Unit.one)`

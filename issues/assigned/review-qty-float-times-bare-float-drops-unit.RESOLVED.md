@@ -54,3 +54,5 @@ tightest pin; a runtime render/`Unit.in` check is the observable-value companion
 ## Verified
 Built `cdz` at trunk `a588e5431`, ran `cdz type` on the shape above → `Float64` (unit dropped).
 Confirmed the disclosed filing is absent from queue + repo. Distinct from the existing calc-relabel item.
+
+<!-- RESOLVED 2026-07-15 (trunk@1aebedc58, fix 1aebedc58): Qty × bare number keeps its dimension — apply_type reorder gated the BigInt/Rational/Float operand arms on !any_qty so (Qty T u)×bare-T stays (Qty T u). Verified: (* (Qty Float64 meter) 2.0) : (Qty Float64 meter). 2 graded pins + rcdzc test. Took 3 sends (2 silently dropped — pattern flagged to concierge). Residual x*1-identity edge tracked separately by v-quantity. -->

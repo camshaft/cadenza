@@ -31115,6 +31115,29 @@ mod match_engine {
     }
 
     #[test]
+    fn scaling_a_quantity_by_a_bare_number_preserves_its_dimension() {
+        // apply_type REORDER: a `(Qty T u) * <bare T>` keeps the unit — a bare number scales, contributing
+        // `Unit.one`. Before the reorder, apply_type's Float/BigInt/Rational operand-type arms ran BEFORE
+        // the quantity arm, so a `(Qty Float64 meter)` multiplied by a bare `Float64` matched the Float arm
+        // (its bare sibling is `Ty::Float`) and returned the bare `Float64` — the unit silently dropped, and
+        // `Qty.value` of the result declined ("no machine representation"). Now the quantity arm runs first
+        // (mirroring check_application's `is_multiplicative && any_qty` ordering), so the result stays a
+        // quantity and `Qty.value` recovers the scaled magnitude. Runs end-to-end.
+        let src = "(do (def (main) \
+                   ((. Qty value) (* ((. Qty of) 2.0 ((. Unit base) #\"meter\")) 3.0))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a Float64 quantity scaled by a bare Float64 keeps its unit and runs"),
+                "main"
+            ),
+            6.0,
+            "2.0 meter * 3.0 = 6.0 meter (unit preserved, Qty.value recovers 6.0)"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`

@@ -16,10 +16,13 @@
 //! churny snapshot. `v-duvet-coverage` owns GROWING the number: when it adds citations it bumps the
 //! floor with `xtask duvet-check --save`.
 //!
-//! FAIL-SOFT: if the `duvet` binary is not installed, this SKIPS with a note rather than failing — the
-//! gate must never turn `check` red merely because a machine lacks the optional tool (that would be the
-//! very machine-specific flakiness the committed-snapshot approach was rejected for). A machine that
-//! has duvet enforces the floor; one that doesn't, doesn't.
+//! FAIL-SOFT — but ONLY for a genuinely-absent tool. If the `duvet` binary is not installed, this
+//! SKIPS with a note (the gate must never turn `check` red merely because a machine lacks the optional
+//! tool). But if duvet IS installed and `duvet report` FAILS (the common cause: a stranded citation —
+//! a `//=` / `//#` pointing at spec text that was reworded/removed), that is NOT a clean skip: it means
+//! the gate can't run, which is exactly the regression it exists to catch, so it FAILS loudly. (An
+//! earlier version conflated the two and silently disabled itself when a stranded citation broke the
+//! report — green-by-skip. The `Measurement` enum below keeps `Absent` and `ReportFailed` distinct.)
 
 use std::path::Path;
 use std::process::Command;
@@ -42,13 +45,30 @@ struct Coverage {
 /// Entry point. `save` records the current counts as the new floor (what `v-duvet-coverage` runs after
 /// adding citations); otherwise this enforces the committed floor and exits non-zero on a regression.
 pub fn run(paths: &Paths, save: bool) {
-    let Some(live) = measure(paths) else {
-        // duvet not installed / report failed → fail-soft skip (never red on a missing optional tool).
-        println!(
-            "duvet-check: `duvet` not available (or report failed) — SKIPPING the citation gate. \
-             Install duvet to enforce it locally; this is not a failure."
-        );
-        return;
+    let live = match measure(paths) {
+        Measurement::Ok(cov) => cov,
+        Measurement::Absent => {
+            // The `duvet` binary is genuinely not installed → fail-soft skip (never red on a machine
+            // lacking the optional tool). This is the ONLY legitimate skip.
+            println!(
+                "duvet-check: `duvet` is not installed — SKIPPING the citation gate. \
+                 Install duvet to enforce it locally; this is not a failure."
+            );
+            return;
+        }
+        Measurement::ReportFailed(why) => {
+            // duvet IS installed but `duvet report` failed — almost always a STRANDED citation (a
+            // `//=` / `//#` pointing at spec text that no longer exists). This previously fell into the
+            // skip path, silently DISABLING the gate (it was green-by-skip on trunk for a while). That
+            // is exactly the regression the gate exists to catch, so it must be LOUD, not a skip: FAIL.
+            eprintln!(
+                "duvet-check: `duvet report` FAILED — the citation gate could NOT run. This is NOT a \
+                 clean skip: duvet is installed but erroring, which is almost always a STRANDED \
+                 citation (a //= / //# whose spec sentence was reworded/removed). Fix the citation so \
+                 `duvet report` succeeds again.\n  duvet error: {why}"
+            );
+            std::process::exit(1);
+        }
     };
 
     let floor_path = paths.repo.join(FLOOR_REL);
@@ -103,25 +123,62 @@ pub fn run(paths: &Paths, save: bool) {
     }
 }
 
-/// Run `duvet report --json <tmp>` and count the citation + spec annotations. Returns `None` if duvet
-/// is missing or the report can't be produced/parsed (→ fail-soft skip).
-fn measure(paths: &Paths) -> Option<Coverage> {
+/// The outcome of trying to measure coverage — distinguished so `run` can SKIP on a genuinely-absent
+/// tool but FAIL LOUDLY when duvet is present yet erroring (a stranded citation), instead of silently
+/// disabling the gate for both.
+enum Measurement {
+    /// duvet ran and its report parsed → the coverage counts.
+    Ok(Coverage),
+    /// The `duvet` binary is not installed (command not found) → the only legitimate skip.
+    Absent,
+    /// duvet is installed but `duvet report` failed / its output couldn't be parsed → must be loud.
+    ReportFailed(String),
+}
+
+/// Run `duvet report --json <tmp>` and count the citation + spec annotations, distinguishing a missing
+/// binary (→ `Absent`) from a present-but-failing one (→ `ReportFailed`).
+fn measure(paths: &Paths) -> Measurement {
     // Emit the JSON to a temp path under the repo's target dir (never committed).
     let out = paths.repo.join("target/duvet-report.json");
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let status = Command::new("duvet")
+    let output = Command::new("duvet")
         .current_dir(&paths.repo)
         .args(["report", "--json"])
         .arg(&out)
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        _ => return None, // duvet missing or errored → skip
+        .output();
+    match output {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Measurement::Absent,
+        Err(e) => Measurement::ReportFailed(format!("could not run duvet: {e}")),
+        Ok(o) if !o.status.success() => {
+            // duvet ran but exited non-zero — surface its stderr (it names the stranded citation).
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let tail: String = stderr
+                .lines()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            Measurement::ReportFailed(if tail.is_empty() {
+                format!("duvet report exited with {}", o.status)
+            } else {
+                tail
+            })
+        }
+        Ok(_) => match std::fs::read_to_string(&out) {
+            Err(e) => Measurement::ReportFailed(format!("could not read duvet report: {e}")),
+            Ok(text) => match count_annotations(&text) {
+                Some(cov) => Measurement::Ok(cov),
+                None => Measurement::ReportFailed(
+                    "duvet report JSON had no `annotations` array (unexpected shape)".to_string(),
+                ),
+            },
+        },
     }
-    let text = std::fs::read_to_string(&out).ok()?;
-    count_annotations(&text)
 }
 
 /// Count citation vs SPEC annotations in a `duvet report --json` document. A SPEC-typed annotation is

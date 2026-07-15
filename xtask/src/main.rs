@@ -2687,9 +2687,15 @@ fn check(paths: &Paths, profile: &str) {
     log.step_show("gate", &gate_cmd, repo);
 
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
-    // (live cited < the committed floor). Fail-soft when `duvet` isn't installed, so it never reddens
-    // `check` on a machine lacking the optional tool — a machine with duvet enforces the floor.
-    log.step_show("duvet-check", &format!("{xtask} duvet-check"), repo);
+    // (live cited < the committed floor). Skips only when `duvet` isn't installed; a present-but-
+    // erroring duvet (a stranded citation) FAILS loudly. Thread `--profile` through like the gate step
+    // so `cargo xtask --profile <p> check` runs every nested self-invocation under the SAME profile
+    // (no cross-profile rebuild of this xtask binary between steps).
+    log.step_show(
+        "duvet-check",
+        &format!("{xtask} --profile {profile} duvet-check"),
+        repo,
+    );
 
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }

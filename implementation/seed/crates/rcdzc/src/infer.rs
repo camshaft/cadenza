@@ -3589,6 +3589,14 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             let a = type_of(db, args[0]);
             let b = type_of(db, args[1]);
+            // A QUANTITY operand takes the dimensional arm below, NOT the bare-numeric arms here — even
+            // when its SIBLING is a bare `Float`/`BigInt`/`Rational`. `(* (Qty Float64 meter) 3.0)` must
+            // stay `(Qty Float64 meter)` (a bare number scales, contributing `Unit.one`), not collapse to
+            // the bare `Float64` the Float arm would return by matching the bare sibling. So gate the three
+            // bare-numeric arms on `!any_qty`, mirroring `check_application`'s `is_multiplicative && any_qty`
+            // ordering (the quantity check runs first there too). Without this the unit was silently dropped
+            // and `Qty.value` of the result declined ("no machine representation").
+            let any_qty = matches!(a, Ty::Qty { .. }) || matches!(b, Ty::Qty { .. });
             // A `+`/`-`/`*`/`/` over BIGINT operands is `BigInt` — the unbounded arithmetic, NOT the
             // fixed-width int scheme (whose `∀a. (Int a) → …` would reject a `BigInt` operand). `lower`
             // routes it to the runtime `bigint-*` op (or folds a constant). A `BigInt`/fixed mix is
@@ -3601,7 +3609,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
                     | crate::resolved::Prim::Rem
-            ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
+            ) && !any_qty
+                && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
             {
                 return Ty::BigInt;
             }
@@ -3618,7 +3627,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
-            ) && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
+            ) && !any_qty
+                && (matches!(a, Ty::Rational) || matches!(b, Ty::Rational))
             {
                 return Ty::Rational;
             }
@@ -3637,7 +3647,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
-            ) && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
+            ) && !any_qty
+                && (matches!(a, Ty::Float(_)) || matches!(b, Ty::Float(_)))
             {
                 // Prefer whichever operand fixed the width (a concrete `Float32`/`Float64` over a deferred
                 // literal), mirroring the `join` width preference — so `(+ x 1.0)` with `x : Float32`
@@ -4025,6 +4036,25 @@ pub(crate) fn payload_ty_at_instantiation(
     scrut_ty: &Ty,
 ) -> Option<Ty> {
     let mut fresh = Fresh::new();
+    // SEED the instantiation counter PAST every free variable the SCRUTINEE type carries, so the ctor
+    // scheme's fresh vars cannot COLLIDE with them. `scrut_ty` is not always ground: a recursive call's
+    // result is typed by `apply_scheme_to_args`, which instantiates the callee's scheme from 0 — so a
+    // `Result A ?0` scrutinee (an error slot no branch of the recursive callee fixes) carries `?0`. The
+    // ctor scheme also instantiates from 0 (`Err : ∀a b. b → Result a b` → `?1 → Result ?0 ?1`), so its
+    // `?0`/`?1` alias the scrutinee's `?0`: unifying `Result ?0 ?1` against `Result A ?0` first solves
+    // `?0 = A`, then `?1 = ?0 = A` — binding `et` to `A` instead of the scrutinee's error var, which then
+    // read the whole match as `Result A A` (a spurious CDZ0203 "if branches differ", and downstream a
+    // backend "no local slot" decline). Reserving above the scrutinee's vars keeps the two var domains
+    // DISJOINT, so `Err`'s payload solves to the scrutinee's own error var. A GROUND scrutinee has no free
+    // var and reserves nothing (byte-identical to the old from-0 path). Mirrors `apply_scheme_to_args`,
+    // which seeds the same way to keep a recursive-generic result var connected.
+    {
+        let mut scrut_vars = Vec::new();
+        scrut_ty.collect_free_vars(&mut scrut_vars);
+        if let Some(&max) = scrut_vars.iter().max() {
+            fresh.reserve(max + 1);
+        }
+    }
     let scheme = crate::eval::scheme_of(db, variant_head, &mut fresh)?;
     let inst = crate::unify::instantiate(&scheme, &mut fresh);
     // The ctor type is a curried arrow `payload… → result`. Peel EVERY arrow: a single-payload variant
@@ -11180,5 +11210,46 @@ mod tests {
             sb.ty.render_name(),
             "recursive param solve must be order-independent"
         );
+    }
+
+    #[test]
+    fn rewrapping_a_recursive_results_err_payload_keeps_the_error_type() {
+        // REGRESSION (fresh-var collision in `payload_ty_at_instantiation`): a recursive `f` typed
+        // `(Result A ?err)` (no branch fixes the error slot, so it stays a free var), matched by a helper
+        // `g` that RE-WRAPS `(Result.Err et)`. The `Err` ctor scheme (`∀a b. b -> Result a b`) was
+        // instantiated from 0, colliding with the scrutinee's free `?err = ?0` — so `et` solved to `A`
+        // (the FIRST type arg) and `g` typed `(Result A A)`, tripping a spurious CDZ0203. Seeding the ctor
+        // instantiation PAST the scrutinee's vars keeps them disjoint, so `et` solves to the scrutinee's
+        // OWN error var and the whole match types `(Result A ?err)`. Assert the error slot is NOT `A`.
+        let src = "(module m \
+            (type A AY AN) \
+            (type Exp (Num Int64) (If Exp Exp)) \
+            (def (f (: e Exp)) (match e ((Exp.Num _) (Result.Ok AY)) ((Exp.If c t) (f c)))) \
+            (def (g (: t Exp)) (match (f t) ((Result.Ok tt) (Result.Ok tt)) ((Result.Err et) (Result.Err et)))) \
+            (def (main) 0) (export main))";
+        let mut db = Db::load(parse(src));
+        let d = def_of(&db, "g");
+        let scheme = def_scheme(&mut db, d).expect("g has a determined scheme");
+        // g : Exp -> (Result A ?err). Peel the one arrow to the result.
+        let result = match scheme.ty {
+            Ty::Fn(_, r) => *r,
+            other => other,
+        };
+        // The result must be a `Result` whose FIRST arg is `A` and whose SECOND (error) arg is NOT `A` —
+        // the collision made both `A`. It should be a free var (`?err`, no branch fixed it).
+        match result {
+            Ty::Sum { args, .. } if args.len() == 2 => {
+                assert_eq!(args[0].render_name(), "A", "ok payload should be A");
+                assert!(
+                    !matches!(&args[1], Ty::Sum { .. }),
+                    "error slot must NOT collapse to the ok type A (collision bug); got {}",
+                    args[1].render_name()
+                );
+            }
+            other => panic!(
+                "g result should be a 2-arg Result sum, got {}",
+                other.render_name()
+            ),
+        }
     }
 }
