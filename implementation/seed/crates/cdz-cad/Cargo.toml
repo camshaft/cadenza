@@ -11,9 +11,8 @@
 # Cargo.toml `exclude`s this path — the SAME isolation cdz-smith uses. Reason: the mesh backend links
 # `manifold-csg`, whose `-sys` crate builds the C++ manifold3d library via cmake; keeping it out of the seed
 # workspace means a plain `cargo build --workspace` / the corpus gate never pays that C++/cmake build. A
-# dedicated CI job (like `cad-tests`/`gate`) builds+tests this crate on demand. This first sub-slice has NO
-# manifold dep yet (the parser + CSG tree are pure Rust), so it builds instantly; the dep joins with the
-# meshing sub-slice.
+# dedicated CI job (like `cad-tests`/`gate`) builds+tests this crate on demand. The `manifold-csg` dep below
+# builds the C++ manifold3d via cmake — which is exactly why this crate is workspace-excluded.
 [workspace]
 
 [package]
@@ -23,6 +22,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# The geometry kernel: safe Rust bindings to manifold3d (its `-sys` crate builds the C++ core via cmake).
+# Consumes the parsed CSG tree and evaluates the booleans into a guaranteed-watertight mesh. NOT a Cadenza
+# WIT peer — a host-side kernel the driver calls at each node (the B1 "driver meshes the tree" seam).
+manifold-csg = "0.3.3"
 
 [lib]
 name = "cdz_cad"

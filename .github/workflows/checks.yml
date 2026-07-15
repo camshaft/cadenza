@@ -177,10 +177,10 @@ jobs:
     # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is
     # EXCLUDED from the seed workspace (its own `[workspace]`) because its mesh backend links `manifold-csg`,
     # whose `-sys` crate builds the C++ manifold3d via cmake — a build the seed's `--workspace` jobs must
-    # never pay. So the `test`/`clippy`/`fmt` jobs above don't cover it; gate it here on its own. This first
-    # sub-slice is the pure-Rust `Solid` s-expr PARSER (no manifold dep yet), so the job is light; when the
-    # meshing sub-slice adds `manifold-csg`, this job gains the C++/cmake build (cmake + a C++ compiler are
-    # on the standard ubuntu runner). No wasm toolchain or runtime store needed — pure native crate.
+    # never pay. So the `test`/`clippy`/`fmt` jobs above don't cover it; gate it here on its own. The crate
+    # links `manifold-csg`, so this job compiles the C++ manifold3d via cmake on the first build (cmake + a
+    # C++ compiler are on the standard ubuntu runner; the Rust cache keeps re-runs fast). No wasm toolchain
+    # or runtime store needed — pure native crate.
     name: cdz-cad native driver
     runs-on: ubuntu-latest
     steps:
