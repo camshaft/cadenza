@@ -53,6 +53,9 @@
 ///                              element" (false before the very first element).
 ///   - `StepByI((n, src))`    — yield every `n`-th element of `src` (the 1st, then skip `n-1`): src's
 ///                              elements at indices 0, n, 2n, … A non-positive `n` yields nothing.
+///   - `DedupI((have, prev, src))` — drop CONSECUTIVE duplicates: yield an element only if it differs
+///                              from the one just yielded. `have` = "a previous element exists"; `prev`
+///                              = that element. (Local, not global dedup — `[1,1,2,1]` → `[1,2,1]`.)
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -71,6 +74,7 @@ type Iter =
   | FlatMapI(Tuple((Int64 -> Iter), Tuple(Iter, Iter)))
   | IntersperseI(Tuple(Int64, Tuple(Bool, Iter)))
   | StepByI(Tuple(Int64, Iter))
+  | DedupI(Tuple(Bool, Tuple(Int64, Iter)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -162,6 +166,16 @@ def next(it) = match it with
     if n <= 0 then Option.None(unit) else (match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest)))))))))
+  | Iter.DedupI(dd) => (match dd with | (have, prev-src) => (match prev-src with | (prev, src) =>
+    // yield an element only if it differs from the one just yielded (`prev`, valid when `have`). A
+    // duplicate recurses to skip it, threading the same `prev`; a new value yields + becomes the new `prev`.
+    (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) =>
+          if have then
+            (if v == prev then next(Iter.DedupI((true, (prev, rest))))
+             else Option.Some((v, Iter.DedupI((true, (v, rest))))))
+          else Option.Some((v, Iter.DedupI((true, (v, rest)))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -235,6 +249,11 @@ def take-while(it, p: Int64 -> Bool) = Iter.TakeWhileI((p, it))
 /// Yield every `n`-th element of `it`: the element at index 0, then n, 2n, … (keep one, skip `n-1`).
 /// A non-positive `n` yields nothing. Generalizes `range-step` to any iterator source.
 def step-by(it, n) = Iter.StepByI((n, it))
+
+/// Drop CONSECUTIVE duplicate elements: yield each element only when it differs from the one just
+/// yielded (`[1,1,2,2,3,1]` → `[1,2,3,1]`). Local, not global — on a sorted/grouped source it removes
+/// all duplicates; on an arbitrary source only runs of equal neighbors collapse.
+def dedup(it) = Iter.DedupI((false, (0, it)))
 
 /// Concatenate: yield all of `it`, then all of `other`.
 def chain(it, other) = Iter.ChainI((it, other))
@@ -1099,5 +1118,49 @@ def iter-map-keys-empty() =
   // a map with its sole entry removed yields no keys
   let m = Map.remove(Map.insert(Map.empty(), 1, 10), 1) in
   if count(iter-map-keys(m)) == 0 then unit else trap("empty map has no keys")
+
+// ── dedup: drop consecutive duplicates ───────────────────────────────────────────────────────────
+
+@test
+def dedup-collapses-runs() =
+  // [1,1,2,2,2,3,1,1] -> [1,2,3,1] (consecutive runs collapse; the trailing 1 survives, distinct run)
+  if int-list-eq(collect-list(dedup(from-list([1, 1, 2, 2, 2, 3, 1, 1]))), [1, 2, 3, 1]) then
+    unit
+  else
+    trap("dedup runs -> [1,2,3,1]")
+
+@test
+def dedup-no-duplicates-unchanged() =
+  // already-distinct-neighbors input is unchanged
+  if int-list-eq(collect-list(dedup(from-list([1, 2, 3, 4]))), [1, 2, 3, 4]) then unit else trap("no dups")
+
+@test
+def dedup-all-same-collapses-to-one() =
+  if int-list-eq(collect-list(dedup(from-list([7, 7, 7, 7]))), [7]) then unit else trap("all same -> [7]")
+
+@test
+def dedup-empty-is-empty() =
+  if count(dedup(empty())) == 0 then unit else trap("dedup of empty is empty")
+
+@test
+def dedup-of-sorted-range-is-unchanged() =
+  // a range has no equal neighbors, so dedup is identity over it
+  if int-list-eq(collect-list(dedup(range(0, 5))), [0, 1, 2, 3, 4]) then unit else trap("range dedup = id")
+
+@test
+def dedup-composes-with-map() =
+  // map can CREATE adjacent duplicates that dedup then collapses: [1,2,3,4] |> /2 (int) -> [0,1,1,2] -> dedup [0,1,2]
+  if int-list-eq(collect-list(dedup(map(from-list([1, 2, 3, 4]), fn(x) => x / 2))), [0, 1, 2]) then
+    unit
+  else
+    trap("dedup after map -> [0,1,2]")
+
+@test
+def dedup-is-lazy() =
+  // take 3 distinct from a long run-heavy source: [5,5,5,6,6,7,7,7,...] take 3 -> [5,6,7]
+  if int-list-eq(collect-list(take(dedup(from-list([5, 5, 5, 6, 6, 7, 7, 7, 8])), 3)), [5, 6, 7]) then
+    unit
+  else
+    trap("dedup lazy take 3")
 
 export { Iter.* }
