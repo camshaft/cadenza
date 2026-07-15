@@ -33869,6 +33869,29 @@ mod diagnostics {
                 "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
             );
         }
+        // The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — pin the
+        // full trap-kind axis `core-semantics.md §285` names, so a future change that breaks the fold's
+        // trap-proof for one kind (e.g. modulo, the rational zero-denominator, or overflow) is caught. Each
+        // is a 0-use `let` binding whose init provably traps at compile time; all compile (value unobserved)
+        // AND warn CDZ0305 exactly once. (Integer ÷0 is covered by the position sweep above; these add %0,
+        // the zero-denominator `Rational.of`, and a constant overflow past the Int64 default.)
+        for trap_init in [
+            "(% 100 0)",                 // integer modulo by zero (CDZ0304-class trap)
+            "(Rational.of 1 0)",         // a rational with a zero denominator
+            "(+ 9223372036854775807 1)", // a constant Int64 overflow (max + 1)
+        ] {
+            let src = format!("(module m (def (main) (let ((t {trap_init})) 5)) (export main))");
+            let dead: Vec<_> = warnings_of(&src)
+                .into_iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+                .collect();
+            assert_eq!(
+                dead.len(),
+                1,
+                "a 0-use let binding whose init is `{trap_init}` must warn CDZ0305 (dead trap) exactly \
+                 once and still compile, got {dead:?}"
+            );
+        }
     }
 
     #[test]
@@ -34136,6 +34159,59 @@ mod diagnostics {
         let u = unused_of(mixed);
         assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
         assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
+    }
+
+    /// A BARE (un-dotted) nullary-variant arm pattern (`TInt` in `(match a (TInt …) (TBool …))`) is the
+    /// CONSTRUCTOR, not a binder — even when the match is NESTED inside another match's arm. `match_arm_binds`
+    /// treated a bare-name arm pattern as introducing a binding of that name; scope resolution is
+    /// scope-FIRST, so a NESTED `(match b (TInt 1) (TBool 2))` under an outer `(TInt …)` arm had its inner
+    /// `TInt` resolve to the "binder" the outer arm appeared to introduce instead of to the variant ctor.
+    /// That mis-resolution drew spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" on the
+    /// inner arms — though the program compiled and ran correctly (the runtime value was the ctor's). A bare
+    /// variant name never binds, so `match_arm_binds` now returns `None` for one (via `variant_ctor_by_name`,
+    /// the same index `resolve_name`'s bare-variant step consults), at every nesting depth.
+    #[test]
+    fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
+        // The queue repro (mlrepro-false-warning-nested-nullary-match-unused-binding): the INNER bare
+        // nullary match drew CDZ0306 + CDZ0213. Now CLEAN — no warnings, exit 0.
+        let nested = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (export classify))";
+        let all = diags_of(nested);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+            "no spurious 'unused binding' on a bare nested nullary-variant arm: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0213")),
+            "no spurious 'unreachable arm' on a bare nested nullary-variant arm: {all:?}"
+        );
+        // BEHAVIOR PRESERVED: the inner `TInt` is a CTOR, so `classify(TInt, TBool)` selects the `TBool => 2`
+        // arm (a catch-all binder would have matched `TBool` at the FIRST inner arm and returned 1). Build a
+        // nullary export that computes it and run it under wasmtime — the value must be 2.
+        let prog = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (def (main) (classify TInt TBool)) (export main))";
+        let component = crate::compile::compile_component(&crate::codec::encode(&parse(prog)))
+            .expect("the nested nullary-variant program compiles");
+        assert_eq!(
+            super::run_returns::<i64>(&component, "main"),
+            2,
+            "the inner bare nullary `TInt` matches as a ctor (→2), not a catch-all binder (→1)"
+        );
+        // The SAME inner match at TOP LEVEL was always clean — pin it stays clean (no regression the other way).
+        let top = "(module m (type Ty TInt TBool) \
+            (def (classify2 (: b Ty)) (match b (TInt 1) (TBool 2))) (export classify2))";
+        assert!(
+            diags_of(top)
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0306")
+                    && d.code.as_deref() != Some("CDZ0213")),
+            "a top-level bare nullary-variant match stays clean: {:?}",
+            diags_of(top)
+        );
     }
 
     /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r

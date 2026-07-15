@@ -1982,6 +1982,21 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     if pat_name != name || pat_name == "_" {
         return None;
     }
+    // A bare name that IS a NULLARY VARIANT CONSTRUCTOR is the constructor, not a binder — a `(match a
+    // (TInt …) (TBool …))` arm head `TInt` matches the variant refutably and binds NOTHING (lowering reads
+    // it via `variant_disc_by_name`, and a bare variant reference resolves to its ctor). Without this, an
+    // outer nullary-variant arm was treated as binding its own name, so a NESTED bare nullary-variant match
+    // (`(TInt (match b (TInt …) (TBool …)))`) had its inner `TInt` resolve — scope-FIRST — to the "binder"
+    // the outer arm appeared to introduce, instead of to the variant ctor. That mis-resolution then drew
+    // spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" warnings (the guard in
+    // `collect_unused` keys off `variant_disc_of`, which the mis-resolved occurrence failed). A bare
+    // variant name never binds, so returning `None` here is correct at every match nesting depth. (An
+    // APPLIED variant `(Mk x)` is a `Struct::List`, so `as_name(binder_pat)` is `None` above and never
+    // reaches here — only a lone bare name does. `variant_ctor_by_name` is the same O(1) load-time index
+    // `resolve_name`'s bare-variant step consults, so the classification agrees with resolution.)
+    if db.variant_ctor_by_name(pat_name).is_some() {
+        return None;
+    }
     // `form`'s parent must be a `(match scrutinee arm…)`, and `form` one of its arms (not the
     // scrutinee, which is the first tail element).
     let parent = db.parent_of(form)?;
