@@ -12,6 +12,8 @@
 #   SLACK_BRIDGE_CHANNEL Slack channel/DM id the bridge posts into           (default: unset → DM-only inbound)
 #   BRIDGE_IMPL          "node" (bridge.js) or "rust" (cargo run --release)  (default: node)
 #   RESTART_DELAY        seconds to wait before restarting after a crash     (default: 5)
+#   WATCHDOG_ONLY        (rust impl) =1 → run JUST the fleet watchdog, NO Socket Mode — a safe way to
+#                        run the reliability backbone as a 2nd process without a competing Slack conn.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
