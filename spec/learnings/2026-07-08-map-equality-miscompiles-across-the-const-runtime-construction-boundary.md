@@ -5,7 +5,7 @@
 **What happened.** Two structurally-equal maps compare UNEQUAL when one was built with a compile-time
 constant key and the other with a run-time-computed key. `(let ((j (+ 2 3))) (map (j 1)))` and `(let ((k
 5)) (map (k 1)))` are the same map `{5:1}` — `(+ 2 3)` is 5, both render `(map (5 1))`, both `Map.lookup
-5` → `(Some 1)`, both `Map.size` → 1 — yet `(= (map (j 1)) (map (k 1)))` returns `false`. A const-key
+5` → `(Some 1)`, both `Map.len` → 1 — yet `(= (map (j 1)) (map (k 1)))` returns `false`. A const-key
 literal compares equal to a const-key literal and to a `Map.insert` map (all true), but a computed-key
 (runtime-constructed) map compares false against a const one. This is a wrong VALUE, not a missing
 rejection.

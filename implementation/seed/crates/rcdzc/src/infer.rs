@@ -5634,13 +5634,15 @@ fn seg_kind_name(kind: &crate::resolved::SegKind) -> &'static str {
     }
 }
 
-/// The surface NAME of a TUPLE row-operation prim (`cat`/`split-at`/`pop`) whose operand(s) must be a
-/// `Ty::Tuple`; `None` otherwise. `cat` takes two tuple operands, `split-at`/`pop` one.
+/// The surface NAME of a TUPLE row-operation prim (`concat`/`split-at`/`remove`) whose operand(s) must be
+/// a `Ty::Tuple`; `None` otherwise. `concat` takes two tuple operands, `split-at`/`remove` one. These are
+/// the SURFACE spellings a program writes (post the consistent-naming cutover — the intrinsic Prims stay
+/// `TupleCat`/`TuplePop`), so a diagnostic naming `Tuple.<op>` matches what the author typed.
 fn tuple_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
     match prim {
-        Some(crate::resolved::Prim::TupleCat) => Some("cat"),
+        Some(crate::resolved::Prim::TupleCat) => Some("concat"),
         Some(crate::resolved::Prim::TupleSplitAt) => Some("split-at"),
-        Some(crate::resolved::Prim::TuplePop) => Some("pop"),
+        Some(crate::resolved::Prim::TuplePop) => Some("remove"),
         _ => None,
     }
 }
@@ -8088,6 +8090,21 @@ pub(crate) fn member_category(db: &Db, operand: StructId, key: &str) -> (String,
     ("record".to_string(), "field")
 }
 
+/// The canonical replacement for a RETIRED prelude collection-op name, or `None` if `(module, old)` is
+/// not one of the three renames from the consistent-naming cutover (2026-07-15). This table is a
+/// DIAGNOSTIC-ONLY hint (drives CDZ0603's message + fix); it does NOT participate in name resolution —
+/// the retired name still fails to resolve, honoring `no-keys-outside-the-prelude` (the prelude in
+/// `prelude.rs` is the ONE place a member name resolves). Kept tight to the exact retired set so a
+/// genuine typo (a name that was never a member) still gets the ordinary unknown-member did-you-mean.
+pub(crate) fn retired_collection_op(module: &str, old: &str) -> Option<&'static str> {
+    match (module, old) {
+        ("Map", "size") => Some("len"),
+        ("Tuple", "cat") => Some("concat"),
+        ("Tuple", "pop") => Some("remove"),
+        _ => None,
+    }
+}
+
 /// The `record has no field \`key\`` rejection for a member access `member` (`(. operand key)`),
 /// enriched two-tier (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
 /// record analogue of the unbound-name suggestion). `operand`'s field names are the candidate set (a
@@ -8108,6 +8125,33 @@ fn no_field_reject(
     operand: StructId,
     key: &crate::resolved::Symbol,
 ) -> Reject {
+    // The key occurrence is the second child of the `(. operand key)` form — the node any fix rewrites.
+    let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
+    // RENAMED-OP hint (CDZ0603): if the operand is a prelude collection MODULE and `key` is one of the
+    // three retired names from the consistent-naming cutover, give a targeted message + VERIFIED fix
+    // pointing at the canonical spelling. This is a diagnostic-only hint — the retired name still failed
+    // to resolve (no alias participates in resolution; `no-keys-outside-the-prelude`), it just gets a
+    // better message than the generic "no member". A name that is NOT in this fixed retired set falls
+    // through to the ordinary unknown-member did-you-mean below.
+    if let Some(module) = db.ast.as_name(operand)
+        && let Some(new_name) = retired_collection_op(module, &key.name)
+    {
+        let reject = Reject::coded(
+            Code::RenamedOp,
+            format!(
+                "`{module}.{}` was renamed to `{module}.{new_name}`; write `(. {module} {new_name})`",
+                key.name
+            ),
+        );
+        return match key_occ {
+            Some(occ) => reject.with_fix(Fix::replace_verified(
+                occ,
+                new_name,
+                format!("rename to `{new_name}`"),
+            )),
+            None => reject,
+        };
+    }
     // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list when
     // there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a `Some` winner
     // ⟺ the message says "did you mean `field`?" — the fix targets the very field the message names.
@@ -8133,8 +8177,6 @@ fn no_field_reject(
         }
         (suggestion, hint)
     };
-    // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
-    let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
     // NAME the operand's real category (effect / module / type / record) instead of always "record" —
     // `(. E emt)` reads "effect `E` has no operation `emt`", `(. List nonesuch)` "the `List` module has no
     // member `nonesuch`". The `has no <word> \`key\`` shape stays the shared dedup invariant.
@@ -9704,13 +9746,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // `args[0]` (`split-at`'s `args[1]` is a position literal, not a tuple). Report
                     // "requires a tuple, found <T>" (the tuple-projection message already exists for `(. n
                     // N)`); `Any`/`Var` (an unconstrained param) is not flagged.
-                    let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                    let operands: &[StructId] = if tup_op == "concat" {
+                        &args
+                    } else {
+                        &args[..1]
+                    };
                     operands
                         .iter()
                         .any(|&o| definite_non_tuple(&type_of(db, o)))
                 }
             {
-                let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                let operands: &[StructId] = if tup_op == "concat" {
+                    &args
+                } else {
+                    &args[..1]
+                };
                 for &o in operands {
                     let ot = type_of(db, o);
                     if definite_non_tuple(&ot) {

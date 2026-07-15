@@ -42,7 +42,7 @@ c68 coercion's mixed-key symptom, though c68's core (unbound → CDZ0101, not st
 required.
 
 **Corpus case added.** `spec/semantics/05-compound-types.sexp` §"a map literal with keys of two different
-types is a type error" — `(let ((j 5)) (let ((k true)) (Map.size (map (j 1) (k 2)))))` MUST reject
+types is a type error" — `(let ((j 5)) (let ((k true)) (Map.len (map (j 1) (k 2)))))` MUST reject
 CDZ0201, the key-homogeneity sibling of the value-homogeneity literal cases and the `Map.insert`
 key-check. Gated `(needs collections)`, realized; the behavior gate catches it (expected reject CDZ0201,
 observed a heterogeneous-key map built). A generation that does not yet check a map literal's key

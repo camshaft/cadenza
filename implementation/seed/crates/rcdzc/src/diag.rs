@@ -281,6 +281,15 @@ pub enum Code {
     //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-drawn-from-a-fixed-set
     //# A module directive's arguments MUST match the shape the directive's key defines, and a directive whose arguments do not MUST be rejected with a machine-readable diagnostic.
     MalformedDirective,
+    /// A member access naming a prelude collection operation that was RENAMED in the consistent-naming
+    /// cutover — `Map.size` (now `Map.len`), `Tuple.cat` (now `Tuple.concat`), `Tuple.pop` (now
+    /// `Tuple.remove`). The retired name genuinely no longer resolves (there is no transitional alias —
+    /// one place a name resolves, per `no-keys-outside-the-prelude`); this code just supplies a BETTER
+    /// message than the generic "no member" — it names the new spelling and carries a VERIFIED fix-it
+    /// rewriting the key token to the canonical name. A plain typo (a name that was never a member) still
+    /// gets the ordinary CDZ0201 unknown-member did-you-mean, so this fires ONLY on the fixed retired set.
+    /// In the CDZ060x DIRECTIVE/SURFACE band alongside `UnknownDirective`/`MalformedDirective`.
+    RenamedOp,
     /// A ROBUSTNESS decline: a well-formed program the compiler cannot reduce to a component because it
     /// hits a recursion/resource BOUND — an unproductive compile-time recursion (a nullary self-call
     /// `(def (f) (f))` with no base case: following it re-enters the same body without end, and a nullary
@@ -339,6 +348,7 @@ impl Code {
             Code::UnitConflict => "CDZ0502",
             Code::UnknownDirective => "CDZ0601",
             Code::MalformedDirective => "CDZ0602",
+            Code::RenamedOp => "CDZ0603",
             Code::RecursionBound => "CDZ0999",
         }
     }

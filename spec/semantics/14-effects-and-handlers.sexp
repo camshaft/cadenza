@@ -308,13 +308,13 @@
            returned value is used as a KEY inserted into a runtime map. The component imports TWO interfaces —
            the effect (as `host`) and the value-heap runtime (as `heap`) — and the boundary threads both: the
            host response for `ask.ask` and the runtime's `map-insert`/`map-size` ops. With `ask.ask`
-           responding 2, inserting key 2 into the map {1: 10} yields two distinct keys, so `Map.size` is 2 —
+           responding 2, inserting key 2 into the map {1: 10} yields two distinct keys, so `Map.len` is 2 —
            a deterministic function of the input, the recorded response, and the runtime's semantics.")
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (Map.size (Map.insert (map (1 10)) (ask.ask) 20)))) (export main)))
+                (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main)))
   (host-responses (respond ask.ask (: 2 Int64)))
   (host-calls (call ask.ask))
   (output (: 2 Int64)))
@@ -3148,7 +3148,7 @@
 (case "an abort abandons a pending borrowed map lookup and the map survives"
   (doc    "The borrowed-operand face: `(+ (Option.expect (Map.lookup m \"k\") \"v\") (Bail.bail 20))` —
            the lookup's extracted value (from the still-live `m`) is pending in the abandoned frame when
-           the abort fires. The handle yields 20; the outer `(Map.size m)` must still see the intact map
+           the abort fires. The handle yields 20; the outer `(Map.len m)` must still see the intact map
            → 1, so 21. An unwind that dropped the abandoned lookup result as if OWNED would free the
            value `m` still holds — the abort-path twin of the borrowed-key ownership discipline the
            lookup/contains emits observe on the normal path.")
@@ -3158,7 +3158,7 @@
               (let ((m (Map.insert Map.empty "k" 1)))
                 (+ (handle Bail 0 ((bail (n) s n))
                      (+ (Option.expect (Map.lookup m "k") "v") (Bail.bail 20)))
-                   (Map.size m))))
+                   (Map.len m))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 21 Int64)))
