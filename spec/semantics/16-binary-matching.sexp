@@ -546,36 +546,56 @@
   (error  CDZ0201))
 
 ; ============================================================================================
-; Fit — a value that does not fit its segment has no encoding (rejected when provable, else traps)
+; Fit — a segment REQUIRES its width-typed value. A CONSTANT literal grounds to that width and a
+; provable overflow FAILS THE BUILD (CDZ0304 / CDZ0220); a NON-CONSTANT value of a different integer
+; type is a COMPILE-TIME TYPE ERROR (CDZ0203). A value that fits its type has no out-of-range case, so
+; construction NEVER traps — an out-of-range value is a type failure, not a runtime failure.
 ; ============================================================================================
 
 (case "constructing a u8 segment from a value above its range is rejected"
   (doc    "`(bin (u8 256))` asks an 8-bit unsigned segment to hold 256, which needs nine bits and has no
-           8-bit encoding — it does NOT truncate to 0. With a CONSTANT operand the overflow is provable, so
-           it FAILS THE BUILD (CDZ0304) — the compile-provable-trap rule (reference-compiler.md #A
-           Compile-Provable Trap Fails The Build); a runtime value out of range traps \"binary value does
-           not fit segment\" at that point. The companion of the Bytes out-of-range check, at the segment
-           boundary.")
+           8-bit encoding — it does NOT truncate to 0. The literal grounds to the segment's `UInt8` and the
+           overflow is provable, so it FAILS THE BUILD (CDZ0304) — the compile-provable-trap rule
+           (reference-compiler.md #A Compile-Provable Trap Fails The Build). The companion of the Bytes
+           out-of-range check, at the segment boundary. (A non-constant value of the wrong type is a
+           CDZ0203 type error — see the runtime section.)")
   (input  (bin (u8 256)))
   (error  CDZ0304))
 
 (case "constructing an unsigned segment from a negative value is rejected"
   (doc    "`(bin (u8 -1))` gives a negative value to an UNSIGNED segment, which has no negative encoding —
-           it does NOT wrap to 255 (that is the meaning of the SIGNED `(i8 -1)` case above). With a CONSTANT
-           operand the out-of-range value is provable, so it FAILS THE BUILD (CDZ0304); a runtime negative
-           traps \"binary value does not fit segment\". Pins that unsigned and signed segments differ on a
-           negative value: the signed one encodes it in two's complement, the unsigned one has no encoding.")
+           it does NOT wrap to 255 (that is the meaning of the SIGNED `(i8 -1)` case above). The literal
+           grounds to the segment's `UInt8` and the negative is out of range, so it FAILS THE BUILD
+           (CDZ0304). Pins that unsigned and signed segments differ on a negative value: the signed one
+           encodes it in two's complement, the unsigned one has no encoding.")
   (input  (bin (u8 -1)))
   (error  CDZ0304))
 
 (case "constructing a bit-field from a value wider than its width is rejected"
   (doc    "`(bin (bits 2 1))` gives the value 2 (which needs two bits) to a 1-bit field, so it does not fit.
            With a CONSTANT operand the misfit is provable at compile time, so the ill-formed bit-field is
-           rejected (CDZ0220 — the binary well-formedness code); a runtime value wider than the field traps
-           \"binary value does not fit segment\". Pins that a bit-field's value is range-checked against its
-           width, the sub-byte companion of the u8-overflow check.")
+           rejected (CDZ0220 — the binary well-formedness code). Pins that a bit-field's value is
+           range-checked against its width, the sub-byte companion of the u8-overflow check.")
   (input  (bin (bits 2 1)))
   (error  CDZ0220))
+
+(case "a narrower-typed runtime value is not silently widened into a wider segment"
+  (doc    "The segment's required type is EXACT in both width and signedness — it is a TYPE match, not a
+           value-range fit. A runtime `UInt8` fed to a `u16` segment is a COMPILE-TIME type error (CDZ0203),
+           even though every `UInt8` value trivially fits 16 bits: widening is as explicit as narrowing, never
+           implicit (the caller writes `UInt16.of` / `UInt16.wrap`). Pins that `(u16 v)` requires a `UInt16`,
+           not merely an integer that fits — so a future change cannot quietly accept any narrower unsigned
+           value. The widening companion of the wider-value rejection (an `Int64` into `u8`).")
+  (input  (do (def (main (: n UInt8)) (Bytes.len (bin (u16 n)))) (export main)))
+  (error  CDZ0203))
+
+(case "an unsigned runtime value is not accepted by a signed segment of the same width"
+  (doc    "Signedness is strict too: a runtime `UInt8` fed to a SIGNED `i8` segment is a COMPILE-TIME type
+           error (CDZ0203) — `(i8 v)` requires an `Int8`, not a same-width unsigned value (their encodings of
+           a high value differ: a `UInt8` 200 is not the `Int8` −56). Pins that the segment match is on BOTH
+           axes, the signedness companion of the no-silent-widening case.")
+  (input  (do (def (main (: n UInt8)) (Bytes.len (bin (i8 n)))) (export main)))
+  (error  CDZ0203))
 
 ; ============================================================================================
 ; Runtime segments — a `bin` whose segment value / scrutinee is a RUNTIME value (a def parameter,

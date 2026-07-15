@@ -340,6 +340,27 @@ pub enum FleetCmd {
         #[arg(long)]
         no_commit: bool,
     },
+    /// Self-heal the fleet: re-arm any ACTIVE agent whose `/loop` has stalled. Each agent stamps a
+    /// heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every tick; if that
+    /// file is older than `--stale-mult` × the agent's interval, its loop is presumed dead and this
+    /// nudges the window back to life (`tmux send-keys "/loop <interval>" Enter` — the same recovery
+    /// an operator does by hand). Skips: stopped agents, agents with no live tmux window, agents
+    /// mid-tick (their pane shows "esc to interrupt" — real work in flight), and agents re-armed
+    /// within `--grace-secs` (anti-thrash). Meant to run from a short cron (~every 4 min); one pass
+    /// then exit. This is the fleet's reliability backbone — a fleet-wide `/loop` stall froze every
+    /// agent once, so the watchdog exists to catch it without a human babysitting 25+ windows.
+    Watchdog {
+        /// Report what WOULD be re-armed, but send no keys (safe to run anytime).
+        #[arg(long)]
+        dry_run: bool,
+        /// Presume a loop stalled once its heartbeat is older than this multiple of its interval.
+        #[arg(long, default_value_t = 2)]
+        stale_mult: u32,
+        /// Don't re-arm an agent re-armed within this many seconds (gives a freshly-nudged loop time
+        /// to tick and refresh its heartbeat before we judge it stale again).
+        #[arg(long, default_value_t = 120)]
+        grace_secs: u64,
+    },
 }
 
 /// A message as delivered into an inbox. Serialized one-per-file so delivery is a single atomic
@@ -389,6 +410,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
+        FleetCmd::Watchdog {
+            dry_run,
+            stale_mult,
+            grace_secs,
+        } => watchdog(&fleet, dry_run, stale_mult, grace_secs),
     }
 }
 
@@ -746,6 +772,191 @@ fn describe(fleet: &Fleet, name: &str) {
     println!("DISALLOW_ASK={}", if a.disallow_ask { 1 } else { 0 });
 }
 
+// ── watchdog ───────────────────────────────────────────────────────────────────────────────────
+
+/// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
+/// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
+fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
+    if !in_tmux() {
+        eprintln!(
+            "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
+             the tmux session the fleet windows live in."
+        );
+        return;
+    }
+    let session = tmux_current_session();
+    let live = tmux_windows(&session);
+    let reg = fleet.load();
+    let now = now_unix();
+
+    let mut rearmed = 0usize;
+    let mut checked = 0usize;
+    for a in &reg.agents {
+        // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
+        if a.status != "active" || fleet.stopfile(&a.name).exists() {
+            continue;
+        }
+        // No live window → `up` hasn't launched it (or it was closed); the watchdog doesn't create
+        // windows, only revives loops in existing ones.
+        if !live.iter().any(|w| w == &a.name) {
+            continue;
+        }
+        checked += 1;
+
+        // Liveness = the heartbeat touch-file's mtime (stamped at the top of every tick). A missing
+        // file means the agent has never ticked (freshly launched) — treat its age as "just now" so we
+        // give the first tick its full stale window before judging it, rather than nuking a booting agent.
+        let hb_age = heartbeat_age_secs(fleet, &a.name, now);
+        let interval = parse_interval_secs(&a.interval);
+        let stale_after = interval.saturating_mul(stale_mult as u64);
+        let Some(age) = hb_age else {
+            continue; // never stamped yet — a booting agent; leave it for the next pass.
+        };
+        if age <= stale_after {
+            continue; // ticked recently — healthy.
+        }
+
+        // Anti-thrash: don't re-arm an agent we nudged within the grace period — give the nudge time
+        // to land and refresh the heartbeat before we judge it stale again.
+        if let Some(since) = rearm_age_secs(fleet, &a.name, now)
+            && since < grace_secs
+        {
+            println!(
+                "  ~ {} stale ({age}s > {stale_after}s) but re-armed {since}s ago (< {grace_secs}s grace) — waiting",
+                a.name
+            );
+            continue;
+        }
+
+        // Don't interrupt a real tick: if the pane shows Claude working ("esc to interrupt"), the loop
+        // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop.
+        if window_is_working(&session, &a.name) {
+            println!(
+                "  = {} heartbeat stale but pane shows work in flight — left alone",
+                a.name
+            );
+            continue;
+        }
+
+        if dry_run {
+            println!(
+                "  DRY-RUN would re-arm '{}' (idle {age}s > {stale_after}s stale window; interval {})",
+                a.name, a.interval
+            );
+            rearmed += 1;
+            continue;
+        }
+        if rearm_window(&session, &a.name, &a.interval) {
+            stamp_rearm(fleet, &a.name);
+            rearmed += 1;
+            println!(
+                "  + re-armed '{}' (idle {age}s > {stale_after}s; sent `/loop {}`)",
+                a.name, a.interval
+            );
+        } else {
+            eprintln!("  ! failed to send-keys to '{}'", a.name);
+        }
+    }
+
+    println!(
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed.",
+        if dry_run { "DRY-RUN: " } else { "" }
+    );
+}
+
+/// Seconds since the epoch, from the wall clock. (Unlike the Cadenza toolchain, xtask may read the
+/// clock — this is host tooling, not compiled-program logic.)
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Age in seconds of the agent's heartbeat touch-file (`now - mtime`), or `None` if it has never been
+/// stamped (the file is absent — a freshly-launched agent that has not run its first tick yet).
+fn heartbeat_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("heartbeat").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Age in seconds since we last re-armed this agent (mtime of `.claude/fleet/rearm/<name>`), or
+/// `None` if we have never re-armed it.
+fn rearm_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("rearm").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Touch `.claude/fleet/rearm/<name>` to record that we just re-armed this agent (for the grace check).
+fn stamp_rearm(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("rearm");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "rearm\n").ok();
+}
+
+/// A file's modification time as seconds since the epoch, or `None` if it can't be read.
+fn file_mtime_unix(path: &Path) -> Option<u64> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Parse a `/loop` interval like `10m` / `2h` / `30s` / `1d` into seconds. Falls back to 600s (the
+/// 10m default) on anything unrecognized, so a malformed interval never yields a 0-second stale
+/// window that would re-arm on every pass.
+fn parse_interval_secs(s: &str) -> u64 {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: u64 = num.parse().unwrap_or(0);
+    if n == 0 {
+        return 600;
+    }
+    match unit {
+        "s" => n,
+        "m" | "" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        _ => 600,
+    }
+}
+
+/// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
+/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
+/// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
+/// into the middle of real work). Captures only the visible pane (no scrollback).
+fn window_is_working(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", &target])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.contains("esc to interrupt"))
+        .unwrap_or(false)
+}
+
+/// Re-arm a stalled agent's loop by typing `/loop <interval>` + Enter into its idle pane — exactly
+/// the manual recovery an operator does. Two send-keys calls: the literal text (`-l`, so the slash
+/// isn't interpreted as a tmux command), then `Enter` to submit. Returns whether both keystrokes were
+/// delivered.
+fn rearm_window(session: &str, agent: &str, interval: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let text = format!("/loop {interval}");
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", &text])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 // ── archive ────────────────────────────────────────────────────────────────────────────────────
 
 /// Mirror the live gitignored work queue into the TRACKED `issues/` archive so the reproducers are
@@ -1094,4 +1305,41 @@ fn trunk_vs_origin_main(repo: &Path) -> Option<(usize, usize)> {
     let behind = it.next()?.parse().ok()?; // left  = origin/main-only
     let ahead = it.next()?.parse().ok()?; // right = trunk-only
     Some((ahead, behind))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interval_parses_every_supported_unit() {
+        assert_eq!(parse_interval_secs("30s"), 30);
+        assert_eq!(parse_interval_secs("10m"), 600);
+        assert_eq!(parse_interval_secs("30m"), 1800);
+        assert_eq!(parse_interval_secs("2h"), 7200);
+        assert_eq!(parse_interval_secs("1d"), 86400);
+    }
+
+    #[test]
+    fn interval_bare_number_is_minutes() {
+        // The registry always carries a unit, but a bare number should mean minutes, not seconds —
+        // the watchdog must never treat "10" as a 10-second stale window.
+        assert_eq!(parse_interval_secs("10"), 600);
+    }
+
+    #[test]
+    fn interval_malformed_falls_back_to_ten_minutes() {
+        // A malformed/zero interval must NOT collapse to a 0-second stale window (which would re-arm
+        // a healthy agent on every pass). Fall back to the 10m default instead.
+        assert_eq!(parse_interval_secs(""), 600);
+        assert_eq!(parse_interval_secs("garbage"), 600);
+        assert_eq!(parse_interval_secs("0m"), 600);
+        assert_eq!(parse_interval_secs("5x"), 600);
+        assert_ne!(parse_interval_secs("0m"), 0);
+    }
+
+    #[test]
+    fn interval_tolerates_surrounding_whitespace() {
+        assert_eq!(parse_interval_secs("  15m "), 900);
+    }
 }

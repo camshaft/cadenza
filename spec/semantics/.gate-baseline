@@ -103,6 +103,11 @@ pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
+pass	Set.contains does not fold a set whose element is a runtime scalar
+pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.insert does not fold a duplicate against a runtime element
+pass	Set.remove does not fold a set whose element is a runtime scalar
+pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	THREE Tuple args cross the direct-call boundary
@@ -909,6 +914,7 @@ pass	a narrow-width parameter plus a bare literal computes at the parameter widt
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
+pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
@@ -1272,6 +1278,7 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
+pass	a runtime string rope compared through a borrowed operand
 pass	a runtime string rope compares equal to its flat twin
 pass	a runtime string rope inserted into a set is a member
 pass	a runtime string rope map key is found by its flat twin
@@ -1391,6 +1398,7 @@ pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
+pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
@@ -1604,6 +1612,7 @@ pass	an abstract type is used through the module's exported constructor and acce
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
+pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
@@ -1769,6 +1778,7 @@ pass	an unsigned LEB128 encoder emits a single byte below the continuation thres
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
+pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge

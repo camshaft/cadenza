@@ -1171,6 +1171,74 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
     assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
 }
 
+/// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
+/// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
+/// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
+/// build once per arm. This is the multi-arm analogue of the `if`-arm hoist (which already collapses a
+/// nested `if` of a common constructor); a `match` lowers to a probe chain, not nested `Core::If`, so it
+/// needs its own sink. Structurally the payload becomes a branchless `select` (the arm count here folds
+/// to one), and the value must round-trip in EVERY arm direction — k=0→10, k=1→20, wildcard→30 — proving
+/// the single build with a selected payload reproduces the per-arm builds. Kept opaque via a recursive
+/// helper so the sum is a genuine runtime heap value.
+#[test]
+fn a_common_constructor_sinks_out_of_all_match_arms() {
+    use crate::testkit::parse;
+    // `mk` bottoms out immediately (`n >= 0`) with the match; being recursive it is not inlined, so the
+    // Option stays a runtime heap value observed by `main`'s match.
+    let src = "(module m \
+                 (def (mk (: n Int64) (: k Int64)) \
+                   (if (< n 0) (mk (+ n 1) k) \
+                     (match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30))))) \
+                 (def (main (: k Int64)) \
+                   (match (mk 0 k) ((Some v) v) (None -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The sunk payload folds to a branchless scalar `select`/`if` decision tree — a `select` witnesses
+    // that the constructor was pulled out (pre-sink there was a per-arm `sum-new` and no payload select).
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the match common-constructor sink must lower the differing payload to a branchless select \
+         (build-once); found no select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime Option value must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |k: i64| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![k.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => {
+                panic!("match common-ctor sink trapped (miscompile?): {t}")
+            }
+        }
+    };
+    assert_eq!(run(0), "10", "arm 0 → payload 10");
+    assert_eq!(run(1), "20", "arm 1 → payload 20");
+    assert_eq!(run(2), "30", "wildcard arm → payload 30");
+    assert_eq!(
+        run(99),
+        "30",
+        "wildcard arm covers any other scrutinee → 30"
+    );
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
@@ -2803,6 +2871,68 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
+/// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
+/// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope
+/// param — was compared by its UNFLATTENED header bytes and silently returned the WRONG answer (the rope
+/// remainder the seed's "RELATED" note flags). `bytes-compact` is refcount-NEUTRAL (`op_bytes_compact` =
+/// `bytes_flatten(buf); buf` — flatten IN PLACE, same handle back, unobservable even when shared), so the
+/// emit now compacts EVERY String operand and drops only the OWNED ones. Here a rope built by `rep` is
+/// stored as a map VALUE, looked up, and compared inside the match arm (`s` = a borrowed payload): its
+/// content is "hixxx", so `=` is true → 1 (was 0 — a champ_eq physical-byte miss on the un-compacted rope).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_borrowed_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[borrowed-rope-eq] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // `rep` builds an OWNED rope "hixxx" (three `String.concat`s), stored as a map value. `f` looks it up
+    // and compares the BORROWED `Some` payload `s` against the flat literal "hixxx" INSIDE the arm — so
+    // the `=` operand `s` is a borrowed rope, the case the OWNED-only compaction missed.
+    let rope_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (f (: mp (Map String String)) (: k String)) \
+                    (match (Map.lookup mp k) ((Some s) (if (= s \"hixxx\") 1 0)) ((None) (- 0 1)))) \
+                 (def (main) (f (Map.insert (Map.empty) \"y\" (rep \"hi\" 3)) \"y\")) (export main))";
+    let rope = compile_component(&crate::codec::encode(&parse(rope_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a BORROWED runtime string rope (a map-looked-up payload) must compare EQUAL to its flat twin \
+         (was 0 — a champ_eq physical-byte miss before the emit compacts a borrowed String operand too)"
+    );
+    let rope_live = rt.live_objects();
+
+    // The byte-identical FLAT-value baseline (no rope, so no compaction needed): the map value is the flat
+    // literal "hixxx". Both programs build the SAME map + value-box shape that the scalar-returning `main`
+    // does not yet reclaim (a pre-existing map-temporary matter, orthogonal to this fix). Comparing
+    // rope-vs-flat cancels that shared baseline, so it fails IFF compacting the borrowed operand leaks.
+    let flat_src = "(module m \
+                 (def (f (: mp (Map String String)) (: k String)) \
+                    (match (Map.lookup mp k) ((Some s) (if (= s \"hixxx\") 1 0)) ((None) (- 0 1)))) \
+                 (def (main) (f (Map.insert (Map.empty) \"y\" \"hixxx\") \"y\")) (export main))";
+    let flat = compile_component(&crate::codec::encode(&parse(flat_src))).expect("compile");
+    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
+    assert_eq!(rt_flat.call("main", &[]), Val::S64(1));
+    let flat_live = rt_flat.live_objects();
+
+    assert_eq!(
+        rope_live, flat_live,
+        "borrowed-rope-eq leak: the rope-value program leaves {rope_live} live cells vs the flat-value \
+         baseline's {flat_live} — compacting a BORROWED operand is refcount-neutral (in-place flatten, \
+         same handle, no drop follows the borrow), so any difference is a compaction leak"
+    );
+}
+
 /// The char-by-char lexer idiom: a recursive scan reading each Unicode scalar with `String.at` at a
 /// RUNTIME index and comparing its content — `(= (String.at s i) "a")`. `String.at` returns
 /// `Some(bytes-slice(str, pos, len))`, a ROPE slice (an offset INTO the source), so before the fix its
@@ -2986,6 +3116,60 @@ fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
          out, consumed by set-insert)",
         rt_flat.live_objects()
     );
+}
+
+/// `Set.contains`/`Set.remove`/`Set.insert` must NOT fold against a `Set.of` that holds a RUNTIME element.
+/// `Set.of (list …)` folds a constant list to a canonical constant `Core::SetOf`, and these ops fold
+/// against a constant set by comparing elements at COMPILE TIME (`const_compound_eq`). But a `SetOf` can
+/// carry a non-constant element (a call/param result that did not fold), and comparing it to a constant
+/// query is `None` (unknown) — so folding SILENTLY MISCOMPILED: contains answered `false` for a query that
+/// equals the runtime element at run time, remove RETAINED it (cardinality stayed high), insert could add a
+/// duplicate. `(add 2 3)` is a recursive call that does NOT fold but equals 5 at run time, so it forces the
+/// runtime path. The fix declines the fold unless the whole set is `is_const_value`. `#[ignore]` — needs
+/// the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn set_ops_do_not_fold_against_a_runtime_element() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-runtime-fold] debug-counters runtime not in the store; skipping");
+        return;
+    };
+    // `(add 2 3)` = 5 at run time but is a recursive call, so it stays a runtime `SetOf` element.
+    let add = "(def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))";
+    let cases: &[(&str, &str, i64)] = &[
+        // contains: 5 IS the runtime element → present → 1 (folded to 0 before the fix).
+        (
+            "contains",
+            "(if (Set.contains (Set.of (list (add 2 3))) 5) 1 0)",
+            1,
+        ),
+        // remove: removing the equal literal drops the element → cardinality 0 (folded to 1 before).
+        (
+            "remove",
+            "(Set.len (Set.remove (Set.of (list (add 2 3))) 5))",
+            0,
+        ),
+        // insert: 5 duplicates the runtime element → cardinality stays 1 (folded to 2 before).
+        (
+            "insert",
+            "(Set.len (Set.insert (Set.of (list (add 2 3))) 5))",
+            1,
+        ),
+    ];
+    for (name, body, expect) in cases {
+        let src = format!("(module m {add} (def (main) {body}) (export main))");
+        let program = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+        assert_eq!(
+            rt.call("main", &[]),
+            Val::S64(*expect),
+            "Set.{name} over a set holding the runtime element (add 2 3)=5 must run the real champ op \
+             (expected {expect}); a compile-time fold against the runtime element silently miscompiled"
+        );
+    }
 }
 
 /// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
@@ -15519,6 +15703,24 @@ mod match_engine {
             "a bare operator keeps the generic mismatch message: {}",
             bare.message
         );
+        // M180/M181 structural-delta audit: when the argument and the expected element are SAME-KIND
+        // compounds that differ structurally, the member-op message appends the minimal-conflict delta the
+        // effect-op / operator-arg / annotation sites carry — a record field-set diff into `List.push`
+        // names the field rather than leaving the reader to diff two rendered record types.
+        let delta = reject_full(
+            "(module m (def (g (: xs (List (Record (x Int64))))) \
+             ((. List push) xs (record (y 2)))) (export g))",
+        )
+        .expect("a structurally-mismatched List.push element rejects");
+        assert!(
+            delta
+                .message
+                .contains("`List.push` expects an argument of type")
+                && delta.message.contains("field `x`")
+                && delta.message.contains('y'),
+            "names the operation + the field-level delta: {}",
+            delta.message
+        );
     }
 
     #[test]
@@ -21442,10 +21644,31 @@ mod match_engine {
             msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u16 n)))) (export main))")
                 .contains("UInt16"),
         );
-        // A DIFFERENT-signedness type is also a mismatch: an `Int8` into an UNSIGNED `u8` segment.
+        // A DIFFERENT-signedness type is also a mismatch: an `Int8` into an UNSIGNED `u8` segment. The
+        // required type is EXACT in BOTH axes (width AND sign), not merely "an integer that fits".
         assert!(
             msg_0203("(module m (def (main (: n Int8)) (Bytes.len (bin (u8 n)))) (export main))")
                 .contains("UInt8"),
+        );
+        // The width match is EXACT — a NARROWER value is NOT silently widened into a wider segment: a
+        // `UInt8` into a `u16` segment is a mismatch (the segment wants `UInt16`), even though every `UInt8`
+        // value trivially fits 16 bits. This pins that the contract is a TYPE match, not a value-range fit —
+        // widening is as explicit as narrowing (`UInt16.of`), never implicit.
+        assert!(
+            msg_0203("(module m (def (main (: n UInt8)) (Bytes.len (bin (u16 n)))) (export main))")
+                .contains("UInt16"),
+        );
+        // A WIDER value into a NARROWER segment is likewise a type error (a `UInt16` into `u8`), the
+        // companion of the `Int64`-into-`u8` case above.
+        assert!(
+            msg_0203("(module m (def (main (: n UInt16)) (Bytes.len (bin (u8 n)))) (export main))")
+                .contains("UInt8"),
+        );
+        // Signedness is strict on the SIGNED side too: a wider SIGNED `Int16` into a signed `i8` segment is
+        // a mismatch (wants `Int8`), naming the signed width type.
+        assert!(
+            msg_0203("(module m (def (main (: n Int16)) (Bytes.len (bin (i8 n)))) (export main))")
+                .contains("Int8"),
         );
         // A raw `Int64` into a `bits` field → CDZ0203 naming `(UInt k)` (here a 4-bit field, byte-closed by a
         // trailing constant `(bits 5 4)`).
@@ -36283,6 +36506,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_value_eq_on_an_inlined_match_operand_compiles() {
+        // A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) "z")` where
+        // `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) "?"))`, inlined into the `=` operand.
+        // The two arms DISAGREE on ownership: the `Some` arm returns a BORROWED payload (`s` = a
+        // `SumPayload` read off the owned Option), the `None` arm returns an OWNED const (`"?"`). The
+        // `value-eq` operand-ownership analysis had no `MatchSum` arm and fell through to the generic
+        // decline "borrowing op operand has an ownership this backend cannot yet prove" — blocking any
+        // program that compares a returned map/variant payload once the wrapper inlines (the shape a
+        // compiler-in-Cadenza substitution pass hits). It must now classify a match operand by the JOIN of
+        // its arm bodies — BORROWED here (a mixed join, the leak-safe value), so no drop follows and the
+        // operand is left to its owner (the standalone-function path leaks the scrutinee the same way).
+        let src = "(module m \
+                     (def (f (: m (Map String String)) (: k String)) \
+                        (match (Map.lookup m k) ((Some s) s) ((None) \"?\"))) \
+                     (def (main) (if (= (f (Map.insert (Map.empty) \"y\" \"z\") \"y\") \"z\") 1 0)) \
+                     (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a value-eq on an inlined match operand compiles (match operand classified by its arm join, \
+             mixed → Borrowed)"
+        );
+    }
+
+    #[test]
     fn a_multi_export_compound_return_declines_with_the_multi_export_diagnosis() {
         // The OTHER compound-return trigger: a program with MULTIPLE exports, one returning a compound.
         // The resource-escape path takes only a SINGLE nullary compound export, so a multi-export program
@@ -39106,6 +39353,41 @@ mod stage1 {
                 && err.message.contains("Bool"),
             "names the operation + expected/actual types: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_perform_arg_structural_mismatch_names_the_delta_not_just_the_types() {
+        // M180/M181 structural-delta audit applied to the effect-op perform arm. When the performed value
+        // and the declared operation argument are SAME-KIND compounds that differ structurally (a record
+        // field-set diff here), the perform arm named only the two rendered types — leaving the reader to
+        // diff `(Record (x Int64))` against `(Record (y Int64))` by eye. It now appends the minimal-conflict
+        // delta the annotation / operator-arg / peer-join sites already carry, so the message says WHICH
+        // field is wrong. A SCALAR mismatch (Int64 vs Bool — no structural delta) keeps the bare message.
+        let src = "(do (effect Log (op put (-> (Record (x Int64)) Unit))) \
+                   (def (main) (handle Log unit ((put (r) s (resume unit s))) \
+                   ((. Log put) (record (y 2))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a structurally-mismatched perform argument must be rejected");
+        assert!(
+            err.message.contains("operation `put`")
+                && err.message.contains("was performed")
+                && err.message.contains("field `x`")
+                && err.message.contains('y'),
+            "names the operation + the field-level delta: {}",
+            err.message
+        );
+        // NO spurious delta on a SCALAR mismatch — the same effect with an Int64 op performed a Bool keeps
+        // the bare "was performed" message (structural_delta_hint is None → the empty tail).
+        let scalar = "(do (effect Log (op put (-> Int64 Unit))) \
+                      (def (main) (handle Log unit ((put (r) s (resume unit s))) \
+                      ((. Log put) true))) (export main))";
+        let serr = compile_component(&crate::codec::encode(&parse(scalar)))
+            .expect_err("a scalar perform mismatch still rejects");
+        assert!(
+            serr.message.contains("operation `put`") && !serr.message.contains(" — "),
+            "a scalar perform mismatch carries no structural-delta tail: {}",
+            serr.message
         );
     }
 
