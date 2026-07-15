@@ -2881,6 +2881,22 @@
             (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main)))
   (error  CDZ0201))
 
+(case "a bind directive to a package name with no interface projection is rejected"
+  (doc    "The other common face of a malformed peer interface name (the sibling of the uppercase-package
+           case above): a bare PACKAGE name with NO `/interface` projection. A peer binding imports an
+           interface INSTANCE, whose component extern name is `namespace:package/interface` — the `/iface`
+           projection is REQUIRED (component-abi.md; the same shape the runtime heap import
+           `cadenza:runtime/heap` uses). `\"cadenza:math\"` names only the package, so it is not a valid
+           interface name and the emitted component's import would fail to load. Rejected at compile time
+           (CDZ0201) rather than a silent invalid-component miscompile — exercising the projection-required
+           branch of the interface-name check, distinct from the kebab/lowercase branch the `Math/API` case
+           covers. The likeliest author typo (forgetting the `/api`), so worth its own witness.")
+  (input  (do
+            (effect Math (op add (-> Int64 Int64)))
+            (bind Math "cadenza:math")
+            (def (main (: x Int64)) (host (Math) (Math.add x))) (export main)))
+  (error  CDZ0201))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).
