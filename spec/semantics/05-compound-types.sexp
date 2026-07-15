@@ -1437,6 +1437,45 @@
             (export main)))
   (output (: 3 Int64)))
 
+; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
+; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
+; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
+; (`head-e elems`), AND passes `elems` to `fl`, which recurses back into `fc`. Because the head is read
+; from `elems` (the value the arm binds) rather than by re-extracting `node`'s payload in a sibling
+; operand, there is ONE path to the child array and no borrowed sum-payload alias to corrupt: the walk
+; folds the child `fc`s (`Name` → 1, `Int` → 0) and the sibling head-read (Some "a" → 100) is independent,
+; so `fc (List [Name "a", Int 5])` = 100 + 1 = 101. Pins the correct mutual `fc↔fl` tree walk — a
+; scope-checker / resolver / free-var pass written the natural way over the canonical AST. (The DISTINCT
+; failing shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand
+; WHILE `fl(elems)` consumes the shared payload alias — is a backend Perceus limit tracked outside the
+; corpus: a `SumPayload` binder consumed by a mutual-recursive call while its scrutinee is still read needs
+; a `dup` the retain analysis does not yet place for payload aliases. This case pins the reading-from-elems
+; idiom that AVOIDS it, so a refcount change in the payload-read path cannot silently break the walker.)
+
+(case "a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read"
+  (doc    "The idiomatic homoiconic-AST walk: `fc` (node) and `fl` (child list) mutually recurse over a
+           recursive `Ast` sum. `fc`'s `List` arm binds the child list `elems`, reads the head from `elems`
+           directly (`head-e elems` → Some \"a\" → 100), and folds the children via `fl` (which calls `fc`
+           back): `Name` → 1, `Int` → 0, so `fl [Name \"a\", Int 5]` = 1. `fc (List [Name \"a\", Int 5])` =
+           100 + 1 = 101. Pins the correct mutual `fc↔fl` walk that reads the payload once through the arm-
+           bound child list — the shape a scope-checker/resolver over the canonical AST takes — so a
+           refcount change in the sum-payload read path cannot silently regress the self-hosted walker.")
+  (input  (do
+            (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+            (def (head-e (: elems (List Ast)))
+              (match elems ((list ((. Ast Name) n) .. _) (Some n)) (_ (None unit))))
+            (def (fc (: node Ast))
+              (match node
+                (((. Ast Name) _) 1)
+                (((. Ast List) elems)
+                  (+ (match (head-e elems) ((Some _) 100) ((None _) 0)) (fl elems)))
+                (_ 0)))
+            (def (fl (: elems (List Ast)))
+              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (export main)))
+  (output (: 101 Int64)))
+
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
            1, `Map.lookup 1` returns `(Option.Some (C.R))`, and the nested match deconstructs the stored
