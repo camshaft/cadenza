@@ -1,0 +1,157 @@
+/// ssa.cdz — an SSA LINEARIZER: flatten the arithmetic `Expr` tree (imported cross-file from `parse`) into
+/// a straight-line list of THREE-ADDRESS instructions, each defining a fresh SSA register. `r3 = r1 + r2`
+/// — every subexpression's value lives in a numbered register, computed once, in evaluation order. This is
+/// the shape a real backend lowers to before register allocation / instruction selection.
+///
+/// It mints fresh register ids by THREADING A COUNTER through the result (a `(reg, next-counter, instrs)`
+/// triple), NOT via a `Fresh` effect handler. That is deliberate: the natural effect-based gensym over a
+/// two-child tree needs TWO sibling recursive calls under a state-threading handler, which the tail-
+/// resumptive fold does not yet thread (an honest decline — see
+/// `repros/decline-effect-state-across-sibling-recursive-calls.cdz`). Pure counter-threading is the
+/// correct, portable design and is exactly what the seed's own passes do.
+///
+/// An instruction is `(dst, op, a, b)` as an `Instr` record-free tuple sum: `Lit(dst, value)` loads a
+/// constant into a register; `Op(dst, opcode, ra, rb)` computes `ra <op> rb` into `dst`. A `Lit`'s "b" is
+/// the literal value; an `Op` names the two source registers. `lower e` returns the instruction list and
+/// the register holding the whole expression's result; an `interp` over the instruction list re-executes
+/// the SSA form, and must agree with `parse`'s tree-walking `run` — the linearizer's correctness contract.
+
+import { Tok, Expr, parse, run } from "parse"
+
+type Instr =
+  | Lit(Int64, Int64)          // (dst-reg, constant value)
+  | Op(Int64, Int64, Int64, Int64)   // (dst-reg, op-code, src-reg-a, src-reg-b)
+
+/// The register an instruction defines (its destination).
+def dst-of(ins: Instr) = match ins with
+  | Instr.Lit(d, _) => d
+  | Instr.Op(d, _, _, _) => d
+
+/// Lower `e` starting at register counter `next`, appending instructions onto `acc`. Returns
+/// `(result-reg, next-counter, instrs)` — the register holding e's value, the advanced counter, and the
+/// extended instruction list. A pure post-order walk: lower left, lower right (threading the counter and
+/// list), then emit the combining `Op` into a fresh register. The counter threads through the RESULT (no
+/// sibling reads a stale counter), so no effect handler and no still-live hazard.
+def lower-into(e: Expr, next: Int64, acc: List(Instr)) = match e with
+  | Expr.Lit(v) =>
+    // r{next} = v
+    (next, next + 1, List.push(acc, Instr.Lit(next, v)))
+  | Expr.Bin(op, l, r) =>
+    let lp = lower-into(l, next, acc) in
+    let rp = lower-into(r, lp.1, lp.2) in
+    let d = rp.1 in
+    // r{d} = r{lp.0} <op> r{rp.0}
+    (d, d + 1, List.push(rp.2, Instr.Op(d, op, lp.0, rp.0)))
+
+/// Lower a whole `Expr`: returns `(result-reg, instrs)`.
+def lower(e: Expr) =
+  let p = lower-into(e, 0, []) in
+  (p.0, p.2)
+
+/// The instruction list of the lowered form.
+def instrs(e: Expr) = (lower(e)).1
+
+/// The result register of the lowered form.
+def result-reg(e: Expr) = (lower(e)).0
+
+/// How many instructions `e` lowers to (== node count of the tree).
+def instr-count(e: Expr) = List.len(instrs(e))
+
+/// Interpret an SSA program by evaluating each instruction into a register file (a `Map Int64 Int64`),
+/// then reading the result register. A pure re-execution of the linearized form.
+def apply-op(op: Int64, a: Int64, b: Int64) =
+  if op == 43 then a + b else (if op == 45 then a - b else (if op == 42 then a * b else a / b))
+
+def reg-of(regs: Map(Int64, Int64), r: Int64) = match Map.lookup(regs, r) with
+  | Option.Some(v) => v
+  | Option.None(_) => 0
+
+/// Run the instruction list from index `i`, updating the register file `regs`; returns the final regs.
+def run-instrs(prog: List(Instr), i: Int64, regs: Map(Int64, Int64)) =
+  if i == List.len(prog) then
+    regs
+  else
+    (match List.at(prog, i) with
+      | Option.Some(ins) => run-instrs(prog, i + 1, exec-one(ins, regs))
+      | Option.None(_) => regs)
+
+/// Execute one instruction into the register file (threading the new file INTO the recursion, so no
+/// sibling reads the pre-update file — the safe still-live shape).
+def exec-one(ins: Instr, regs: Map(Int64, Int64)) = match ins with
+  | Instr.Lit(d, v) => Map.insert(regs, d, v)
+  | Instr.Op(d, op, ra, rb) => Map.insert(regs, d, apply-op(op, reg-of(regs, ra), reg-of(regs, rb)))
+
+/// Lower `e`, run the SSA form, read the result register — the end-to-end evaluation via the linearized IR.
+def eval-ssa(e: Expr) =
+  let lr = lower(e) in
+  reg-of(run-instrs(lr.1, 0, Map.empty), lr.0)
+
+/// Builders.
+def lit(v: Int64) = Expr.Lit(v)
+def mkb(op: Int64, l: Expr, r: Expr) = Expr.Bin(op, l, r)
+def add() = 43
+def mul() = 42
+
+@test
+def ssa-literal() =
+  // a single Lit → 1 instruction, result reg 0
+  if instr-count(lit(7)) == 1 then (if eval-ssa(lit(7)) == 7 then unit else trap("=7")) else trap("1 instr")
+
+@test
+def ssa-add() =
+  // 1 + 2: Lit r0=1, Lit r1=2, Op r2 = r0+r1 → 3 instrs, result 3
+  let e = mkb(add(), lit(1), lit(2)) in
+  if instr-count(e) == 3 then (if eval-ssa(e) == 3 then unit else trap("=3")) else trap("3 instrs")
+
+@test
+def ssa-result-reg() =
+  // for 1 + 2 the result lives in register 2 (r0, r1, then r2)
+  if result-reg(mkb(add(), lit(1), lit(2))) == 2 then unit else trap("result in r2")
+
+@test
+def ssa-precedence-tree() =
+  // 1 + (2*3) = 7 via the SSA form
+  let e = mkb(add(), lit(1), mkb(mul(), lit(2), lit(3))) in
+  if eval-ssa(e) == 7 then unit else trap("1+2*3=7 via SSA")
+
+@test
+def ssa-instr-count-eq-nodes() =
+  // instruction count equals the node count: (1+2)*(3+4) has 7 nodes → 7 instrs
+  let e = mkb(mul(), mkb(add(), lit(1), lit(2)), mkb(add(), lit(3), lit(4))) in
+  if instr-count(e) == 7 then unit else trap("7 nodes → 7 instrs")
+
+@test
+def ssa-agrees-with-parser-run() =
+  // parse "2*(3+4)-1" → lower → eval-ssa must equal parse's tree-walking run (13)
+  let ts = [Tok.TNum(2), Tok.TOp(42), Tok.TLP, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRP, Tok.TOp(45), Tok.TNum(1)] in
+  let e = parse(ts) in
+  if eval-ssa(e) == run(ts) then unit else trap("SSA eval == tree-walk")
+
+@test
+def ssa-left-assoc() =
+  // 10 - 3 - 2 = 5 through the SSA form (left-assoc from the parser)
+  let ts = [Tok.TNum(10), Tok.TOp(45), Tok.TNum(3), Tok.TOp(45), Tok.TNum(2)] in
+  if eval-ssa(parse(ts)) == 5 then unit else trap("10-3-2=5 via SSA")
+
+@test
+def ssa-registers-are-unique-and-dense() =
+  // the destination registers are 0,1,2,…,n-1 in order — check the last instr's dst is n-1
+  let e = mkb(add(), lit(1), lit(2)) in
+  let is = instrs(e) in
+  (match List.at(is, 2) with
+    | Option.Some(last) => (if dst-of(last) == 2 then unit else trap("last dst is 2"))
+    | Option.None(_) => trap("3 instrs expected"))
+
+@test
+def ssa-deep-nested() =
+  // ((1+2)*(3+4)) = 21 via SSA
+  let e = mkb(mul(), mkb(add(), lit(1), lit(2)), mkb(add(), lit(3), lit(4))) in
+  if eval-ssa(e) == 21 then unit else trap("(1+2)*(3+4)=21 via SSA")
+
+@test
+def ssa-single-op-result-in-last-reg() =
+  // for a deep tree the result register is the highest (last emitted): 7-node tree → result reg 6
+  let e = mkb(mul(), mkb(add(), lit(1), lit(2)), mkb(add(), lit(3), lit(4))) in
+  if result-reg(e) == 6 then unit else trap("result in r6")
+
+export { lower, instrs, result-reg, eval-ssa, instr-count }

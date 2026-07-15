@@ -1599,9 +1599,11 @@ fn apply_fix_to_source(
 /// but returns the primitive edits (via `textedit::edits_preserving`) so an agent applies them directly
 /// (`source[start..end] := text`) instead of re-deriving positions from a kind/prefix/suffix. `None` when
 /// the fix cannot be built (unparseable payload, node not found).
+#[allow(clippy::too_many_arguments)] // source + tree + origin-index + spans + kind/target/repl/surface
 fn fix_edits(
     source: &str,
     old: &cadenza_syntax::query::Tree,
+    origins: &OriginPaths,
     spans: &cadenza_syntax::spans::SpanTable,
     kind: &str,
     target: cadenza_syntax::StructId,
@@ -1619,8 +1621,9 @@ fn fix_edits(
     // diffing the whole `(old, new)` tree, but walks O(subtree) instead of O(program). Computing a fix PER
     // diagnostic over the whole tree was O(fixes × program) = O(N²) on a file with many fixable warnings (a
     // wide match with N unused-binder arms: N `transform_target` whole-tree rebuilds, each deep-cloning the
-    // other N−1 arms). `localized_change` finds the target's subtree + builds only ITS replacement.
-    let (old_sub, new_sub) = localized_change(old, kind, target, repl)?;
+    // other N−1 arms). `localized_change` finds the target's subtree (O(depth) via `origins`) + builds only
+    // ITS replacement.
+    let (old_sub, new_sub) = localized_change(old, origins, kind, target, repl)?;
     Some(cadenza_syntax::query::textedit::edits_preserving(
         source, old_sub, &new_sub, &span_of, surface,
     ))
@@ -1630,11 +1633,13 @@ fn fix_edits(
 /// CHANGED subtree, not the whole program. `replace`/`wrap`/`insert` change the TARGET node itself, so its
 /// subtree is the diff root; `delete` removes the target from its PARENT list, so the parent is the root.
 /// Because `edits_preserving` emits edits only within the changed span, diffing this local pair is
-/// byte-identical to diffing the whole tree — at O(subtree) not O(program). Returns a BORROW of the old
-/// subtree (into `old`) + the freshly built new subtree. `None` if the target (or, for delete, its parent)
-/// is not found, or the payload does not parse.
+/// byte-identical to diffing the whole tree — at O(subtree) not O(program). The target (or, for delete, its
+/// parent) is located in O(depth) via the precomputed `origins` index — NOT an O(program) scan (which,
+/// per fix over N fixes, was O(N²)). Returns a BORROW of the old subtree (into `old`) + the freshly built
+/// new subtree. `None` if the target is not found or the payload does not parse.
 fn localized_change<'t>(
     old: &'t cadenza_syntax::query::Tree,
+    origins: &OriginPaths,
     kind: &str,
     target: cadenza_syntax::StructId,
     repl: &str,
@@ -1642,12 +1647,12 @@ fn localized_change<'t>(
     use cadenza_syntax::query::Tree;
     if kind == "delete" {
         // Delete edits the PARENT list (the target vanishes from its children). Diff the parent subtree.
-        let parent = find_parent_of(old, target)?;
+        let parent = origins.parent(old, target)?;
         let new_parent = delete_target(parent, target)?;
         return Some((parent, new_parent));
     }
     // `replace`/`wrap`/`insert` change the target node in place — its subtree is the diff root.
-    let node = find_by_origin(old, target)?;
+    let node = origins.node(old, target)?;
     let new_node = match kind {
         "replace" => parse_fragment(repl)?,
         "wrap" => {
@@ -1669,36 +1674,84 @@ fn localized_change<'t>(
     Some((node, new_node))
 }
 
-/// The subtree at `origin` within `tree` (by provenance id) — a borrow, no clone. `None` if absent.
-fn find_by_origin(
-    tree: &cadenza_syntax::query::Tree,
-    origin: cadenza_syntax::StructId,
-) -> Option<&cadenza_syntax::query::Tree> {
-    use cadenza_syntax::query::Tree;
-    if tree.origin() == Some(origin) {
-        return Some(tree);
-    }
-    match tree {
-        Tree::Atom(..) => None,
-        Tree::List(items, _) => items.iter().find_map(|c| find_by_origin(c, origin)),
-    }
+/// A `provenance id → path-from-root` index over a parsed `Tree`, so locating a fix's target node is
+/// O(depth) (follow the path) instead of O(program) (scan every node comparing origins). Built ONCE per
+/// file in a single walk (`OriginPaths::of`) and shared across all its fixes: a file with N fixable
+/// diagnostics located each target by a fresh whole-tree scan (`find_by_origin`) → O(N × program) = O(N²)
+/// (`find_by_origin` + `Tree::origin` were ~82% of a wide-fixable-warnings check). A `path` is the child
+/// indices from the root down to the node (empty = the root itself).
+struct OriginPaths {
+    path: std::collections::HashMap<cadenza_syntax::StructId, Vec<usize>>,
 }
 
-/// The LIST node that directly contains a child whose origin is `target` — the node a `delete` edits.
-/// `None` if no list holds `target` as a direct child.
-fn find_parent_of(
-    tree: &cadenza_syntax::query::Tree,
-    target: cadenza_syntax::StructId,
-) -> Option<&cadenza_syntax::query::Tree> {
-    use cadenza_syntax::query::Tree;
-    match tree {
-        Tree::Atom(..) => None,
-        Tree::List(items, _) => {
-            if items.iter().any(|c| c.origin() == Some(target)) {
-                return Some(tree);
+/// A file's parsed `Tree` + its `origin → path` index, both built once and shared (`Rc`) across every fix
+/// that targets the file (the `check`-loop cache value).
+type FileTree = (
+    std::rc::Rc<cadenza_syntax::query::Tree>,
+    std::rc::Rc<OriginPaths>,
+);
+
+impl OriginPaths {
+    /// One walk of `tree`, recording each origin-bearing node's path from the root.
+    fn of(tree: &cadenza_syntax::query::Tree) -> OriginPaths {
+        use cadenza_syntax::query::Tree;
+        fn walk(
+            t: &Tree,
+            path: &mut Vec<usize>,
+            out: &mut std::collections::HashMap<cadenza_syntax::StructId, Vec<usize>>,
+        ) {
+            if let Some(id) = t.origin() {
+                out.insert(id, path.clone());
             }
-            items.iter().find_map(|c| find_parent_of(c, target))
+            if let Tree::List(items, _) = t {
+                for (i, c) in items.iter().enumerate() {
+                    path.push(i);
+                    walk(c, path, out);
+                    path.pop();
+                }
+            }
         }
+        let mut out = std::collections::HashMap::default();
+        walk(tree, &mut Vec::new(), &mut out);
+        OriginPaths { path: out }
+    }
+
+    /// The node at `origin` (O(depth) — follow the cached path), a borrow into `tree`. `None` if absent
+    /// or the path does not resolve (a stale index against a different tree).
+    fn node<'t>(
+        &self,
+        tree: &'t cadenza_syntax::query::Tree,
+        origin: cadenza_syntax::StructId,
+    ) -> Option<&'t cadenza_syntax::query::Tree> {
+        use cadenza_syntax::query::Tree;
+        let mut cur = tree;
+        for &i in self.path.get(&origin)? {
+            let Tree::List(items, _) = cur else {
+                return None;
+            };
+            cur = items.get(i)?;
+        }
+        Some(cur)
+    }
+
+    /// The PARENT list node of `origin` (the node a `delete` edits) — the node at the path with its last
+    /// step dropped. `None` if `origin` is the root (no parent) or absent.
+    fn parent<'t>(
+        &self,
+        tree: &'t cadenza_syntax::query::Tree,
+        origin: cadenza_syntax::StructId,
+    ) -> Option<&'t cadenza_syntax::query::Tree> {
+        use cadenza_syntax::query::Tree;
+        let full = self.path.get(&origin)?;
+        let (_, parent_path) = full.split_last()?;
+        let mut cur = tree;
+        for &i in parent_path {
+            let Tree::List(items, _) = cur else {
+                return None;
+            };
+            cur = items.get(i)?;
+        }
+        Some(cur)
     }
 }
 
@@ -2132,24 +2185,32 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     // `old` per fix (`Tree::of` deep-copies the whole arena) made a file with N fixable diagnostics
     // O(N × tree) = O(N²). Cache it lazily per file (`Rc`, so the borrow is cheap to hand out) — the tree
     // materializes at most once per file regardless of how many fixes reference it.
-    let tree_cache: std::cell::RefCell<Vec<Option<std::rc::Rc<cadenza_syntax::query::Tree>>>> =
+    // Alongside the tree, cache its `origin → path` INDEX (`OriginPaths`) — built once per file so each
+    // fix locates its target node in O(depth), not by an O(program) scan (which, per fix over N fixes, was
+    // O(N²): `find_by_origin`+`Tree::origin` were ~82% of a wide-fixable-warnings check). Both the tree and
+    // its index live for the whole `check` run, shared across every fix targeting the file.
+    let tree_cache: std::cell::RefCell<Vec<Option<FileTree>>> =
         std::cell::RefCell::new(vec![None; files.len()]);
-    let file_tree = |fi: usize| -> std::rc::Rc<cadenza_syntax::query::Tree> {
-        if let Some(t) = &tree_cache.borrow()[fi] {
-            return t.clone();
+    let file_tree = |fi: usize| -> FileTree {
+        if let Some(pair) = &tree_cache.borrow()[fi] {
+            return pair.clone();
         }
         let t = std::rc::Rc::new(cadenza_syntax::query::Tree::of(&files[fi].arenas));
-        tree_cache.borrow_mut()[fi] = Some(t.clone());
-        t
+        let idx = std::rc::Rc::new(OriginPaths::of(&t));
+        let pair = (t, idx);
+        tree_cache.borrow_mut()[fi] = Some(pair.clone());
+        pair
     };
     let do_fix_edits = |kind: &str,
                         fix_node: &str,
                         repl: &str|
      -> Option<Vec<cadenza_syntax::query::textedit::Edit>> {
         let (fi, local) = file_of_node(fix_node)?;
+        let (tree, origins) = file_tree(fi);
         fix_edits(
             &files[fi].source,
-            &file_tree(fi),
+            &tree,
+            &origins,
             &files[fi].spans,
             kind,
             cadenza_syntax::StructId(local),
@@ -2159,9 +2220,10 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let do_fix_apply = |kind: &str, fix_node: &str, repl: &str| -> Option<String> {
         let (fi, local) = file_of_node(fix_node)?;
+        let (tree, _origins) = file_tree(fi);
         apply_fix_to_source(
             &files[fi].source,
-            &file_tree(fi),
+            &tree,
             &files[fi].spans,
             kind,
             cadenza_syntax::StructId(local),
@@ -3697,8 +3759,11 @@ mod tests {
         // siblings around it.
         let (small, tgt_s) = build(4, 4);
         let (big, tgt_b) = build(400, 8);
-        let (os_small, _) = localized_change(&small, "replace", tgt_s, "_y").expect("found");
-        let (os_big, _) = localized_change(&big, "replace", tgt_b, "_y").expect("found");
+        let idx_small = OriginPaths::of(&small);
+        let idx_big = OriginPaths::of(&big);
+        let (os_small, _) =
+            localized_change(&small, &idx_small, "replace", tgt_s, "_y").expect("found");
+        let (os_big, _) = localized_change(&big, &idx_big, "replace", tgt_b, "_y").expect("found");
         assert_eq!(
             count(os_small),
             1,
@@ -3711,6 +3776,63 @@ mod tests {
              diffing the whole tree would scale with the {}-sibling program",
             count(os_small),
             400
+        );
+    }
+
+    #[test]
+    fn origin_paths_index_locates_every_node_and_its_parent() {
+        // REGRESSION (perf): `cdz check` located each fix's target by an O(program) origin SCAN
+        // (`find_by_origin`), run PER fixable diagnostic → O(N × program) = O(N²) on a file with many
+        // fixable warnings (`find_by_origin`+`Tree::origin` were ~82% of a wide-fixable-warnings check).
+        // FIX: `OriginPaths::of` builds an `origin → path-from-root` index in ONE walk (shared across all a
+        // file's fixes), so `node`/`parent` locate in O(depth) by following the path — not by scanning.
+        //
+        // Lock in the index's CORRECTNESS (a wrong path silently mis-fixes): for EVERY origin-bearing node
+        // in a mixed tree, `OriginPaths::node` returns exactly that node (same origin), and `parent` returns
+        // the list that directly holds it. A regression to a scan-free-but-wrong path would fail here.
+        use cadenza_syntax::query::Tree;
+        use cadenza_syntax::{StructId, ast::Leaf};
+        // `(root (a b) c (d (e f)))` with distinct origins — a mix of depths and sibling positions.
+        let leaf = |id: u32, n: &str| Tree::Atom(Leaf::Name(n.to_string()), Some(StructId(id)));
+        let tree = Tree::List(
+            vec![
+                Tree::List(vec![leaf(2, "a"), leaf(3, "b")], Some(StructId(1))),
+                leaf(4, "c"),
+                Tree::List(vec![leaf(6, "e"), leaf(7, "f")], Some(StructId(5))),
+            ],
+            Some(StructId(0)),
+        );
+        let idx = OriginPaths::of(&tree);
+        // Every origin resolves to the SAME node.
+        for id in [0u32, 1, 2, 3, 4, 5, 6, 7] {
+            let sid = StructId(id);
+            let n = idx.node(&tree, sid).expect("origin is indexed");
+            assert_eq!(n.origin(), Some(sid), "node({id}) has origin {id}");
+        }
+        // A missing origin → None (no panic, no spurious hit).
+        assert!(
+            idx.node(&tree, StructId(99)).is_none(),
+            "absent origin → None"
+        );
+        // The root has no parent; a nested node's parent is the list directly holding it.
+        assert!(
+            idx.parent(&tree, StructId(0)).is_none(),
+            "the root has no parent"
+        );
+        assert_eq!(
+            idx.parent(&tree, StructId(2)).and_then(|p| p.origin()),
+            Some(StructId(1)),
+            "`a`'s parent is the `(a b)` list"
+        );
+        assert_eq!(
+            idx.parent(&tree, StructId(6)).and_then(|p| p.origin()),
+            Some(StructId(5)),
+            "`e`'s parent is the `(e f)` list"
+        );
+        assert_eq!(
+            idx.parent(&tree, StructId(4)).and_then(|p| p.origin()),
+            Some(StructId(0)),
+            "`c`'s parent is the root"
         );
     }
 

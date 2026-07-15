@@ -365,11 +365,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesAt { bytes, index, .. } => {
             binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
-        // `String.at` CONSUMES its string — the `Some` branch `bytes-slice`s a scalar span OUT of it (the
-        // returned String retains part of the source), and the `None` branch drops it. So a binding used
-        // as the string operand ESCAPES into the result (like `Bytes.slice`), unlike `Bytes.at`'s borrow.
+        // `String.at` BORROWS its string — the `Some` branch `dup`s it before the `bytes-slice` consumes
+        // the copy (so the returned slice owns an INDEPENDENT reference, not part of the source), and the
+        // `None` branch takes no reference. So a binding used as the string operand does NOT escape through
+        // `String.at` — the enclosing `let`/owner still reclaims it — exactly like `List.at`/`Bytes.at`.
+        // The index is a scalar. (This borrow discipline is why `String.at` composes in a recursive char
+        // scan that threads the same string through both `String.at` and the recursive call.)
         Core::StrAt { string, index, .. } => {
-            binding_escapes(db, string, binder, false) || binding_escapes(db, index, binder, false)
+            binding_escapes(db, string, binder, true) || binding_escapes(db, index, binder, false)
         }
         // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
         // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
@@ -1222,6 +1225,9 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
             out.insert(OP_BYTES_SLICE);
+            // The Some-branch COMPACTS the fresh slice to an independent flat leaf (see the emit) so a
+            // `String.at` result's content-equality / key-hashing compares by content, not rope offset.
+            out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DROP);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
@@ -3486,29 +3492,9 @@ fn emit_tail(
                     }
                 },
             };
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
+            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+                db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
-            out.push(Lir::LocalSet(handle_slot));
-            let len_slot = *high;
-            *high = len_slot + 1;
-            scratch_ty.insert(len_slot, ValType::I32);
-            out.push(Lir::LocalGet(handle_slot));
-            out.push(Lir::CallImport(OP_VEC_LEN));
-            out.push(Lir::LocalSet(len_slot));
-            let mut arm_slots = slots.clone();
-            arm_slots.insert(scrutinee, handle_slot);
-            let arm_base = *high;
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -5140,19 +5126,49 @@ fn emit(
             out.push(Lir::LocalSet(spanstart_slot));
             emit_skip_one_scalar(out, &push_is_lead);
             out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
-            out.push(Lir::LocalGet(str_slot)); // [disc_some, str]
+            // `bytes-slice` CONSUMES its buffer, but `str` is a BORROWED operand of `String.at` (the
+            // `str_slot` handle is only borrowed — a param/local the caller owns, or an owned temporary
+            // this arm's own end reclaims uniformly). So RETAIN it (`dup`, rc++) before the consuming slice,
+            // exactly as `List.at` `dup`s the borrowed `vec-get` element before the `Some` consumes it — the
+            // slice then owns an INDEPENDENT reference, and `str` is left untouched for its other uses (the
+            // recursive `(cnt s …)` that threads the same string). Without this, slicing consumes the sole
+            // reference to `str`; the pre-fix code masked it by LEAKING the un-compacted `Some(slice)` (the
+            // leak pinned `str` alive but compared by rope offset — wrong), and compacting the slice
+            // (below) then `op_drop`s `str`'s node → a use-after-free the recursive scan hit as a trap.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_DUP)); // rc++ str: the slice takes an independent reference
+            out.push(Lir::LocalGet(str_slot)); // [disc_some, str] (retained)
             out.push(Lir::LocalGet(spanstart_slot));
             out.push(Lir::I32WrapI64); // [.., spanstart:i32]
             out.push(Lir::LocalGet(pos_slot));
             out.push(Lir::LocalGet(spanstart_slot));
             out.push(Lir::I64Sub);
             out.push(Lir::I32WrapI64); // [.., span_len:i32]
-            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes str)
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes the dup'd str)
+            // COMPACT the fresh slice to an INDEPENDENT flat leaf before wrapping it in `Some`. A
+            // `bytes-slice` result is a ROPE node — a `[off, len]` offset INTO the source string — whose
+            // PHYSICAL bytes are the source's, not a flat `[byte…]` leaf. A String's content-equality
+            // (`Core::ValueEq` → `champ_eq`) and its map/set-key hashing compare PHYSICAL bytes, so a rope
+            // slice compares by its offset and never matches a flat twin of identical content (the
+            // `String.at` content-equality miscompile: `(= (String.at s i) "a")` silently false; a lexer
+            // over a runtime string cannot classify a char). `bytes-compact` here is REFCOUNT-NEUTRAL — it
+            // CONSUMES the owned slice we just produced and returns a content-equal owned leaf (flattening
+            // releases the source-string reference the slice pinned, exactly the reference `bytes-slice`
+            // transferred in), so the ownership accounting is unchanged (owned in, owned out) and no
+            // downstream borrow/drop shifts. Doing it at the PRODUCER (not the `=` site) fixes ALL uses of
+            // the result — equality, a map/set key, a re-concat — and is cheap: a `String.at` result is a
+            // SINGLE Unicode scalar (≤4 bytes), so the flatten copies at most 4 bytes. This is why the
+            // `Core::ValueEq` owned-String compaction did NOT catch it: the extracted payload reaches `=` as
+            // a BORROW from the `Some` wrapper (owned by it), so the value-eq site cannot own-and-compact it
+            // without a double-free — the slice must be flattened while it is still the fresh owned producer
+            // result, here.
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // slice rope → independent flat leaf (owned→owned)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
-            // ELSE — None. The str handle was BORROWED (never consumed), so drop it, then build None.
-            out.push(Lir::LocalGet(str_slot));
-            out.push(Lir::CallImport(OP_DROP));
+            // ELSE — None. `str` was BORROWED (the Some branch `dup`'d it for the slice; this branch takes
+            // no reference), so it is NOT dropped here — its owner reclaims it (an enclosing `let`/param),
+            // exactly as `List.at`'s None branch leaves its list untouched. `String.at` is now a clean
+            // BORROW of its string, like `List.at`/`Bytes.at`.
             out.push(Lir::ConstI32(disc_none as i32));
             // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
             // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
@@ -5616,30 +5632,37 @@ fn emit(
             scrutinee,
             disc_present,
         } => {
-            // Reserve a fresh i32 slot for the sum handle ABOVE the running high-water (`*high`), NOT at
-            // `base`. When this `SumExpect` is a SUB-EXPRESSION whose SIBLING uses `base` for a different
-            // width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where the i64 `(+ i 1)` sibling also
-            // starts scratch at `base` — reusing `base` for the i32 handle re-types a slot the sibling
-            // `local.set`s at i64, an invalid module (`expected i64, found i32`). A slot at `*high` is
-            // guaranteed never pre-typed, so the handle never clashes with a sibling's scalar slot. This is
-            // the SAME "advance past the reserved handle slot" discipline `MatchSum`/`if`-cond use for a
-            // heap-handle sub-expression (the documented scratch-floor family). Emit the scrutinee ABOVE the
-            // handle slot (its own transient scratch floats clear), then stash the one handle; reading the
-            // slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE.
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
-            )?;
-            out.push(Lir::LocalSet(handle_slot));
+            // The sum handle is read TWICE — the disc probe (`sum-disc`) and the present-payload read
+            // (`sum-payload`), BOTH BORROWING (no rc change, never consume). HANDLE SLOT REUSE (mirrors
+            // `MatchSum`/`List.at`/`MatchList`): a REUSABLE handle — a `Param`/kept `let`-`LocalRef` already
+            // resident in a stable slot — is read from its OWN slot directly; no copy. A COMPUTED scrutinee
+            // (a call/`if`/fresh construction) is stashed ONCE into a fresh i32 slot reserved ABOVE the
+            // running high-water (`*high`), NOT at `base`: when this `SumExpect` is a SUB-EXPRESSION whose
+            // SIBLING uses `base` for a different width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where
+            // the i64 `(+ i 1)` sibling also starts scratch at `base` — reusing `base` for the i32 handle
+            // re-types a slot the sibling `local.set`s at i64, an invalid module. A slot at `*high` is
+            // guaranteed never pre-typed. Either way, reading the slot twice evaluates the scrutinee EXACTLY
+            // ONCE.
+            let handle_slot = match reusable_handle_slot(db, scrutinee, slots) {
+                Some(owner) => owner,
+                None => {
+                    let handle_slot = *high;
+                    *high = handle_slot + 1;
+                    scratch_ty.insert(handle_slot, ValType::I32);
+                    emit(
+                        db,
+                        scrutinee,
+                        slots,
+                        handle_slot + 1,
+                        high,
+                        scratch_ty,
+                        layout,
+                        out,
+                    )?;
+                    out.push(Lir::LocalSet(handle_slot));
+                    handle_slot
+                }
+            };
             // The result block type is this node's solved type (the payload type).
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
@@ -5962,29 +5985,9 @@ fn emit(
                     }
                 },
             };
-            let handle_slot = *high;
-            *high = handle_slot + 1;
-            scratch_ty.insert(handle_slot, ValType::I32);
-            emit(
-                db,
-                scrutinee,
-                slots,
-                handle_slot + 1,
-                high,
-                scratch_ty,
-                layout,
-                out,
+            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+                db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
-            out.push(Lir::LocalSet(handle_slot));
-            let len_slot = *high;
-            *high = len_slot + 1;
-            scratch_ty.insert(len_slot, ValType::I32);
-            out.push(Lir::LocalGet(handle_slot));
-            out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
-            out.push(Lir::LocalSet(len_slot));
-            let mut arm_slots = slots.clone();
-            arm_slots.insert(scrutinee, handle_slot);
-            let arm_base = *high;
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -7007,6 +7010,64 @@ fn reusable_handle_slot(
     }
 }
 
+/// Prepare a `MatchList` scrutinee for its arm bodies: bind the list HANDLE to a slot the arms read
+/// (`arm_slots[scrutinee]`), compute the `vec-len` ONCE into a `len_slot` (the arms' length dispatch reads
+/// it), and return the scratch floor `arm_base` past both. Returns `(arm_slots, len_slot, arm_base)`.
+///
+/// HANDLE SLOT REUSE (mirrors `MatchSum`'s scrutinee discipline + the `List.at` reuse): a REUSABLE handle —
+/// a `Param` / kept `let`-`LocalRef` already resident in a stable slot — is read from its OWN slot; the arm
+/// bodies' element reads (`vec-get`, BORROWING) and the rest read (`vec-drop`, which `dup`s the handle
+/// before consuming — see the `SumPayload` `RestFrom` emit) keep that owner reference intact, so no copy is
+/// needed. `emit(scrutinee)` for such a handle is a plain borrowing `local.get`, so the previous
+/// copy-into-scratch was pure waste. A COMPUTED scrutinee (a call result, an `if`, a fresh construction) is
+/// evaluated ONCE into a fresh i32 slot as before (re-emitting it would recompute + its scratch would clash
+/// with the arm bodies').
+#[allow(clippy::too_many_arguments)]
+fn materialize_list_match_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    slots: &HashMap<StructId, u32>,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(HashMap<StructId, u32>, u32, u32), Reject> {
+    let (arm_slots, handle_slot) = match reusable_handle_slot(db, scrutinee, slots) {
+        // Resident handle: the arms read the owner slot directly; `slots` already maps the binder there,
+        // so `emit(scrutinee)` (a `Param`/`LocalRef`) resolves to it. No copy, no fresh handle scratch.
+        Some(owner) => (slots.clone(), owner),
+        None => {
+            let handle_slot = *high;
+            *high = handle_slot + 1;
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                handle_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(handle_slot));
+            let mut m = slots.clone();
+            m.insert(scrutinee, handle_slot);
+            (m, handle_slot)
+        }
+    };
+    // The list length is a derived SCALAR read once into its own slot regardless (the length dispatch reads
+    // it per arm; recomputing `vec-len` per arm would be a repeated borrow).
+    let len_slot = *high;
+    *high = len_slot + 1;
+    scratch_ty.insert(len_slot, ValType::I32);
+    out.push(Lir::LocalGet(handle_slot));
+    out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
+    out.push(Lir::LocalSet(len_slot));
+    let arm_base = *high;
+    Ok((arm_slots, len_slot, arm_base))
+}
+
 /// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
 /// frame must reclaim, or a BORROW another owner (a parameter's caller, a `let`'s binding-slot drop)
 /// already accounts for. Drives whether the `value-eq` emit `drop`s an operand after the borrowing
@@ -7117,6 +7178,9 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // (`sum-payload`/`arr-get` read without transferring ownership; see `binding_escapes`). This is
         // the shape a recursive tree-walker compares — `(= h "+")` where `h` is a variant's tuple-payload
         // element bound via `SumPayload`. `SumExpect` (an `Option.expect` payload read) borrows likewise.
+        // (A `String.at` `Some` payload is a rope slice, but it is COMPACTED at the producer — the `StrAt`
+        // Some-branch flattens the slice before wrapping it — so the extracted payload is a flat leaf that
+        // `value-eq` compares correctly without reclassifying this borrow as owned; see `Core::StrAt` emit.)
         Core::SumPayload { .. } | Core::SumExpect { .. } | Core::Proj { .. } => {
             Ok(HandleOwnership::Borrowed)
         }
@@ -11559,6 +11623,91 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
             "the bytes param slot 0 is never written (no handle copy); got {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_list_match_on_a_param_reads_the_scrutinee_slot_directly_no_handle_copy() {
+        // (def (hd (: xs (List Int64))) (match xs ((list) 0) ((list h .. rest) h))) — the scrutinee is a
+        // parameter, resident in slot 0. The match reads its handle for `vec-len` (length dispatch) and the
+        // arm bodies' element reads (`vec-get`, BORROW) + rest read (`vec-drop`, `dup`-guarded); all read
+        // slot 0 DIRECTLY — the handle is NOT copied into a scratch slot first (the c180 reuse, matching the
+        // `MatchSum`/`List.at` discipline). So the FIRST `vec-len` reads `LocalGet(0)`, and slot 0 is never
+        // written (a param — the reuse removes the would-be `local.set handle_slot` copy).
+        let ast = crate::testkit::parse(
+            "(module m (def (hd (: xs (List Int64))) (match xs ((list) 0) ((list h .. rest) h))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "hd");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The length dispatch's `vec-len` reads the scrutinee param slot 0 directly (no prior copy).
+        let vec_len_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_LEN))
+            .expect("a length-dispatch vec-len");
+        assert_eq!(
+            f.code[vec_len_pos - 1],
+            Lir::LocalGet(0),
+            "the list match's vec-len reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[..=vec_len_pos]
+        );
+        // The scrutinee param slot 0 is never written — the handle-copy `local.set` is gone.
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the scrutinee param slot 0 is never copied (no handle stash); got {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn an_option_expect_on_a_param_reads_the_scrutinee_slot_directly_no_handle_copy() {
+        // (def (unwrap (: o (Option Int64))) (Option.expect o "v")) — the scrutinee is a parameter, resident
+        // in slot 0. `SumExpect` reads its handle TWICE — the disc probe (`sum-disc`) and the present-payload
+        // read (`sum-payload`), both BORROWING — so both read slot 0 DIRECTLY, no copy into a scratch slot
+        // (the c181 reuse, matching the `MatchSum`/`List.at`/`MatchList` discipline). So `sum-disc` reads
+        // `LocalGet(0)`, and slot 0 is never written.
+        let ast = crate::testkit::parse(
+            "(module m (def (unwrap (: o (Option Int64))) (Option.expect o \"v\")) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "unwrap");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // The disc probe's `sum-disc` reads the scrutinee param slot 0 directly (no prior copy).
+        let disc_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_DISC))
+            .expect("a disc probe sum-disc");
+        assert_eq!(
+            f.code[disc_pos - 1],
+            Lir::LocalGet(0),
+            "the expect's sum-disc reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[..=disc_pos]
+        );
+        // The present-payload `sum-payload` also reads slot 0 directly.
+        let payload_pos = f
+            .code
+            .iter()
+            .position(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_PAYLOAD))
+            .expect("a present-payload sum-payload");
+        assert_eq!(
+            f.code[payload_pos - 1],
+            Lir::LocalGet(0),
+            "the expect's sum-payload reads the scrutinee param slot 0 directly; got {:?}",
+            &f.code[payload_pos - 1..=payload_pos]
+        );
+        // The scrutinee param slot 0 is never written — the handle-copy `local.set` is gone.
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::LocalSet(0) | Lir::LocalTee(0))),
+            "the scrutinee param slot 0 is never copied (no handle stash); got {:?}",
             f.code
         );
     }

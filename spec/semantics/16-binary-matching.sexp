@@ -177,6 +177,37 @@
             (_ 0)))
   (output (: 255 Int64)))
 
+(case "a signed segment reads the sign-bit-only byte as the minimum, not its magnitude"
+  (doc    "The 0x80 boundary, sharper than the 0xFF cases above (which read the trivial all-ones byte as
+           -1): the byte 128 (`0b1000_0000`, only the sign bit set) read through a SIGNED `(i8 n)` pattern
+           is -128 — the Int8 MINIMUM, its two's-complement value — NOT 128 (its magnitude) and NOT -0. This
+           is where a naive reinterpretation that masks the sign bit and negates the remaining magnitude
+           would wrongly give 0 or -0; the correct reading is the two's-complement -128. Pins the
+           sign-bit-only extreme of the signed segment read.")
+  (input  (match (Bytes.of (list 128))
+            ((bin (i8 n)) n)
+            (_ 0)))
+  (output (: -128 Int64)))
+
+(case "an unsigned segment reads the same sign-bit-only byte as 128"
+  (doc    "The unsigned companion: the byte 128 read through `(u8 n)` is 128 — the same byte reads back as
+           -128 under `i8` and 128 under `u8`, differing by exactly the segment's sign at the sign-bit
+           boundary (as the 0xFF pair does at the all-ones byte). Pins that the two readings of 0x80 split
+           by segment sign, so signedness is a property of the segment across the whole byte range, not
+           just the all-ones case.")
+  (input  (match (Bytes.of (list 128))
+            ((bin (u8 n)) n)
+            (_ 0)))
+  (output (: 128 Int64)))
+
+(case "constructing a signed segment at the minimum emits the sign-bit-only byte"
+  (doc    "The construction inverse of the signed 0x80 read: `(bin (i8 -128))` encodes the Int8 minimum in
+           two's complement as the byte 0x80 = 128, so it equals `(Bytes.of (list 128))`. With the read
+           case above this pins the round-trip at the signed minimum — `-128` emits 0x80, and 0x80 read as
+           `i8` is `-128` — the extreme companion of the `(i8 -1)` ⇆ 255 round-trip.")
+  (input  (= (bin (i8 -128)) (Bytes.of (list 128))))
+  (output (: true Bool)))
+
 (case "a bits pattern segment reads sub-byte fields back into integers"
   (doc    "The packed byte `0b1010_0101` matched against `(bin (bits a 1) (bits b 2) (bits c 5))` reads the
            three most-significant-field-first sub-byte fields back: a = 1, b = 0b01 = 1, c = 0b00101 = 5,

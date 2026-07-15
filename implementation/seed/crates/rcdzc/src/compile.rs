@@ -2231,14 +2231,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 has_bakeable_type_export = true;
             }
             if !bakeable {
+                // The message embeds `TYPE_EXPORT_MARKER` ("is a TYPE, not a runtime value") so
+                // `dedup_faults` drops the downstream no-runtime-form decline family (a built-in-as-value /
+                // nullary-lambda / type-value-no-runtime-form cascade the emit path leaks for this same
+                // body) — exactly as the nested-type-value branch below does. Without the marker phrasing,
+                // a NON-bakeable type-value export (`(: Int64 Type)`, a parameterized/undetermined type)
+                // reported the coded reject PLUS three unanchored declines (the very cascade the comment
+                // above promises this reject replaces).
                 faults.push(
                     Reject::coded(
                         Code::Malformed,
                         format!(
-                            "export `{name}` is a TYPE that cannot cross the component boundary — a \
-                             type-value crosses only from a NULLARY export and only when it reduces to a \
-                             concrete type (a type-value never flows from runtime data, so a parameterized \
-                             or not-fully-determined type has no boundary form)"
+                            "export `{name}` is a TYPE, not a runtime value that can cross the component \
+                             boundary — a type-value crosses only from a NULLARY export and only when it \
+                             reduces to a concrete type (a type-value never flows from runtime data, so a \
+                             parameterized or not-fully-determined type has no boundary form)"
                         ),
                     )
                     .at(occ),
@@ -3449,6 +3456,15 @@ enum ArmCover {
     /// variant arm that REFINES its payload (a nested literal/constructor) is NOT this — it covers only
     /// part of the variant, so it never shadows and is never classified (returns `None`).
     Variant(u32),
+    /// A FIXED-arity list pattern `(list p0…p_{n-1})` whose leading elements are ALL bare binders/wildcards
+    /// — covers exactly length `n`. A refining leading element (a literal/ctor/nested pattern) is NOT this
+    /// (covers only part of that length), so it is not classified. A duplicate exact-length arm, or one
+    /// shadowed by an earlier rest arm of lead ≤ `n`, is dead.
+    ListExact(usize),
+    /// A REST list pattern `(list p0…p_{k-1} .. rest)` whose leading elements are ALL bare binders/wildcards
+    /// — covers every length ≥ `k`. A later list arm (exact or rest) whose lengths all fall in `[k, ∞)` is
+    /// shadowed. `k == 0` (`(list .. rest)`) covers EVERY list — a whole-list catch-all.
+    ListFrom(usize),
 }
 
 /// Classify a match arm's pattern into the part of the scrutinee it covers, for redundant-arm detection —
@@ -3479,6 +3495,35 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
         crate::resolved::Resolved::Bool(b) => return Some(ArmCover::Lit(format!("b{b}"))),
         crate::resolved::Resolved::Str(s) => return Some(ArmCover::Lit(format!("s{s}"))),
         _ => {}
+    }
+    // A LIST pattern `(list p… [.. rest])` — covers a length (exact for a fixed pattern, a `≥ k` ray for a
+    // rest pattern) ONLY when every LEADING element is a bare binder/wildcard (a refining element — a
+    // literal/ctor/nested pattern — covers only part of that length, so it is not classified: conservative,
+    // never a false redundancy). This is the list analogue of the full-variant `Variant` cover. `is_list_
+    // pattern` matches both the `(list …)` alias and the reserved `"list"` symbol head.
+    if let Some(es) = db
+        .ast
+        .as_form(pat, "list")
+        .or_else(|| db.ast.as_ctor_form(pat, "list"))
+        .map(<[_]>::to_vec)
+    {
+        let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+        let lead = dd.unwrap_or(es.len());
+        // A malformed rest (a `..` not second-to-last, or >1 binder after it) is not decidably a cover.
+        if let Some(i) = dd
+            && i + 2 != es.len()
+        {
+            return None;
+        }
+        // Every LEADING element must be a bare binder / `_` (no refining sub-pattern).
+        for &e in &es[..lead] {
+            db.ast.as_name(e)?;
+        }
+        return Some(if dd.is_some() {
+            ArmCover::ListFrom(lead) // `(list p… .. rest)` covers every length ≥ lead
+        } else {
+            ArmCover::ListExact(lead) // `(list p…)` covers exactly length lead
+        });
     }
     // A constructor-headed pattern `(C.Red)`, `(Some x)`, `((. Sum V) x)`. It covers the WHOLE variant
     // only when every payload sub-pattern is a bare binder/wildcard; a refining sub-pattern (a nested
@@ -3554,12 +3599,20 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
         // distinct-variant arms scanned the growing covered list).
         let mut covered: std::collections::HashSet<ArmCover> = std::collections::HashSet::new();
+        // The SMALLEST rest-arm lead seen so far — a prior `(list p… .. rest)` of lead `k` covers every
+        // length ≥ k, so it SHADOWS any later list arm whose lengths all fall in `[k, ∞)` (a later exact
+        // `(list …n…)` with n ≥ k, or a later rest of lead ≥ k). `None` until a rest arm appears. Tracked
+        // alongside `covered` (which only catches EXACT-key duplicates) to add list-length subsumption.
+        let mut min_list_from: Option<usize> = None;
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
                 // Any arm after coverage closed (a catch-all, or the type saturated) is unreachable.
                 _ if coverage_closed => true,
-                // A repeat of an already-covered literal / full-variant cover.
+                // A later list arm whose every length is ≥ an earlier rest arm's lead is shadowed by it.
+                Some(ArmCover::ListExact(n)) if min_list_from.is_some_and(|k| k <= *n) => true,
+                Some(ArmCover::ListFrom(j)) if min_list_from.is_some_and(|k| k <= *j) => true,
+                // A repeat of an already-covered literal / full-variant / exact-length / rest cover.
                 Some(c) => covered.contains(c),
                 // Unclassifiable — not provably redundant.
                 None => false,
@@ -3592,6 +3645,14 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             match cover {
                 Some(ArmCover::CatchAll) => coverage_closed = true,
                 Some(c) => {
+                    // A REST list arm `(list p… .. rest)` of lead `k` covers `[k, ∞)` — record the smallest
+                    // such lead so it shadows later list arms whose lengths lie in that ray (the list
+                    // analogue of a variant/catch-all closing coverage). A lead-0 `(list .. rest)` covers
+                    // EVERY length, so it shadows all later list arms (min becomes 0). Still `.insert` it so
+                    // an exact-key DUPLICATE rest arm is also caught by `covered.contains`.
+                    if let ArmCover::ListFrom(k) = c {
+                        min_list_from = Some(min_list_from.map_or(k, |m| m.min(k)));
+                    }
                     covered.insert(c);
                     // If the distinct full covers now saturate a FINITE type, coverage is closed: any
                     // later arm (including a catch-all) is unreachable. Count only `Variant`/`Lit` covers

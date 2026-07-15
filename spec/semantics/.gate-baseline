@@ -1094,6 +1094,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
+pass	a recursive scan counts a runtime string's matching characters
 pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
@@ -1133,6 +1134,7 @@ pass	a round-trip consumer binds the applied closure through a let
 pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
+pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
@@ -1304,6 +1306,7 @@ pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome
 pass	a signed pattern segment reads a two's-complement integer as negative
+pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
@@ -1356,6 +1359,7 @@ pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
+pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
 pass	a tail-recursive accumulator loop runs to a large runtime N in constant stack
@@ -1684,6 +1688,7 @@ pass	an unsigned LEB128 encoder emits a single byte below the continuation thres
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
+pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
@@ -1779,6 +1784,7 @@ pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
 pass	constructing a rational with a zero denominator traps
+pass	constructing a signed segment at the minimum emits the sign-bit-only byte
 pass	constructing a sized bytes segment whose value length differs from the size is rejected
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
@@ -2049,6 +2055,8 @@ pass	performing a string-parameter operation with a non-string argument is a typ
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
+pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
+pass	performs in the VALUES of a MAP constructor thread and the entry reads back correctly
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple

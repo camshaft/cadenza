@@ -3626,10 +3626,33 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
                 ),
             ));
         }
-        return Resolved::Poison(Reject::coded(
+        // An unrecognized kind head. If it is a plausible typo of a known kind — `byte`→`bytes`,
+        // `utf`/`utf-8`→`utf8`, `bit`→`bits`, `u62`→`u64` handled above — name it and carry a rename fix on
+        // the kind-head node (the bin-segment twin of the member/variant did-you-mean). The candidate set is
+        // the CLOSED bin vocabulary. `parts[0]` is the head to rewrite.
+        let mut reject = Reject::coded(
             Code::Malformed,
             "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)",
-        ));
+        )
+        .at(seg);
+        const BIN_KINDS: &[&str] = &[
+            "bits", "bytes", "utf8", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+        ];
+        if let Some(suggestion) =
+            crate::diag::suggest::nearest(kind_name, BIN_KINDS.iter().copied())
+        {
+            let head = parts[0];
+            reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "an unrecognized bin segment kind `{kind_name}` — did you mean `{suggestion}`? \
+                     (expected uNN/iNN/bits/bytes/utf8)"
+                ),
+            )
+            .at(head)
+            .with_fix(crate::diag::Fix::replace_heuristic(head, suggestion));
+        }
+        return Resolved::Poison(reject);
     }
     Resolved::Bin { segs }
 }
@@ -4397,6 +4420,17 @@ pub(crate) fn read_record_fields(
     for &field in fields_tail {
         let kv = match db.ast.get(field) {
             Struct::List(kv) if kv.len() == 2 => kv,
+            Struct::List(kv) => {
+                // A wrong-arity field entry `(x 1 2)` / `(x)` — a fixed-arity shape (want 2). A SURPLUS
+                // element gets the shared delete-the-surplus fix (`(x 1 2)` → `(x 1)`); too few is
+                // message-only. Anchored at the offending entry.
+                return Err(fixed_arity_reject(
+                    field,
+                    kv,
+                    2,
+                    "record field must be (key value)",
+                ));
+            }
             _ => {
                 return Err(Reject::coded(
                     Code::Malformed,
@@ -4579,6 +4613,17 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
     for &entry in tail {
         match db.ast.get(entry) {
             Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            Struct::List(items) => {
+                // A wrong-arity entry `(1 2 3)` / `(1)` — a fixed-arity shape (want 2). A SURPLUS element
+                // gets the shared delete fix (`(1 2 3)` → `(1 2)`); too few is message-only. Anchored at
+                // the offending entry.
+                return Resolved::Poison(fixed_arity_reject(
+                    entry,
+                    items,
+                    2,
+                    "a map entry is a (key value) pair",
+                ));
+            }
             _ => {
                 return Resolved::Poison(Reject::coded(
                     Code::Malformed,
