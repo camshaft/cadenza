@@ -814,6 +814,25 @@ fn references_at(
         return Vec::new();
     };
 
+    // SHADOWING GUARD. `UsesOf{name}` indexes only references to the TOP-LEVEL def/type of `name` — it
+    // is NAME-keyed, not node-keyed. So if the cursor is on a LOCAL binder (a parameter, a `let`, a
+    // match binder) that SHADOWS a top-level symbol of the same spelling, a bare `UsesOf` would wrongly
+    // return the unrelated top-level's references. Only proceed when the cursor genuinely belongs to the
+    // top-level symbol: either it IS that symbol's declaration name occurrence, or it RESOLVES
+    // (`ResolveOf`) to it. Otherwise return empty (a node-keyed local-uses query is a later increment).
+    let top_node = top_level_symbol_node(&arenas, &name);
+    let resolves_to = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::ResolveOf { node: node.0 },
+        rcdzc::sidecar::KIND_RESOLVE,
+    )
+    .and_then(|a| a.trim().parse::<u32>().ok());
+    let cursor_is_top_level =
+        top_node == Some(node.0) || (top_node.is_some() && resolves_to == top_node);
+    if !cursor_is_top_level {
+        return Vec::new();
+    }
+
     let mut locations: Vec<Location> = Vec::new();
     if let Some(answer) = run_query_text(
         &arenas,
@@ -829,22 +848,44 @@ fn references_at(
         }
     }
 
-    // Optionally include the DECLARATION site (the def's name occurrence the cursor's name resolves to).
-    // `UsesOf` excludes the defining occurrence by design, so `include_declaration` adds it back.
-    if include_declaration
-        && let Some(answer) = run_query_text(
-            &arenas,
-            rcdzc::sidecar::Query::ResolveOf { node: node.0 },
-            rcdzc::sidecar::KIND_RESOLVE,
-        )
-        && let Ok(target) = answer.trim().parse::<u32>()
-        && let Some(loc) = node_location(text, &spans, uri, target)
-        && !locations.contains(&loc)
-    {
-        locations.push(loc);
+    // Optionally include the DECLARATION site — the top-level symbol's own name occurrence (`UsesOf`
+    // excludes the defining occurrence by design). We already confirmed the cursor belongs to that
+    // top-level symbol, so its declaration node is `top_node` (falling back to the `ResolveOf` target
+    // when the cursor is a reference rather than the declaration itself).
+    if include_declaration {
+        let decl = top_node.or(resolves_to);
+        if let Some(target) = decl
+            && let Some(loc) = node_location(text, &spans, uri, target)
+            && !locations.contains(&loc)
+        {
+            locations.push(loc);
+        }
     }
 
     locations
+}
+
+/// The node id of the TOP-LEVEL declaration named `name` (its name occurrence), or `None` if no
+/// top-level symbol has that name. Reads the `Symbols` query (whose third column IS that name node) —
+/// the same authority `Symbols`/`Exports` use, so a name that names no top-level declaration (a purely
+/// local binder) yields `None`, which is exactly what the shadowing guard needs.
+fn top_level_symbol_node(arenas: &cadenza_syntax::Arenas, name: &str) -> Option<u32> {
+    let answer = run_query_text(
+        arenas,
+        rcdzc::sidecar::Query::Symbols,
+        rcdzc::sidecar::KIND_SYMBOLS,
+    )?;
+    for line in answer.lines() {
+        // `name<TAB>kind<TAB>name-node-id`
+        let mut cols = line.splitn(3, '\t');
+        if let (Some(n), Some(_kind), Some(node)) = (cols.next(), cols.next(), cols.next())
+            && n == name
+            && let Ok(id) = node.trim().parse::<u32>()
+        {
+            return Some(id);
+        }
+    }
+    None
 }
 
 // ── the analysis: cursor → completion candidates, via the `ScopeAt` + `Symbols` queries ──────────────
@@ -856,7 +897,9 @@ fn references_at(
 ///
 /// Deduped by name — a local binding SHADOWS a top-level of the same name (the local wins), matching how
 /// resolution itself would bind the name. The client filters this set by the prefix the user has typed.
-/// TOTAL: a buffer that does not parse yields whatever partial set the queries produce, never a panic.
+/// TOTAL: never panics. On the ML surface the reader RECOVERS, so a mid-edit buffer still yields a
+/// partial candidate set from its recovered tree; on the s-expr surface a buffer that does not parse
+/// hard-fails, and completions are then EMPTY (there is no recovered tree to read scope/symbols from).
 fn completions_at(text: &str, is_ml: bool, pos: Position) -> Vec<CompletionItem> {
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
@@ -1452,6 +1495,36 @@ mod tests {
         let text = "def answer = 42";
         let refs = references_at(text, true, Position::new(0, 13), &test_uri(), false);
         assert!(refs.is_empty(), "expected no references, got {refs:?}");
+    }
+
+    #[test]
+    fn references_on_a_local_shadowing_a_top_level_does_not_leak_the_top_levels_uses() {
+        // `helper` is a TOP-LEVEL def AND the name of a PARAMETER of `g` that shadows it. A references
+        // request on the LOCAL `helper` (the param use in g's body) must NOT return the top-level
+        // `helper`'s references (the `UsesOf`-by-name bug) — the name-keyed query can't distinguish them,
+        // so the shadowing guard suppresses it (empty) rather than report unrelated references.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef g(helper: Int64) -> Int64 = helper";
+        // The `helper` param use in g's body is at line 1, col 32.
+        let refs = references_at(text, true, Position::new(1, 32), &test_uri(), false);
+        assert!(
+            refs.is_empty(),
+            "a local binder shadowing a top-level must not leak the top-level's refs, got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn references_on_the_genuine_top_level_still_works_under_the_guard() {
+        // The guard must not suppress a LEGITIMATE top-level references query: `helper` used from another
+        // top-level def still finds its use.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef m = helper(1)";
+        // The `helper` call in `m` (line 1, col 8).
+        let refs = references_at(text, true, Position::new(1, 8), &test_uri(), false);
+        assert_eq!(
+            refs.len(),
+            1,
+            "the genuine top-level use should be found, got {refs:?}"
+        );
+        assert_eq!(refs[0].range.start.line, 1);
     }
 
     #[test]
