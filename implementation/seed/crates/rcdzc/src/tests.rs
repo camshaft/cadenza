@@ -20525,6 +20525,40 @@ mod match_engine {
             "bare = on two identical types is not relabeled a kind boundary: {}",
             two_types_eq.message
         );
+        // ONE primary error, no cascade: `(+ Color 1)` used to report the CDZ0201 kind-boundary AND a
+        // SPANLESS uncoded "a type value has no runtime form" decline (lowering the type-valued operand) —
+        // two `error:` lines for ONE root cause. `dedup_faults` now drops the spanless decline whenever the
+        // Type-kind-boundary CDZ0201 is present, so an arithmetic op on a type value is a single error.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (type Color (Red)) (def (main) (+ Color 1)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an arithmetic op on a type value = ONE error, not the CDZ0201 + a spanless \
+             no-runtime-form decline: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("type value has no runtime form")),
+            "the spanless no-runtime-form decline is suppressed: {:?}",
+            out.diagnostics
+        );
     }
 
     #[test]

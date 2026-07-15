@@ -2627,6 +2627,22 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_not_a_function_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.starts_with(crate::diag::NOT_A_FUNCTION_PREFIX));
+    // A TYPE VALUE used where a runtime value is wanted — `(+ Color 1)`, a first-class type in an
+    // arithmetic/operand position — is reported by `infer` as the coded CDZ0201 kind-boundary ("a Type and
+    // an Int64 are different types …"). Lowering that same operand ALSO hits the SPANLESS uncoded "a type
+    // value has no runtime form" decline (the type-value has no machine form), which is a CONSEQUENCE of
+    // the very fault the CDZ0201 names, not an independent limitation. The node-based `coded_nodes` dedup
+    // below can't drop it (the decline is spanless — `.at` is None), so it leaked as a second `error:`
+    // line for `+` (but not `<`, which never lowers the operand as a runtime value). Drop the spanless
+    // TYPE_VALUE decline whenever a coded reject NAMING `Type` at the kind boundary is present, so a type
+    // in a value position is ONE primary `error:`. Keyed on the CDZ0201 message mentioning `Type` + the
+    // kind-boundary phrasing, so an unrelated coded reject does not spuriously suppress a genuine
+    // unbuilt-type-value decline (e.g. a bare type export with no boundary error keeps its own handling).
+    let has_type_kind_boundary_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.contains("are different types")
+            && r.message.contains("Type")
+    });
     // Likewise: the evaluator's uncoded "applied more arguments than the function accepts" DECLINE is
     // redundant when `infer` proved the over-application (the coded CDZ0203 `applied N arguments to a
     // function of arity M …` reject). Drop the weaker decline so over-application is ONE primary error.
@@ -2939,6 +2955,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             if has_not_a_function_reject
                 && r.is_decline()
                 && r.message == crate::diag::NOT_APPLYABLE_DECLINE
+            {
+                return false;
+            }
+            // Drop the SPANLESS "a type value has no runtime form" decline when a coded Type-kind-boundary
+            // reject (`(+ Color 1)` → CDZ0201) already names the real fault — the decline is the same
+            // type-in-value-position defect surfacing at lowering, not an independent limitation. (Spanless,
+            // so the node-based `coded_nodes` dedup below misses it.)
+            if has_type_kind_boundary_reject
+                && r.is_decline()
+                && r.message == crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
             {
                 return false;
             }
