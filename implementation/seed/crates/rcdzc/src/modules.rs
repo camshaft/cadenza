@@ -9,7 +9,7 @@
 //# Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
 //!
 //= spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports
-//# Each definition in a module MUST register its name and value as a field of the module's record.
+//# Each definition a module exports MUST register its name and value as a field of the module's record, and a definition the module does not export MUST NOT, so that the record's fields are exactly the module's visible surface (modules-and-namespaces.md §Visibility Is Explicit).
 //!
 //= spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports
 //# A module's exported definition MUST be reachable by member access on the module's record.

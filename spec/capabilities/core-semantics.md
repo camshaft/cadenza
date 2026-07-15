@@ -234,7 +234,7 @@ A reference to a module's name in its enclosing scope MUST resolve to that expor
 
 Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
 
-Each definition in a module MUST register its name and value as a field of the module's record.
+Each definition a module exports MUST register its name and value as a field of the module's record, and a definition the module does not export MUST NOT, so that the record's fields are exactly the module's visible surface (modules-and-namespaces.md §Visibility Is Explicit).
 
 A module's exported definition MUST be reachable by member access on the module's record.
 
