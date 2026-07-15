@@ -63,10 +63,10 @@ export default function Metaprogramming() {
   (if (= (quote 42) (Ast.Int 42)) 1 0))`}
       />
 
-      <H2>Booleans quote too</H2>
+      <H2>Every literal has its variant</H2>
       <P>
-        Every literal kind has its AST variant. A boolean quotes to an <C>Ast.Bool</C>, matches like any
-        other variant, and its payload is a real <C>Bool</C>:
+        Each literal kind quotes to its own variant. A boolean quotes to an <C>Ast.Bool</C>, matches like
+        any other variant, and its payload is a real <C>Bool</C>:
       </P>
       <Runnable
         source={`(match (quote false)
@@ -74,9 +74,28 @@ export default function Metaprogramming() {
   (_            true))`}
       />
       <P>
-        The <C>Ast.Bool</C> arm binds <C>b = false</C>, so the whole match is <C>false</C>. And because a
-        constructor is type-checked like any other, <C>(Ast.Bool 5)</C> is a compile error — the payload
-        must be a <C>Bool</C>, not an integer.
+        The <C>Ast.Bool</C> arm binds <C>b = false</C>, so the whole match is <C>false</C>. A string works
+        the same way — a string literal is an <C>Ast.Str</C>, distinct from an <C>Ast.Name</C> (which is an
+        identifier):
+      </P>
+      <Runnable
+        source={`(match (quote "hi")
+  ((Ast.Str s) 1)
+  (_           0))`}
+      />
+      <P>
+        A float has its own variant too, <C>Ast.Float</C> — distinct from <C>Ast.Int</C>, so <C>(quote 2.5)</C>{" "}
+        matches the float arm and binds its <C>Float64</C> payload:
+      </P>
+      <Runnable
+        source={`(match (quote 2.5)
+  ((Ast.Float f) (if (= f 2.5) 1 0))
+  (_             0))`}
+      />
+      <P>
+        That completes the literal set — integers, floats, strings, booleans, and names each reify to their
+        own variant. And because a constructor is type-checked like any other, <C>(Ast.Bool 5)</C> is a
+        compile error — the payload must be a <C>Bool</C>, not an integer.
       </P>
       <Runnable source={`(Ast.Bool 5)`} expect="error" />
 
