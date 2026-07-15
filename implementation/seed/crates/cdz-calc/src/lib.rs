@@ -418,6 +418,11 @@ fn collapse_whole_rationals(s: &str) -> String {
 
 pub mod runtime;
 
+/// The command surface (`CalcArgs` + `run`), embeddable so the unified `cdz` binary can mount
+/// `cdz calc`. The standalone `cdz-calc` bin is a thin shim over it; this module owns only the
+/// arg-parsing + REPL loop, never the engine above.
+pub mod cli;
+
 #[cfg(test)]
 mod tests {
     use super::*;
