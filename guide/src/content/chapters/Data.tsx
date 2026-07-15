@@ -47,6 +47,35 @@ export default function Data() {
         with no magic.
       </Why>
 
+      <H2>Compared by value</H2>
+      <P>
+        Two tuples or two records are equal when their contents are — structural equality, not identity.
+        A tuple matches position by position, so <C>(tuple 1 2)</C> equals another <C>(tuple 1 2)</C>:
+      </P>
+      <Runnable source={`(if (= (tuple 1 2) (tuple 1 2)) 1 0)`} />
+      <P>
+        A record matches by <em>field name</em>, not field order — so the same fields written in a
+        different order are still the same record. That's the by-name nature showing through: a record is
+        its set of named fields, however you list them.
+      </P>
+      <Runnable source={`(if (= (record (x 1) (y 2)) (record (y 2) (x 1))) 1 0)`} />
+
+      <H2>Taking one apart in a match</H2>
+      <P>
+        Beyond reaching a single field, you can bind <em>all</em> of a tuple's parts at once by matching
+        its shape — the same <C>match</C> you use for any value. Here a two-tuple binds <C>a</C> and{" "}
+        <C>b</C> in one step, then adds them:
+      </P>
+      <Runnable
+        source={`(match (tuple 3 4)
+  ((tuple a b) (+ a b))
+  (_           0))`}
+      />
+      <P>
+        Destructuring like this is the subject of <strong>Pattern matching</strong>; the point here is
+        that a tuple or record is an ordinary value a pattern can name and take apart.
+      </P>
+
       <H2>They compose</H2>
       <P>
         A tuple can hold a record, a record field can hold a tuple, and so on — the shapes nest freely,
