@@ -917,6 +917,24 @@ fn mark_binder_dups(
         }
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            // A NESTED-COMPOUND projection (`get_op` None — `arr-get` returns the child HANDLE, a BORROW of
+            // the parent) in a CONSUMING position, whose parent `binder` is STILL LIVE afterward, needs a
+            // `dup` of the CHILD — not of the binder. The parent is already retained by its own occurrence's
+            // dup, but that bumps the AGGREGATE's rc, not the child's: `arr-get` does not rc++ the child, so
+            // the child has rc 1 (only the parent's array cell refs it) and the consuming op (e.g. `vec-push`)
+            // FBIP-mutates it in place, corrupting a LATER re-projection `(. binder k)` that reads the same
+            // child. Dup the child here so the consumer takes the persistent (copy) path and the parent's
+            // array stays intact. Marked at THIS Proj node (its own id); the emit `dup`s the arr-get result.
+            // Only when the operand IS the (live) binder directly — a projection off a nested/computed operand
+            // is a different (fresh/owned) handle handled by the `reclaim` path. Scalar elements COPY out, so
+            // they never alias — no dup (the FBIP single-use fast path and scalar reads stay untouched).
+            let operand_is_binder = matches!(
+                core_of(db, operand),
+                Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder
+            );
+            if consuming && !scalar_element && live_after && operand_is_binder {
+                sites.insert(id);
+            }
             mark_binder_dups(db, operand, binder, !scalar_element, live_after, sites)
         }
         Core::MapSize { map } => borrow(db, map, live_after, sites),
@@ -6496,6 +6514,24 @@ fn emit(
                 if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
+            } else if out.dup_sites.contains(&id) {
+                // PERCEUS RETAIN of the projected CHILD (`collect_dup_sites`/`mark_binder_dups` marked this
+                // consuming nested-compound projection of a still-live binder): the `arr-get` returned the
+                // child as a BORROW (no rc++), so the child's rc is 1 (only the parent's array cell). A
+                // consuming op (`vec-push`/…) would FBIP-mutate it in place, corrupting a LATER re-projection
+                // that reads the same child. `dup` the child (rc++ → 2) so the consumer takes the persistent
+                // copy path and the parent's array stays intact for the later read; the consumer's own drop
+                // (or the persistent path's drop of its taken ref) reclaims the extra reference. `dup` POPS
+                // its arg and returns nothing, so re-materialize the child from a scratch slot: tee it, dup
+                // the copy, leave the original on the stack for the consumer.
+                let child_slot = base;
+                if child_slot + 1 > *high {
+                    *high = child_slot + 1;
+                }
+                scratch_ty.insert(child_slot, ValType::I32);
+                out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                out.push(Lir::LocalGet(child_slot)); // [child, child]
+                out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
             }
             Ok(())
         }

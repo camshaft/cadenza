@@ -753,6 +753,7 @@ pass	a line comment wrapping a top-level form does not hide it
 pass	a line comment wrapping a type declaration is seen through
 pass	a line comment wrapping the entry point is seen through
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
+pass	a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
 pass	a list arm with two constructor elements binds both payloads
