@@ -124,6 +124,22 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             let (iface, path) = s
                 .split_once('=')
                 .ok_or_else(|| anyhow::anyhow!("--peer expects `interface=path`, got `{s}`"))?;
+            // Both halves must be non-empty. An empty PATH (`--peer iface=`) otherwise falls through to
+            // `fs::read("")` → a confusing blank-filename "No such file" error; an empty INTERFACE
+            // (`--peer =path`) makes a peer with no interface name that fails opaquely later. Name the
+            // real problem at the CLI edge.
+            if iface.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--peer `{s}` has an empty interface name — expected `interface=path` \
+                     (e.g. `cadenza:math/api=math.wasm`)"
+                ));
+            }
+            if path.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--peer `{s}` has an empty path — expected `interface=path` \
+                     (e.g. `cadenza:math/api=math.wasm`)"
+                ));
+            }
             let bytes = std::fs::read(path)
                 .map_err(|e| anyhow::anyhow!("read peer component {path}: {e}"))?;
             Ok(Peer {
