@@ -66,6 +66,34 @@ export default function Strings() {
         handling isn't a library bolted on, it's part of how Cadenza describes itself.
       </Note>
 
+      <H2>Compared by value</H2>
+      <P>
+        Two strings are equal when they hold the same characters — structural equality, not identity. So a
+        string you <em>built</em> equals a literal with the same content: <C>(String.concat "ab" "c")</C>{" "}
+        equals <C>"abc"</C>, however each was made.
+      </P>
+      <Runnable source={`(if (= (String.concat "ab" "c") "abc") 1 0)`} />
+
+      <H2>Crossing to bytes and back</H2>
+      <P>
+        Text and raw bytes are different types (that's the <strong>Bytes</strong> chapter), and the crossing
+        is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding — <C>"café"</C> is five bytes,
+        the two-byte <C>é</C> included. Going back is <C>String.from-bytes</C>, which returns an{" "}
+        <C>Option</C>, because not every byte sequence is valid UTF-8 — a round-trip of well-formed text
+        succeeds:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (String.from-bytes (String.to-bytes "café"))
+    ((Some s) (String.scalar-len s))
+    ((None _) -1)))`}
+      />
+      <P>
+        The bytes decode back to <C>"café"</C>, four characters — the same value we started with. The{" "}
+        <C>Option</C> is the honest part: decoding <em>arbitrary</em> bytes can fail, so <C>from-bytes</C>{" "}
+        hands you an <C>Option</C> to handle rather than assuming the bytes are text.
+      </P>
+
       <H2>Slicing out a substring</H2>
       <P>
         To take a run of characters rather than a single one, <C>String.slice</C> selects a half-open
