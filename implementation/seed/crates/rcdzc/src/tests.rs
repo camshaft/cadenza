@@ -29008,6 +29008,9 @@ mod match_engine {
         // T (Int Int64))` made bare `Int` the variant ctor, so an unrelated `(: x Int64)` failed to reduce
         // (`Int` was no longer the width constructor) — a global corruption from one declaration.
         // The unrelated `Int64` annotation still reduces even with a `(type T (Int Int64))` in scope.
+        // (The construct-HEAD position DOES now shadow — a bare `(Int 42)` builds T's variant — but that is
+        // scoped to a user node in head position and does NOT touch the width TYPE in annotation position,
+        // the invariant this test guards. See `a_type_name_colliding_variant_constructs_as_the_local_variant`.)
         assert!(
             reject_code(
                 "(module m (type T (Int Int64)) (def (g (: x Int64)) x) (def (main) (g 5)) (export main))"
@@ -29035,8 +29038,8 @@ mod match_engine {
         // prelude `Int`/`Some`. Without this, the bare head resolved (scope→def→prelude) to the prelude
         // entry and the ctor check rejected CDZ0203, so an AST sum with prelude-colliding variant names
         // could only be matched QUALIFIED. `pattern_constraints` remaps a bare head to the scrutinee decl's
-        // cached ctor for that name. (Construct position stays qualified — no scrutinee to disambiguate,
-        // the deliberate variant-shadows-prelude design.)
+        // cached ctor for that name. (The CONSTRUCT half now shadows too — see
+        // `a_type_name_colliding_variant_constructs_as_the_local_variant` below.)
         let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
         // Single-variant nominal newtype, bare `Int` pattern (qualified construct).
         ok(
@@ -29093,6 +29096,50 @@ mod match_engine {
             vec![],
         ) {
             assert_eq!(v, "5", "bare Other construct is T's own Other arm");
+        }
+    }
+
+    #[test]
+    fn a_type_name_colliding_variant_constructs_as_the_local_variant() {
+        // The CONSTRUCT-position half. A variant whose name collides with a prelude TYPE/MODULE name
+        // (`Int`/`List`/…) is SKIPPED from the bare `variant_ctor_index` (the `9f326a2d` guard) so bare
+        // `Int` stays the width constructor everywhere it means the width TYPE. But in application-HEAD
+        // position on a genuine USER node a bare `(Int 42)` is a VALUE construct of the local variant — so
+        // the user's declaration SHADOWS the colliding prelude name (operator ruling 2026-07-15). Before
+        // the fix the bare construct stayed the prelude width-type ctor (a type value with no runtime form)
+        // and the program was over-rejected; only `(T.Int 42)` worked. `resolve_name` step 3d reaches the
+        // variant via the companion `prelude_colliding_variant_ctor` index, consulted only in head position
+        // on a user node — the same discriminator the same-name-newtype ctor rule uses.
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Single-variant nominal newtype, bare `(Int 42)` construct (qualified `T.Int` pattern isolates it).
+        ok(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
+        );
+        // Multi-variant sum, bare `(Int 42)` construct beside a nullary variant.
+        ok(
+            "(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((T.Int n) n) ((T.Nil) 0))) (def (main) (f (Int 42))) (export main))",
+        );
+        // `List`-colliding variant (a prelude MODULE name), bare construct.
+        ok(
+            "(module m (type T (List Int64) (Nada)) (def (f (: t T)) (match t ((T.List n) n) ((T.Nada) 0))) (def (main) (f (List 7))) (export main))",
+        );
+        // The bare `(Int 42)` construct genuinely BUILDS + matches T's `Int` variant → 42 (not a rejection,
+        // not a wrong value from resolving to the prelude width type).
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "42", "bare (Int 42) construct is T's own Int variant");
+        }
+        // NO CORRUPTION of the width type: bare `Int` used as the width TYPE (a `(: x Int64)` annotation
+        // whose reduction touches the prelude `Int` ctor) still works ALONGSIDE the shadowing construct.
+        // The shadow is scoped to construct-head position on a user node; a regression that shadowed `Int`
+        // unconditionally would break this annotation reduction (the global corruption `9f326a2d` fixed).
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (g (: x Int64)) x) (def (main) (+ (f (Int 42)) (g 10))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "52", "construct shadow coexists with the width type Int");
         }
     }
 

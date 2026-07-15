@@ -704,6 +704,46 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // is now unified with EFFECTS — a peer contract is an `(effect …)` bound to a peer via `(bind …)`, and
     // an escaping op is an ordinary perform that lowers to a `Core::HostCall` routed to the peer envelope.
     // There is no separate extern-op name to resolve.)
+    // 3d. A bare variant whose name COLLIDES with a prelude TYPE/MODULE name (`Int`/`List`/`Name`/…) —
+    // the ones step 3c's `variant_ctor_by_name` (and the file-scoped bare map) DELIBERATELY omits (the
+    // `9f326a2d` skip) so bare `Int` keeps resolving to the width constructor everywhere it means the
+    // width TYPE (a `(Int W)` annotation reduction, `Int64`'s synthesized `(Int 64)`). But in
+    // application-HEAD position on a genuine USER node a bare `(Int 42)` is a value CONSTRUCT of the local
+    // variant, not a width-type reduction — so the user's variant SHADOWS the colliding prelude name here
+    // (operator ruling 2026-07-15: a program-defined name shadows the built-in alias in construct position
+    // too, consistent with binding-is-lexical and the match-pattern remap `85faf395`). The `child_ix == 0`
+    // + `is_user_node` gate is the SAME head-position/user-node discriminator the same-name-newtype ctor
+    // step uses: it fires on a real source `(Int 42)` construct but NOT on a synthesized `(Int 64)` the
+    // width machinery builds (a non-user node) nor on a non-head `Int` used as the width TYPE. Placed after
+    // the ordinary variant step + before the prelude, so a NON-colliding variant already resolved above and
+    // only a colliding one (skipped from the bare index) reaches here. Generic — no name special-case; the
+    // set of shadowable names is exactly the user's colliding variant declarations.
+    //
+    // EXCLUDE a TYPE-EXPRESSION head: `(List Ast)` in a variant payload / annotation `(: x (List Int64))`
+    // heads a list on a user node too, but there `List` is the TYPE constructor, not a value construct of a
+    // `List` variant — diverting it would turn a self-referential AST sum's payload into a bogus variant
+    // application (CDZ0201). A bare type ATOM (`Int64`) is already spared by the head-position gate; only a
+    // type-expression APPLICATION head needs this. `is_type_expr_node` is the load-time subtree marker.
+    if db.child_ix_of(id) == 0 && db.is_user_node(id) && !db.is_type_expr_node(id) {
+        // FILE-SCOPED for a linked package: consult the QUALIFIED ctor surface (which, unlike the bare
+        // map, retains a prelude-named ctor) confined to this reference's own file, so the shadowing is
+        // scoped exactly like every other declaration — a sibling file's colliding variant does not leak.
+        // A single-file / indeterminate-node compile falls through to the flat companion index.
+        let scoped = if db.is_linked_package() {
+            db.file_scoped_variant_ctor_qualified(id, name)
+        } else {
+            None
+        };
+        if let Some(Ok(value)) = scoped {
+            trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → file-scoped prelude-colliding variant ctor (construct-position shadow)");
+            return Resolved::Ref { value };
+        } else if scoped.is_none()
+            && let Some(value) = db.prelude_colliding_variant_ctor(name)
+        {
+            trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude-colliding variant ctor (construct-position shadow)");
+            return Resolved::Ref { value };
+        }
+    }
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {

@@ -5731,15 +5731,54 @@
            this, the bare pattern head resolved (scope→def→prelude) to the prelude `Int` and the ctor
            check rejected CDZ0203 'this variant pattern is not a variant of the matched type T',
            breaking bare pattern-matching on an AST sum whose variants (`Int`/`Name`/`List`) collide with
-           prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The construct position still writes
-           the qualified `T.Int`: a bare `(Int 42)` in value position has no scrutinee to disambiguate it
-           and stays the prelude type constructor, per the deliberate variant-shadows-prelude design.)")
+           prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The CONSTRUCT position is exercised
+           by its own dedicated case below — the bare `(Int 42)` construct now shadows the prelude too, per
+           the 2026-07-15 operator ruling; this case keeps the qualified construct to isolate the MATCH.)")
   (input  (do
             (type T (Int Int64))
             (def (f (: t T)) (match t ((Int n) n)))
             (def (main) (f (T.Int 42)))
             (export main)))
   (output (: 42 Int64)))
+
+(case "a bare type-name-colliding variant name constructs as the local variant"
+  (doc    "The CONSTRUCT-position analogue of the match-half case above. `(type T (Int Int64))` declares a
+           variant named `Int`, colliding with the prelude `Int` TYPE constructor (the width ctor `(Int W)`
+           = a W-bit int type). In application-HEAD position a bare `(Int 42)` is a VALUE construct of T's
+           own `Int` variant, NOT a width-type reduction — so the user's declaration SHADOWS the colliding
+           prelude name (2026-07-15 operator ruling: a program-defined name shadows the built-in alias in
+           construct position too, consistent with binding-is-lexical; NO name resolves two ways by
+           syntactic position). Before the fix a bare `(Int 42)` stayed the prelude width-type constructor
+           (a type value with no runtime form) and the program was over-rejected; only the qualified
+           `(T.Int 42)` worked. The resolver reaches T's variant via a companion index of exactly the
+           prelude-colliding variants the `9f326a2d` skip omits from the bare index, consulted ONLY in
+           head position on a genuine USER node — the same head-position/user-node discriminator the
+           same-name-newtype ctor rule uses — so a synthesized `(Int 64)` the width machinery builds and a
+           non-head `Int` used as the width TYPE are unaffected. Uses the qualified `T.Int` pattern to
+           isolate the CONSTRUCT: the ONLY bare colliding element is `(Int 42)`. Matches the `Int` arm → 42.")
+  (input  (do
+            (type T (Int Int64))
+            (def (f (: t T)) (match t ((T.Int n) n)))
+            (def (main) (f (Int 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a type-name-colliding variant construct coexists with the width type it collides with"
+  (doc    "The shadowing is SCOPED to construct-head position and does NOT corrupt the width type `Int`
+           means everywhere else — the invariant the `9f326a2d` skip protects. `(type T (Int Int64))`'s
+           bare `(Int 42)` construct reaches T's variant, while a `(: x Int64)` annotation (whose reduction
+           touches the prelude width ctor `Int`) still resolves `Int` to the width type — the two live in
+           one program without collision. `f (Int 42)` → 42 (T's variant); `g 10` → 10 (typed at Int64);
+           their sum → 52. A regression that shadowed `Int` unconditionally (not just in construct-head
+           position on a user node) would break `g`'s annotation reduction — the exact global corruption
+           `9f326a2d` fixed.")
+  (input  (do
+            (type T (Int Int64))
+            (def (f (: t T)) (match t ((T.Int n) n)))
+            (def (g (: x Int64)) x)
+            (def (main) (+ (f (Int 42)) (g 10)))
+            (export main)))
+  (output (: 52 Int64)))
 
 (case "a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant"
   (doc    "A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
