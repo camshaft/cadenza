@@ -771,6 +771,7 @@ pass	a list-carrying recursion whose base arm does a fallible indexed read compi
 pass	a list-concatenating helper threads lists through a call
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a literal arm wins over a later guard arm that also matches
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
