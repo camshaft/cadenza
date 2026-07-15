@@ -574,6 +574,42 @@
   (input  (= "x" 1))
   (error  CDZ0201))
 
+; --- Equality of two SAME-KIND compounds of different STRUCTURE names the structural delta -----
+; The cases above compare across different KINDS (Int64 vs String). Two compounds of the SAME kind but
+; a DIFFERENT structure — two records with different field SETS, two tuples of different ARITY — are also
+; different types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match: a
+; record's shape is its field set, a tuple's is its arity), so `=` over them is a type error (CDZ0203).
+; The diagnostic names the structural DELTA (a missing/extra field, an arity difference), not a raw
+; 'these two Records differ' — the same minimal-conflict hint the annotation field-set cases carry, at
+; the operator-argument position. These pin the same-kind-different-shape facet of equality's operand
+; typing, the companion of the cross-kind cases above.
+
+(case "equality of two records with different field sets is a type error"
+  (doc    "`(= (record (x 1)) (record (y 2)))` compares a `(Record (x Int64))` with a `(Record (y Int64))`
+           — same KIND (both records) but different field SETS, so different types (a record's shape is its
+           field set). Rejected CDZ0203, the diagnostic naming the delta (missing `x`; no such field `y`).
+           Pins that `=` requires matching field sets, not merely that both operands are records — the
+           structural companion of the cross-kind `(= 1 \"x\")` case.")
+  (input  (= (record (x 1)) (record (y 2))))
+  (error  CDZ0203))
+
+(case "equality of two tuples of different arity is a type error"
+  (doc    "`(= (tuple 1 2) (tuple 1 2 3))` compares a 2-tuple with a 3-tuple — same kind, different arity,
+           so different types (a tuple's arity is part of its type). Rejected CDZ0203, naming the arity
+           delta (expected 2 elements, has 3). Pins that `=` over tuples requires equal arity, the tuple
+           companion of the record-field-set case.")
+  (input  (= (tuple 1 2) (tuple 1 2 3)))
+  (error  CDZ0203))
+
+(case "equality of a record with a subset of another's fields is a type error"
+  (doc    "`(= (record (x 1)) (record (x 1) (y 2)))` — one record's fields are a SUBSET of the other's, but
+           a subset is still a DIFFERENT field set (row polymorphism, which would relate them, is a
+           separate opt-in — 15-rows-and-open-sums). Rejected CDZ0203 (no such field `y` on the smaller
+           record's type). Pins that `=` is not silently widened to ignore the extra field, the subset
+           facet of the field-set check.")
+  (input  (= (record (x 1)) (record (x 1) (y 2))))
+  (error  CDZ0203))
+
 ; --- The comparison operators type-check their operands exactly as = and + do -------------
 ; An ordering comparison (`<` `>` `<=` `>=`) offers a total order over ONE type's values
 ; (core-semantics.md #Ordering Where Offered Is Total; type-system.md #Structural Values Are

@@ -5772,10 +5772,19 @@ pub(crate) fn check_binding_pattern(
         if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr)
             && !value_ty.agrees_with(&annot_ty)
         {
+            // Append the structural DELTA (which field/element/axis differs) when the annotation and the
+            // bound value are the same structured kind — two records of a different field set, two tuples
+            // of a different arity, etc. Without it, `(: r (Record (x Int64)))` bound to `(record (y 2))`
+            // rendered two whole record types the reader must diff; the delta names the minimal conflict
+            // ("missing field `x`; no such field `y`"), the SAME hint the value-annotation / argument /
+            // peer-join sites carry (`structural_delta_hint`, shared). The annotation is the expected type
+            // (first), the value the actual (other).
+            let delta =
+                crate::infer::structural_delta_hint(&annot_ty, value_ty).unwrap_or_default();
             return Err(Reject::coded(
                 Code::TypeMismatch,
                 format!(
-                    "a binder annotated {} is bound to a value of type {}",
+                    "a binder annotated {} is bound to a value of type {}{delta}",
                     annot_ty.render_name(),
                     value_ty.render_name()
                 ),
@@ -5953,6 +5962,21 @@ fn classify_binding_ctor(
         },
     };
     let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
+        // A MALFORMED `const` PARAMETER — `(const n Int64)` — that survived `strip_const_params` (which
+        // only unwraps a well-formed single-operand `(const <binder>)`). A `const` param wraps ONE annotated
+        // binder, so a bare `(const n Int64)` (two operands, unannotated) reaches here as a "binding pattern"
+        // whose head is `const`; the generic "not a tuple/record/constructor" message is misleading (the
+        // author reached for a real form, just mis-wrote it). Name the correct shape.
+        if db.ast.as_name(head) == Some("const")
+            && db.ast.as_form(pat, "const").is_some_and(|t| t.len() != 1)
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a `const` parameter wraps exactly ONE annotated binder — write `(const (: <name> \
+                 <Type>))`, e.g. `(const (: n Int64))`",
+            )
+            .at(pat));
+        }
         // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
         // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
         // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here

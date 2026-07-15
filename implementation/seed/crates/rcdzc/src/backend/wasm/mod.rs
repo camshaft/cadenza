@@ -3137,6 +3137,17 @@ fn emit_closure_resource(
             Some(std::slice::from_ref(slot)),
         ));
     }
+    // A SUM arg with a LIST result (byte-rope / value-form / value-encode) DECLINES cleanly: the three
+    // list-result cores + their envelopes thread `list_rebuilds` (tuple rebuilds), not `SumArgRebuild`s, so the
+    // boundary `call` functype would carry the flattened `(disc, payload)` params while the core rebuilds no sum
+    // cell — a mismatched module. (Guarding here, before the list blocks below, prevents that miscompile; the
+    // scalar-result sum path above already returned.) Threading sums through the list cores is a later widening.
+    if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a closure taking a sum (Option/Result) argument AND returning a list/compound/byte-rope is not yet \
+             emitted (the list-result cores thread tuple-arg rebuilds, not sum-arg rebuilds)",
+        ));
+    }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
     // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
     if ret_is_bytes {

@@ -1056,6 +1056,22 @@
   (input  (let ((s (Sign.Pos unit))) s))
   (output (: (Pos unit) Sign)))
 
+(case "an if choosing between two nullary enum variants selects branchlessly on the discriminant"
+  (doc    "`(if (< n 0) (Way.Lo) (Way.Hi))` — both branches are nullary variants of an all-nullary
+           (enum-discriminant) sum, so each is just its discriminant constant (no allocation), and the `if`
+           compiles to a BRANCHLESS `select` on the discriminant. The downstream `match` recovers the value:
+           `n < 0` → Lo → -1, `n >= 0` → Hi → 1. Value parity is the observable proof the branchless
+           discriminant selection preserves the variant on both arms. Pins the enum-disc `if`→select (a
+           heap-typed result whose rep is a plain i32 discriminant).")
+  (input  (do
+            (type Way (Lo) (Hi))
+            (def (sgn (: n Int64)) (if (< n 0) (Way.Lo) (Way.Hi)))
+            (def (val (: s Way)) (match s ((Lo) -1) ((Hi) 1)))
+            (def (main (: n Int64)) (val (sgn n)))
+            (export main)))
+  (call   main (: -5 Int64)) (output (: -1 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
 (case "a top-level value definition binds a sum value matched by the program's functions"
   (doc    "The SUM companion of the scalar/record top-level value definitions (11-modules.sexp): a
            `(def …)` with no signature binds a VALUE, and that value may be a user SUM. `(def chosen (C.G

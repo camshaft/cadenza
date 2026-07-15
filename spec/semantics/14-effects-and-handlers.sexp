@@ -1710,6 +1710,29 @@
                 ((. List len) xs))) (export main)))
   (output (: 3 Int64)))
 
+(case "an effect-built heap list bound in a let is USED TWICE and retained across both uses"
+  (doc    "The DUP / retain shape for an effect-built heap value: the list a handle builds is bound to `xs`
+           and consumed MORE THAN ONCE (`(+ ((. List len) xs) ((. List len) xs))`), so the binding is a
+           shared owner the first use must NOT free out from under the second. Unlike the escapes-and-
+           consumed-ONCE case above, this exercises the Perceus dup — a multiply-used heap binding must be
+           RETAINED, not consumed by its first reader. `Idx` seeded 1, `build 3` collects three elements, and
+           `len xs + len xs` = `3 + 3` = 6 (a use-after-free from the first `List.len` consuming `xs` would
+           read a freed handle / wrong length). Pins that an effect-built heap value bound and used twice is
+           reference-managed correctly across the uses — the effects × dup-retain composition. (wasm: rust
+           declines — value-heap/List emission parity gap, not the effects fold.)")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64))
+              (if (= n 0)
+                  (list)
+                  (let ((v (Idx.next)))
+                    ((. List push) (build (- n 1)) v))))
+            (def (main)
+              (handle Idx 1 ((next (u) s (resume s (+ s 1))))
+                (let ((xs (build 3)))
+                  (+ ((. List len) xs) ((. List len) xs))))) (export main)))
+  (output (: 6 Int64)))
+
 (case "a STRING-result effect op resumes with a string that folds through a concat"
   (doc    "The effect fold's value column carries a heap STRING: an operation returning `String` is resumed
            with a string literal, and that performed value flows into `String.concat` in the continuation.

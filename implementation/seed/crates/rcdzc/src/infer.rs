@@ -4791,7 +4791,7 @@ fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// most of their structure.
 //= spec/capabilities/type-system.md#a-type-rejection-reports-the-minimal-conflict-at-both-sites
 //# A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
-fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+pub(crate) fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
     record_field_diff_hint(first, other)
         .or_else(|| tuple_arity_mismatch_hint(first, other))
         .or_else(|| collection_element_mismatch_hint(first, other))
@@ -7562,6 +7562,26 @@ fn check_application(
                             message: format!(
                                 "this argument is a function value, but a value of type {} is expected \
                                  here{hint}",
+                                sparam.render_name()
+                            ),
+                            ..reject
+                        });
+                    } else if let Some(delta) = structural_delta_hint(&sparam, &sat) {
+                        // Two SAME-KIND compounds that differ structurally — two records of different field
+                        // sets (`(= (record (x 1)) (record (y 2)))`), two tuples of different arity, two
+                        // collections of a differing element/key/value type, two same-sum-type payloads.
+                        // These fall through every coercion/wrap branch (no total conversion bridges them)
+                        // to the raw unify "type mismatch: (Record (x Int64)) and (Record (y Int64)) must be
+                        // the same type here, but differ" — which BURIES the actual difference (field `x` vs
+                        // `y`). REPLACE the raw lead with the readable arg-site phrasing and append the
+                        // structural-delta hint (`field `y` … `, `element 1 …`) the annotation / peer-join
+                        // sites already carry, so the operator-arg position names the minimal conflict too.
+                        // No mechanical fix (retyping the structure is the author's choice); the reject's
+                        // code is kept. Last structural branch before the bare fallthrough.
+                        out.push(Reject {
+                            message: format!(
+                                "this argument is {}, but a value of type {} is expected here{delta}",
+                                sat.render_with_article(),
                                 sparam.render_name()
                             ),
                             ..reject
