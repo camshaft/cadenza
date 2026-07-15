@@ -2548,9 +2548,53 @@ fn collect_param_constraints(
                 collect_param_constraints(db, e, env, def, subst, fresh);
             }
         }
+        // A `(bin …)` CONSTRUCTION: each fixed-width integer segment CONSTRAINS its value to the segment's
+        // OWN width type — `(u8 v)` requires `v : UInt8`, `(i16 v)` requires `Int16`, `(bits v k)` requires
+        // `v : (UInt k)`. A value that provably fits its type has no out-of-range case, so the segment needs
+        // no runtime range-check and cannot trap: an out-of-range value is a COMPILE-TIME type error, and
+        // any narrowing (`UInt8.wrap` to truncate, `UInt8.of` checked) is the caller's responsibility. This
+        // is the constraint that grounds a parameter used ONLY in a segment to the width type (a `(def (main
+        // n) (bin (u8 n)))` infers `n : UInt8`), the segment analogue of an operator pinning its operand.
+        Resolved::Bin { segs } => {
+            for seg in &segs {
+                if let Some(want) = seg_value_ty(&seg.kind) {
+                    let at = arg_ty_in_env(db, seg.slot, env, subst, fresh);
+                    let _ = crate::unify::unify(subst, &want, &at);
+                }
+                collect_param_constraints(db, seg.slot, env, def, subst, fresh);
+                // A dependent-size occurrence `(bytes b n)` / `(utf8 s n)` is an ordinary integer index.
+                match &seg.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => {
+                        collect_param_constraints(db, *n, env, def, subst, fresh)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => {
+                        collect_param_constraints(db, *size, env, def, subst, fresh)
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Leaves and references contribute no sub-constraints (a bare param ref's constraint comes from
         // the operation that consumes it, handled at the enclosing Apply).
         _ => {}
+    }
+}
+
+/// The exact integer TYPE a fixed-width `bin` segment requires of its VALUE — the segment's own width and
+/// signedness: `(uN v)` → an unsigned N-bit `Ty::Int`, `(iN v)` → a signed N-bit one, `(bits v k)` → an
+/// unsigned k-bit one. `None` for a `bytes`/`utf8` segment (whose value is a Bytes/String, not an integer,
+/// checked separately). `SegKind::Int.width` is in BYTES, so the machine width is `width * 8` bits; a `bits`
+/// field's width is its `k` (already in bits). This is the single source of truth for both the inference
+/// CONSTRAINT (`collect_param_constraints`) and the well-formedness CHECK (`collect`), so the type a
+/// segment imposes and the type it verifies never drift.
+fn seg_value_ty(kind: &crate::resolved::SegKind) -> Option<Ty> {
+    match kind {
+        crate::resolved::SegKind::Int { width, signed } => Some(Ty::Int(crate::ty::IntTy::fixed(
+            *signed,
+            (*width as u32) * 8,
+        ))),
+        crate::resolved::SegKind::Bits { k } => Some(Ty::Int(crate::ty::IntTy::fixed(false, *k))),
+        crate::resolved::SegKind::Bytes { .. } | crate::resolved::SegKind::Utf8 { .. } => None,
     }
 }
 
@@ -8703,40 +8747,89 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 }
                 collect(db, seg.slot, out);
-                // A segment's VALUE must match its KIND: an `Int`/`Bits` segment takes an integer, a
-                // `Utf8` segment a String, a `Bytes` segment a Bytes. An int segment fed a String
-                // (`(bin (u8 "x"))`) was silently accepted at BUILD (the int-segment lowering never
-                // type-checked its slot), emitting garbage bytes; a `Bytes` slot mismatch was caught only
-                // at compile ("not a Bytes value"). Check the slot's type here (so it surfaces in `cdz
-                // check` too), flagging ONLY a DEFINITE wrong kind — an `Any`/`Var` slot (a binder, an
-                // unreduced param, or — crucially — a bin PATTERN's binder, which types as the decoded
-                // value) is never flagged, so a valid `(bin …)` pattern/construction stays clean.
-                let (want, ok): (&str, bool) = match &seg.kind {
+                // A segment's VALUE must match its KIND *and*, for an integer segment, its WIDTH TYPE. A
+                // `Utf8` segment takes a String, a `Bytes` segment a Bytes. A fixed-width int/bits segment
+                // takes the segment's OWN width type: `(u8 v)` requires `v : UInt8`, `(bits v k)` requires
+                // `v : (UInt k)`. A value that provably fits its type has no out-of-range case, so an int
+                // segment needs no runtime range-check and cannot trap — a wider/negative value is a
+                // COMPILE-TIME type error (CDZ0203), and narrowing (`UInt8.wrap`/`UInt8.of`) is the caller's
+                // job. Flag ONLY a DEFINITE mismatch: a String/Bytes conflict for utf8/bytes, and for an int
+                // segment a CONCRETELY-fixed integer type (both sign and width fixed) that differs from the
+                // segment's — an `Any`/`Var` slot (a binder, an unreduced param, a bin PATTERN's binder,
+                // which types as the decoded value) or a DEFERRED bare literal (grounds to the width + range-
+                // checks separately, CDZ0304/CDZ0302) is never flagged, so a valid construction/pattern
+                // stays clean.
+                match &seg.kind {
                     crate::resolved::SegKind::Int { .. }
                     | crate::resolved::SegKind::Bits { .. } => {
-                        ("an integer", !definite_non_int(&type_of(db, seg.slot)))
+                        let want =
+                            seg_value_ty(&seg.kind).expect("int/bits segment has a value type");
+                        let got = type_of(db, seg.slot);
+                        if let (Ty::Int(want_it), Ty::Int(got_it)) = (&want, &got)
+                            && got_it.width_is_fixed()
+                            && matches!(got_it.sign, crate::ty::Sign::Fixed(_))
+                            && (got_it.ground_signed() != want_it.ground_signed()
+                                || got_it.ground_width() != want_it.ground_width())
+                        {
+                            out.push(
+                                Reject::coded(
+                                    Code::TypeMismatch,
+                                    format!(
+                                        "a bin {} segment takes a {} value, but this value is {} — \
+                                         convert it explicitly (e.g. {}.wrap to truncate, or {}.of to \
+                                         check) before placing it in the segment",
+                                        seg_kind_name(&seg.kind),
+                                        want.render_name(),
+                                        got.render_name(),
+                                        want.render_name(),
+                                        want.render_name(),
+                                    ),
+                                )
+                                .at(seg.slot),
+                            );
+                        } else if definite_non_int(&got) {
+                            // A non-integer value in an integer segment (`(bin (u8 "x"))`) — the wrong KIND.
+                            out.push(
+                                Reject::coded(
+                                    Code::IllFormedBinary,
+                                    format!(
+                                        "a bin {} segment takes an integer value, but this value is {}",
+                                        seg_kind_name(&seg.kind),
+                                        got.render_name()
+                                    ),
+                                )
+                                .at(seg.slot),
+                            );
+                        }
                     }
-                    crate::resolved::SegKind::Utf8 { .. } => (
-                        "a String",
-                        !definite_conflicts_with(&type_of(db, seg.slot), &Ty::String),
-                    ),
-                    crate::resolved::SegKind::Bytes { .. } => (
-                        "a Bytes",
-                        !definite_conflicts_with(&type_of(db, seg.slot), &Ty::Bytes),
-                    ),
-                };
-                if !ok {
-                    out.push(
-                        Reject::coded(
-                            Code::IllFormedBinary,
-                            format!(
-                                "a bin {} segment takes {want} value, but this value is {}",
-                                seg_kind_name(&seg.kind),
-                                type_of(db, seg.slot).render_name()
-                            ),
-                        )
-                        .at(seg.slot),
-                    );
+                    crate::resolved::SegKind::Utf8 { .. } => {
+                        if definite_conflicts_with(&type_of(db, seg.slot), &Ty::String) {
+                            out.push(
+                                Reject::coded(
+                                    Code::IllFormedBinary,
+                                    format!(
+                                        "a bin utf8 segment takes a String value, but this value is {}",
+                                        type_of(db, seg.slot).render_name()
+                                    ),
+                                )
+                                .at(seg.slot),
+                            );
+                        }
+                    }
+                    crate::resolved::SegKind::Bytes { .. } => {
+                        if definite_conflicts_with(&type_of(db, seg.slot), &Ty::Bytes) {
+                            out.push(
+                                Reject::coded(
+                                    Code::IllFormedBinary,
+                                    format!(
+                                        "a bin bytes segment takes a Bytes value, but this value is {}",
+                                        type_of(db, seg.slot).render_name()
+                                    ),
+                                )
+                                .at(seg.slot),
+                            );
+                        }
+                    }
                 }
                 match &seg.kind {
                     crate::resolved::SegKind::Bytes { size: Some(n) } => collect(db, *n, out),

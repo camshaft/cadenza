@@ -1287,6 +1287,7 @@ pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime value is constructed into a fixed-width segment and its length read
+pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -1521,6 +1522,7 @@ pass	a variant-payload binder shadowing a param in a called def binds the payloa
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
+pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wrong-arity tuple binding pattern is a shape error
@@ -2477,7 +2479,6 @@ todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	constructing a runtime value that does not fit its segment traps
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

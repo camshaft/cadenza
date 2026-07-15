@@ -2821,7 +2821,7 @@
            The tuple crosses flattened as a native `tuple<s64,s64>` the `call` rebuilds in-guest; the closure's
            `Bytes` result copies out as `list<u8>`. `make()` → handle, `call(handle, (5, 6))` → the two bytes
            `(5 6)`. Proves the tuple-arg rebuild threads through the byte-rope-result core + envelope.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (bin (u8 (. p 0)) (u8 (. p 1)))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
   (call   mk (: (tuple 5 6) (Tuple Int64 Int64)))
   (output (: (5 6) Bytes)))
@@ -3083,7 +3083,7 @@
   (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) Bytes)` — a prefix scalar then a tuple, returning a
            byte rope. The bytes `call` interleaves `n` around the rebuilt tuple, dispatches, copies the returned
            Bytes out as `list<u8>`. `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
-  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 n) (u8 (. p 0)) (u8 (. p 1)))))
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
   (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (100 10 3) Bytes)))
@@ -3304,7 +3304,7 @@
            `call` rebuilds the nested cell, dispatches, copies the returned Bytes out as `list<u8>`.
            `call(handle, (100, (10, 3)))` → the bytes `(100 10 3)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
-                         (bin (u8 (. p 0)) (u8 (. (. p 1) 0)) (u8 (. (. p 1) 1)))))
+                         (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. (. p 1) 0))) (u8 (UInt8.wrap (. (. p 1) 1))))))
               (export mk)))
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (100 10 3) Bytes)))
@@ -3645,8 +3645,8 @@
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Bytes)` sharing one bytes-returning `call`. The shared
            bytes `call` interleaves `n` around the rebuilt tuple, dispatches, copies the returned Bytes out as
            `list<u8>`. Driving `mk-a`: `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
-  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 n) (u8 (. p 0)) (u8 (. p 1)))))
-              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (. p 0)))))
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (100 10 3) Bytes)))
@@ -3769,7 +3769,7 @@
            `call` rebuilds both arg tuples, dispatches, and copies the returned Bytes out as `list<u8>`.
            `call(handle, (5,5), (5,10))` → the bytes `(5 10)`.")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
-                (bin (u8 (. p 0)) (u8 (. q 1)))))
+                (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. q 1))))))
               (export mk)))
   (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (5 10) Bytes)))
@@ -3954,8 +3954,8 @@
            tuples are rebuilt; the returned Bytes is copied out as `list<u8>`. Driving `mk-a`: `call(handle,
            (5,5), (5,10))` → the bytes `(p.0, q.1)` = `(5 10)`.")
   (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
-                (bin (u8 (. p 0)) (u8 (. q 1)))))
-              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (bin (u8 (. p 1)))))
+                (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. q 1))))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 1))))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
   (output (: (5 10) Bytes)))
