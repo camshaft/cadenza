@@ -14544,6 +14544,53 @@ mod match_engine {
     }
 
     #[test]
+    fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
+        // A near-miss export typo (`(export mian)` for `(def (main) …)`) has ONE real defect — the export
+        // names no definition (CDZ0101, "did you mean `main`?"). The intended target `main` must NOT ALSO
+        // draw a CDZ0306 "unused definition" — the author clearly meant to export it (they misspelled the
+        // export), so "unused" is consequent, misleading noise. Suppressed: a def a MISSING export names as
+        // its nearest match counts as intended-for-export.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export mian))",
+        )));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("did you mean `main`?")),
+            "the export typo is still reported: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`main`")),
+            "no spurious 'unused definition `main`' — it is the intended export target: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVER-SUPPRESSION: a FAR-miss export (no near def) still lets a genuinely-unused def warn — the
+        // suppression fires only when the export offers that exact def as its "did you mean?".
+        let far = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 1) (export zzzzz))",
+        )));
+        assert!(
+            far.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`main`")),
+            "a far-miss export does not suppress the genuinely-unused def: {:?}",
+            far.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // And a def unrelated to any export error still warns unused (baseline unaffected).
+        let plain = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (helper) 1) (def (main) 2) (export main))",
+        )));
+        assert!(
+            plain
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`helper`")),
+            "an ordinary unused def still warns: {:?}",
+            plain.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
         // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
         // declared. The old "export `Color` names no definition" misled (reads as "unknown name"); it now
