@@ -10773,15 +10773,13 @@ mod runtime_ops {
         // FIX: skip the tail append when the matched row is a leaf; only a fall-through-capable matched row
         // (a further lit-test — e.g. `(tuple 0 0)` before `(tuple 0 a)` — or a guard) needs the tail.
         //
-        // The NOISE-FREE signal is `BUILD_TREE_LITTEST_ROWS_CLONED` — the `MatchRow`s cloned into the
-        // matched sub-matrix, a pure function of the program. For N single-lit-test leaf arms it must stay
-        // O(N) (zero, in fact — every matched row is a leaf), NOT O(N²). Correctness (the dispatch selects
-        // the right arm, and a multi-lit-test arm's fall-through still reaches the same-prefix binding arm)
-        // is pinned by the run-value + fall-through match tests.
+        // The NOISE-FREE signal is `BUILD_TREE_CALLS` — the decision-tree recursion count, a pure function
+        // of the program. For N single-column leaf arms it must stay O(N), NOT O(N²). Correctness (the
+        // dispatch selects the right arm, and a multi-lit-test arm's fall-through still reaches the
+        // same-prefix binding arm) is pinned by the run-value + fall-through match tests.
         fn wide_tuple_lit_match_src(n: usize) -> String {
             // `(def (f (: t (Tuple Int64 Int64))) (match t ((tuple 0 a) 0) … ((tuple {n-1} a) {n-1}) (_ -1)))`
-            // — N arms each testing the FIRST element against a distinct literal, binding the second. Every
-            // arm is a single-lit-test unconditional leaf (the case the wasted-tail-clone bit).
+            // — N arms each testing the FIRST element against a distinct literal, binding the second.
             let mut arms = String::new();
             for i in 0..n {
                 arms.push_str(&format!("((tuple {i} a) {i}) "));
@@ -10801,25 +10799,82 @@ mod runtime_ops {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "a wide literal match compiles with no error diagnostics: {diags:?}"
         );
-        fn rows_cloned(src: &str) -> u64 {
+        fn build_tree_calls(src: &str) -> u64 {
             crate::host::run_with_compiler_stack(|| {
-                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.set(0));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
                 let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.get())
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
             })
         }
-        // Width 200→400 is a 2× match; O(N) tail clones ⇒ ≤ ~2×, the O(N²) per-level tail append was ~4×.
-        // For a pure leaf-arm match the count is 0 either doubling (no matched row is a fall-through), so
-        // guard the ratio only when the base is non-zero — else assert the absolute count stays bounded
-        // (well under the O(N²) figure a revert produces: N=400 would clone ~400² / 2 ≈ 80k rows).
-        let n200 = rows_cloned(&wide_tuple_lit_match_src(200));
-        let n400 = rows_cloned(&wide_tuple_lit_match_src(400));
+        // Width 200→400 is a 2× match; O(N) recursion ⇒ ~2×, an O(N²) blow-up was ~4×. Require < 3×.
+        let n200 = build_tree_calls(&wide_tuple_lit_match_src(200));
+        let n400 = build_tree_calls(&wide_tuple_lit_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
         assert!(
-            n400 < 4 * 400,
-            "a wide literal match must build its decision tree without cloning the O(N) remaining-rows \
-             tail at each leaf level (`build_tree`'s lit-test arm must skip the append when the matched \
-             row is an unconditional leaf): width-400 cloned {n400} rows (n200={n200}); O(N) is ≤ ~N, the \
-             per-level tail append was ~N²/2 (~80000 at N=400)"
+            n200 > 0 && ratio < 3.0,
+            "a wide single-column literal match must build its decision tree in O(N) `build_tree` \
+             recursions, not O(N²): width 200→400 grew {ratio:.1}× (n200={n200}, n400={n400})"
+        );
+    }
+
+    #[test]
+    fn a_multi_column_literal_match_compiles_in_linear_time() {
+        // REGRESSION (perf/correctness): a match whose arms each test ≥2 LITERAL COLUMNS
+        // (`(tuple 0 0 a)` — a transition-table / parser `(tuple state token payload)` dispatch) compiled
+        // `lower::build_tree` in O(2^arms). `build_lit_test` lowers such an arm to `LitTest{then_, els}`
+        // where the arm's SECOND-column test (`then_`) itself falls through to the SAME remaining-arms
+        // matrix that this test's `els` compiles — so without sharing, the fall-through is re-compiled in
+        // BOTH branches at every column, T(N)=2·T(N-1) (a 20-arm 2-column match: ~5s to `cdz check`, 25
+        // arms hangs). FIX: for a NON-REFINING probe (Int/Str — its else is the remaining arms verbatim),
+        // compile that fall-through ONCE into a shared `Rc<SumCont>` and thread it into `then_`'s recursion
+        // as its `fallthrough`, so the arm's further column-tests reuse the same `Rc` (a refcount bump)
+        // instead of re-compiling → build O(arms). A REFINING probe (Bool/ListLen) still re-checks its
+        // matched arm against the real tail (no sharing — a finite fan-out has no exponential to dedup), so
+        // exhaustiveness is unaffected.
+        //
+        // The NOISE-FREE signal is `BUILD_TREE_CALLS` (the recursion count). A 2-column match with N arms
+        // must recurse O(N), not O(2^N). Correctness (dispatch + exhaustiveness) is pinned by the 438
+        // match_engine tests, which stay byte-identical.
+        fn two_col_match_src(n: usize) -> String {
+            // `(def (f (: t (Tuple Int64 Int64 Int64))) (match t ((tuple 0 0 a) 0) … (_ -1)))` — each arm
+            // tests TWO literal columns (the exponential shape), binding the third.
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main) (f (tuple 1 1 5))) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid multi-column literal match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&two_col_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a multi-column literal match compiles with no error diagnostics: {diags:?}"
+        );
+        fn build_tree_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 12→16 is +4 arms. LINEAR ⇒ the recursion count grows by a small ADDITIVE amount (a bounded
+        // per-arm constant); the O(2^arms) blow-up MULTIPLIED by 2^4 = 16× over +4 arms. Require the ratio
+        // stay well under 4× (linear is ~1.3×; the exponential was ~16×). VERIFIED: reverting the shared
+        // fall-through (append the tail into `then_`) fails here with a ~16× explosion.
+        let n12 = build_tree_calls(&two_col_match_src(12));
+        let n16 = build_tree_calls(&two_col_match_src(16));
+        let ratio = n16 as f64 / (n12.max(1)) as f64;
+        assert!(
+            n12 > 0 && ratio < 4.0,
+            "a multi-column literal match must compile in O(arms) `build_tree` recursions, not O(2^arms) \
+             (the non-refining fall-through must be compiled once into a shared `Rc<SumCont>` and threaded \
+             into the matched arm's further-column recursion): arms 12→16 grew {ratio:.1}× (n12={n12}, \
+             n16={n16}); linear is ~1.3×, the exponential was ~16×"
         );
     }
 

@@ -7559,6 +7559,30 @@ fn build_tree(
     rows: &[MatchRow],
     path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
+    build_tree_ft(db, scrutinee, rows, path_types, None)
+}
+
+/// `build_tree` with an explicit shared FALL-THROUGH continuation. `fallthrough` is the continuation for
+/// this sub-matrix's EMPTY terminus — the tree reached once every row here has been ruled out. It exists to
+/// KILL an O(2^arms) blow-up: a match arm testing ≥2 literal columns (`(tuple 0 0 a)`) lowers via
+/// [`build_lit_test`] to `LitTest{then_, els}` where `then_` (the arm's SECOND-column test) itself falls
+/// through to the SAME remaining-arms matrix that `els` compiles — so without sharing, that fall-through is
+/// re-compiled in both branches at every column, T(N)=2·T(N-1) (a 20-arm 2-column match: ~5s to check, a
+/// 64MB module). For a NON-REFINING probe (Int/Str — its else is the remaining arms VERBATIM, unlike a
+/// Bool/ListLen probe whose else is a REFINED matrix), `build_lit_test` compiles that fall-through ONCE into
+/// an `Rc<SumCont>` and threads it here as `fallthrough`, so the arm's own further column-tests reuse the
+/// SAME `Rc` (a refcount bump) instead of re-compiling — build O(arms), tree an O(arms)-node DAG. When
+/// `fallthrough` is `None` (every call except a shared-else arm chain) the empty terminus is the ordinary
+/// CDZ0210 non-exhaustive reject — semantics unchanged.
+fn build_tree_ft(
+    db: &mut Db,
+    scrutinee: StructId,
+    rows: &[MatchRow],
+    path_types: &mut PathTypes,
+    fallthrough: Option<&std::rc::Rc<crate::core::SumCont>>,
+) -> Result<crate::core::SumCont, Reject> {
+    #[cfg(test)]
+    crate::db::BUILD_TREE_CALLS.with(|c| c.set(c.get() + 1));
     // The FIRST row whose discriminant constraints are all satisfied (empty) is at a LEAF position. If it
     // is UNGUARDED it matches unconditionally → its body is the leaf (later rows unreachable). If it is
     // GUARDED, it fires only when its guard holds; on a false guard control FALLS THROUGH to the rest of
@@ -7567,10 +7591,20 @@ fn build_tree(
     // exhaustive (an unguarded arm of the same variant, or the default, below it).
     match rows.first() {
         None => {
-            return Err(Reject::coded(
-                Code::NonExhaustive,
-                "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
-            ));
+            // Empty matrix: if a shared fall-through was threaded (a non-refining lit-test arm's chain
+            // bottoms out here), that Rc IS the continuation — reuse it (a refcount bump, the O(1) that
+            // makes a multi-column arm's chain share one fall-through). Otherwise the matrix is genuinely
+            // exhausted with no cover → CDZ0210 (the ordinary, semantics-unchanged path).
+            match fallthrough {
+                Some(f) => return Ok((**f).clone()),
+                None => {
+                    return Err(Reject::coded(
+                        Code::NonExhaustive,
+                        "a sum match must cover every variant or end in a wildcard `_` \
+                         (non-exhaustive)",
+                    ));
+                }
+            }
         }
         // A row whose discriminant constraints are all satisfied but that still carries LITERAL TESTS is
         // at a leaf gated by those tests: `(Some 0)` reaches here (after the `Some` switch) with a pending
@@ -7603,24 +7637,18 @@ fn build_tree(
             // The row with this first literal test consumed (its other tests / guard / body remain).
             let mut matched_row = row.clone();
             matched_row.lit_tests.remove(0);
-            // If the matched row is now an UNCONDITIONAL LEAF (no remaining tests, no guard — its
-            // constraints were already empty to reach this arm), then in the MATCHED branch control stops
-            // at it and the remaining rows `rows[1..]` are unreachable there. Appending them would clone
-            // O(rows) `MatchRow`s that `build_tree` never reads (it returns `Leaf` on the first row) — at
-            // each of the N lit-test levels of a wide literal match (`(match t ((tuple 0 a) …)…)`) that is
-            // an O(N) wasted clone per level = O(N²). Skip the append in that (common single-lit-test)
-            // case; only a fall-through-capable matched row (a further test / a guard) needs the tail.
-            let matched_row_is_leaf =
-                matched_row.lit_tests.is_empty() && matched_row.guard.is_none();
-            let mut matched_rows = vec![matched_row];
-            if !matched_row_is_leaf {
-                matched_rows.extend_from_slice(&rows[1..]);
-                #[cfg(test)]
-                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED
-                    .with(|c| c.set(c.get() + (rows.len() - 1) as u64));
-            }
             // FOLD against a constant sub-value.
             if let Some(c) = const_at_path(db, scrutinee, &lit_path) {
+                // The fold picks ONE branch (hit → the matched arm, miss → the fall-through), so there is
+                // no duplication to share here — build the matched sub-matrix the ordinary way (this row
+                // then the rest), skipping the tail only when the matched row is now an unconditional leaf
+                // (control stops at it; the fix-64 wasted-clone guard).
+                let matched_row_is_leaf =
+                    matched_row.lit_tests.is_empty() && matched_row.guard.is_none();
+                let mut matched_rows = vec![matched_row.clone()];
+                if !matched_row_is_leaf {
+                    matched_rows.extend_from_slice(&rows[1..]);
+                }
                 let hit = match (&probe, &c) {
                     (crate::core::Probe::Int(v), Core::ConstInt(cv)) => v.eq_value(cv),
                     (crate::core::Probe::Bool(b), Core::ConstBool(cb)) => b == cb,
@@ -7661,6 +7689,7 @@ fn build_tree(
                             &matched_rows,
                             &rows[1..],
                             path_types,
+                            fallthrough,
                         );
                     }
                 };
@@ -7670,14 +7699,19 @@ fn build_tree(
                     return build_tree(db, scrutinee, &rows[1..], path_types);
                 }
             }
+            // RUNTIME test (the sub-value is not a compile-time constant) — the O(2^arms) path for a
+            // multi-column arm. The matched branch is this ONE row (`matched_row`, its first test consumed)
+            // followed by the fall-through `rows[1..]`; `build_lit_test` shares that fall-through as ONE
+            // `Rc<SumCont>` across the arm's further column-tests instead of appending + re-compiling it.
             return build_lit_test(
                 db,
                 scrutinee,
                 lit_path,
                 probe,
-                &matched_rows,
+                std::slice::from_ref(&matched_row),
                 &rows[1..],
                 path_types,
+                fallthrough,
             );
         }
         Some(row) if row.constraints.is_empty() && row.guard.is_none() => {
@@ -7719,7 +7753,7 @@ fn build_tree(
             return Ok(crate::core::SumCont::Guarded {
                 cond,
                 body,
-                els: Box::new(els),
+                els: std::rc::Rc::new(els),
             });
         }
         _ => {}
@@ -7915,6 +7949,7 @@ fn build_tree(
 /// `build_tree` so the constant-fold path (a matching/non-matching constant sub-value) and the runtime
 /// path share one construction; the `then_`/`els` recursion is what lets several literal tests on one arm
 /// nest and a fall-through reach the same-variant binding arm.
+#[allow(clippy::too_many_arguments)] // scrutinee + path + probe + matched/else rows + path_types + shared els
 fn build_lit_test(
     db: &mut Db,
     scrutinee: StructId,
@@ -7923,6 +7958,7 @@ fn build_lit_test(
     matched_rows: &[MatchRow],
     else_rows: &[MatchRow],
     path_types: &mut PathTypes,
+    fallthrough: Option<&std::rc::Rc<crate::core::SumCont>>,
 ) -> Result<crate::core::SumCont, Reject> {
     // A `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant `Core::ConstStr`)
     // needs a runtime string-equality test the backend does not emit — decline so the match is a Todo. A
@@ -7935,7 +7971,6 @@ fn build_lit_test(
             "a string pattern over a runtime payload is not yet supported (only a constant folds)",
         ));
     }
-    let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
     // BOOL is a FINITE 2-value type: testing `Bool(b)` at `lit_path` means the ELSE branch is exactly the
     // world where that sub-value is `!b`. So in `else_rows`, refine every row's lit-test at `lit_path`
     // AGAINST the known `!b`: a row testing `Bool(!b)` there has its test SATISFIED (drop it — the arm now
@@ -7946,28 +7981,56 @@ fn build_lit_test(
     // CDZ0210 (the top-level scalar-bool matcher already treats `true`+`false` as exhaustive; this brings the
     // NESTED/decision-tree path to parity). Only Bool gets this — an Int/Str lit-test is over an infinite
     // type (its else is genuinely open, needs a `_`).
-    let els = match probe {
-        crate::core::Probe::Bool(b) => {
-            let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
-            build_tree(db, scrutinee, &refined, path_types)?
+    //
+    // The `then_`/`els` structure depends on whether the probe REFINES its else:
+    //  - Int/Str (NON-refining): `else_rows` is the remaining arms VERBATIM in BOTH the matched arm's
+    //    fall-through and this test's `els`. Compile it ONCE into an `Rc<SumCont>` and SHARE it — thread it
+    //    into `then_`'s recursion as the matched arm's `fallthrough`, and reuse the same `Rc` as `els`. THIS
+    //    is what kills the O(2^arms) blow-up on a multi-column literal arm (`(tuple 0 0 a)`): without
+    //    sharing, an arm testing K columns re-compiles the remaining matrix 2^K times (each column's `then_`
+    //    and `els` both descend into it). Exhaustiveness is unaffected — the matched arm's own coverage is
+    //    checked when the shared tail is built (the `build_tree_ft(else_rows)` call), and reusing that
+    //    verdict is byte-identical to re-deriving it.
+    //  - Bool/ListLen (REFINING): the `els` matrix is REFINED by the failed test, so it DIFFERS from the
+    //    matched arm's fall-through (which sees the unrefined remaining arms). Here the matched arm's own
+    //    exhaustiveness must be re-checked against the ACTUAL remaining rows, so `then_` is built the
+    //    ordinary way — the matched row APPENDED with `else_rows` — and `els` is the refined tree. No
+    //    sharing (a finite refining probe has only 2 / a few branches — no exponential fan-out to dedup).
+    let (then_, els) = match probe {
+        crate::core::Probe::Bool(_) | crate::core::Probe::ListLen { .. } => {
+            // Refining: matched arm sees the real tail; els is refined. (No sharing — finite fan-out.)
+            let mut matched = matched_rows.to_vec();
+            matched.extend_from_slice(else_rows);
+            let then_ = build_tree_ft(db, scrutinee, &matched, path_types, fallthrough)?;
+            let refined = match probe {
+                crate::core::Probe::Bool(b) => refine_bool_else_rows(db, else_rows, &lit_path, b),
+                crate::core::Probe::ListLen { len, at_least } => {
+                    refine_listlen_else_rows(else_rows, &lit_path, len, at_least)
+                }
+                _ => unreachable!("outer match restricts to Bool/ListLen"),
+            };
+            let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
+            (std::rc::Rc::new(then_), std::rc::Rc::new(els))
         }
-        // A LIST-LENGTH test's else refines the remaining rows the SAME way (`refine_listlen_else_rows`):
-        // a following row whose `ListLen` test is guaranteed by the failed test's residual becomes an
-        // unconditional leaf — so `(list) + (list x .. r)` (nested in a payload) is exhaustive without a
-        // `_`, the decision-tree twin of Inc-23's list-of-bools saturation. Int/Str tests are over an
-        // infinite unstructured domain (no such finite/interval complement) — they still need a `_`.
-        crate::core::Probe::ListLen { len, at_least } => {
-            let refined = refine_listlen_else_rows(else_rows, &lit_path, len, at_least);
-            build_tree(db, scrutinee, &refined, path_types)?
+        _ => {
+            // Non-refining (Int/Str): compile the fall-through ONCE and SHARE it across `then_` and `els`.
+            let tail = std::rc::Rc::new(build_tree_ft(
+                db,
+                scrutinee,
+                else_rows,
+                path_types,
+                fallthrough,
+            )?);
+            let then_ = build_tree_ft(db, scrutinee, matched_rows, path_types, Some(&tail))?;
+            (std::rc::Rc::new(then_), tail)
         }
-        _ => build_tree(db, scrutinee, else_rows, path_types)?,
     };
     Ok(crate::core::SumCont::LitTest {
         // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
         path: lit_path.to_vec(),
         probe,
-        then_: Box::new(then_),
-        els: Box::new(els),
+        then_,
+        els,
     })
 }
 

@@ -232,7 +232,7 @@ pub enum SumCont {
     Guarded {
         cond: StructId,
         body: StructId,
-        els: Box<SumCont>,
+        els: std::rc::Rc<SumCont>,
     },
     /// A LITERAL-PAYLOAD test — a variant pattern whose payload (or a deeper sub-value) is a LITERAL
     /// rather than a binder: `(Some 0)` matches `Some` carrying EXACTLY `0` (`core-semantics.md §Pattern
@@ -249,8 +249,8 @@ pub enum SumCont {
     LitTest {
         path: Vec<PathStep>,
         probe: Probe,
-        then_: Box<SumCont>,
-        els: Box<SumCont>,
+        then_: std::rc::Rc<SumCont>,
+        els: std::rc::Rc<SumCont>,
     },
     /// A nested switch on the sub-value at `path` (from the ROOT scrutinee) — try each arm's disc, else
     /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
