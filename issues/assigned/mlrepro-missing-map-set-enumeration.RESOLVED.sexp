@@ -44,3 +44,5 @@
   (export main))
 
 ;; BLOCKED 2026-07-15: NOT a front-end fix — needs a RUNTIME op (canonical value-ordering for to-list; CHAMP cursor walks HASH order, no front-end sort). Feature gap, no miscompile. Routed the runtime half to v-runtime; fix-map-set-enumeration escalated ownership to concierge + closed. Do NOT reassign as a plain fix agent until the runtime op exists.
+
+;; RESOLVED 2026-07-15 (trunk@cee06d57f): Map/Set enumeration surface LANDED — Set.to-list/Map.to-list check clean + run e2e (Set.of([3,1,2])→to-list→len=3), canonical-order via the set-to-list/map-to-list runtime ops (PR#395). Front-end plumbing integrated by the enumeration batch (superseded fix-map-set-enum-frontend's baseline-colliding MRs). Correctness pinned in 05-compound-types.sexp. NB fix-map-set-enum-frontend is landing a source-only descriptor-LEAK follow-up (mr 6a1fdd46).
