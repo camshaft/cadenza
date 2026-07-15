@@ -837,6 +837,7 @@ pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
 pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
+pass	a map match over a map literal with a runtime key selects by value, not a const fold
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
@@ -1958,7 +1959,6 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
-pass	bitwise-or and bitwise-xor with zero keep a runtime operand
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
@@ -2272,7 +2272,6 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
-pass	multiply by negative one strength-reduces to negation, trapping only at the minimum
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -2471,7 +2470,6 @@ pass	string to bytes produces the exact UTF-8 byte values, not just the right co
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
-pass	subtract-zero and multiply-by-one keep a boundary-crossing runtime operand
 pass	subtracting quantities of incompatible dimension is a compile-time error
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
@@ -2727,7 +2725,6 @@ todo	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
-pass	a map match over a map literal with a runtime key selects by value, not a const fold
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
