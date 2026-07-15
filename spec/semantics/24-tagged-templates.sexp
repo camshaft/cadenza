@@ -9,10 +9,10 @@
 ; `Ast` is spliced in the template's position and expanded to a fixpoint before type-checking. JSX is then
 ; a library `jsx : List String -> List Ast -> Ast`, not a language feature.
 ;
-; STAGE STATUS. The reader form (v-syntax B1+B2) is landed; the EXPANDER (rcdzc Inc 2 —
-; `tagged_template::expand`) is NOT yet built, so these cases DECLINE (todo) until it lands: a
-; `(tagged-template …)` node currently reaches resolve as an ordinary form and reports unbound `tagged-
-; template`. They pin the contract the expander must meet — each flips todo→pass when Inc 2 lands.
+; STAGE STATUS. The reader form (v-syntax B1+B2) AND the expander (rcdzc Inc 2 —
+; `tagged_template::expand`, which rewrites `(tagged-template …)` to the binding-dispatched application
+; `(<tag> (list …) (list …))` the one-tier evaluator reduces) are BOTH landed, so these cases PASS
+; end-to-end. Deeper increments (JSX library, a 2nd DSL, hygiene for macro-introduced binders) are follow-ons.
 
 ; --- The core: a tag resolves to a function and its Ast result is spliced --------------------------
 ; metaprogramming.md: "The compiler MUST evaluate that function … applied to the chunks and holes, and
