@@ -933,19 +933,23 @@ fn a_let_bound_if_produced_compound_read_at_two_positions_emits_valid_wasm() {
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
-/// the tuple must be OPAQUE to the fold: a projection-only tuple LITERAL folds away (no heap), and a
-/// call-returned one now folds through too (the callee β-reduces — cycle 16). So the tuple comes from
-/// an `if` whose two branches DIFFER (`(tuple a b)` vs `(tuple b a)`) — `reduce_to_tuple_elems` does
-/// not see through an `if`, and the differing branches block the identical-branch collapse — so `t`
-/// stays a runtime handle and both projections are `arr-get`s. `(+ (. t 0) (. t 1))` must build,
-/// validate, and compute 100+50 = 150 through the heap (the sum is order-independent, so either branch
-/// gives 150).
+/// the tuple must be OPAQUE to the fold: a projection-only tuple LITERAL folds away (no heap), a
+/// call-returned one now folds through too (the callee β-reduces — cycle 16), and an `if` whose two
+/// branches DIFFER now ALSO folds through (the common-constructor hoist pushes the projections into
+/// per-element `select`s — no heap). So the tuple comes from a RECURSIVE helper (`mk`): `is_recursive`
+/// declines the β-reduction, so `reduce_to_tuple_elems` cannot see through `mk` and `t` stays a runtime
+/// handle whose projections are `arr-get`s (mirroring the runtime-record test's opacity trick). `(+ (.
+/// t 0) (. t 1))` must build, validate, and compute 100+50 = 150 through the heap.
 #[test]
 fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     use crate::testkit::parse;
+    // `mk` bottoms out immediately (`n >= 0`) with the tuple, but being recursive it is not inlined, so
+    // the tuple stays opaque and `t` is a runtime heap handle.
     let src = "(module m \
+                 (def (mk (: a UInt8) (: b UInt8) (: n Int64)) \
+                   (if (< n 0) (mk a b (+ n 1)) (tuple a b))) \
                  (def (pair-sum (: a UInt8) (: b UInt8)) \
-                   (let ((t (if (< a b) (tuple a b) (tuple b a)))) (+ (. t 0) (. t 1)))) \
+                   (let ((t (mk a b 0))) (+ (. t 0) (. t 1)))) \
                  (export pair-sum))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
@@ -967,6 +971,76 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
         cdz_run::Outcome::Trap(t) => panic!("narrow heap run trapped (miscompile?): {t}"),
     }
+}
+
+/// COMMON-CONSTRUCTOR HOIST: `(if c (Some a) (Some b))` builds the `Some` variant ONCE and pushes the
+/// differing payload into a branchless `(if c a b)` (a scalar `select`), instead of DUPLICATING the
+/// whole `sum-new` construction in both `if`/`else` arms. Structurally: exactly ONE `sum-new`-style
+/// heap-construct call reaches the boundary and a `select` decides the payload (down from a two-arm
+/// `if` block each with its own build). The value must still round-trip through the value heap in BOTH
+/// branch directions — c=true → the first payload, c=false → the second — proving the single build with
+/// a selected payload reproduces the per-arm builds. A `Some Int64` payload is scalar, so this exercises
+/// the hoist without hitting the (separate, pre-existing) heap-payload-in-a-sum boundary limitation.
+#[test]
+fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
+    use crate::testkit::parse;
+    // `pick` returns `Some a` or `Some b` by the condition — the `if` the hoist targets. `main` observes
+    // the payload via a match, but keeps the sum OPAQUE to the fold with a RECURSIVE helper (`walk`):
+    // `is_recursive` declines the compile-time β-reduction, so the match cannot see through `pick` and
+    // `main` selects a genuine runtime Option off the heap (as the runtime-record test does — an `if`
+    // alone folds through). `walk` bottoms out immediately for `n >= 0`, forwarding to `pick`.
+    let src = "(module m \
+                 (def (pick (: c Bool) (: a Int64) (: b Int64)) (if c (Some a) (Some b))) \
+                 (def (walk (: c Bool) (: a Int64) (: b Int64) (: n Int64)) \
+                   (if (< n 0) (walk c a b (+ n 1)) (pick c a b))) \
+                 (def (main (: c Bool) (: a Int64) (: b Int64)) \
+                   (match (walk c a b 0) ((Some v) v) (None -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The hoisted payload becomes a scalar `select` (branchless). Its presence witnesses the hoist fired
+    // (the pre-hoist form was a two-arm `if` over duplicated sum builds, with no payload `select`).
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the common-constructor hoist must lower the differing payload to a branchless select \
+         (build-once); found no select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime Option value must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |c: bool, a: &str, b: &str| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![c.to_string(), a.to_string(), b.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => panic!("common-ctor hoist run trapped (miscompile?): {t}"),
+        }
+    };
+    assert_eq!(
+        run(true, "10", "20"),
+        "10",
+        "c=true selects the first payload"
+    );
+    assert_eq!(
+        run(false, "10", "20"),
+        "20",
+        "c=false selects the second payload"
+    );
 }
 
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
