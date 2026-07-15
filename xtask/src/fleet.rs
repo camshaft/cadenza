@@ -76,34 +76,122 @@ struct Registry {
     agents: Vec<Agent>,
 }
 
-/// Filesystem anchors under the gitignored `.claude/fleet/` state directory.
+/// One standing agent declared in the TRACKED roster (`fleet/roster.json`). This is the reproducible
+/// intent — what a fresh clone should run. Runtime-only fields (worktree path, live status, window)
+/// are NOT here; they are derived into the machine-local registry at `up` time.
+#[derive(Clone, Debug, Deserialize)]
+struct RosterEntry {
+    name: String,
+    role: String,
+    #[serde(default)]
+    vertical: String,
+    #[serde(default)]
+    area: String,
+    #[serde(default = "default_interval")]
+    interval: String,
+    #[serde(default = "default_model")]
+    model: String,
+}
+
+fn default_interval() -> String {
+    "10m".to_string()
+}
+fn default_model() -> String {
+    "opus".to_string()
+}
+
+/// Resolve a roster/`--model` alias to the full model id `claude --model` receives. The fleet runs
+/// on the 1M-token context variants, so the short aliases map to those — this is the ONE place the
+/// long ids live, so the roster and `fleet add` stay readable (`opus` / `fable`). An id that is not a
+/// known alias passes through unchanged (so a full id or a future model still works).
+fn resolve_model(alias: &str) -> String {
+    match alias {
+        "opus" => "us.anthropic.claude-opus-4-8[1m]".to_string(),
+        "fable" => "us.anthropic.claude-fable-5[1m]".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The tracked roster file (`fleet/roster.json`): the standing fleet that reproduces on any machine.
+#[derive(Default, Deserialize)]
+struct Roster {
+    #[serde(default)]
+    agents: Vec<RosterEntry>,
+}
+
+/// Filesystem anchors: the TRACKED source (`<worktree>/fleet/`, reproducible) and the machine-local
+/// runtime STATE (`<hub>/.claude/fleet/`, gitignored).
 struct Fleet {
-    /// `<hub>/.claude/fleet` — the fleet state directory.
+    /// `<hub>/.claude/fleet` — the machine-local runtime state dir.
     root: PathBuf,
     /// `<hub>/.claude/worktrees` — where per-agent worktrees are created.
     worktrees: PathBuf,
     /// The HUB root (for `git worktree add` and resolving `trunk`).
     repo: PathBuf,
+    /// `<current-worktree>/fleet` — the TRACKED source (roster + role bodies + contract + window.sh).
+    /// Whoever runs `fleet` is in a worktree that has this checked out (it lives on `trunk`).
+    src: PathBuf,
 }
 
 impl Fleet {
-    /// Anchor all state to the HUB, not the current worktree. `.claude/` is gitignored, so it exists
-    /// ONLY at the hub — never inside a linked worktree. An agent running `cargo xtask fleet` from
-    /// its own worktree therefore has `CARGO_MANIFEST_DIR` (→ `paths.repo`) pointing at the worktree,
-    /// which has no `.claude/`. `git rev-parse --git-common-dir` returns the hub's shared git dir from
-    /// ANY worktree, and its parent is the hub root — and this stays correct after the hub is
-    /// converted to bare (the `.git` stays in place, so `.claude/` remains beside it). Fall back to
-    /// `paths.repo` if git can't be consulted (e.g. the hub itself before any worktree exists).
+    /// Anchor RUNTIME state to the HUB (`.claude/` is gitignored, exists only at the hub — shared by
+    /// every worktree via `--git-common-dir`, and it stays put after the bare conversion). Anchor the
+    /// TRACKED source to the current worktree (`paths.repo` = `CARGO_MANIFEST_DIR`'s parent = the
+    /// worktree root, which has `fleet/` checked out from `trunk`).
     fn new(paths: &Paths) -> Self {
         let hub = hub_root(&paths.repo).unwrap_or_else(|| paths.repo.clone());
         Fleet {
             root: hub.join(".claude/fleet"),
             worktrees: hub.join(".claude/worktrees"),
             repo: hub,
+            src: paths.repo.join("fleet"),
         }
     }
     fn registry_path(&self) -> PathBuf {
         self.root.join("registry.json")
+    }
+    fn roster_path(&self) -> PathBuf {
+        self.src.join("roster.json")
+    }
+    /// Load the tracked roster (the standing fleet). Empty if absent/malformed.
+    fn load_roster(&self) -> Roster {
+        match std::fs::read_to_string(self.roster_path()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+                eprintln!(
+                    "fleet: roster {:?} is not valid JSON ({e})",
+                    self.roster_path()
+                );
+                Roster::default()
+            }),
+            Err(_) => Roster::default(),
+        }
+    }
+    /// Copy the tracked role bodies + contract + launcher into the runtime dir, so `window.sh` has a
+    /// stable hub-anchored path and every window reads a consistent snapshot. Mirrors `xtask setup`'s
+    /// tracked→.claude materialization. Idempotent.
+    fn materialize_source(&self) {
+        let loops_dst = self.root.join("loops");
+        std::fs::create_dir_all(&loops_dst).ok();
+        if let Ok(rd) = std::fs::read_dir(self.src.join("loops")) {
+            for e in rd.filter_map(Result::ok) {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "md") {
+                    let _ = std::fs::copy(&p, loops_dst.join(e.file_name()));
+                }
+            }
+        }
+        for f in ["AGENTS-fleet.md", "window.sh"] {
+            let src = self.src.join(f);
+            if src.exists() {
+                let dst = self.root.join(f);
+                let _ = std::fs::copy(&src, &dst);
+                #[cfg(unix)]
+                if f == "window.sh" {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
     }
     fn inbox(&self, agent: &str) -> PathBuf {
         self.root.join("inbox").join(agent)
@@ -171,7 +259,8 @@ pub enum FleetCmd {
         /// The `/loop` interval (e.g. `10m`).
         #[arg(long, default_value = "10m")]
         interval: String,
-        /// The Claude model (`opus` default; `fable` for the breaker).
+        /// The Claude model alias (`opus` default; `fable` for the breaker). Resolved to the full
+        /// 1M-context model id by the launcher.
         #[arg(long, default_value = "opus")]
         model: String,
         /// A file (e.g. a queue `.sexp`) to seed into the new agent's inbox as an `assign` message,
@@ -282,9 +371,29 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
 // ── up / down / status ────────────────────────────────────────────────────────────────────────
 
 fn up(fleet: &Fleet) {
-    let reg = fleet.load();
+    // Materialize the tracked source (role bodies + contract + window.sh) into the runtime dir so
+    // window.sh has a stable hub-anchored path. Then reconcile the tracked ROSTER into the runtime
+    // registry: a standing agent declared in the roster but absent from the registry is added
+    // (status active); an agent already in the registry keeps its runtime state (status, worktree).
+    // This is what makes the fleet reproducible — a fresh clone's `fleet up` seeds every standing
+    // agent from the committed roster. Ephemeral fix/design agents live only in the registry.
+    fleet.materialize_source();
+    let mut reg = fleet.load();
+    let roster = fleet.load_roster();
+    let mut added = 0usize;
+    for e in &roster.agents {
+        if reg.agents.iter().any(|a| a.name == e.name) {
+            continue; // already known — keep its runtime state
+        }
+        reg.agents.push(agent_from_roster(fleet, e));
+        added += 1;
+    }
+    if added > 0 {
+        fleet.save(&reg);
+        println!("fleet up: seeded {added} standing agent(s) from the roster.");
+    }
     if reg.agents.is_empty() {
-        println!("fleet: registry is empty — nothing to bring up. Add agents with `fleet add`.");
+        println!("fleet: no agents (empty roster + registry). Add one with `fleet add`.");
         return;
     }
     if !in_tmux() {
@@ -310,6 +419,28 @@ fn up(fleet: &Fleet) {
         reg.agents.iter().filter(|a| a.status == "active").count()
     );
     println!("  (windows already present were left running; re-run any time — it is idempotent.)");
+}
+
+/// Build a runtime [`Agent`] from a tracked [`RosterEntry`], deriving the runtime-only fields (branch,
+/// worktree path, status, disallow_ask) the same way `add` does.
+fn agent_from_roster(fleet: &Fleet, e: &RosterEntry) -> Agent {
+    let branch = if e.role == "pr-sync" {
+        TRUNK.to_string()
+    } else {
+        format!("fleet/{}", e.name)
+    };
+    Agent {
+        name: e.name.clone(),
+        role: e.role.clone(),
+        vertical: e.vertical.clone(),
+        area: e.area.clone(),
+        worktree: fleet.worktrees.join(&e.name).to_string_lossy().to_string(),
+        branch,
+        interval: e.interval.clone(),
+        model: e.model.clone(),
+        status: "active".to_string(),
+        disallow_ask: !matches!(e.role.as_str(), "concierge" | "design"),
+    }
 }
 
 fn down(fleet: &Fleet) {
@@ -386,8 +517,12 @@ fn add(
     model: String,
     seed: Option<PathBuf>,
 ) {
-    // Validate the role has a body, so a typo doesn't silently create an agent that can't launch.
-    let body = fleet.root.join("loops").join(format!("{role}.md"));
+    // Materialize the tracked source so a freshly-added agent's role body is present in the runtime
+    // dir window.sh reads from.
+    fleet.materialize_source();
+    // Validate the role has a body (in the tracked source), so a typo doesn't silently create an
+    // agent that can't launch.
+    let body = fleet.src.join("loops").join(format!("{role}.md"));
     if !body.exists() {
         eprintln!(
             "fleet add: no role body at {} — valid roles are the files in .claude/fleet/loops/",
@@ -548,11 +683,13 @@ fn describe(fleet: &Fleet, name: &str) {
         std::process::exit(1);
     };
     // Shell-safe KEY=VALUE lines for window.sh to `eval`. Values are our own controlled strings
-    // (paths, a role name, a model id) — single-quote them defensively anyway.
+    // (paths, a role name, a model id) — single-quote them defensively anyway. The stored model is a
+    // short alias (`opus`/`fable`); expand it to the full 1M-context id here, the point where
+    // window.sh consumes it and hands it to `claude --model`.
     let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     println!("WORKTREE={}", q(&a.worktree));
     println!("ROLE={}", q(&a.role));
-    println!("MODEL={}", q(&a.model));
+    println!("MODEL={}", q(&resolve_model(&a.model)));
     println!("INTERVAL={}", q(&a.interval));
     println!("VERTICAL={}", q(&a.vertical));
     println!("AREA={}", q(&a.area));
@@ -609,11 +746,18 @@ fn archive(fleet: &Fleet, no_commit: bool) {
         "fleet archive: mirrored {copied} queue item(s) into issues/ ({removed} stale removed)"
     );
 
+    // Sync the STANDING fleet back into the tracked roster (fleet/roster.json), so a runtime change
+    // to the standing agents (e.g. the concierge spun up a new vertical) is persisted to the repo and
+    // reproduces on another machine — the roster's analogue of the issues/ mirror. Ephemeral agents
+    // (per-issue `fix`, on-demand `design`) and stopped agents are NOT standing, so they are dropped;
+    // only the machine-independent fields are written (name/role/vertical/area/interval/model).
+    let synced = sync_roster(fleet, &cwd);
+
     if no_commit {
-        println!("  --no-commit: change left in the working tree, not committed.");
+        println!("  --no-commit: changes left in the working tree, not committed.");
         return;
     }
-    // Stage just issues/ and commit if there's anything to commit. Run git in the cwd worktree.
+    // Stage the tracked mirrors and commit if anything changed. Run git in the cwd worktree.
     let run_git = |args: &[&str]| {
         Command::new("git")
             .current_dir(&cwd)
@@ -622,27 +766,80 @@ fn archive(fleet: &Fleet, no_commit: bool) {
             .map(|s| s.success())
             .unwrap_or(false)
     };
-    run_git(&["add", "issues"]);
+    run_git(&["add", "issues", "fleet/roster.json"]);
     // Anything staged? `git diff --cached --quiet` exits non-zero if there are staged changes.
     let has_staged = !Command::new("git")
         .current_dir(&cwd)
-        .args(["diff", "--cached", "--quiet", "--", "issues"])
+        .args([
+            "diff",
+            "--cached",
+            "--quiet",
+            "--",
+            "issues",
+            "fleet/roster.json",
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(true);
     if !has_staged {
-        println!("  nothing changed — issues/ already up to date.");
+        println!("  nothing changed — issues/ + roster already up to date.");
         return;
     }
     if run_git(&[
         "commit",
         "-m",
-        "issues: mirror the fleet work queue into the tracked archive",
+        "fleet: mirror the work queue + standing roster into the tracked archive",
     ]) {
-        println!("  committed the archive update.");
+        println!("  committed the archive update ({synced} standing agent(s) in roster).");
     } else {
         eprintln!("  ! git commit failed — the change is staged; commit it by hand.");
     }
+}
+
+/// Write the STANDING agents from the live runtime registry into the tracked `fleet/roster.json`
+/// (in `cwd`, the caller's worktree). Standing = active + a role that belongs in the reproducible
+/// fleet (everything except the ephemeral `fix`/`design` roles). Only machine-independent fields are
+/// written; runtime state (worktree path, status, window) is re-derived by `up`. Returns the count.
+fn sync_roster(fleet: &Fleet, cwd: &Path) -> usize {
+    let reg = fleet.load();
+    let mut entries = String::new();
+    let mut n = 0usize;
+    for a in &reg.agents {
+        if a.status != "active" || matches!(a.role.as_str(), "fix" | "design") {
+            continue;
+        }
+        if n > 0 {
+            entries.push_str(",\n");
+        }
+        // Compact one-line object per agent (readable + stable diffs). Optional fields omitted empty.
+        entries.push_str("    { ");
+        entries.push_str(&format!("\"name\": {:?}, \"role\": {:?}", a.name, a.role));
+        if !a.vertical.is_empty() {
+            entries.push_str(&format!(", \"vertical\": {:?}", a.vertical));
+        }
+        if !a.area.is_empty() {
+            entries.push_str(&format!(", \"area\": {:?}", a.area));
+        }
+        entries.push_str(&format!(
+            ", \"model\": {:?}, \"interval\": {:?} }}",
+            a.model, a.interval
+        ));
+        n += 1;
+    }
+    let doc = format!(
+        "{{\n  \"//\": \"The STANDING fleet — tracked so it reproduces on any machine. \
+         Synced from the live registry by `cargo xtask fleet archive` (pr-sync runs it each tick) \
+         and read back by `fleet up`. Ephemeral fix/design agents are not listed. Edit by hand or \
+         via `fleet add/remove`; the next archive persists the change.\",\n\
+         \"agents\": [\n{entries}\n  ]\n}}\n"
+    );
+    let dst = cwd.join("fleet/roster.json");
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&dst, doc).ok();
+    let _ = fleet; // fleet only used for load(); silence if inlined
+    n
 }
 
 /// Recursively collect file paths under `dir`, as paths RELATIVE to `base`. Skips nothing except
