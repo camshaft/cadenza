@@ -949,6 +949,7 @@ pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
+pass	a negated zero equality composes with the negation fold
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
@@ -1623,6 +1624,7 @@ pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
+pass	a wrapped byte's zero equality tests the masked value, not the wide slot
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a wrong-width value in a multi-byte bit-field is a compile-time type error
@@ -2068,6 +2070,7 @@ pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
+pass	equality against zero answers by value in both operand orders
 pass	equality applied to one operand is rejected, not a crash
 pass	equality of a record with a subset of another's fields is a type error
 pass	equality of an integer and a boolean is a type error

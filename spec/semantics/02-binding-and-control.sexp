@@ -3492,3 +3492,51 @@
   (output (: 0 Int64))
   (call   main (: 0 Int64) (: 3 Int64))
   (output (: 1 Int64)))
+
+; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
+; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
+; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the
+; UInt8.wrap+match zero-probe case in 09-functions pins the match path; this pins `=` directly), and
+; compose with the negation fold. All three graded from the running program's side.
+
+(case "equality against zero answers by value in both operand orders"
+  (doc    "`(= n 0)` and the commuted `(= 0 n)` in one body (10 + 1 = 11 at n = 0; 0 at n = 5): the
+           zero-equality selection recognizes a constant zero on EITHER side and answers by the
+           runtime operand's value. An emit keyed on 'right operand is literal zero' only misses the
+           commuted form; one comparing the operand SLOT (not the value) misfires on nonzero.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (if (= n 0) 10 0) (if (= 0 n) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 11 Int64))
+  (call   main (: 5 Int64))
+  (output (: 0 Int64)))
+
+(case "a wrapped byte's zero equality tests the masked value, not the wide slot"
+  (doc    "`(= (UInt8.wrap n) (UInt8.wrap 0))` at n = 256: the low byte is 0x00, so the equality is
+           TRUE — though the wide i64 slot carried 256 (nonzero). n = 255 → low byte 0xFF → false.
+           The `=`-form companion of the match zero-probe case (09-functions): an eqz applied to the
+           un-masked wide slot answers false at n = 256.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (= (UInt8.wrap n) (UInt8.wrap 0)) 1 0))
+            (export main)))
+  (call   main (: 256 Int64))
+  (output (: 1 Int64))
+  (call   main (: 255 Int64))
+  (output (: 0 Int64)))
+
+(case "a negated zero equality composes with the negation fold"
+  (doc    "`(not (= n 0))` — the zero-equality selection (eqz) composed with boolean negation (itself
+           an eqz on i32): n = 0 → the equality is true, negated → 0; n = 7 → 1. Pins the two
+           single-instruction selections stack without cancelling each other (a peephole that folded
+           eqz;eqz as double negation ACROSS the width change would flip these).")
+  (input  (do
+            (def (main (: n Int64))
+              (if (not (= n 0)) 1 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64)))
