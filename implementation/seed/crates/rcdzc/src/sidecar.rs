@@ -93,6 +93,11 @@ pub const KIND_DOC: &str = "doc";
 /// specializations), one per line.
 pub const KIND_INSTANTIATIONS: &str = "instantiations";
 
+/// The output artifact kind for a `Symbols` query result — the module's DOCUMENT OUTLINE: every top-level
+/// declaration (value/function def, type, effect, module) classified by kind, the LSP `documentSymbol`
+/// analogue.
+pub const KIND_SYMBOLS: &str = "symbols";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -233,6 +238,21 @@ pub enum Query {
     /// runtime param `name: TYPE`, an erased compile-time param `const name = VALUE`). Total: an UNKNOWN
     /// name yields the empty result; a known def always gets exactly one `disp` line.
     Instantiations { name: String },
+    /// The DOCUMENT OUTLINE — every TOP-LEVEL declaration in the module, classified by what it declares,
+    /// so an editor can render a symbol tree / breadcrumb (`textDocument/documentSymbol`). Reads the SAME
+    /// declaration columns a compile fills — `db.defs` (value/function definitions), `db.type_decls` (sum
+    /// types), `db.effect_decls` (effects), `db.modules` (namespaces) — so a symbol equals what the
+    /// compiler scanned, never a second lexical pass. This is the SUPERSET companion of `Exports` (which
+    /// lists only the `(export …)`-named subset with their solved types): `Symbols` lists EVERY
+    /// declaration — private ones included — by kind, which is what an outline shows. Answered as one
+    /// `name<TAB>kind<TAB>name-node-id` line per declaration; `kind` is a fixed closed vocabulary
+    /// (`SymbolKind` — `value`/`function`/`type`/`effect`/`module`), the node id is the declaration's NAME
+    /// occurrence so a consumer can jump to it. Node-id-keyed and span-free like the other queries; the
+    /// order is declaration order within each column, columns grouped (defs, then types, effects, modules),
+    /// so it is a deterministic function of the program. TOTAL — a module with no declarations yields the
+    /// empty result. INTERNAL defs (do-local / module-member callables `modules::register_callable`
+    /// synthesizes) are OMITTED: they are not top-level source declarations an outline names.
+    Symbols,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -271,6 +291,7 @@ mod tag {
     pub const QUERY_DOC_OF: u8 = 0x18;
     pub const QUERY_DOC_AT: u8 = 0x19;
     pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
+    pub const QUERY_SYMBOLS: u8 = 0x1b;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -326,6 +347,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_INSTANTIATIONS => Some(Request::Query(Query::Instantiations {
             name: read_string(r)?,
         })),
+        tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
         _ => None,
     }
 }
@@ -384,6 +406,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             out.push(tag::QUERY_INSTANTIATIONS);
             write_string(out, name);
         }
+        Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
     }
 }
 
@@ -680,7 +703,136 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::Symbols => {
+            // The DOCUMENT OUTLINE: every top-level declaration classified by kind, one
+            // `name<TAB>kind<TAB>name-node-id` line. Reads the declaration columns `scan_top_level` filled
+            // — no new pass. Columns grouped (defs → types → effects → modules), declaration order within
+            // each, so the answer is a deterministic function of the program. INTERNAL defs (the do-local /
+            // module-member callables `modules::register_callable` registers) are not top-level source
+            // declarations, so they are skipped.
+            let text = symbols_text(db);
+            QueryResult {
+                kind: KIND_SYMBOLS,
+                name: "symbols".to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// A top-level declaration's OUTLINE KIND — the fixed closed vocabulary a `Symbols` line reports, the LSP
+/// `SymbolKind` analogue keyed to what Cadenza declares. A `def` splits into `value` (a nullary binding
+/// `(def answer 42)`) vs `function` (a def WITH parameters `(def (f x) …)`) — the same signature-shape
+/// split `scan_top_level` makes — so an outline distinguishes a constant from a function the way an editor
+/// paints them differently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SymbolKind {
+    /// A nullary value definition — `(def answer 42)`.
+    Value,
+    /// A function definition (a def with ≥1 parameter) — `(def (f x) …)`.
+    Function,
+    /// A sum-type declaration — `(type Option (Some a) None)`.
+    Type,
+    /// An effect declaration — `(effect E (op emit (-> Int64 Unit)))`.
+    Effect,
+    /// A module (namespace) declaration — `(module m …)`.
+    Module,
+}
+
+impl SymbolKind {
+    /// The wire spelling — a short stable kebab-case token, the same style as `HighlightKind::as_str`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SymbolKind::Value => "value",
+            SymbolKind::Function => "function",
+            SymbolKind::Type => "type",
+            SymbolKind::Effect => "effect",
+            SymbolKind::Module => "module",
+        }
+    }
+}
+
+/// The `Symbols` read: every top-level declaration as `name<TAB>kind<TAB>name-node-id`, columns grouped
+/// (defs → types → effects → modules) and in declaration order within each — a deterministic function of
+/// the program. The NAME occurrence is the node a consumer jumps to; for a def it is the signature's first
+/// child (a function's `(NAME param…)` head) or the bare value-def name, matching `Exports`. Skips INTERNAL
+/// defs (do-local / module-member callables) — they are not source-level top-level declarations. Total: an
+/// empty program yields the empty string.
+fn symbols_text(db: &Db) -> String {
+    let mut text = String::new();
+    let mut emit = |name: &str, kind: SymbolKind, node: StructId| {
+        text.push_str(&format!("{name}\t{}\t{}\n", kind.as_str(), node.0));
+    };
+    for def in &db.defs {
+        // A synthesized callable (a recursive do-local / module member) is not a top-level source
+        // declaration an outline names — skip it, exactly as the unused-def / export candidacy paths do.
+        // Likewise a def whose signature is not a USER node (a prelude / accum-synthesized / β-copied def)
+        // has no source span, so it is not part of the outline (the `Highlight`/diagnostic-edge filter).
+        if def.internal || !db.is_user_node(def.sig_occ) {
+            continue;
+        }
+        // A def's NAME occurrence: the sig's first child when the signature is a `(NAME param…)` list (a
+        // function), else the bare-name signature itself (a value def) — the same node `Exports` reports.
+        let name_node = match db.ast.get(def.sig_occ) {
+            Struct::List(kids) => kids.first().copied().unwrap_or(def.sig_occ),
+            _ => def.sig_occ,
+        };
+        let kind = if def.params.is_empty() {
+            SymbolKind::Value
+        } else {
+            SymbolKind::Function
+        };
+        emit(&def.name, kind, name_node);
+    }
+    for td in &db.type_decls {
+        // A type/effect/module declaration's occurrence is its `(type …)`/`(effect …)`/`(module …)` FORM
+        // (nominal identity); the NAME node is the form's first tail element (the name atom). Fall back to
+        // the form itself if malformed — the name still resolves, only the jump target is coarser.
+        //
+        // The prelude injects its OWN sums (`Option`/`Result`/`Ordering`/`Ast`/…) into `type_decls` as
+        // synthesized declarations with occurrences PAST the source program (no span) — an outline is the
+        // USER'S declarations, so filter those exactly as `Highlight` filters synthesized/prelude leaves
+        // (`is_user_node`). Effects/modules are user-only today, but gate them the same way for uniformity.
+        if !db.is_user_node(td.occ) {
+            continue;
+        }
+        emit(
+            &td.name,
+            SymbolKind::Type,
+            decl_name_node(db, td.occ, "type"),
+        );
+    }
+    for ed in &db.effect_decls {
+        if !db.is_user_node(ed.occ) {
+            continue;
+        }
+        emit(
+            &ed.name,
+            SymbolKind::Effect,
+            decl_name_node(db, ed.occ, "effect"),
+        );
+    }
+    for md in &db.modules {
+        if !db.is_user_node(md.occ) {
+            continue;
+        }
+        emit(
+            &md.name,
+            SymbolKind::Module,
+            decl_name_node(db, md.occ, "module"),
+        );
+    }
+    text
+}
+
+/// The NAME occurrence of a `(head NAME …)` declaration FORM at `occ` — the first tail element (the name
+/// atom), for a go-to jump. Falls back to the form occurrence itself if the form is malformed (no name),
+/// so the answer stays total.
+fn decl_name_node(db: &Db, occ: StructId, head: &str) -> StructId {
+    db.ast
+        .as_form(occ, head)
+        .and_then(|tail| tail.first().copied())
+        .unwrap_or(occ)
 }
 
 /// The `Instantiations` read: the definition named `name`'s DISPOSITION plus, if it is specialized, every
@@ -1646,6 +1798,7 @@ mod tests {
             Request::Query(Query::Instantiations {
                 name: "fold-n".into(),
             }),
+            Request::Query(Query::Symbols),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

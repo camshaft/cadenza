@@ -50525,7 +50525,8 @@ mod sidecar_driven {
     use crate::compile::compile;
     use crate::sidecar::{
         self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
-        KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
+        Request,
     };
     use crate::testkit::parse;
 
@@ -51266,6 +51267,107 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order.
+    fn symbol_rows(src: &str) -> Vec<(String, String)> {
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        artifact_text(&out, KIND_SYMBOLS)
+            .expect("a symbols artifact")
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_symbols_query_outlines_every_top_level_declaration_by_kind() {
+        // The document outline: every declaration classified — a nullary def is a `value`, a def with
+        // params a `function`, plus `type`/`effect`. Columns grouped (defs, then types, then effects).
+        let src = "(do (type Color Red Green Blue) \
+                   (effect Log (op emit (-> Int64 Unit))) \
+                   (def answer 42) (def (double x) (+ x x)) (export double answer))";
+        let rows = symbol_rows(src);
+        assert_eq!(
+            rows,
+            vec![
+                ("answer".to_string(), "value".to_string()),
+                ("double".to_string(), "function".to_string()),
+                ("Color".to_string(), "type".to_string()),
+                ("Log".to_string(), "effect".to_string()),
+            ],
+            "rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_lists_private_declarations_not_just_exports() {
+        // The superset property vs `Exports`: a def that is NOT exported still appears in the outline.
+        let src = "(do (def (public-fn x) x) (def (private-fn y) y) (export public-fn))";
+        let rows = symbol_rows(src);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"public-fn"), "rows: {rows:?}");
+        assert!(
+            names.contains(&"private-fn"),
+            "an outline lists the UNEXPORTED def too — rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_omits_prelude_types_and_module_internals() {
+        // A prelude sum (`Option`/`Result`/…) is injected into `type_decls` with no source span — it is
+        // NOT the user's declaration, so it must not appear. A module's member def is INTERNAL (a
+        // synthesized callable), so it is omitted too — only the `module` itself is a top-level symbol.
+        let src = "(do (module geo (def (area r) (* r r)) (export area)) \
+                   (def (main) (geo.area 3)) (export main))";
+        let rows = symbol_rows(src);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"main"), "rows: {rows:?}");
+        assert!(
+            names.contains(&"geo") && rows.iter().any(|(n, k)| n == "geo" && k == "module"),
+            "the module is a symbol — rows: {rows:?}"
+        );
+        assert!(
+            !names.contains(&"Option") && !names.contains(&"Result"),
+            "prelude types must not leak into the outline — rows: {rows:?}"
+        );
+        assert!(
+            !names.contains(&"area"),
+            "a module-member callable is internal, not a top-level symbol — rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_on_a_declarationless_program_is_empty() {
+        // Total: a program with no top-level declarations yields the empty outline, never an error.
+        let src = "42";
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert_eq!(artifact_text(&out, KIND_SYMBOLS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_symbols_query_carries_a_jumpable_name_node() {
+        // The node id on each line is the declaration's NAME occurrence (a user node), so a consumer can
+        // resolve it to a source range and jump — the go-to affordance the outline rides on.
+        let src = "(do (type Color Red Green Blue) (def (f x) x) (export f))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_SYMBOLS).expect("a symbols artifact");
+        for line in text.lines() {
+            let node: u32 = line
+                .rsplit('\t')
+                .next()
+                .unwrap()
+                .parse()
+                .expect("a node id");
+            // Every reported node id is a real user node (mappable to a span), never a `-` sentinel.
+            assert_ne!(line.rsplit('\t').next().unwrap(), "-", "line: {line}");
+            let _ = node;
+        }
     }
 
     #[test]

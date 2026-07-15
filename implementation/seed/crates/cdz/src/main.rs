@@ -102,6 +102,11 @@ enum Cmd {
     /// The module's exported interface: each `(export …)` name and its type, as
     /// `file:line:col: name : type`.
     Exports(ExportsArgs),
+    /// The document OUTLINE of FILE: every top-level declaration (value/function/type/effect/module)
+    /// classified by kind, as `file:line:col: kind name` — the LSP `documentSymbol` analogue. The
+    /// superset companion of `cdz exports` (which lists only the exported subset): `symbols` lists EVERY
+    /// declaration, private ones included, so an editor can render a symbol tree / breadcrumb.
+    Symbols(SymbolsArgs),
     /// SEMANTIC SYNTAX HIGHLIGHTING for FILE: every token CLASSIFIED by the role it plays (type vs
     /// constructor vs local vs call vs unbound), as `file:line:col: kind` — the LSP `semanticTokens`
     /// analogue, coloured by MEANING (the compiler's columns) rather than by spelling.
@@ -150,6 +155,7 @@ fn main() -> ExitCode {
         Cmd::Def(a) => run_def(&a),
         Cmd::Scope(a) => run_scope(&a),
         Cmd::Exports(a) => run_exports(&a),
+        Cmd::Symbols(a) => run_symbols(&a),
         Cmd::Highlight(a) => run_highlight(&a),
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
@@ -1331,6 +1337,12 @@ struct ScopeArgs {
 
 #[derive(clap::Args)]
 struct ExportsArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+}
+
+#[derive(clap::Args)]
+struct SymbolsArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
 }
@@ -2751,6 +2763,56 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             None => args.file.clone(),
         };
         println!("{loc}: {name} : {ty}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `cdz symbols FILE` — the document OUTLINE: every top-level declaration classified by kind, as
+/// `file:line:col: kind name`. Rides the `Symbols` sidecar query, then maps each declaration's NAME node
+/// to a source location through the span table. The superset companion of `cdz exports` — it lists EVERY
+/// declaration (private ones too), not just the exported subset, so an editor can render a symbol tree.
+fn run_symbols(args: &SymbolsArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Symbols),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_SYMBOLS) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if text.trim().is_empty() {
+        eprintln!("{PROG}: {} declares nothing", args.file);
+        return ExitCode::SUCCESS;
+    }
+    // Each line is `name<TAB>kind<TAB>name-node-id`. One line-start index (binary-searched line:col) so a
+    // wide declaration list stays linear (the same swap `exports`/`highlight` carry).
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    for line in text.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let (name, kind, node) = match (cols.next(), cols.next(), cols.next()) {
+            (Some(n), Some(k), Some(d)) => (n, k, d),
+            _ => continue,
+        };
+        let loc = match node
+            .parse::<u32>()
+            .ok()
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        {
+            Some(span) => {
+                let (l, c) = index.line_col(&source, span.start);
+                format!("{}:{l}:{c}", args.file)
+            }
+            None => args.file.clone(),
+        };
+        println!("{loc}: {kind} {name}");
     }
     ExitCode::SUCCESS
 }
