@@ -554,6 +554,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
+pass	a decoded payload feeds ordinary arithmetic
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deep consume leaves the intermediate compound and a sibling element readable
@@ -1476,6 +1477,7 @@ pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
+pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
@@ -1782,6 +1784,7 @@ pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
+pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
@@ -2611,6 +2614,7 @@ pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
