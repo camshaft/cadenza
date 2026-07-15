@@ -1648,6 +1648,14 @@ impl Db {
         // stripped text is CAPTURED (keyed by each def's signature occurrence) so the `DocOf`/`DocAt`
         // queries can still surface a definition's documentation after it leaves the body.
         let doc_by_sig = strip_def_docs(&mut ast);
+        // F1: for a `@test` whose parameter is a `(List <Int>)`, synthesize a nullary `Test.gen`-driven
+        // generator WRAPPER (and drop `@test` from the original, which becomes the wrapper's callee), so
+        // `cdz test` can property-test over a list rather than declining the compound param at the
+        // boundary. Runs BEFORE `strip_annotations` (so the synthesized `@test` wrapper is hoisted as the
+        // test) and `scan_top_level` (so its `(effect Test …)` + `(def …)` scan like hand-written source);
+        // every node it appends is ordinary AST (`proptest_gen`, no name special-casing). A no-op for a
+        // program with no compound-param `@test`.
+        crate::proptest_gen::synthesize(&mut ast);
         // Normalize away a `(const BINDER)` PARAMETER wrapper on every `def`/`fn` signature BEFORE anything
         // reads a parameter: `const` marks a COMPILE-TIME parameter (`DESIGN-…-monomorphization` Addendum
         // 3), a declaration the specializer consumes — not part of the binder shape the resolver/typer

@@ -557,3 +557,53 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
         "shrinks to the minimal failing int: {stdout}"
     );
 }
+
+/// F1 (compiler-directed collection generators): a `@test` whose parameter is a `(List Int64)` is
+/// property-tested by a COMPILER-SYNTHESIZED wrapper — the compiler builds a list from `Test.gen` and
+/// calls the test, so a property over a data structure runs over `--trials` generated inputs and shrinks
+/// a counterexample, exactly like a scalar property. Before this, a compound param declined at the
+/// boundary ("no component boundary representation"). Two files (so the ML root is a `do`-block the pass
+/// rewrites): a passing list property + a failing one that reports a counterexample.
+#[test]
+fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
+    let d = dir("f1-listgen");
+    // A TRUE property over any generated `List Int64` (length is non-negative), plus a second def so the
+    // ML file's top level is a `do`-block. The synthesized `<name>-gen` wrapper is what runs.
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def len_nonneg(xs: List(Int64)) = if List.len(xs) >= 0 then unit else trap(\"neg\")\n\
+         @test def plain() = if 1 == 1 then unit else trap(\"p\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "12"]);
+    assert!(
+        ok,
+        "a true list property + a unit test pass: {stdout}{stderr}"
+    );
+    // The list property runs as the synthesized generator wrapper over the trial count.
+    assert!(
+        stdout.contains("PASS len_nonneg-gen (12 trials)"),
+        "the List parameter is property-tested via the synthesized wrapper: {stdout}"
+    );
+    assert!(stdout.contains("PASS plain"), "{stdout}");
+    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+
+    // A FALSE property over a generated list fails with a counterexample + a replay seed. The wrapper
+    // builds a fixed-length-3 list, so `len == 3` is always true → this asserts-false and fails.
+    let bad = write(
+        &d,
+        "bad.cdz",
+        "@test def never_three(xs: List(Int64)) = if List.len(xs) == 3 then trap(\"was three\") else unit\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &bad, "--seed", "0"]);
+    assert!(!ok, "a false list property → non-zero exit: {stdout}");
+    assert!(
+        stdout.contains("FAIL never_three-gen"),
+        "the failing list property is reported by its wrapper name: {stdout}"
+    );
+    assert!(
+        stdout.contains("counterexample") && stdout.contains("seed 0"),
+        "a counterexample + replay seed are reported: {stdout}"
+    );
+}
