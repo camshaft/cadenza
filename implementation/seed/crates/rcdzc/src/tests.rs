@@ -51364,6 +51364,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_trapping_earlier_let_init_is_not_dropped_by_a_try_short_circuit() {
+        // REGRESSION (PR #409): the constant-failure `?` fast-path (BRICK 3a) folds a `let` whose init is a
+        // `Core::Break` to the break value, discarding earlier bindings. It guarded only host-call-freedom,
+        // so a trapping earlier init `(a (/ 1 0))` was folded AWAY when short-circuiting — dropping a
+        // DEFINED trap that is OBSERVED before the `?` (§283/§285, dead-binding-drops-a-defined-trap). The
+        // fast path now also requires earlier inits to be `is_trap_free`. The `÷0` is compile-provable, so
+        // the program is rejected CDZ0304 (a compile-provable trap fails the build) rather than yielding
+        // `None`.
+        let src = "(module m (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) \
+                   (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a trapping earlier init must not be dropped — the ÷0 is CDZ0304, not folded to None",
+        );
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0304"),
+            "the trapping earlier init is a compile-provable trap (CDZ0304), got: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_constant_err_try_short_circuits_a_result_boundary() {
         // The Result companion: a constant `Err` `?` under a Result boundary short-circuits to the `Err`.
         // `(try (Err 7))` breaks `main` to `(Err 7)`. Pins that the fold reads the SUCCESS disc (`Ok`) off

@@ -3155,11 +3155,19 @@ fn lower_let(
         if matches!(resolved_of(db, init), Resolved::Try { .. })
             && let Core::Break { value } = core_of(db, init)
         {
-            // Every earlier init must be pure (its discarded value carries no lost effect). A perform/host
-            // call / trap in an earlier init is an effect the break would drop — leave it to a later brick.
+            // Every earlier init must be DISCARDABLE — its value is dropped when the break fires, so it may
+            // carry NO observable effect. Two observability channels, both of which the break would elide:
+            //   * a HOST CALL / perform (`subtree_reaches_host_call`) — an ordered observable effect, and
+            //   * a TRAP (`(trap …)`, checked overflow, ÷0 — NOT trap-free) — a strict earlier init on the
+            //     unconditional spine is OBSERVED before the `?`, so its trap MUST fire (§283/§285,
+            //     `dead-binding-drops-a-defined-trap` / `trap-kind-is-observable`); folding it away drops a
+            //     defined trap (the exact PR #409 miscompile: `(let ((a (/ 1 0))) (let ((x (try None))) …))`
+            //     wrongly yielded `None` instead of trapping). So the fast path requires earlier inits to be
+            //     BOTH host-call-free AND trap-free; otherwise the break is left to a later brick (the
+            //     runtime `Core::Block`/`Break` emit sequences the earlier init's effect before the break).
             if bindings[..i]
                 .iter()
-                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev) && is_trap_free(db, prev))
             {
                 return core_of(db, value);
             }
