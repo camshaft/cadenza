@@ -61011,6 +61011,104 @@ mod cross_component_oracle {
             d10.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL2 — ZERO-COST is an ABI INVARIANT: a rich value crosses a peer boundary as a bare u32 HANDLE,
+    // never marshaled. The operator's north star for peer linking is that calling a rich interface a
+    // peer module exposes is as cheap as an in-module call — no serialize/deserialize tax, because both
+    // peers share one value-heap runtime and a compound crosses as an opaque handle into it (ABI v5
+    // §Cadenza Components Composed Against A Shared Runtime Exchange Values As Handles). The e2e X5/U5
+    // tests prove a value crosses CORRECTLY; this pins the mechanism STRUCTURALLY at the `extern_abi_
+    // val_type` seam — so a future "marshal it into a component aggregate" refactor (which would keep
+    // the value correct but reintroduce the serialization tax) FAILS here rather than silently
+    // regressing zero-cost. A handle is ONE i32 slot with no payload — the definition of no-copy.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_rich_value_crosses_a_peer_boundary_as_a_bare_handle_not_marshaled() {
+        use crate::backend::wasm::host::extern_abi_val_type;
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        use crate::ty::Ty;
+
+        // Every RUNTIME-OWNED rich type — the value-heap compounds, the byte-rope String/Bytes, and the
+        // bignums — must cross as exactly `AbiValType::U32`: the opaque handle into the shared runtime.
+        // NOT `None` (which would force a marshal / a decline) and NOT any wider aggregate form.
+        let string_key = crate::resolved::Symbol::plain("x");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(string_key, Ty::int64());
+        let rich_types: Vec<(&str, Ty)> = vec![
+            (
+                "Tuple",
+                Ty::Tuple(std::rc::Rc::from([Ty::int64(), Ty::Bool])),
+            ),
+            ("Record", Ty::Record(std::rc::Rc::new(fields))),
+            (
+                "Sum",
+                Ty::Sum {
+                    decl: crate::ast::StructId(0),
+                    name: "Option".to_string(),
+                    args: std::rc::Rc::from([Ty::int64()]),
+                },
+            ),
+            ("List", Ty::List(Box::new(Ty::int64()))),
+            ("Map", Ty::Map(Box::new(Ty::String), Box::new(Ty::int64()))),
+            ("Set", Ty::Set(Box::new(Ty::int64()))),
+            ("String", Ty::String),
+            ("Bytes", Ty::Bytes),
+            ("BigInt", Ty::BigInt),
+            ("Rational", Ty::Rational),
+            // An erased NOMINAL over a rich type reads through to the inner type's handle.
+            (
+                "Nominal<List>",
+                Ty::Nominal {
+                    decl: crate::ast::StructId(0),
+                    name: "MyList".to_string(),
+                    args: std::rc::Rc::from([]),
+                    inner: std::rc::Rc::new(Ty::List(Box::new(Ty::int64()))),
+                },
+            ),
+        ];
+        for (label, ty) in &rich_types {
+            let abi = extern_abi_val_type(ty);
+            assert_eq!(
+                abi,
+                Some(AbiValType::U32),
+                "a rich `{label}` must cross a peer boundary as a bare u32 handle (zero-cost), \
+                 not marshaled — got {abi:?}"
+            );
+            // The handle is ONE i32 word with no serialized payload — the structural meaning of no-copy.
+            let handle = abi.unwrap();
+            assert_eq!(
+                handle.core_byte(),
+                0x7F,
+                "the `{label}` handle occupies a single core i32 slot"
+            );
+            assert_eq!(
+                handle.comp_byte(),
+                0x79,
+                "the `{label}` handle crosses as the component-model `u32` primitive"
+            );
+        }
+
+        // REGRESSION GUARD (the other direction): a SCALAR still crosses BY VALUE, never handle-ified —
+        // handle-crossing a scalar would be a pointless indirection (and wrong: a host peer can't build a
+        // heap handle for a plain integer). Int64 → S64 by value; Bool → Bool; a narrow int by value.
+        assert_eq!(
+            extern_abi_val_type(&Ty::int64()),
+            Some(AbiValType::S64),
+            "an Int64 crosses BY VALUE (S64), not as a handle"
+        );
+        assert_eq!(
+            extern_abi_val_type(&Ty::Bool),
+            Some(AbiValType::Bool),
+            "a Bool crosses BY VALUE, not as a handle"
+        );
+        // `Unit` has no boundary slot at all (a nullary op takes/returns nothing).
+        assert_eq!(
+            extern_abi_val_type(&Ty::Unit),
+            None,
+            "Unit has no cross-boundary representation"
+        );
+    }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
     // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via
