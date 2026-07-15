@@ -3040,14 +3040,18 @@
   (output (: 121 Int64)))
 
 (case "a trapping payload in a non-taken arm of a same-constructor match does not trap"
-  (doc    "`(match k (0 (Some (/ 100 k))) (1 (Some 20)) (_ (Some 30)))` at k = 1: every arm builds
-           `Some`, the sink's target; the taken arm yields 20 and arm 0's payload `(/ 100 0)` — which
-           WOULD trap for this k had it been evaluated — stays behind its probe. Pins that sinking the
-           payload into a per-position match keeps each alternative guarded by its arm's probe, the
-           match analogue of the if-hoist untaken-arm pins above.")
+  (doc    "`(match k (0 (Some (/ 100 (- k 1)))) (1 (Some 20)) (_ (Some 30)))` at k = 1: every arm builds
+           `Some`, the sink's target; arm 1 is taken → 20, and arm 0's payload `(/ 100 (- k 1))` = `(/
+           100 0)` at this k WOULD trap had it been evaluated, but stays behind its probe. The divisor is
+           `(- k 1)` — a RUNTIME expression that is 0 exactly at the k this case calls — NOT a literal `(/
+           100 0)`, which is a compile-time divide-by-zero poison (CDZ0304) that would reject the whole
+           program before any sink. So a sink that eagerly evaluated arm 0's payload would TRAP at k = 1
+           instead of yielding 20 — the test now genuinely exercises the guard (an earlier version used
+           `(/ 100 k)`, which at k = 1 is `(/ 100 1)` = 100 and never traps, making the pin vacuous — PR
+           #381 review). The match analogue of the if-hoist untaken-arm pins above.")
   (input  (do
             (def (main (: k Int64))
-              (match (match k (0 (Option.Some (/ 100 k))) (1 (Option.Some 20)) (_ (Option.Some 30)))
+              (match (match k (0 (Option.Some (/ 100 (- k 1)))) (1 (Option.Some 20)) (_ (Option.Some 30)))
                 ((Option.Some v) v)
                 (_ -1)))
             (export main)))
