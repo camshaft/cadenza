@@ -1186,6 +1186,21 @@
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "a perform composes as the SOURCE of a pipeline"
+  (doc    "An effect operation composes as the LHS value of a `|>` pipeline — the common surface form for
+           `f(perform())`. `(|> (Fresh.next) (+ 100))` desugars to the application `(+ (Fresh.next) 100)`
+           (the pipeline splices its value as the first argument of the rhs application), so the perform is
+           an ordinary strict operand the fold threads. `Fresh.next` seeded 5 resumes 5, and `5 + 100` = 105.
+           Pins that the pipeline desugar preserves the perform's strict-operand position — a performed value
+           flows through `|>` exactly as through a direct application, the way an effectful pass reads
+           `input |> transform`.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 5 ((next () s (resume s (+ s 1))))
+                (|> (Fresh.next) (+ 100)))) (export main)))
+  (output (: 105 Int64)))
+
 (case "performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right"
   (doc    "A perform in a tuple or list CONSTRUCTOR element is a strict, ordered position — each element is
            evaluated exactly once, left to right, before the compound is built — so the fold threads it like
