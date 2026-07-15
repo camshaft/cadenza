@@ -3256,3 +3256,49 @@
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; ── A `let` binding is observed only when it is REFERENCED — an unused binding's trap is elided ───────
+; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed names, in the same breath as an
+; un-projected tuple element, "a `let` binding that is never referenced" as unobserved: constructing the
+; surrounding scope does not require evaluating it, so an implementation MAY elide it AND the trap it
+; would have raised. This settles the open "strict-let / dead-trap ruling" the escaping-tuple case above
+; measures against: `let` is NOT "strict" enough to make an unused binding's trap observable — observation,
+; not the `let` keyword, is what forces a trap, exactly as for an un-projected tuple element. The dual
+; ANCHOR pins that the moment the binding IS referenced, its value flows out and the trap fires. A
+; parameter-driven overflow (not a constant fold — the arg crosses the boundary at run time) makes this a
+; genuine emitted-code question on BOTH backends. (A binding the compiler PROVES traps and elides also
+; earns the non-error CDZ0305 diagnostic; the build still succeeds with the recorded value.)
+
+(case "an unused let binding whose init would overflow is elided, so its trap does not occur"
+  (doc    "`(let ((y (+ x 1))) x)` with x = Int64.max: the binding `y = x + 1` overflows Int64, but the
+           body returns `x`, never referencing `y`. `y`'s value is unobserved, so the binding need not be
+           evaluated and its overflow trap does not occur — the program yields Int64.max. Uses a runtime
+           parameter (the arg crosses the boundary, not a constant fold) so this exercises the emitted
+           code on both backends. The anchor below pins that referencing `y` DOES trap. This is the
+           binding-form companion of the un-projected tuple element (05-compound-types.sexp) and the
+           unused-argument (09-functions.sexp) elisions — observation, not the `let` keyword, forces a
+           trap (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed).")
+  (input  (do (def (main (: x Int64)) (let ((y (+ x 1))) x)) (export main)))
+  (call   main (: 9223372036854775807 Int64))
+  (output (: 9223372036854775807 Int64)))
+
+(case "a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)"
+  (doc    "The control: the SAME `(let ((y (+ x 1))) …)` but the body returns `y`, so `y`'s value flows
+           out as the result — observed — and the overflowing `+` must trap. Contrast the elision case
+           above where `y` is never referenced. Confirms the elision is specifically about an UNREFERENCED
+           binding: a referenced binding is a strict, observed computation whose trap fires. The
+           binding-form dual of the projected-tuple-element anchor in 05-compound-types.sexp.")
+  (input  (do (def (main (: x Int64)) (let ((y (+ x 1))) y)) (export main)))
+  (call   main (: 9223372036854775807 Int64))
+  (trap   "integer overflow"))
+
+(case "a discarded do-statement whose value would overflow is elided, so its trap does not occur"
+  (doc    "The sequencing face: `(do (+ x 1) x)` with x = Int64.max evaluates the non-final statement
+           `(+ x 1)` only for its effect and discards its value. The statement is PURE (it reaches no host
+           call) and its overflowing value is never observed, so an implementation need not evaluate it —
+           its trap does not occur and the block yields its tail `x` = Int64.max. Pins that a discarded
+           pure do-statement is unobserved exactly as an unreferenced let binding is; a non-final statement
+           whose value cannot affect observable behavior (no host call, discarded value) need not run.")
+  (input  (do (def (main (: x Int64)) (do (+ x 1) x)) (export main)))
+  (call   main (: 9223372036854775807 Int64))
+  (output (: 9223372036854775807 Int64)))

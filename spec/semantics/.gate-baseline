@@ -533,6 +533,7 @@ pass	a dictionary consumer called at two dictionaries is monomorphized per dicti
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
+pass	a discarded do-statement whose value would overflow is elided, so its trap does not occur
 pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
@@ -1204,6 +1205,7 @@ pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reference to an unbound name is rejected before running
+pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
@@ -1847,6 +1849,7 @@ pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
