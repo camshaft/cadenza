@@ -3214,6 +3214,20 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match with all arms yielding the same value collapses to the body (trap-free scrutinee)");
         return core_of(db, *first_body);
     }
+    // COMMON-CONSTRUCTOR SINK (the match analogue of `hoist_common_ctor` for `if`): if EVERY arm is
+    // UNGUARDED and builds the SAME constructor `K` (same `SumNew` disc+arity / same-arity `Tuple` /
+    // same-length `List` / same-key `Record`), build `K` ONCE and sink each field position into its own
+    // per-position `match` over the same scrutinee — so `(match n (0 (Some 10)) (1 (Some 20)) (_ (Some
+    // 30)))` becomes `(Some (match n (0 10) (1 20) (_ 30)))`: ONE `sum-new`/alloc, the scalar decision
+    // tree chooses only the payload. See `sink_ctor_through_match_arms` for soundness (each arm's payload
+    // still materializes only on its own matching path, so Perceus is unchanged; the scrutinee is
+    // evaluated once by the sunk match exactly as by the original).
+    if probes.iter().all(|(_, guard, _)| guard.is_none())
+        && let Some(core) = sink_ctor_through_match_arms(db, scrutinee, &probes)
+    {
+        trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match with all arms building the same constructor sinks the constructor out (build-once)");
+        return core;
+    }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
     Core::Match {
         scrutinee,
@@ -3222,6 +3236,134 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             .map(|(probe, guard, body)| crate::core::MatchArm { probe, guard, body })
             .collect(),
     }
+}
+
+/// Sink a COMMON CONSTRUCTOR out of every arm of a scalar `match` — the multi-arm analogue of
+/// `hoist_common_ctor`. When all arms build the SAME constructor `K` (same `SumNew` disc + payload
+/// arity, a same-arity `Tuple`, a same-length `List`, or a `Record` with the SAME KEY SET), the heap
+/// build is DUPLICATED once per arm, differing only in the field occurrences. Build `K` ONCE and put
+/// each field position under its OWN `match` over the same scrutinee + probes, selecting that position's
+/// per-arm value; a position that is `core_equiv` across ALL arms is shared directly (one occurrence, no
+/// sub-match). `(match n (0 (Some a)) (_ (Some b)))` → `(Some (match n (0 a) (_ b)))`.
+///
+/// Caller guarantees every arm is UNGUARDED (a guard makes an arm's yield conditional on more than the
+/// probe, so the per-position sub-match — which replays only the probes — would not observe the guard).
+///
+/// SOUND: the sunk per-position `match` replays the IDENTICAL scrutinee + probe sequence, so it selects
+/// the SAME arm the original match did for every scrutinee value; the chosen arm's field value is thus
+/// exactly what that arm's `K` build used. Only ONE arm's fields ever materialize (the matched arm's),
+/// exactly as before — a differing field stays under a `match` arm, so Perceus consume-once is unchanged
+/// (a heap field is dup'd/dropped on its own path as the original arm's build did). A SHARED field is a
+/// value that is `core_equiv` across every arm (pure scalar — const/param/local/arith/compare/convert/
+/// proj), so emitting it once reproduces the matched arm's single evaluation. The scrutinee is evaluated
+/// once by the (outer, if any) sunk match exactly as the original match evaluated it once. Returns
+/// `None` when the arms are not all the same constructor, disagree in shape/key-set, or there are no
+/// field positions (a nullary variant / empty tuple/record — no build to share).
+fn sink_ctor_through_match_arms(
+    db: &mut Db,
+    scrutinee: StructId,
+    probes: &[(crate::core::Probe, Option<StructId>, StructId)],
+) -> Option<Core> {
+    enum Shape {
+        Sum(u32),
+        Tuple,
+        List,
+        Record(Vec<crate::resolved::Symbol>),
+    }
+    if probes.is_empty() {
+        return None;
+    }
+    // Read each arm body's constructor shape + its ordered field occurrences. All arms must agree on the
+    // shape (same `Shape` AND the same arity/key-set), or there is no common constructor to sink.
+    let arm_fields = |db: &mut Db, body: StructId| -> Option<(u8, Vec<StructId>)> {
+        // A discriminating tag so arms of DIFFERENT constructor kinds don't get merged: 0=Sum(disc via
+        // separate check), 1=Tuple, 2=List, 3=Record. The disc/keys are compared separately below.
+        match core_of(db, body) {
+            Core::SumNew { disc: _, payloads } => Some((0, payloads)),
+            Core::Tuple { elems } => Some((1, elems)),
+            Core::ListNew { elems } => Some((2, elems)),
+            Core::Record { fields } => Some((3, fields.values().copied().collect())),
+            _ => None,
+        }
+    };
+    // Establish the reference shape from the FIRST arm, then require every other arm to match it.
+    let first_body = probes[0].2;
+    let (shape, first_vals): (Shape, Vec<StructId>) = match core_of(db, first_body) {
+        Core::SumNew { disc, payloads } => (Shape::Sum(disc), payloads),
+        Core::Tuple { elems } => (Shape::Tuple, elems),
+        Core::ListNew { elems } => (Shape::List, elems),
+        Core::Record { fields } => {
+            let keys: Vec<crate::resolved::Symbol> = fields.keys().cloned().collect();
+            let vals: Vec<StructId> = keys.iter().map(|k| fields[k]).collect();
+            (Shape::Record(keys), vals)
+        }
+        _ => return None,
+    };
+    let arity = first_vals.len();
+    if arity == 0 {
+        return None;
+    }
+    // Collect, per FIELD POSITION, the list of per-arm value occurrences (arm-order). Bail if any arm
+    // disagrees in constructor kind, disc, arity, or (for a record) key set.
+    let mut per_field: Vec<Vec<StructId>> = vec![Vec::with_capacity(probes.len()); arity];
+    for (_, _, body) in probes {
+        // Same-shape check, position-aligned.
+        let ok = match &shape {
+            Shape::Sum(d0) => {
+                matches!(core_of(db, *body), Core::SumNew { disc, ref payloads } if disc == *d0 && payloads.len() == arity)
+            }
+            Shape::Tuple => {
+                matches!(core_of(db, *body), Core::Tuple { ref elems } if elems.len() == arity)
+            }
+            Shape::List => {
+                matches!(core_of(db, *body), Core::ListNew { ref elems } if elems.len() == arity)
+            }
+            Shape::Record(keys) => {
+                matches!(core_of(db, *body), Core::Record { ref fields } if fields.len() == arity && fields.keys().zip(keys.iter()).all(|(a, b)| a == b))
+            }
+        };
+        if !ok {
+            return None;
+        }
+        let (_, vals) = arm_fields(db, *body)?;
+        for (i, v) in vals.into_iter().enumerate() {
+            per_field[i].push(v);
+        }
+    }
+    // Build each field position: shared (all arms `core_equiv`) → the first arm's occurrence; otherwise a
+    // fresh `Core::Match` over the same scrutinee + probes selecting that position's per-arm value.
+    let mut out_vals: Vec<StructId> = Vec::with_capacity(arity);
+    for field_vals in &per_field {
+        let all_same = field_vals[1..]
+            .iter()
+            .all(|&v| core_equiv(db, v, field_vals[0]));
+        if all_same {
+            out_vals.push(field_vals[0]);
+        } else {
+            let field_ty = crate::infer::type_of(db, field_vals[0]);
+            let arms: Vec<crate::core::MatchArm> = probes
+                .iter()
+                .zip(field_vals.iter())
+                .map(|((probe, _guard, _body), &v)| crate::core::MatchArm {
+                    probe: probe.clone(),
+                    guard: None,
+                    body: v,
+                })
+                .collect();
+            out_vals.push(synth_core(db, Core::Match { scrutinee, arms }, field_ty));
+        }
+    }
+    Some(match shape {
+        Shape::Sum(disc) => Core::SumNew {
+            disc,
+            payloads: out_vals,
+        },
+        Shape::Tuple => Core::Tuple { elems: out_vals },
+        Shape::List => Core::ListNew { elems: out_vals },
+        Shape::Record(keys) => Core::Record {
+            fields: std::rc::Rc::new(keys.into_iter().zip(out_vals).collect()),
+        },
+    })
 }
 
 /// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — folds a COMPILE-TIME-CONSTANT

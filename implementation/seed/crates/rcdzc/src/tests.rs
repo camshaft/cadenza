@@ -1171,6 +1171,74 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
     assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
 }
 
+/// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
+/// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
+/// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
+/// build once per arm. This is the multi-arm analogue of the `if`-arm hoist (which already collapses a
+/// nested `if` of a common constructor); a `match` lowers to a probe chain, not nested `Core::If`, so it
+/// needs its own sink. Structurally the payload becomes a branchless `select` (the arm count here folds
+/// to one), and the value must round-trip in EVERY arm direction — k=0→10, k=1→20, wildcard→30 — proving
+/// the single build with a selected payload reproduces the per-arm builds. Kept opaque via a recursive
+/// helper so the sum is a genuine runtime heap value.
+#[test]
+fn a_common_constructor_sinks_out_of_all_match_arms() {
+    use crate::testkit::parse;
+    // `mk` bottoms out immediately (`n >= 0`) with the match; being recursive it is not inlined, so the
+    // Option stays a runtime heap value observed by `main`'s match.
+    let src = "(module m \
+                 (def (mk (: n Int64) (: k Int64)) \
+                   (if (< n 0) (mk (+ n 1) k) \
+                     (match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30))))) \
+                 (def (main (: k Int64)) \
+                   (match (mk 0 k) ((Some v) v) (None -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The sunk payload folds to a branchless scalar `select`/`if` decision tree — a `select` witnesses
+    // that the constructor was pulled out (pre-sink there was a per-arm `sum-new` and no payload select).
+    let selects = count_opcode(&bytes, |op| {
+        matches!(
+            op,
+            wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. }
+        )
+    });
+    assert!(
+        selects >= 1,
+        "the match common-constructor sink must lower the differing payload to a branchless select \
+         (build-once); found no select"
+    );
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime Option value must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let run = |k: i64| -> String {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![k.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => {
+                panic!("match common-ctor sink trapped (miscompile?): {t}")
+            }
+        }
+    };
+    assert_eq!(run(0), "10", "arm 0 → payload 10");
+    assert_eq!(run(1), "20", "arm 1 → payload 20");
+    assert_eq!(run(2), "30", "wildcard arm → payload 30");
+    assert_eq!(
+        run(99),
+        "30",
+        "wildcard arm covers any other scrutinee → 30"
+    );
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
