@@ -410,7 +410,11 @@ fn add(
         format!("fleet/{name}")
     };
     let worktree = fleet.worktrees.join(&name);
-    let disallow_ask = role != "concierge";
+    // The INTERACTIVE roles keep AskUserQuestion — they talk to the operator by design. The
+    // `concierge` is the standing human interface; a `design` agent is an on-demand interactive
+    // session the operator switches to and iterates with. Every other role runs unattended and is
+    // denied the human-prompt tool (it routes anything human-shaped to the concierge as an `ask`).
+    let disallow_ask = !matches!(role.as_str(), "concierge" | "design");
 
     let agent = Agent {
         name: name.clone(),
