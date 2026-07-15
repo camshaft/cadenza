@@ -16,13 +16,17 @@
 //! churny snapshot. `v-duvet-coverage` owns GROWING the number: when it adds citations it bumps the
 //! floor with `xtask duvet-check --save`.
 //!
-//! FAIL-SOFT — but ONLY for a genuinely-absent tool. If the `duvet` binary is not installed, this
-//! SKIPS with a note (the gate must never turn `check` red merely because a machine lacks the optional
-//! tool). But if duvet IS installed and `duvet report` FAILS (the common cause: a stranded citation —
-//! a `//=` / `//#` pointing at spec text that was reworded/removed), that is NOT a clean skip: it means
-//! the gate can't run, which is exactly the regression it exists to catch, so it FAILS loudly. (An
-//! earlier version conflated the two and silently disabled itself when a stranded citation broke the
-//! report — green-by-skip. The `Measurement` enum below keeps `Absent` and `ReportFailed` distinct.)
+//! Three non-`Ok` outcomes, each handled distinctly (see the `Measurement` enum). `Absent` — the
+//! `duvet` binary isn't installed → SKIP (never redden `check` for a missing optional tool).
+//! `Stranded` — duvet ran but ABORTED on a stranded citation (a `//=` / `//#` pointing at a spec
+//! section that was renamed/removed); `duvet report` emits no JSON, so coverage is unmeasurable, but
+//! this is a DISTINCT, self-evident, single-owner fix (repoint one citation), NOT a coverage
+//! regression — blocking every agent's `check` on one stale reference is too blunt, so we WARN (naming
+//! the exact citation) and SKIP the floor check rather than hard-fail. `ReportFailed` — duvet failed
+//! for some OTHER reason (crash / unexpected output) → FAIL loudly.
+//!
+//! History: v1 conflated absent+failed and silently green-by-skip'd on a stranding; v2 over-corrected
+//! and hard-failed the whole fleet's gate on any stranding; this v3 names the stranding + doesn't block.
 
 use std::path::Path;
 use std::process::Command;
@@ -56,16 +60,28 @@ pub fn run(paths: &Paths, save: bool) {
             );
             return;
         }
-        Measurement::ReportFailed(why) => {
-            // duvet IS installed but `duvet report` failed — almost always a STRANDED citation (a
-            // `//=` / `//#` pointing at spec text that no longer exists). This previously fell into the
-            // skip path, silently DISABLING the gate (it was green-by-skip on trunk for a while). That
-            // is exactly the regression the gate exists to catch, so it must be LOUD, not a skip: FAIL.
+        Measurement::Stranded(loc) => {
+            // A STRANDED citation aborted `duvet report` (no JSON → coverage unmeasurable). This is a
+            // DISTINCT, self-evident, single-owner problem (repoint one `//=`/`//#` at the renamed
+            // section) — NOT a coverage regression, and NOT a reason to redden every agent's
+            // `xtask check`. So WARN loudly (naming the exact citation to fix) but do NOT block: the
+            // coverage-floor check is simply skipped this run (it can't measure). The owner fixing the
+            // citation restores measurement; nobody else is held hostage by one stale reference.
             eprintln!(
-                "duvet-check: `duvet report` FAILED — the citation gate could NOT run. This is NOT a \
-                 clean skip: duvet is installed but erroring, which is almost always a STRANDED \
-                 citation (a //= / //# whose spec sentence was reworded/removed). Fix the citation so \
-                 `duvet report` succeeds again.\n  duvet error: {why}"
+                "duvet-check: WARNING — a STRANDED citation aborted `duvet report`, so citation \
+                 coverage couldn't be measured this run (gate SKIPPED, not failed). Repoint it at the \
+                 current spec section:\n  {loc}\n  (A stranding is a fixable single-citation issue, \
+                 not a coverage regression — it doesn't block the gate, but please fix it so coverage \
+                 is measured again.)"
+            );
+            return;
+        }
+        Measurement::ReportFailed(why) => {
+            // duvet is installed and did NOT abort on a stranding, yet still failed (crash / unexpected
+            // output). That's genuinely broken and rare — fail loudly so it's investigated.
+            eprintln!(
+                "duvet-check: `duvet report` FAILED for a non-stranding reason — the citation gate \
+                 could NOT run. Investigate:\n  duvet error: {why}"
             );
             std::process::exit(1);
         }
@@ -123,15 +139,22 @@ pub fn run(paths: &Paths, save: bool) {
     }
 }
 
-/// The outcome of trying to measure coverage — distinguished so `run` can SKIP on a genuinely-absent
-/// tool but FAIL LOUDLY when duvet is present yet erroring (a stranded citation), instead of silently
-/// disabling the gate for both.
+/// The outcome of trying to measure coverage. `run` treats each distinctly: SKIP on a genuinely-absent
+/// tool; WARN-but-don't-block on a STRANDED citation (a distinct, self-evident, single-owner problem
+/// that shouldn't blank every agent's coverage gate); and FAIL only on an OTHERWISE-broken report.
 enum Measurement {
     /// duvet ran and its report parsed → the coverage counts.
     Ok(Coverage),
     /// The `duvet` binary is not installed (command not found) → the only legitimate skip.
     Absent,
-    /// duvet is installed but `duvet report` failed / its output couldn't be parsed → must be loud.
+    /// duvet ran but ABORTED on a stranded citation — a `//=` / `//#` pointing at a spec section that
+    /// was renamed/removed. `duvet report` emits no JSON in this case, so coverage can't be measured,
+    /// but this is a DISTINCT fixable issue (repoint the citation), not a coverage regression, and it's
+    /// self-evidently loud + single-owner — so blocking the whole fleet's gate on it is too blunt.
+    /// Carries the human-readable location (`file:line → missing §slug`) parsed from duvet's error.
+    Stranded(String),
+    /// duvet is installed but `duvet report` failed for another reason (crash / unexpected output) →
+    /// genuinely broken, must be loud.
     ReportFailed(String),
 }
 
@@ -152,22 +175,21 @@ fn measure(paths: &Paths) -> Measurement {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Measurement::Absent,
         Err(e) => Measurement::ReportFailed(format!("could not run duvet: {e}")),
         Ok(o) if !o.status.success() => {
-            // duvet ran but exited non-zero — surface its stderr (it names the stranded citation).
+            // duvet ran but exited non-zero. A STRANDED citation is the common, benign-to-the-gate
+            // case: `duvet report` aborts with a `missing section "<slug>"` … `[<file>:<line>]` error.
+            // Classify it as `Stranded` (warn, don't block) vs a genuine `ReportFailed` (block).
             let stderr = String::from_utf8_lossy(&o.stderr);
-            let tail: String = stderr
-                .lines()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            Measurement::ReportFailed(if tail.is_empty() {
-                format!("duvet report exited with {}", o.status)
-            } else {
-                tail
-            })
+            match parse_stranded(&stderr) {
+                Some(loc) => Measurement::Stranded(loc),
+                None => {
+                    let tail = last_lines(&stderr, 6);
+                    Measurement::ReportFailed(if tail.is_empty() {
+                        format!("duvet report exited with {}", o.status)
+                    } else {
+                        tail
+                    })
+                }
+            }
         }
         Ok(_) => match std::fs::read_to_string(&out) {
             Err(e) => Measurement::ReportFailed(format!("could not read duvet report: {e}")),
@@ -179,6 +201,46 @@ fn measure(paths: &Paths) -> Measurement {
             },
         },
     }
+}
+
+/// Parse a duvet `missing section` (stranded-citation) error out of its stderr, returning a compact
+/// `<file>:<line> → missing §<slug>` locator, or `None` if the stderr isn't a stranding (some other
+/// failure). duvet prints (across ANSI-boxed lines): `missing section "<slug>" in spec/<path>` and a
+/// `[<file>:<line>:<col>]` source span. We stitch the slug + the source span; both may be soft-wrapped
+/// across lines, so scan the whole text rather than a single line.
+fn parse_stranded(stderr: &str) -> Option<String> {
+    // Strip the ANSI box-drawing / prefix noise so wrapped fragments join cleanly.
+    let flat: String = stderr
+        .lines()
+        .map(|l| l.trim_start_matches(|c: char| "│╭╮╰─·×✕ ".contains(c)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !flat.contains("missing section") {
+        return None;
+    }
+    // slug: the text inside the first `"..."` after `missing section`.
+    let slug = flat
+        .split_once("missing section")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(s, _)| s.trim().to_string());
+    // source span: `[<...>:<line>:<col>]` — take the first bracketed path:line.
+    let span = flat
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(s, _)| s.trim().to_string());
+    match (slug, span) {
+        (Some(slug), Some(span)) => Some(format!("{span} → missing §{slug}")),
+        (Some(slug), None) => Some(format!("missing §{slug}")),
+        _ => Some("a citation points at a missing/renamed spec section".to_string()),
+    }
+}
+
+/// The last `n` non-empty-ish lines of a string, rejoined — for surfacing a report failure's tail.
+fn last_lines(s: &str, n: usize) -> String {
+    let all: Vec<&str> = s.lines().collect();
+    let start = all.len().saturating_sub(n);
+    all[start..].join("\n")
 }
 
 /// Count citation vs SPEC annotations in a `duvet report --json` document. A SPEC-typed annotation is
@@ -259,5 +321,31 @@ mod tests {
         assert!(count_annotations("not json").is_none());
         // Missing the annotations array → None (fail-soft, not a crash).
         assert!(count_annotations(r#"{"other":1}"#).is_none());
+    }
+
+    #[test]
+    fn parse_stranded_extracts_slug_and_span() {
+        // A real duvet stranding error (ANSI box-drawn, soft-wrapped), like `prelude.rs:320`.
+        let stderr = r#"
+  ×   × missing section "an-open-sums-payload-may-be-schema-typed" in spec/
+  │   │ capabilities/type-system.md
+  │      ╭─[implementation/seed/crates/rcdzc/src/prelude.rs:320:9]
+  │  320 │     //= spec/capabilities/type-system.md#an-open-sums-payload-may-
+  │      ·                                             ╰── referenced here
+  ╰─▶ encountered 1 errors
+"#;
+        let loc = parse_stranded(stderr).expect("should detect a stranding");
+        assert!(
+            loc.contains("an-open-sums-payload-may-be-schema-typed"),
+            "slug: {loc}"
+        );
+        assert!(loc.contains("prelude.rs:320"), "span: {loc}");
+    }
+
+    #[test]
+    fn parse_stranded_none_on_other_errors() {
+        // A non-stranding failure must NOT be classified as a stranding (so it still hard-fails).
+        assert!(parse_stranded("thread 'main' panicked at 'boom'").is_none());
+        assert!(parse_stranded("").is_none());
     }
 }

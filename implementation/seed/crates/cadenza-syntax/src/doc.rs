@@ -345,4 +345,87 @@ mod tests {
     fn empty_doc() {
         assert_eq!(Doc::new().render(80), "");
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Emit a random, BALANCED box subtree into `d` (every `cbox`/`ibox` gets its matching `end`).
+    /// Between any two atomic tokens (words / nested boxes) it ALWAYS emits a break (space/zerobreak/
+    /// hardbreak), so there is a breakable point between every pair of tokens — that makes the width
+    /// bound meaningful: an overflow can then only come from a single too-wide word, never from an
+    /// unbreakable concatenation of adjacent words. Returns the widest single WORD emitted.
+    fn gen_doc(rng: &mut Rng, d: &mut Doc, depth: usize) -> usize {
+        let words = ["a", "bb", "ccc", "word", "longer-token", "x"];
+        let mut widest = 0usize;
+        let n = 1 + rng.below(4);
+        for i in 0..n {
+            if i > 0 {
+                // A break BETWEEN tokens (never two adjacent words with no break between them).
+                match rng.below(3) {
+                    0 => d.space(),
+                    1 => d.zerobreak(),
+                    _ => d.hardbreak(),
+                }
+            }
+            // An atomic token: a word, or a nested box (only while depth remains).
+            if depth == 0 || rng.below(3) == 0 {
+                let w = words[rng.below(words.len())];
+                d.word(w);
+                widest = widest.max(w.chars().count());
+            } else if rng.below(2) == 0 {
+                d.cbox(rng.below(4) as isize);
+                widest = widest.max(gen_doc(rng, d, depth - 1));
+                d.end();
+            } else {
+                d.ibox(rng.below(4) as isize);
+                widest = widest.max(gen_doc(rng, d, depth - 1));
+                d.end();
+            }
+        }
+        widest
+    }
+
+    #[test]
+    fn render_never_panics_and_respects_the_width_bound() {
+        // The pretty-printer's core correctness property, swept over random BALANCED token streams (a
+        // break between every pair of tokens) at a range of widths: `render` (a) never PANICS (no OOB /
+        // underflow in the Oppen scan), and (b) respects the WIDTH BOUND — no output line is longer than
+        // `max(width, widest word) + the deepest indent`. Because every pair of tokens has a break
+        // between it, a line can exceed `width` ONLY because a single unbreakable `word` (offset by a box
+        // indent) is itself that wide; the engine must never gratuitously overflow when a break was
+        // available. Fixed seed → reproducible; the failing doc's render is printed.
+        let mut rng = Rng(0x0bad_c0de_dead_beef);
+        for _ in 0..3000 {
+            let mut d = Doc::new();
+            let depth = 1 + rng.below(4);
+            let widest = gen_doc(&mut rng, &mut d, depth);
+            for &width in &[1usize, 4, 8, 20, 80] {
+                let out = d.render(width);
+                // Ceiling: `max(width, widest word)` plus the deepest achievable indent (≤ 4 per box
+                // level × the max depth), since a broken line is prefixed by its box's indent.
+                let ceiling = width.max(widest).saturating_add(4 * 8);
+                for line in out.split('\n') {
+                    assert!(
+                        line.chars().count() <= ceiling,
+                        "line {:?} (len {}) exceeds ceiling {ceiling} at width {width}\n--- full ---\n{out}",
+                        line,
+                        line.chars().count()
+                    );
+                }
+            }
+        }
+    }
 }

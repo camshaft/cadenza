@@ -622,6 +622,23 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         "a List Bool parameter is property-tested via the synthesized wrapper: {stdout}"
     );
 
+    // Bool DISTRIBUTION (PR #408): the generated Bool must actually produce `true` values, not almost
+    // always `false`. A property that traps the moment it sees a `true` element MUST fail within a modest
+    // trial count — with the old `(= gen 0)` mapping `true` appeared only for the exact int 0 (near-never)
+    // and this would spuriously pass; the parity mapping `(= (% gen 2) 0)` makes it ~50/50 so `true` shows.
+    let boolcov = write(
+        &d,
+        "boolcov.sexp",
+        "(do (@ test (def (never-true (: bs (List Bool))) \
+           (match bs ((list) unit) ((list h .. t) (if h (trap \"saw true\") unit))))) \
+           (def (anchor4) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &boolcov, "--seed", "0", "--trials", "30"]);
+    assert!(
+        !ok && stdout.contains("FAIL never-true-gen"),
+        "the Bool generator must produce `true` (parity, not = 0) so a see-a-true property fails: {stdout}"
+    );
+
     // G3: a `(Tuple …)` parameter is generated too, and nesting composes — a `(List (Tuple Int64 Bool))`
     // is property-tested. Pins the recursive `<gen:T>` over tuple slots + arbitrary nesting.
     let tup = write(

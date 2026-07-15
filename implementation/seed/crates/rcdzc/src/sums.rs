@@ -134,6 +134,12 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         // `List` ((List Ast)) — the complete spec variant set. Discriminants are read BY NAME everywhere
         // (`ast_variant_discs`), never positionally, so this order is display-only and adding a variant
         // never mis-tags an existing one.
+        //
+        // `Ast` is an ordinary `(type …)` sum built by the same `type_form_payloads`/`scan_type_decl` path
+        // as any user sum — NOT a compiler-special-cased primitive — with exactly the spec's variant per
+        // syntactic form and a `List` variant carrying a `(List Ast)` of the same type:
+        //= spec/capabilities/type-system.md#the-abstract-syntax-tree-is-an-ordinary-sum-type
+        //# The abstract syntax tree type MUST be an ordinary sum type of the language — a variant per syntactic form (an integer, a float, a string, a boolean, a name, and a list of child nodes) with the list variant carrying a list of the same type — rather than a primitive the type system special-cases.
         type_form_payloads(
             ast,
             "Ast",

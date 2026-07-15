@@ -549,3 +549,73 @@
                 ((Ok n) n)
                 ((Err _) -1))) (export main)))
   (output (: -1 Int64)))
+
+; --- OS2 schema-decode: the runtime, error-kind, and composition faces -----------------------------
+; The OS2 cases above pin the Ok/Err decode over constant variants matched to a scalar. These pin the
+; neighbors: a RUNTIME-built variant through the decode, the DecodeError KIND dispatch (the
+; multi-variant error was a deliberate design call — its kinds must be matchable), the decoded
+; payload feeding ordinary arithmetic, and Ok+Err decodes composing in one program.
+
+(case "a runtime-built open-sum variant decodes through the schema"
+  (doc    "`(decode Int64-schema (payload-of (Measured (+ k 1))))` with k a PARAMETER — the variant's
+           payload is a runtime value, so nothing about the decode's INPUT folds; the schema still
+           fixes the target type and the Ok arm recovers k+1 = 7. Pins the decode over a live payload
+           (a const-fold-only path that declined runtime payloads would todo here; one that folded a
+           placeholder would bind garbage).")
+  (input  (do
+            (type V (Measured Int64) (Labeled String) .. r)
+            (def (main (: k Int64))
+              (match (decode Int64-schema (payload-of (Measured (+ k 1))))
+                ((Ok v) v)
+                ((Err _) -1)))
+            (export main)))
+  (call   main (: 6 Int64))
+  (output (: 7 Int64)))
+
+(case "the decode error's kind is matchable"
+  (doc    "`DecodeError` is a MULTI-variant sum (TypeMismatch | Eof) by design — an error names its
+           kind. A mismatched decode's Err payload dispatches by kind: `(Err (TypeMismatch _))` → 1,
+           the `(Err (Eof _))` arm stays untaken → not 2. Pins the error-kind surface (a
+           single-variant or erased error would make the kind arms unreachable or ill-typed).")
+  (input  (do
+            (type V (Measured Int64) (Labeled String) .. r)
+            (def (main (: d Int64))
+              (match (decode Int64-schema (payload-of (Labeled "x")))
+                ((Ok _) 0)
+                ((Err (TypeMismatch _)) 1)
+                ((Err (Eof _)) 2)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a decoded payload feeds ordinary arithmetic"
+  (doc    "`(+ (match (decode …) ((Ok v) v) …) 1)` = 8 — the recovered payload is a first-class Int64
+           in downstream arithmetic (the schema's type-fixing is real: a payload carried as an opaque
+           handle rather than the typed value would fail the add or compute garbage).")
+  (input  (do
+            (type V (Measured Int64) (Labeled String) .. r)
+            (def (main (: d Int64))
+              (+ (match (decode Int64-schema (payload-of (Measured 7)))
+                   ((Ok v) v)
+                   ((Err _) -1))
+                 1))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 8 Int64)))
+
+(case "an Ok and an Err decode compose through one shared handler"
+  (doc    "TWO decodes in one program — one Ok (Measured 7 → 7), one Err (Labeled → -1) — folded
+           through a SHARED `(Result Int64 DecodeError)`-typed helper: 7 + (-1) = 6. Pins the decode
+           result as a first-class value crossing a function boundary, and that the two outcome
+           shapes coexist in one compilation (a decode specialized per-call-site to only its observed
+           outcome would reject or misdispatch the shared helper).")
+  (input  (do
+            (type V (Measured Int64) (Labeled String) .. r)
+            (def (dec (: r (Result Int64 DecodeError)))
+              (match r ((Ok v) v) ((Err _) -1)))
+            (def (main (: d Int64))
+              (+ (dec (decode Int64-schema (payload-of (Measured 7))))
+                 (dec (decode Int64-schema (payload-of (Labeled "x"))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 6 Int64)))

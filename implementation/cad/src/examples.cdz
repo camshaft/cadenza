@@ -42,6 +42,33 @@ def cube-row(n: Int64, step: Float64) =
   if n == 0 then empty()
   else union(cube-uniform(1.0), translate(v3(step, 0.0, 0.0), cube-row(n - 1, step)))
 
+/// Int64 → Float64, for computing an angle from a loop index (`Float64.of-int`).
+def i2f(i: Int64) = Float64.of-int(i)
+
+/// A radial pattern: `n` copies of `part`, each rotated `i × 360/n` degrees about +z and pushed out to
+/// radius `r` along +x. The general "arrange N features in a circle" combinator — the recursion + float
+/// angle arithmetic (`i2f(i) × (360/n)`) that a gear, a bolt-circle, or a fan blade-set is built from.
+/// `part` is any `Solid`; the caller supplies the feature to repeat. Returns `empty` for `n <= 0`.
+def radial-pattern(n: Int64, r: Float64, part: Solid) = radial-from(n, 0, r, part)
+
+def radial-from(n: Int64, i: Int64, r: Float64, part: Solid) =
+  if i == n then empty()
+  else union(
+    rotate(v3(0.0, 0.0, i2f(i) * (360.0 / i2f(n))), translate(v3(r, 0.0, 0.0), part)),
+    radial-from(n, i + 1, r, part))
+
+/// A spur gear (schematic): a hub cylinder with `n` cubic teeth arranged in a radial pattern at the hub's
+/// rim. Not an involute profile — the showcase point is that a parametric, recursive circular pattern is
+/// ordinary Cadenza (fold + float angle math), which the mesh backend then evaluates. `n` teeth → `n+1`
+/// primitive leaves (the hub + each tooth).
+def gear(n: Int64, hub-r: Float64, hub-h: Float64, tooth: Float64) =
+  union(cylinder(hub-h, hub-r), radial-pattern(n, hub-r, cube-uniform(tooth)))
+
+/// A hollow tube: an outer cylinder with a concentric bore removed along its whole length (a washer
+/// extended — the pipe/ring-stock idiom). `difference` of two coaxial cylinders.
+def tube(len: Float64, ro: Float64, ri: Float64) =
+  difference(cylinder(len, ro), cylinder(len, ri))
+
 /// ============================ @test suite (pins the example shapes) ============================
 
 @test
@@ -81,4 +108,33 @@ def cube-row-recursion-depth-matches-count() =
   let five = leaf-count(cube-row(5, 1.0)) in
   if three == 3 then (if five == 5 then unit else trap("row 5 = 5 leaves")) else trap("row 3 = 3 leaves")
 
-export { plate, washer, capsule, cube-row }
+@test
+def radial-pattern-counts-n-copies() =
+  // n copies of a single-leaf part → n primitive leaves
+  if leaf-count(radial-pattern(6, 2.0, cube-uniform(1.0))) == 6 then unit else trap("radial 6 = 6 leaves")
+
+@test
+def radial-pattern-zero-is-empty() =
+  if is-empty(radial-pattern(0, 2.0, cube-uniform(1.0))) then unit else trap("empty radial pattern")
+
+@test
+def radial-pattern-repeats-a-compound-part() =
+  // the part can itself be a compound (2-leaf) tree; 4 copies of a 2-leaf part → 8 leaves
+  let part = union(cube-uniform(1.0), sphere(0.5)) in
+  if leaf-count(radial-pattern(4, 3.0, part)) == 8 then unit else trap("4 × 2-leaf = 8 leaves")
+
+@test
+def gear-is-hub-plus-n-teeth() =
+  // a gear with 8 teeth → hub + 8 teeth = 9 primitive leaves
+  if leaf-count(gear(8, 2.0, 0.5, 0.4)) == 9 then unit else trap("gear 8 = hub + 8 teeth = 9 leaves")
+
+@test
+def gear-tooth-count-scales() =
+  let g12 = leaf-count(gear(12, 2.0, 0.5, 0.4)) in
+  if g12 == 13 then unit else trap("gear 12 = 13 leaves")
+
+@test
+def tube-is-two-cylinders() =
+  if leaf-count(tube(5.0, 2.0, 1.5)) == 2 then unit else trap("tube = outer - bore = 2 leaves")
+
+export { plate, washer, capsule, cube-row, radial-pattern, gear, tube }

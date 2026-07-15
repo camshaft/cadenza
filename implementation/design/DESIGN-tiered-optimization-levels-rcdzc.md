@@ -166,3 +166,42 @@ Coordination: v-core-opt ↔ v-cdz-tooling on the surface; v-core-opt ↔ v-wasm
 to Core vs stay wasm-specific (v-wasm-opt confirmed 2026-07-15: its Lir/slot-level CSE, select-ification,
 br_table, LICM, accum-intro, slot reuse, guard elision are wasm-Lir-specific and STAY; the common-ctor
 build-once hoist/sink family is already backend-independent in `lower.rs`).
+
+## 7. The dev/release → OptLevel mapping — CANONICAL (v-core-opt, 2026-07-15)
+
+v-cdz-tooling asked for the authoritative profile→level mapping for `cdz build` + a `Project.cdz`
+profile field. This section is that authority; `cdz build` and `rcdzc` follow it so they agree.
+
+- **`cdz build` default (no flag, no manifest field) → `OptLevel::default()` = `O1`.** The dev/scripting
+  common case: cheap cleanups on, no whole-function analysis. (Matches `compile`'s default wrapper.)
+- **`cdz build --release` → `O2`.** Release spends the whole-function passes (inlining, global CSE,
+  LICM) — the "release-default" the design has always named. NOT `O3`: `O3`'s aggressive/whole-program
+  passes are opt-IN via an explicit `--opt-level O3`, not implied by `--release` (so `--release` stays a
+  predictable, well-tested tier; a project wanting maximum spends `--opt-level O3` deliberately).
+- **A `dev` alias → `O1`** (= the default). Provided so `--release`/`dev` read as a symmetric pair and a
+  manifest can name `dev` explicitly; `dev` is just the name for the default tier, it adds no new level.
+
+**Canonical alias table** (the two named profiles map onto the O-levels; the O-levels remain the ground
+truth the `PassManager` gates on):
+
+| profile / alias | OptLevel | meaning                                                        |
+|-----------------|----------|----------------------------------------------------------------|
+| `dev` (default) | `O1`     | cheap local cleanups; fast iteration                           |
+| `release`       | `O2`     | + whole-function passes (inlining, global CSE, LICM)           |
+| (explicit only) | `O0`     | canonicalization only — max dev speed, via `--opt-level O0`    |
+| (explicit only) | `O3`     | + aggressive/whole-program — via `--opt-level O3`, never implied|
+
+**Manifest field name — flat `opt-level`, not a `[profile.release]` block.** `Project.cdz` is flat
+`def`s (name/entry/tests), not TOML, so a flat well-known field `def opt-level = "O2"` fits the manifest
+shape and reuses the SAME `rcdzc::OptLevel::FromStr` the `--opt-level` flag parses (one spelling, one
+parser, one mapping). A cargo-style `[profile.*]` block would import TOML sectioning the manifest does
+not otherwise have. If per-profile granularity is later wanted, `def opt-level-release = "O3"` extends
+flatly without a block. **Precedence:** `--opt-level` flag > manifest `opt-level` field > (`--release` ⇒
+`O2`) > `OptLevel::default()` (`O1`). The flag always wins; `--release` and a manifest field that
+disagree is a coordination detail for v-cdz-tooling (suggest: `--release` sets the baseline, an explicit
+`--opt-level` still overrides).
+
+**Behavior bar unchanged:** every level is observably identical (only speed/size differ). `cdz build
+--release` must produce the same OBSERVABLE result as a default build for every program — the
+level-equivalence guarantee the `every_opt_level_emits_byte_identical_wasm` test already pins, and a
+future `--opt-sweep` gate would extend corpus-wide.

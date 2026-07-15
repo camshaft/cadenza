@@ -19538,15 +19538,30 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                     // statically-impossible conversion. (A RUNTIME `T.of` whose value is unknown until run
                     // time still traps at run time — the branch below declines it to the checked emit; only
                     // a compile-time-KNOWN out-of-range constant is rejected up front here.)
-                    let signed_word = if signed { "signed" } else { "unsigned" };
                     trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "checked conversion of an out-of-range constant → CDZ0302 reject");
-                    Core::Poison(Reject::coded(
-                        Code::IntOutOfRange,
-                        format!(
-                            "integer does not fit the target type of the checked conversion \
-                             ({signed_word} {width}-bit)"
+                    // Name the offending VALUE, the target width TYPE, and the VALID RANGE — matching the
+                    // annotation-position CDZ0302 ("the valid range is 0..=255") rather than the terse
+                    // "(unsigned 8-bit)". A checked conversion `(UInt8.of 300)` is the same over-range fault
+                    // as the annotation `(: 300 UInt8)`, so it reads the same. Reuses `width_module_spelling`
+                    // (bound name `UInt8` for an aliased width, `(UInt k)` ctor form otherwise) +
+                    // `int_width_range` (min..=max) — the M191 bin-segment helpers.
+                    let ty = crate::infer::width_module_spelling(&crate::ty::IntTy::fixed(
+                        signed, width,
+                    ));
+                    let val = v.to_decimal_string();
+                    let message = match crate::infer::int_width_range(signed, width) {
+                        Some(range) => format!(
+                            "the value {val} does not fit the checked conversion's target type {ty} \
+                             (the valid range is {range}) — `.of` traps out of range; use `.wrap` to \
+                             truncate, or convert a value that fits"
                         ),
-                    ))
+                        None => format!(
+                            "the value {val} does not fit the checked conversion's target type {ty} \
+                             — `.of` traps out of range; use `.wrap` to truncate, or convert a value \
+                             that fits"
+                        ),
+                    };
+                    Core::Poison(Reject::coded(Code::IntOutOfRange, message))
                 }
             }
         },
