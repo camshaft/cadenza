@@ -36,6 +36,8 @@
 ///   - `ChainI((a, b))`       — yield all of `a`, then all of `b` (concatenation).
 ///   - `ZipWithI((f, (a, b)))`— yield `f(x, y)` for each pair `x` from `a`, `y` from `b`; stops when
 ///                              either runs out (the shorter one bounds the result).
+///   - `ScanI((f, acc, src))` — inclusive left scan: yield the running accumulator `f(acc, x)` for
+///                              each `x` from `src`.
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -46,6 +48,7 @@ type Iter =
   | TakeWhileI(Tuple((Int64 -> Bool), Iter))
   | ChainI(Tuple(Iter, Iter))
   | ZipWithI(Tuple((Int64 -> Int64 -> Int64), Tuple(Iter, Iter)))
+  | ScanI(Tuple((Int64 -> Int64 -> Int64), Tuple(Int64, Iter)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -85,6 +88,12 @@ def next(it) = match it with
       | Option.None(_) => Option.None(unit)
       | Option.Some(pb) => (match pb with | (vb, rb) =>
           Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb)))))))))))
+  | Iter.ScanI(sf) => (match sf with | (f, acc-src) => (match acc-src with | (acc, src) =>
+    // yield the running accumulator, threading the new acc into the rest
+    (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) =>
+          let acc2 = f(acc, v) in Option.Some((acc2, Iter.ScanI((f, (acc2, rest)))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -119,6 +128,16 @@ def chain(it, other) = Iter.ChainI((it, other))
 
 /// Zip two iterators with `f`: yield `f(x, y)` for paired elements, stopping when either runs out.
 def zip-with(it, other, f: Int64 -> Int64 -> Int64) = Iter.ZipWithI((f, (it, other)))
+
+/// Inclusive left scan: yield the running accumulator `f(acc, x)` for each element, seeded with `init`.
+def scan(it, init, f: Int64 -> Int64 -> Int64) = Iter.ScanI((f, (init, it)))
+
+// NOTE — `flat-map` (element → sub-iterator, flattened) is NOT provided: a `FlatMapI` variant storing
+// an `Int64 -> Iter` closure coexisting with `ScanI`'s `Int64 -> Int64 -> Int64` closure in this one
+// sum makes the shared closure-dispatch table decline at lowering ("a runtime closure application has
+// no matching function type"). Each combinator compiles alone; only the coexistence of two
+// distinctly-typed boxed closures breaks. Filed as
+// `repros/decline-two-distinct-closure-typed-variants-in-one-sum.cdz`; `flat-map` is gated on that fix.
 
 // ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
 
@@ -303,5 +322,28 @@ def zip-with-is-lazy() =
     unit
   else
     trap("zip-with lazy take 3 of squares")
+
+@test
+def scan-running-sum() =
+  // running sums of 1..5 -> 1,3,6,10
+  if int-list-eq(collect-list(scan(range(1, 5), 0, fn(a, x) => a + x)), [1, 3, 6, 10]) then
+    unit
+  else
+    trap("scan running sum = [1,3,6,10]")
+
+@test
+def scan-empty-yields-nothing() =
+  // scanning an empty source yields nothing (an empty range is the empty producer here — comparing a
+  // collected result to the bare `[]` literal hits an unrelated generic-empty-list-eq gap, so assert
+  // on the count instead)
+  if count(scan(range(5, 5), 0, fn(a, x) => a + x)) == 0 then unit else trap("scan of an empty source is empty")
+
+@test
+def scan-is-lazy() =
+  // running sum over a huge range, take 3 -> 0,1,3 (seeded 0: 0+0,+1,+2)
+  if int-list-eq(collect-list(take(scan(range(0, 1000000), 0, fn(a, x) => a + x), 3)), [0, 1, 3]) then
+    unit
+  else
+    trap("scan lazy take 3")
 
 export { Iter.* }
