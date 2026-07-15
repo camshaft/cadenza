@@ -57,3 +57,5 @@
             (def (main) (sum (list 2 2 2 2 2 2 2 2 2 2) 0))
             (export main)))
   (output (: 20 Int64)))
+
+;; RESOLVED 2026-07-15: stale — gate PASSes on current trunk. Cranelift branch-range fixed upstream.

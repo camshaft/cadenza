@@ -14,6 +14,8 @@
     { "name": "v-compiler-perf", "role": "vertical", "vertical": "compiler-perf", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-wasm-opt", "role": "vertical", "vertical": "wasm-opt", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-guide", "role": "vertical", "vertical": "guide", "area": "guide", "model": "opus", "effort": "high", "interval": "10m" },
-    { "name": "v-compiler-ml", "role": "vertical", "vertical": "compiler-ml", "area": "compiler-ml", "model": "opus", "effort": "high", "interval": "10m" }
+    { "name": "v-compiler-ml", "role": "vertical", "vertical": "compiler-ml", "area": "compiler-ml", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-duvet-coverage", "role": "vertical", "vertical": "duvet-coverage", "area": "spec", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "github-liaison", "role": "github-liaison", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }

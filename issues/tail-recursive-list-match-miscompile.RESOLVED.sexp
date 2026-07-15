@@ -59,3 +59,5 @@
 ;; correct + regression-free, reconstructable) AND fix the head-read-0 in the tail-call arg eval (BUG 2).
 ;; Reconstruct BUG-1 fix from this note; then root-cause BUG 2 in emit_loop_iteration's arg evaluation
 ;; (all args read OLD param values before any store — verify the head-read actually reads the OLD slot).
+
+;; RESOLVED 2026-07-15: stale — gate PASSes on current trunk (the (do …) form returns 15). Fixed upstream.
